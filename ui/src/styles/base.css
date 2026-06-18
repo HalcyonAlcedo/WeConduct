@@ -1,0 +1,117 @@
+/* ===== WeConduct Base Styles ===== */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 12px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  color: var(--text-primary);
+  background: var(--bg-app);
+  line-height: 1.4;
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+}
+
+#app {
+  height: 100vh;
+  width: 100vw;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -1px;
+}
+
+/* ===== Responsive Layout (< 1024px) ===== */
+@media (max-width: 1023px) {
+  .workbench-responsive .panel-left,
+  .workbench-responsive .panel-right {
+    width: 100% !important;
+    min-width: 0 !important;
+    flex: none !important;
+  }
+  .workbench-responsive .panel-splitter {
+    display: none;
+  }
+  .commandbar .cmd-toolbar .tb-label,
+  .commandbar .cmd-toolbar .tb-info,
+  .commandbar .cmd-toolbar .tb-brand {
+    display: none;
+  }
+  .source-panel .sp-pipeline {
+    display: none;
+  }
+  /* Show mobile tab switcher */
+  .mobile-tabs { display: flex !important; }
+}
+
+/* Mobile tab switcher: hidden on desktop, shown on mobile */
+.mobile-tabs {
+  display: none;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-panel-header);
+}
+.mobile-tab {
+  flex: 1;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  cursor: pointer;
+  text-align: center;
+  border-bottom: 2px solid transparent;
+}
+.mobile-tab-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+/* Touch-friendly: larger hit targets on small screens */
+@media (max-width: 768px) {
+  .tb-btn { padding: 6px 14px; min-height: 36px; }
+  .sp-btn-compile { padding: 10px 16px; min-height: 40px; }
+  .ot-tab { padding: 8px 12px; }
+  .ph-btn { width: 28px; height: 28px; }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

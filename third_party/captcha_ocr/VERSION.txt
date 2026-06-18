@@ -1,0 +1,4 @@
+﻿version=1.1
+build_date=2026-03-15 19:57:29
+model=common_old.onnx
+charset=common_old_charset.json

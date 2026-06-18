@@ -1,0 +1,132 @@
+/* ===== WeConduct — Design Tokens ===== */
+/* Inherits WebControl warm theme color system */
+/* Reference: I:\WebControl\ui\src\styles\tokens.css */
+
+:root,
+[data-theme="light"] {
+  /* ===== Primary Accent (WebControl signature warm amber) ===== */
+  --accent:              #E89868;
+  --accent-hover:        #E08050;
+  --accent-light:        rgba(232, 152, 104, 0.12);
+
+  /* ===== Background (Adobe-style warm gray system) ===== */
+  --bg-app:              #EDE8E3;
+  --bg-panel:            #F7F4F0;
+  --bg-panel-header:     #F0EBE6;
+  --bg-input:            #FCF9F6;
+  --bg-hover:            rgba(232, 152, 104, 0.06);
+  --bg-selected:         rgba(232, 152, 104, 0.10);
+  --bg-commandbar:       #E8E3DD;
+  --bg-statusbar:        #DDD8D1;
+
+  /* ===== Text (warm black scale) ===== */
+  --text-primary:        #3D362E;
+  --text-secondary:      #7A7066;
+  --text-disabled:       #B8AFA5;
+  --text-inverse:        #F7F4F0;
+
+  /* ===== Borders (warm gray) ===== */
+  --border-default:      #D5CEC5;
+  --border-subtle:       #E8E2D9;
+  --border-focus:        #E89868;
+
+  /* ===== State Colors (inherited from WebControl) ===== */
+  --state-success:       #6B9A66;
+  --state-warning:       #E89868;
+  --state-error:         #D07060;
+  --state-info:          #6B9AA8;
+  --state-degraded:      #C8944A;
+  --state-fatal:         #B05042;
+
+  /* ===== Placeholder States ===== */
+  --placeholder-empty:        rgba(0, 0, 0, 0.03);
+  --placeholder-unimplemented:#FFF3E8;
+  --placeholder-notready:     #F4EFF8;
+  --placeholder-failure:      #FAECEA;
+  --placeholder-degraded:     rgba(212, 164, 88, 0.06);
+
+  /* ===== Scrollbar ===== */
+  --scrollbar-thumb:     rgba(180, 165, 150, 0.30);
+  --scrollbar-track:     transparent;
+
+  /* ===== Font ===== */
+  --font-ui:    "Inter", "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono:  "JetBrains Mono", "Cascadia Code", "Consolas", "SF Mono", monospace;
+
+  /* ===== Font Size (professional compact scale) ===== */
+  --text-caption:  10px;
+  --text-small:    11px;
+  --text-body:     12px;
+  --text-code:     13px;
+  --text-panel:    12px;
+
+  /* ===== Spacing (4px grid) ===== */
+  --space-xs:  4px;
+  --space-sm:  8px;
+  --space-md:  12px;
+  --space-lg:  16px;
+  --space-xl:  24px;
+
+  /* ===== Border Radius ===== */
+  --radius-sm:  3px;
+  --radius-md:  5px;
+  --radius-lg:  8px;
+
+  /* ===== Shadows ===== */
+  --shadow-panel: 0 1px 4px rgba(0, 0, 0, 0.06);
+  --shadow-menu:  0 4px 16px rgba(0, 0, 0, 0.10);
+
+  /* ===== Easing ===== */
+  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* ===== Panel ===== */
+  --panel-header-height: 30px;
+  --commandbar-height: 48px;
+  --statusbar-height: 24px;
+  --splitter-width: 4px;
+}
+
+/* ===== Dark Theme ===== */
+[data-theme="dark"] {
+  --accent:              #F0A878;
+  --accent-hover:        #F5B888;
+  --accent-light:        rgba(240, 168, 120, 0.15);
+
+  --bg-app:              #1F1D1A;
+  --bg-panel:            #282522;
+  --bg-panel-header:     #2D2926;
+  --bg-input:            #23201D;
+  --bg-hover:            rgba(240, 168, 120, 0.08);
+  --bg-selected:         rgba(240, 168, 120, 0.14);
+  --bg-commandbar:       #25221E;
+  --bg-statusbar:        #1C1A17;
+
+  --text-primary:        #E8E2D8;
+  --text-secondary:      #ADA698;
+  --text-disabled:       #6A6458;
+  --text-inverse:        #1F1D1A;
+
+  --border-default:      #3B3630;
+  --border-subtle:       #332F2A;
+  --border-focus:        #F0A878;
+
+  --state-success:       #8AB886;
+  --state-warning:       #F0A878;
+  --state-error:         #E89080;
+  --state-info:          #8AB8B5;
+  --state-degraded:      #D4A458;
+  --state-fatal:         #D06858;
+
+  --placeholder-empty:        rgba(255, 255, 255, 0.03);
+  --placeholder-unimplemented:#362E24;
+  --placeholder-notready:     #2D2735;
+  --placeholder-failure:      #372320;
+  --placeholder-degraded:     rgba(212, 164, 88, 0.08);
+
+  --scrollbar-thumb:     rgba(200, 180, 160, 0.20);
+  --scrollbar-track:     transparent;
+
+  --shadow-panel: 0 1px 4px rgba(0, 0, 0, 0.20);
+  --shadow-menu:  0 4px 16px rgba(0, 0, 0, 0.30);
+}

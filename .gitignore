@@ -1,0 +1,59 @@
+# --- OS / Editor ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+.pytest_cache/
+.pytest_tmp/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+.venv/
+venv/
+env/
+ENV/
+
+# --- Test / coverage ---
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# --- Build / packaging ---
+build/
+dist/
+*.spec
+
+# --- Local runtime / workspace state ---
+.weconduct/
+
+# --- Logs / temp files ---
+*.log
+*.tmp
+*.temp
+
+# --- Node / UI ---
+ui/node_modules/
+ui/dist/
+ui/test-results/
+ui/playwright-report/
+ui/.vite/
+
+# Keep UI local editor recommendations if later needed
+ui/.vscode/*
+!ui/.vscode/extensions.json
