@@ -298,7 +298,7 @@ def test_http_api_exposes_snapshot_and_compile(tmp_path: Path) -> None:
             recent_snapshot = json.loads(response.read().decode("utf-8"))
 
         assert snapshot["project"]["loaded"] is True
-        assert snapshot["project"]["project_id"] == "weconduct-phase1-workspace"
+        assert snapshot["project"]["project_id"] == "weconduct-workspace"
         assert snapshot["project"]["project_status"] == "ready"
         assert snapshot["project"]["workspace_root"] == str(Path(__file__).resolve().parents[2])
         assert snapshot["project"]["has_persisted_workspace_state"] is False
@@ -391,8 +391,8 @@ def test_http_api_exposes_project_document_and_can_create_new_project(tmp_path: 
         with urllib.request.urlopen(f"{base_url}/api/workbench/project") as response:
             initial_payload = json.loads(response.read().decode("utf-8"))
 
-        assert initial_payload["project"]["project_id"] == "weconduct-phase1-workspace"
-        assert initial_payload["project"]["project_name"] == "WeConduct Phase 1 Workspace"
+        assert initial_payload["project"]["project_id"] == "weconduct-workspace"
+        assert initial_payload["project"]["project_name"] == "WeConduct Workspace"
         assert initial_payload["project"]["project_schema_version"] == "project-v1"
         assert initial_payload["project"]["source_of_truth"] == "graph_document"
         assert initial_payload["project"]["execution_overview"]["runtime_run_count"] == 0
@@ -2027,6 +2027,12 @@ def test_http_api_exposes_graph_node_draft_endpoint(tmp_path: Path) -> None:
                 "direction": "output",
                 "relation_layer": "control",
                 "semantic_slot": "out.control",
+            },
+            {
+                "port_id": "out:variables",
+                "direction": "output",
+                "relation_layer": "data",
+                "semantic_slot": "out.variables",
             }
         ]
         assert payload["node"]["node_config"] == {
@@ -3194,9 +3200,9 @@ def test_http_api_exposes_runtime_health(tmp_path: Path) -> None:
             payload = json.loads(response.read().decode("utf-8"))
 
         assert payload["status"] == "ok"
-        assert payload["service"] == "weconduct-phase1-api"
+        assert payload["service"] == "weconduct-api"
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "phase1"
+        assert payload["api_version"] == "0.1.1"
         assert payload["workspace_state_version"] == 1
         assert payload["workspace_session_id"].startswith("ws-")
         assert payload["service_started_at"]
@@ -4701,7 +4707,7 @@ def test_http_host_info_exposes_release_manifest_and_runtime_binding(tmp_path: P
             payload = json.loads(response.read().decode("utf-8"))
 
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "phase1"
+        assert payload["api_version"] == "0.1.1"
         assert payload["server_bind"]["host"] == "127.0.0.1"
         assert payload["server_bind"]["port"] == server.server_address[1]
         assert payload["server_bind"]["base_url"] == base_url

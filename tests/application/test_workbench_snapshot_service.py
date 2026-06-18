@@ -165,8 +165,8 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["workbench"]["service_started_at"]
     assert snapshot["workbench"]["compile_counter"] == 0
     assert snapshot["project"]["loaded"] is True
-    assert snapshot["project"]["project_id"] == "weconduct-phase1-workspace"
-    assert snapshot["project"]["project_name"] == "WeConduct Phase 1 Workspace"
+    assert snapshot["project"]["project_id"] == "weconduct-workspace"
+    assert snapshot["project"]["project_name"] == "WeConduct Workspace"
     assert snapshot["project"]["project_status"] == "ready"
     assert snapshot["project"]["project_schema_version"] == "project-v1"
     assert snapshot["project"]["source_of_truth"] == "graph_document"
@@ -181,7 +181,7 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert snapshot["entrypoints"]["graph_source_projection"] == "/api/workbench/graph/source-projection"
     assert snapshot["workbench"]["host_mode"] == "python_core"
-    assert snapshot["workbench"]["api_version"] == "phase1"
+    assert snapshot["workbench"]["api_version"] == "0.1.1"
     assert snapshot["compiler"]["available_source_kinds"] == [
         "graph_workspace",
         "native_flow",
@@ -3825,7 +3825,64 @@ def test_service_runtime_blocks_python_run_when_external_programs_are_disabled()
 
 
 def test_service_runtime_python_run_captures_output_and_allows_safe_imports() -> None:
-    service = CompilationWorkbenchService()
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
 
     service.save_graph_document(
         {
@@ -3865,7 +3922,64 @@ def test_service_runtime_python_run_captures_output_and_allows_safe_imports() ->
 
 
 def test_service_runtime_python_run_blocks_disallowed_imports() -> None:
-    service = CompilationWorkbenchService()
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
 
     service.save_graph_document(
         {
@@ -4245,7 +4359,7 @@ def test_service_runtime_flow_start_configures_browser_launch_options(monkeypatc
     session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
 
     assert session["status"] == "completed"
-    assert captured_launch_kwargs == {"headless": False, "slow_mo": 150}
+    assert captured_launch_kwargs == {"headless": False, "slow_mo": 150, "channel": "msedge"}
     assert session["result"]["outputs"]["node-start"]["browser_config"] == {
         "headless": False,
         "slow_mo_ms": 150,
@@ -5838,7 +5952,64 @@ def test_service_runtime_browser_launch_uses_system_edge_channel(monkeypatch) ->
 
 
 def test_service_runtime_flow_graph_user_component_output_data_edge_binds_child_output_into_downstream_input() -> None:
-    service = CompilationWorkbenchService()
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
 
     service.save_graph_document(
         {
@@ -7057,7 +7228,64 @@ def test_service_runtime_flow_graph_failover_switches_to_fallback_then_finishes(
 
 
 def test_service_runtime_scheduler_user_component_runs_child_graph_and_maps_outputs_to_parent_variables() -> None:
-    service = CompilationWorkbenchService()
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
 
     service.save_graph_document(
         {
@@ -7834,7 +8062,64 @@ def test_service_runtime_scheduler_foreach_body_uses_control_edges_not_node_rang
 
 
 def test_service_runtime_scheduler_call_blueprint_uses_component_resource_id() -> None:
-    service = CompilationWorkbenchService()
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
 
     service.save_graph_document(
         {
@@ -7911,7 +8196,64 @@ def test_service_runtime_scheduler_call_blueprint_uses_component_resource_id() -
 
 
 def test_service_runtime_scheduler_call_blueprint_resolves_legacy_blueprint_info_id() -> None:
-    service = CompilationWorkbenchService()
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
 
     service.save_graph_document(
         {
@@ -8036,7 +8378,64 @@ def test_service_runtime_scheduler_graph_call_subgraph_runs_child_graph_and_maps
 
 
 def test_service_runtime_scheduler_user_component_accepts_data_edge_bound_inputs() -> None:
-    service = CompilationWorkbenchService()
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
 
     service.save_graph_document(
         {
@@ -9386,7 +9785,64 @@ def test_phase9_1_subgraph_success_project_fixture_runs_successfully(tmp_path) -
     )
     assert fixture_path.exists() is True
 
-    service = CompilationWorkbenchService()
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
     opened = service.open_project(project_path=fixture_path)
     started = service.start_runtime_session(None)
     result = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
@@ -9418,7 +9874,64 @@ def test_phase9_1_subgraph_failure_project_fixture_reports_subgraph_error(tmp_pa
 
 
 def test_service_runtime_scheduler_runs_nested_user_components_with_call_stack() -> None:
-    service = CompilationWorkbenchService()
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
 
     service.save_graph_document(
         {
@@ -10641,9 +11154,9 @@ def test_runtime_health_exposes_host_session_capabilities_and_entrypoints() -> N
     health = service.get_runtime_health()
 
     assert health["status"] == "ok"
-    assert health["service"] == "weconduct-phase1-api"
+    assert health["service"] == "weconduct-api"
     assert health["host_mode"] == "python_core"
-    assert health["api_version"] == "phase1"
+    assert health["api_version"] == "0.1.1"
     assert health["workspace_state_version"] == 1
     assert health["workspace_session_id"].startswith("ws-")
     assert health["service_started_at"]
@@ -11475,9 +11988,10 @@ def test_service_validates_edge_relation_layer_matches_connected_ports() -> None
     )
 
     assert validation_result["status"] == "invalid"
-    assert validation_result["summary"]["error_count"] == 1
-    assert validation_result["diagnostics"][0]["category"] == "graph.edge.relation_layer_mismatch"
-    assert validation_result["diagnostics"][0]["stage_extension"]["graph_ref"] == {
+    assert validation_result["summary"]["error_count"] == 2
+    assert validation_result["diagnostics"][0]["category"] == "graph.node.parameter_blank_required"
+    assert validation_result["diagnostics"][1]["category"] == "graph.edge.relation_layer_mismatch"
+    assert validation_result["diagnostics"][1]["stage_extension"]["graph_ref"] == {
         "graph_model_id": "graph:workspace",
         "edge_id": "edge-a-b",
         "from_node_id": "node-a",
@@ -11569,9 +12083,11 @@ def test_service_validates_input_port_max_connections() -> None:
     )
 
     assert validation_result["status"] == "invalid"
-    assert validation_result["summary"]["error_count"] == 1
-    assert validation_result["diagnostics"][0]["category"] == "graph.port.max_connections_exceeded"
-    assert validation_result["diagnostics"][0]["stage_extension"]["graph_ref"] == {
+    assert validation_result["summary"]["error_count"] == 3
+    assert validation_result["diagnostics"][0]["category"] == "graph.node.parameter_blank_required"
+    assert validation_result["diagnostics"][1]["category"] == "graph.node.parameter_blank_required"
+    assert validation_result["diagnostics"][2]["category"] == "graph.port.max_connections_exceeded"
+    assert validation_result["diagnostics"][2]["stage_extension"]["graph_ref"] == {
         "graph_model_id": "graph:workspace",
         "node_id": "target",
         "port_id": "in",
@@ -11626,7 +12142,64 @@ def test_service_validates_control_if_shape_and_requires_condition_source() -> N
 
 
 def test_service_validates_parallel_fork_join_while_retry_and_failover_shapes() -> None:
-    service = CompilationWorkbenchService()
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
 
     validation_result = service.validate_graph_document(
         {
@@ -11736,7 +12309,64 @@ def test_service_validates_parallel_fork_join_while_retry_and_failover_shapes() 
 
 
 def test_service_get_graph_document_normalizes_parallel_fork_and_join_ports_from_branches() -> None:
-    service = CompilationWorkbenchService()
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
 
     service.save_graph_document(
         {

@@ -3944,6 +3944,46 @@ class CompilationWorkbenchService:
                 count += 1
         return count
 
+    def _count_control_ports_with_semantic_prefix(
+        self,
+        *,
+        ports: list,
+        prefix: str,
+        direction: str | None = None,
+    ) -> int:
+        count = 0
+        for port in ports:
+            port_direction = getattr(port, "direction", None)
+            if direction is not None and port_direction != direction:
+                continue
+            semantic_slot = getattr(port, "semantic_slot", None)
+            if isinstance(semantic_slot, str) and semantic_slot.strip():
+                normalized_slot = semantic_slot.strip()
+                if normalized_slot.startswith(prefix):
+                    count += 1
+        return count
+
+    def _resolve_graph_port_by_reference(
+        self,
+        *,
+        node,
+        port_id: str | None,
+        direction: str | None = None,
+    ):
+        if node is None or not isinstance(port_id, str) or not port_id.strip():
+            return None
+        expected = port_id.strip()
+        for port in getattr(node, "ports", []):
+            if self._control_port_matches_expected(
+                port_id=getattr(port, "port_id", None),
+                semantic_slot=getattr(port, "semantic_slot", None),
+                direction=getattr(port, "direction", None),
+                expected=expected,
+            ):
+                if direction is None or getattr(port, "direction", None) == direction:
+                    return port
+        return None
+
     def _derive_runtime_output_binding_keys(
         self,
         *,
@@ -5311,7 +5351,7 @@ class CompilationWorkbenchService:
             "workspace_state_version": WORKSPACE_STATE_VERSION,
             "workbench": {
                 "host_mode": "python_core",
-                "api_version": "0.1.0",
+                "api_version": "0.1.1",
                 "workspace_session_id": f"ws-{uuid.uuid4().hex[:12]}",
                 "service_started_at": datetime.now(timezone.utc).isoformat(),
                 "compile_counter": 0,
@@ -5607,14 +5647,27 @@ class CompilationWorkbenchService:
             if not isinstance(port, dict):
                 continue
             port_id = port.get("port_id")
-            if not isinstance(port_id, str):
-                continue
+            semantic_slot = port.get("semantic_slot")
 
             branch_key: str | None = None
-            if node_kind == "control.parallel_fork" and port_id.startswith("branch:"):
-                branch_key = port_id.removeprefix("branch:").strip()
-            elif node_kind == "control.join" and port_id.startswith("in:"):
-                branch_key = port_id.removeprefix("in:").strip()
+            if node_kind == "control.parallel_fork":
+                branch_key = self._extract_control_branch_key(
+                    port_id=port_id,
+                    semantic_slot=semantic_slot,
+                    port_direction=port.get("direction"),
+                    expected_direction="output",
+                    port_id_prefix="branch:",
+                    semantic_prefix="out.branch:",
+                )
+            elif node_kind == "control.join":
+                branch_key = self._extract_control_branch_key(
+                    port_id=port_id,
+                    semantic_slot=semantic_slot,
+                    port_direction=port.get("direction"),
+                    expected_direction="input",
+                    port_id_prefix="in:",
+                    semantic_prefix="in.branch:",
+                )
 
             if not branch_key or branch_key in seen_keys:
                 continue
@@ -5626,6 +5679,28 @@ class CompilationWorkbenchService:
 
         return entries
 
+    def _extract_control_branch_key(
+        self,
+        *,
+        port_id: object,
+        semantic_slot: object,
+        port_direction: object,
+        expected_direction: str,
+        port_id_prefix: str,
+        semantic_prefix: str,
+    ) -> str | None:
+        if isinstance(port_direction, str) and port_direction != expected_direction:
+            return None
+        if isinstance(semantic_slot, str) and semantic_slot.startswith(semantic_prefix):
+            branch_key = semantic_slot.removeprefix(semantic_prefix).strip()
+            if branch_key:
+                return branch_key
+        if isinstance(port_id, str) and port_id.startswith(port_id_prefix):
+            branch_key = port_id.removeprefix(port_id_prefix).strip()
+            if branch_key:
+                return branch_key
+        return None
+
     def _normalize_control_branch_ports(
         self,
         *,
@@ -5634,9 +5709,22 @@ class CompilationWorkbenchService:
         existing_ports: list | None,
     ) -> tuple[list[dict], bool]:
         if node_kind == "control.parallel_fork":
+            def existing_port_id_for_slot(slot: str, direction: str, fallback: str) -> str:
+                if isinstance(existing_ports, list):
+                    for port in existing_ports:
+                        if not isinstance(port, dict):
+                            continue
+                        if port.get("direction") != direction:
+                            continue
+                        semantic_slot = port.get("semantic_slot")
+                        port_id = port.get("port_id")
+                        if semantic_slot == slot and isinstance(port_id, str) and port_id.strip():
+                            return port_id.strip()
+                return fallback
+
             normalized_ports = [
                 {
-                    "port_id": "in",
+                    "port_id": existing_port_id_for_slot("in.control", "input", "in"),
                     "direction": "input",
                     "relation_layer": "control",
                     "semantic_slot": "in.control",
@@ -5648,7 +5736,11 @@ class CompilationWorkbenchService:
                 branch_key = branch["key"]
                 normalized_ports.append(
                     {
-                        "port_id": f"branch:{branch_key}",
+                        "port_id": existing_port_id_for_slot(
+                            f"out.branch:{branch_key}",
+                            "output",
+                            f"branch:{branch_key}",
+                        ),
                         "direction": "output",
                         "relation_layer": "control",
                         "semantic_slot": f"out.branch:{branch_key}",
@@ -5659,12 +5751,29 @@ class CompilationWorkbenchService:
             return normalized_ports, self._ports_changed(existing_ports, normalized_ports)
 
         if node_kind == "control.join":
+            def existing_port_id_for_slot(slot: str, direction: str, fallback: str) -> str:
+                if isinstance(existing_ports, list):
+                    for port in existing_ports:
+                        if not isinstance(port, dict):
+                            continue
+                        if port.get("direction") != direction:
+                            continue
+                        semantic_slot = port.get("semantic_slot")
+                        port_id = port.get("port_id")
+                        if semantic_slot == slot and isinstance(port_id, str) and port_id.strip():
+                            return port_id.strip()
+                return fallback
+
             normalized_ports = []
             for branch in branches:
                 branch_key = branch["key"]
                 normalized_ports.append(
                     {
-                        "port_id": f"in:{branch_key}",
+                        "port_id": existing_port_id_for_slot(
+                            f"in.branch:{branch_key}",
+                            "input",
+                            f"in:{branch_key}",
+                        ),
                         "direction": "input",
                         "relation_layer": "control",
                         "semantic_slot": f"in.branch:{branch_key}",
@@ -5674,7 +5783,7 @@ class CompilationWorkbenchService:
                 )
             normalized_ports.append(
                 {
-                    "port_id": "out",
+                    "port_id": existing_port_id_for_slot("out.control", "output", "out"),
                     "direction": "output",
                     "relation_layer": "control",
                     "semantic_slot": "out.control",
@@ -6108,9 +6217,11 @@ class CompilationWorkbenchService:
                 )
                 continue
 
-            if edge.from_port_id is not None and edge.from_port_id not in {
-                port.port_id for port in source_node.ports
-            }:
+            if edge.from_port_id is not None and self._resolve_graph_port_by_reference(
+                node=source_node,
+                port_id=edge.from_port_id,
+                direction="output",
+            ) is None:
                 diagnostics.append(
                     {
                         "category": "graph.edge.missing_source_port",
@@ -6136,9 +6247,11 @@ class CompilationWorkbenchService:
                     }
                 )
 
-            if edge.to_port_id is not None and edge.to_port_id not in {
-                port.port_id for port in target_node.ports
-            }:
+            if edge.to_port_id is not None and self._resolve_graph_port_by_reference(
+                node=target_node,
+                port_id=edge.to_port_id,
+                direction="input",
+            ) is None:
                 diagnostics.append(
                     {
                         "category": "graph.edge.missing_target_port",
@@ -6166,13 +6279,17 @@ class CompilationWorkbenchService:
 
             source_port = None
             if source_node is not None and edge.from_port_id is not None:
-                source_port = port_map_by_node_id.get(source_node.node_id, {}).get(
-                    edge.from_port_id
+                source_port = self._resolve_graph_port_by_reference(
+                    node=source_node,
+                    port_id=edge.from_port_id,
+                    direction="output",
                 )
             target_port = None
             if target_node is not None and edge.to_port_id is not None:
-                target_port = port_map_by_node_id.get(target_node.node_id, {}).get(
-                    edge.to_port_id
+                target_port = self._resolve_graph_port_by_reference(
+                    node=target_node,
+                    port_id=edge.to_port_id,
+                    direction="input",
                 )
 
             if (
@@ -6408,6 +6525,13 @@ class CompilationWorkbenchService:
                 direction=direction,
             )
 
+        def count_semantic_prefixed_ports(*, prefix: str, direction: str | None = None) -> int:
+            return self._count_control_ports_with_semantic_prefix(
+                ports=ports,
+                prefix=prefix,
+                direction=direction,
+            )
+
         def has_condition_input() -> bool:
             for port in ports:
                 if port.direction != "input" or port.relation_layer != "data":
@@ -6488,7 +6612,7 @@ class CompilationWorkbenchService:
         if normalized_node_kind == "control.parallel_fork":
             if not has_port("in"):
                 append_missing_port("in")
-            branch_count = count_prefixed_ports(prefix="branch:", direction="output")
+            branch_count = count_semantic_prefixed_ports(prefix="out.branch:", direction="output")
             if branch_count < 2:
                 append_simple_diagnostic(
                     "branch_count_invalid",
@@ -6498,7 +6622,7 @@ class CompilationWorkbenchService:
             return diagnostics
 
         if normalized_node_kind == "control.join":
-            branch_count = count_prefixed_ports(prefix="in:", direction="input")
+            branch_count = count_semantic_prefixed_ports(prefix="in.branch:", direction="input")
             if branch_count < 2:
                 append_simple_diagnostic(
                     "branch_count_invalid",
@@ -9160,6 +9284,7 @@ class CompilationWorkbenchService:
 
     def _build_runtime_plan(self, graph_model: GraphModel) -> dict:
         resources = self._get_resource_registry()
+        node_by_id = {node.node_id: node for node in graph_model.nodes}
         outgoing_edge_ids: dict[str, list[str]] = {node.node_id: [] for node in graph_model.nodes}
         incoming_edge_ids: dict[str, list[str]] = {node.node_id: [] for node in graph_model.nodes}
         port_map_by_node_id = {
@@ -9168,14 +9293,24 @@ class CompilationWorkbenchService:
         }
         relation_edges = []
         for edge in graph_model.edges:
+            source_node = node_by_id.get(edge.from_node_id)
             source_port = (
-                port_map_by_node_id.get(edge.from_node_id, {}).get(edge.from_port_id)
-                if isinstance(edge.from_port_id, str)
+                self._resolve_graph_port_by_reference(
+                    node=source_node,
+                    port_id=edge.from_port_id,
+                    direction="output",
+                )
+                if isinstance(edge.from_port_id, str) and source_node is not None
                 else None
             )
+            target_node = node_by_id.get(edge.to_node_id)
             target_port = (
-                port_map_by_node_id.get(edge.to_node_id, {}).get(edge.to_port_id)
-                if isinstance(edge.to_port_id, str)
+                self._resolve_graph_port_by_reference(
+                    node=target_node,
+                    port_id=edge.to_port_id,
+                    direction="input",
+                )
+                if isinstance(edge.to_port_id, str) and target_node is not None
                 else None
             )
             relation_edges.append(
