@@ -22,6 +22,7 @@ function hasStructuredFields(output: any): boolean {
         <div class="rt-header">
           <span class="rt-badge" :class="runtime.activeRt.status === 'completed' ? 'ok' : runtime.activeRt.status === 'failed' ? 'fail' : ''">{{ runtime.activeRt.status }}</span>
           <span class="rt-id">{{ runtime.activeRt.runtime_session.session_id ?? '—' }}</span>
+          <span v-if="(runtime.activeRt.request as any)?.request_origin" class="rt-origin">{{ (runtime.activeRt.request as any).request_origin === 'saved_graph_document' ? '📄 已保存图' : '✏️ 内存图' }}</span>
         </div>
       </div>
 
@@ -111,6 +112,7 @@ function hasStructuredFields(output: any): boolean {
 .rt-badge.ok { background: rgba(107,154,102,0.12); color: var(--state-success); }
 .rt-badge.fail { background: rgba(208,112,96,0.12); color: var(--state-error); }
 .rt-id { font-family: var(--font-mono); font-size: var(--text-small); color: var(--text-disabled); }
+.rt-origin { font-size: var(--text-caption); color: var(--text-secondary); margin-left: auto; }
 .rt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-xs); color: var(--text-secondary); }
 .rt-node { padding: 2px 0; border-bottom: 1px solid var(--border-subtle); }
 .rt-node-header { display: flex; align-items: center; gap: 6px; }

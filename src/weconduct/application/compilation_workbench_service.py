@@ -29,6 +29,10 @@ from weconduct.contracts import (
     create_initial_summary,
 )
 from weconduct.application.preferences_service import PreferencesService
+from weconduct.application.legacy_webcontrol_converter import (
+    build_conversion_report,
+    convert_legacy_webcontrol_project,
+)
 from weconduct.application.workspace_state_store import (
     FileWorkspaceStateStore,
     InMemoryWorkspaceStateStore,
@@ -648,6 +652,79 @@ class CompilationWorkbenchService:
             "graph_document": graph_model,
         }
 
+    def convert_webcontrol_project(
+        self,
+        *,
+        source_path: str | Path,
+        output_project_path: str | Path,
+        blueprint_paths: list[str | Path] | None = None,
+        blueprint_directory: str | Path | None = None,
+        project_name: str | None = None,
+        overwrite_output: bool = False,
+        auto_open_project: bool = False,
+        preserve_legacy_metadata: bool = True,
+        write_conversion_report: bool = True,
+    ) -> dict:
+        self._refresh_state_from_store()
+        resolved_output_project_path = self._resolve_project_path(output_project_path)
+        if resolved_output_project_path.exists() and not overwrite_output:
+            raise ValueError(
+                f"output project already exists: {resolved_output_project_path}; "
+                "set overwrite_output=true to overwrite"
+            )
+        conversion = convert_legacy_webcontrol_project(
+            source_path=source_path,
+            blueprint_paths=blueprint_paths,
+            blueprint_directory=blueprint_directory,
+            preserve_legacy_metadata=preserve_legacy_metadata,
+        )
+        report_path = None
+        temp_service = self._build_temporary_project_conversion_service()
+        temp_project_name = (
+            project_name.strip()
+            if isinstance(project_name, str) and project_name.strip()
+            else conversion.project_name
+        )
+        temp_service.create_project(project_name=temp_project_name)
+        temp_service.save_graph_document(conversion.graph_model.model_dump(mode="json"))
+        for blueprint_result in conversion.blueprint_results:
+            temp_service.import_resource_from_record(blueprint_result.resource_record)
+        save_result = temp_service.save_project_as(project_path=resolved_output_project_path)
+        if write_conversion_report:
+            report_path = (
+                resolved_output_project_path.parent
+                / f"{resolved_output_project_path.stem}.data"
+                / "conversion-report.json"
+            )
+        report = build_conversion_report(
+            conversion=conversion,
+            output_project_path=resolved_output_project_path,
+            report_path=report_path,
+        )
+        if report_path is not None:
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(
+                json.dumps(report, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        response = {
+            "status": "converted",
+            "output_project_path": str(resolved_output_project_path.resolve()),
+            "output_storage_root": str(
+                self._resolve_project_storage_root(resolved_output_project_path).resolve()
+            ),
+            "report_path": str(report_path.resolve()) if report_path is not None else None,
+            "report": report,
+        }
+        if auto_open_project:
+            opened = self.open_project(project_path=resolved_output_project_path)
+            response["project"] = opened["project"]
+            response["graph_document"] = opened["graph_document"]
+        else:
+            response["project"] = save_result["project"]
+            response["graph_document"] = save_result["graph_document"]
+        return response
+
     def restore_pending_recovery(self) -> dict:
         self._refresh_state_from_store()
 
@@ -953,6 +1030,51 @@ class CompilationWorkbenchService:
             "registry_revision": self._get_resource_registry_revision(),
         }
 
+    def import_resource_from_record(
+        self,
+        raw_resource: dict,
+        *,
+        replace_existing: bool = False,
+    ) -> dict:
+        self._refresh_state_from_store()
+        imported_resource_holder: dict[str, dict] = {}
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            resources = self._extract_resource_registry(current_state)
+            normalized_resource = self._normalize_resource_record(raw_resource)
+            if normalized_resource is None:
+                raise ValueError("resource import payload is invalid")
+            existing_index = None
+            for index, item in enumerate(resources):
+                if item["resource_id"] == normalized_resource["resource_id"]:
+                    existing_index = index
+                    break
+            if existing_index is not None and not replace_existing:
+                raise ValueError(
+                    f"resource already exists: {normalized_resource['resource_id']}; "
+                    "set replace_existing=true to overwrite"
+                )
+            if existing_index is None:
+                resources.insert(0, normalized_resource)
+            else:
+                resources[existing_index] = normalized_resource
+            current_state["resource_registry"] = resources
+            current_state["project"]["resource_registry_revision"] += 1
+            current_state["project_runtime"] = {
+                **self._extract_project_runtime(current_state),
+                "is_dirty": True,
+            }
+            imported_resource_holder["value"] = normalized_resource
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        return {
+            "status": "imported",
+            "resource": imported_resource_holder["value"],
+            "registry_revision": self._get_resource_registry_revision(),
+        }
+
     def _build_legacy_resource_import_payload(
         self,
         *,
@@ -994,6 +1116,12 @@ class CompilationWorkbenchService:
         if not isinstance(blueprint_info, dict):
             return False
         return True
+
+    def _build_temporary_project_conversion_service(self) -> "CompilationWorkbenchService":
+        return CompilationWorkbenchService(
+            state_store=InMemoryWorkspaceStateStore(),
+            preferences_service=self._preferences_service,
+        )
 
     def set_resource_enabled(self, *, resource_id: str, enabled: bool) -> dict:
         self._refresh_state_from_store()
@@ -1189,6 +1317,9 @@ class CompilationWorkbenchService:
             runtime_context = RuntimeContext(
                 project_directory=self._resolve_runtime_project_directory(),
                 workspace_root=self._resolve_runtime_workspace_root(),
+            )
+            runtime_context.flow_runtime["graph_root_metadata"] = deepcopy(
+                session["runtime_plan"].get("root_metadata", {})
             )
             executor_registry = RuntimeExecutorRegistry(
                 runtime_settings=self._build_runtime_execution_settings()
@@ -3522,6 +3653,7 @@ class CompilationWorkbenchService:
         item_var = str(foreach_output.get("item_var") or "item")
         index_var = str(foreach_output.get("index_var") or "index")
         body_execution_step_count = 0
+        implicit_exit_index: int | None = None
         for item_index, item_value in enumerate(items):
             runtime_context.variables[item_var] = item_value
             runtime_context.variables[index_var] = item_index
@@ -3649,7 +3781,11 @@ class CompilationWorkbenchService:
                                 "next_program_counter": (
                                     loop_exit_index
                                     if loop_exit_index is not None
-                                    else len(executable_nodes)
+                                    else (
+                                        implicit_exit_index
+                                        if implicit_exit_index is not None
+                                        else len(executable_nodes)
+                                    )
                                 ),
                             }
                         return {
@@ -3659,7 +3795,11 @@ class CompilationWorkbenchService:
                             "next_program_counter": (
                                 loop_exit_index
                                 if loop_exit_index is not None
-                                else len(executable_nodes)
+                                else (
+                                    implicit_exit_index
+                                    if implicit_exit_index is not None
+                                    else len(executable_nodes)
+                                )
                             ),
                             "control_signal": "break",
                             "control_level": propagated_level - 1,
@@ -3674,7 +3814,11 @@ class CompilationWorkbenchService:
                             "next_program_counter": (
                                 loop_exit_index
                                 if loop_exit_index is not None
-                                else len(executable_nodes)
+                                else (
+                                    implicit_exit_index
+                                    if implicit_exit_index is not None
+                                    else len(executable_nodes)
+                                )
                             ),
                             "control_signal": "continue",
                             "control_level": propagated_level - 1,
@@ -3697,7 +3841,11 @@ class CompilationWorkbenchService:
                             "next_program_counter": (
                                 loop_exit_index
                                 if loop_exit_index is not None
-                                else len(executable_nodes)
+                                else (
+                                    implicit_exit_index
+                                    if implicit_exit_index is not None
+                                    else len(executable_nodes)
+                                )
                             ),
                             "control_signal": "break",
                             "control_level": break_level - 1,
@@ -3709,7 +3857,11 @@ class CompilationWorkbenchService:
                         "next_program_counter": (
                             loop_exit_index
                             if loop_exit_index is not None
-                            else len(executable_nodes)
+                            else (
+                                implicit_exit_index
+                                if implicit_exit_index is not None
+                                else len(executable_nodes)
+                            )
                         ),
                     }
                 if body_output.get("continue_triggered") is True:
@@ -3722,13 +3874,27 @@ class CompilationWorkbenchService:
                             "next_program_counter": (
                                 loop_exit_index
                                 if loop_exit_index is not None
-                                else len(executable_nodes)
+                                else (
+                                    implicit_exit_index
+                                    if implicit_exit_index is not None
+                                    else len(executable_nodes)
+                                )
                             ),
                             "control_signal": "continue",
                             "control_level": continue_level - 1,
                         }
                     break
                 if body_output.get("end_marker") is True:
+                    if implicit_exit_index is None:
+                        implicit_exit_index = self._resolve_runtime_control_successor_index(
+                            source_node_id=body_node["node_id"],
+                            control_edges_by_source=control_edges_by_source,
+                            node_index_by_id=node_index_by_id,
+                            excluded_node_ids={
+                                foreach_node["node_id"],
+                                body_node["node_id"],
+                            },
+                        )
                     break
                 current_body_index = self._resolve_runtime_control_successor_index(
                     source_node_id=body_node["node_id"],
@@ -3739,7 +3905,15 @@ class CompilationWorkbenchService:
                         executable_nodes[loop_exit_index]["node_id"] if loop_exit_index is not None else None,
                     },
                 )
-        next_program_counter = loop_exit_index if loop_exit_index is not None else len(executable_nodes)
+        next_program_counter = (
+            loop_exit_index
+            if loop_exit_index is not None
+            else (
+                implicit_exit_index
+                if implicit_exit_index is not None
+                else len(executable_nodes)
+            )
+        )
         return {
             "status": "succeeded",
             "iteration_count": len(items),
@@ -5351,7 +5525,7 @@ class CompilationWorkbenchService:
             "workspace_state_version": WORKSPACE_STATE_VERSION,
             "workbench": {
                 "host_mode": "python_core",
-                "api_version": "0.1.1",
+                "api_version": "0.2.0",
                 "workspace_session_id": f"ws-{uuid.uuid4().hex[:12]}",
                 "service_started_at": datetime.now(timezone.utc).isoformat(),
                 "compile_counter": 0,
@@ -5466,6 +5640,7 @@ class CompilationWorkbenchService:
             "project_open_action": "/api/workbench/project/open",
             "project_save_action": "/api/workbench/project/save",
             "project_save_as_action": "/api/workbench/project/save-as",
+            "project_convert_webcontrol_action": "/api/workbench/project/convert-webcontrol",
             "recent_project_remove_action": "/api/workbench/recent-projects/remove",
             "resources_document": "/api/workbench/resources",
             "component_library": "/api/workbench/component-library",
@@ -9375,6 +9550,7 @@ class CompilationWorkbenchService:
         return {
             "graph_model_id": graph_model.graph_model_id,
             "compilation_id": graph_model.compilation_id,
+            "root_metadata": deepcopy(graph_model.root_metadata),
             "node_count": len(graph_model.nodes),
             "edge_count": len(graph_model.edges),
             "scheduler_mode": scheduler_mode,

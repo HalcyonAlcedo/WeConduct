@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useToastStore } from '@/stores/toastStore'
+import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useRuntimeStore } from '@/stores/runtimeStore'
 import {
@@ -12,6 +13,7 @@ import {
 import type { ExecutionHistoryResponse } from '@/types/domains/api'
 
 const toast = useToastStore()
+const workspace = useWorkspaceStore()
 const graphWs = useGraphWorkspaceStore()
 const runtime = useRuntimeStore()
 const loading = ref('')
@@ -19,6 +21,8 @@ const execHistory = ref<ExecutionHistoryResponse | null>(null)
 
 function graphBody() {
   if (!graphWs.graphModel) return undefined
+  // If project loaded and graph not dirty, let backend use saved graph
+  if (workspace.snapshot?.project?.loaded && !graphWs.isDirty) return undefined
   return { graph_document: graphWs.graphModel as unknown as Record<string, unknown> }
 }
 

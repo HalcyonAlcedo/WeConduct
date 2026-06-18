@@ -457,6 +457,43 @@ export interface ComponentLibraryResponse {
   facets?: Facets
 }
 
+// ===== P13-B: WebControl Converter =====
+
+export interface WebControlConvertRequest {
+  source_path: string
+  blueprint_paths?: string[]
+  blueprint_directory?: string
+  output_project_path: string
+  project_name?: string
+  overwrite_output?: boolean
+  auto_open_project?: boolean
+  preserve_legacy_metadata?: boolean
+  write_conversion_report?: boolean
+}
+
+export interface WebControlConvertResponse {
+  status: string
+  message?: string
+  report_path?: string
+  project?: {
+    project_id: string
+    project_name: string
+    project_file_path: string
+    project_status: string
+    workspace_root: string
+  }
+  graph_document?: Record<string, unknown>
+  report?: {
+    source_kind?: string
+    main_graph_node_count?: number
+    main_graph_edge_count?: number
+    imported_blueprint_count?: number
+    generated_resource_count?: number
+    warnings?: unknown[]
+    errors?: unknown[]
+  }
+}
+
 // ===== P12: Node Draft =====
 
 export interface NodeDraftResponse {

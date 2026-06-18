@@ -483,6 +483,56 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if self.path == "/api/workbench/project/convert-webcontrol":
+            try:
+                payload = self._read_json_request_body()
+                source_path = payload.get("source_path")
+                output_project_path = payload.get("output_project_path")
+                if not isinstance(source_path, str) or not source_path.strip():
+                    raise ValueError("field must be a non-empty string: source_path")
+                if not isinstance(output_project_path, str) or not output_project_path.strip():
+                    raise ValueError("field must be a non-empty string: output_project_path")
+                blueprint_paths = payload.get("blueprint_paths")
+                if blueprint_paths is not None and (
+                    not isinstance(blueprint_paths, list)
+                    or any(not isinstance(item, str) or not item.strip() for item in blueprint_paths)
+                ):
+                    raise ValueError("field must be a non-empty string list when provided: blueprint_paths")
+                blueprint_directory = payload.get("blueprint_directory")
+                if blueprint_directory is not None and not isinstance(blueprint_directory, str):
+                    raise ValueError("field must be a string when provided: blueprint_directory")
+                project_name = payload.get("project_name")
+                if project_name is not None and not isinstance(project_name, str):
+                    raise ValueError("field must be a string when provided: project_name")
+                overwrite_output = payload.get("overwrite_output", False)
+                auto_open_project = payload.get("auto_open_project", False)
+                preserve_legacy_metadata = payload.get("preserve_legacy_metadata", True)
+                write_conversion_report = payload.get("write_conversion_report", True)
+                for field_name, field_value in {
+                    "overwrite_output": overwrite_output,
+                    "auto_open_project": auto_open_project,
+                    "preserve_legacy_metadata": preserve_legacy_metadata,
+                    "write_conversion_report": write_conversion_report,
+                }.items():
+                    if not isinstance(field_value, bool):
+                        raise ValueError(f"field must be a boolean when provided: {field_name}")
+                result = service.convert_webcontrol_project(
+                    source_path=source_path.strip(),
+                    blueprint_paths=blueprint_paths,
+                    blueprint_directory=blueprint_directory,
+                    output_project_path=output_project_path.strip(),
+                    project_name=project_name,
+                    overwrite_output=overwrite_output,
+                    auto_open_project=auto_open_project,
+                    preserve_legacy_metadata=preserve_legacy_metadata,
+                    write_conversion_report=write_conversion_report,
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, self._serialize_converter_result(result))
+            return
+
         if self.path == "/api/workbench/project/save":
             try:
                 payload = self._read_json_request_body()
@@ -1025,6 +1075,13 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         if hasattr(request, "model_dump"):
             return request.model_dump()
         return dict(request)
+
+    def _serialize_converter_result(self, result: dict) -> dict:
+        payload = dict(result)
+        graph_document = payload.get("graph_document")
+        if hasattr(graph_document, "model_dump"):
+            payload["graph_document"] = graph_document.model_dump(mode="json")
+        return payload
 
     def _get_optional_query_param(self, params: dict[str, list[str]], key: str) -> str | None:
         values = params.get(key)

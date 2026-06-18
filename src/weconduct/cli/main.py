@@ -43,6 +43,16 @@ def main() -> int:
     desktop_shell_parser.add_argument("--title", default="WeConduct")
     desktop_shell_parser.add_argument("--width", type=int, default=1280)
     desktop_shell_parser.add_argument("--height", type=int, default=800)
+    convert_webcontrol_parser = subparsers.add_parser("convert-webcontrol")
+    convert_webcontrol_parser.add_argument("source_path")
+    convert_webcontrol_parser.add_argument("output_project_path")
+    convert_webcontrol_parser.add_argument("--blueprint-path", action="append", default=[])
+    convert_webcontrol_parser.add_argument("--blueprint-directory", default=None)
+    convert_webcontrol_parser.add_argument("--project-name", default=None)
+    convert_webcontrol_parser.add_argument("--overwrite-output", action="store_true")
+    convert_webcontrol_parser.add_argument("--auto-open-project", action="store_true")
+    convert_webcontrol_parser.add_argument("--no-preserve-legacy-metadata", action="store_true")
+    convert_webcontrol_parser.add_argument("--no-write-conversion-report", action="store_true")
 
     args = parser.parse_args()
 
@@ -54,7 +64,7 @@ def main() -> int:
             entry_document=str(source_file),
             source_text=source_file.read_text(encoding="utf-8"),
         )
-        print(json.dumps(result["outcome"].model_dump(), ensure_ascii=False, indent=2))
+        _print_json(result["outcome"].model_dump())
         return 0
 
     if args.command == "run-project":
@@ -69,7 +79,7 @@ def main() -> int:
                 "project_file": str(project_file),
                 "start": started,
             }
-            print(json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default))
+            _print_json(payload)
             return 1
         session_id = started["runtime_session"]["session_id"]
         run_result = service.run_runtime_session(session_id=session_id)
@@ -87,7 +97,7 @@ def main() -> int:
             "result": run_result["result"],
             "regression_summary": _build_runtime_regression_summary(run_result["runtime_plan"]),
         }
-        print(json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default))
+        _print_json(payload)
         return 0 if run_result.get("result", {}).get("status") == "succeeded" else 1
 
     if args.command == "serve-api":
@@ -152,7 +162,7 @@ def main() -> int:
             preferences_path=preferences_path,
             ui_dist_path=ui_dist_path,
         )
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        _print_json(result)
         return 0 if result["status"] == "passed" else 1
 
     if args.command == "desktop-shell":
@@ -198,6 +208,26 @@ def main() -> int:
         )
         return 0
 
+    if args.command == "convert-webcontrol":
+        service = CompilationWorkbenchService()
+        result = service.convert_webcontrol_project(
+            source_path=Path(args.source_path).resolve(),
+            blueprint_paths=[Path(item).resolve() for item in args.blueprint_path],
+            blueprint_directory=(
+                Path(args.blueprint_directory).resolve()
+                if args.blueprint_directory is not None
+                else None
+            ),
+            output_project_path=Path(args.output_project_path).resolve(),
+            project_name=args.project_name,
+            overwrite_output=args.overwrite_output,
+            auto_open_project=args.auto_open_project,
+            preserve_legacy_metadata=not args.no_preserve_legacy_metadata,
+            write_conversion_report=not args.no_write_conversion_report,
+        )
+        _print_json(result)
+        return 0
+
     if args.command is None:
         parser.print_usage()
         return 1
@@ -210,6 +240,14 @@ def _json_default(value):
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
     raise TypeError(f"object of type {type(value).__name__} is not JSON serializable")
+
+
+def _print_json(payload) -> None:
+    text = json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default)
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(json.dumps(payload, ensure_ascii=True, indent=2, default=_json_default))
 
 
 def _build_runtime_regression_summary(runtime_plan: dict) -> dict:

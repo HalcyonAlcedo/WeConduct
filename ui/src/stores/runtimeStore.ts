@@ -22,10 +22,12 @@ export const useRuntimeStore = defineStore('runtime', () => {
   function setActiveRt(detail: RuntimeSessionDetailResponse) { activeRt.value = detail }
   function setActiveDb(detail: DebugSessionDetailResponse) { activeDb.value = detail }
 
-  /** One-click start + run: prepare, start session, run, return result */
-  async function startAndRun(graphDocument?: Record<string, unknown>): Promise<{ success: boolean; message: string }> {
+  /** One-click start + run: prepare, start session, run, return result.
+   *  When project is loaded and graph is clean, uses saved graph (no payload).
+   *  Only passes graph_document for unsaved/dirty in-memory graphs. */
+  async function startAndRun(graphDocument?: Record<string, unknown>, isDirty?: boolean): Promise<{ success: boolean; message: string }> {
     try {
-      const body = graphDocument ? { graph_document: graphDocument } : undefined
+      const body = (graphDocument && isDirty) ? { graph_document: graphDocument } : undefined
       const r = await postRuntimeStart(body)
       if (!r.runtime_session.session_id) {
         setActiveRt(r)

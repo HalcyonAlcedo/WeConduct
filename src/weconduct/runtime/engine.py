@@ -281,7 +281,13 @@ class RuntimeExecutorRegistry:
             return _failed_result(node, "browser.selector_required", "selector is required")
         page = _require_browser_page(context)
         target = _require_browser_target(context)
-        target.locator(selector).click()
+        locator = target.locator(selector)
+        try:
+            locator.click()
+        except Exception as exc:
+            if not self._should_use_legacy_webcontrol_click_fallback(context=context, error=exc):
+                raise
+            locator.first.click()
         page.wait_for_load_state("domcontentloaded")
         return {
             "status": "succeeded",
@@ -1509,6 +1515,19 @@ class RuntimeExecutorRegistry:
 
     def _should_capture_stdout_stderr(self) -> bool:
         return bool(self._runtime_settings.get("capture_stdout_stderr", True))
+
+    def _should_use_legacy_webcontrol_click_fallback(
+        self,
+        *,
+        context: RuntimeContext,
+        error: Exception,
+    ) -> bool:
+        if "strict mode violation" not in str(error):
+            return False
+        root_metadata = context.flow_runtime.get("graph_root_metadata")
+        if not isinstance(root_metadata, dict):
+            return False
+        return root_metadata.get("source_kind") == "webcontrol_main_flow"
 
     def _execute_session_apply_auth_session(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)

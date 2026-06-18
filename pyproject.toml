@@ -4,12 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "weconduct"
-version = "0.1.1"
+version = "0.2.0"
 description = "WeConduct Python core"
 requires-python = ">=3.11"
 dependencies = [
   "pydantic>=2.8,<3",
   "pywebview>=5.0",
+  "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]

@@ -46,6 +46,7 @@ class RuntimeEchoServer(TCPServer):
 class BrowserMockSiteHandler(BaseHTTPRequestHandler):
     clicked = False
     last_form_value = ""
+    ambiguous_last_action = ""
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/dashboard":
@@ -76,6 +77,24 @@ class BrowserMockSiteHandler(BaseHTTPRequestHandler):
   </body>
 </html>
 """.strip()
+        elif self.path.startswith("/ambiguous"):
+            body = f"""
+<!doctype html>
+<html>
+  <body>
+    <div id="ambiguous-status">{self.ambiguous_last_action or "ready"}</div>
+    <form method="post" action="/submit-main">
+      <button class="btn-success" type="submit">提交表单</button>
+    </form>
+    <form method="post" action="/submit-alert">
+      <button class="btn-success" type="submit">Alert 对话框</button>
+    </form>
+    <form method="post" action="/submit-download">
+      <button class="btn-success" type="submit">下载 TXT 文件</button>
+    </form>
+  </body>
+</html>
+""".strip().encode("utf-8")
         else:
             body = f"""
 <!doctype html>
@@ -105,6 +124,13 @@ class BrowserMockSiteHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path in {"/submit-main", "/submit-alert", "/submit-download"}:
+            action = self.path.removeprefix("/submit-")
+            type(self).ambiguous_last_action = action
+            self.send_response(303)
+            self.send_header("Location", "/ambiguous")
+            self.end_headers()
+            return
         content_length = int(self.headers.get("Content-Length", "0"))
         raw_body = self.rfile.read(content_length).decode("utf-8")
         form_value = ""
@@ -153,6 +179,7 @@ def _start_runtime_echo_server() -> tuple[RuntimeEchoServer, threading.Thread]:
 def _start_browser_mock_site_server() -> tuple[BrowserMockSiteServer, threading.Thread]:
     BrowserMockSiteHandler.clicked = False
     BrowserMockSiteHandler.last_form_value = ""
+    BrowserMockSiteHandler.ambiguous_last_action = ""
     server = BrowserMockSiteServer(("127.0.0.1", 0), BrowserMockSiteHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -790,6 +817,90 @@ def test_http_api_save_and_open_project_supports_split_storage_layout(tmp_path: 
             == f"{project_path.stem}.data/graphs/workspace.graph.json"
         )
         assert graph_payload["graph_model_id"] == "graph:workspace"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_can_convert_webcontrol_project_and_auto_open_result(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    source_path = tmp_path / "legacy-main.json"
+    blueprint_dir = tmp_path / "blueprints"
+    blueprint_dir.mkdir(parents=True, exist_ok=True)
+    (blueprint_dir / "bp-login.yaml").write_text(
+        """
+blueprint_info:
+  id: bp-login
+  name: 登录蓝图
+input_schema:
+  username:
+    type: string
+output_schema:
+  logged_in:
+    type: boolean
+automation_steps:
+  - step: 1
+    action: open_url
+    url: "https://example.com/form"
+""".strip(),
+        encoding="utf-8",
+    )
+    source_path.write_text(
+        json.dumps(
+            {
+                "project_info": {"name": "HTTP 转换项目"},
+                "automation_steps": [
+                    {
+                        "step": 1,
+                        "action": "open_url",
+                        "url": "https://example.com/login",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    output_project_path = tmp_path / "converted" / "http-converted.weconduct.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        convert_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/convert-webcontrol",
+            data=json.dumps(
+                {
+                    "source_path": str(source_path),
+                    "blueprint_directory": str(blueprint_dir),
+                    "output_project_path": str(output_project_path),
+                    "auto_open_project": True,
+                    "write_conversion_report": True,
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(convert_request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project") as response:
+            project_payload = json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(f"{base_url}/api/workbench/snapshot") as response:
+            snapshot_payload = json.loads(response.read().decode("utf-8"))
+
+        assert payload["status"] == "converted"
+        assert payload["output_project_path"] == str(output_project_path.resolve())
+        assert payload["report"]["imported_blueprint_count"] == 1
+        assert payload["report"]["generated_resource_count"] == 1
+        assert payload["project"]["project_file_path"] == str(output_project_path.resolve())
+        assert payload["graph_document"]["graph_model_id"] == "graph:workspace"
+        assert project_payload["project"]["project_name"] == "HTTP 转换项目"
+        assert project_payload["project"]["project_file_path"] == str(output_project_path.resolve())
+        assert (
+            snapshot_payload["entrypoints"]["project_convert_webcontrol_action"]
+            == "/api/workbench/project/convert-webcontrol"
+        )
     finally:
         server.shutdown()
         server.server_close()
@@ -3202,7 +3313,7 @@ def test_http_api_exposes_runtime_health(tmp_path: Path) -> None:
         assert payload["status"] == "ok"
         assert payload["service"] == "weconduct-api"
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.1.1"
+        assert payload["api_version"] == "0.2.0"
         assert payload["workspace_state_version"] == 1
         assert payload["workspace_session_id"].startswith("ws-")
         assert payload["service_started_at"]
@@ -3653,6 +3764,88 @@ def test_http_runtime_and_debug_actions_accept_wrapped_transient_graph_document_
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_http_runtime_start_without_graph_document_uses_saved_workspace_graph(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    screenshot_path = tmp_path / "saved-graph-run-shot.png"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+    site_server, site_thread = _start_browser_mock_site_server()
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        graph_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:workspace",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [
+                        {
+                            "node_id": "node-nav",
+                            "lowered_kind": "execution",
+                            "source_anchor_ref": "n-nav",
+                            "expansion_role": "action:navigate",
+                            "node_kind": "browser.navigate",
+                            "node_config": {
+                                "url": f"http://127.0.0.1:{site_server.server_address[1]}/",
+                            },
+                        },
+                        {
+                            "node_id": "node-shot",
+                            "lowered_kind": "execution",
+                            "source_anchor_ref": "n-shot",
+                            "expansion_role": "action:screenshot",
+                            "node_kind": "browser.screenshot",
+                            "node_config": {
+                                "path": str(screenshot_path),
+                            },
+                        },
+                    ],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(graph_request):
+            pass
+
+        start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(start_request) as response:
+            started_payload = json.loads(response.read().decode("utf-8"))
+
+        assert started_payload["status"] == "started"
+        assert started_payload["request"]["request_origin"] == "saved_graph_document"
+        session_id = started_payload["runtime_session"]["session_id"]
+
+        run_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/{session_id}/run",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(run_request) as response:
+            run_payload = json.loads(response.read().decode("utf-8"))
+
+        assert run_payload["status"] == "completed"
+        assert run_payload["request"]["request_origin"] == "saved_graph_document"
+        assert run_payload["result"]["outputs"]["node-shot"]["path"] == str(screenshot_path.resolve())
+        assert screenshot_path.exists() is True
+    finally:
+        server.shutdown()
+        server.server_close()
+        site_server.shutdown()
+        site_server.server_close()
 
 
 def test_http_ui_graph_authoring_main_path_can_project_compile_and_execute_via_transient_graph_document(
@@ -4592,6 +4785,162 @@ def test_http_runtime_run_returns_browser_atomic_outputs(tmp_path: Path) -> None
         site_server.server_close()
 
 
+def test_http_runtime_run_allows_legacy_webcontrol_click_with_ambiguous_selector(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+    site_server, site_thread = _start_browser_mock_site_server()
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        site_url = f"http://127.0.0.1:{site_server.server_address[1]}"
+        graph_document = {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "root_metadata": {
+                "source_kind": "webcontrol_main_flow",
+                "legacy_webcontrol_source": {
+                    "source_path": str((tmp_path / "full_function_test.yaml").resolve()),
+                    "source_kind": "webcontrol_main_flow",
+                },
+            },
+            "nodes": [
+                {
+                    "node_id": "node-nav",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-nav",
+                    "expansion_role": "action:navigate",
+                    "node_kind": "browser.navigate",
+                    "node_config": {
+                        "url": f"{site_url}/ambiguous",
+                    },
+                },
+                {
+                    "node_id": "node-click",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-click",
+                    "expansion_role": "action:click",
+                    "node_kind": "browser.click",
+                    "node_config": {
+                        "selector": ".btn-success",
+                    },
+                },
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+        start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=json.dumps({"graph_document": graph_document}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(start_request) as response:
+            started_payload = json.loads(response.read().decode("utf-8"))
+
+        session_id = started_payload["runtime_session"]["session_id"]
+        run_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/{session_id}/run",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(run_request) as response:
+            run_payload = json.loads(response.read().decode("utf-8"))
+
+        assert run_payload["status"] == "completed"
+        assert run_payload["result"]["outputs"]["node-click"]["selector"] == ".btn-success"
+        assert run_payload["result"]["outputs"]["node-click"]["page_url"].endswith("/ambiguous")
+        assert BrowserMockSiteHandler.ambiguous_last_action == "main"
+    finally:
+        server.shutdown()
+        server.server_close()
+        site_server.shutdown()
+        site_server.server_close()
+
+
+def test_http_runtime_run_keeps_strict_click_for_non_legacy_graph(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+    site_server, site_thread = _start_browser_mock_site_server()
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        site_url = f"http://127.0.0.1:{site_server.server_address[1]}"
+        graph_document = {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "root_metadata": {
+                "source_kind": "graph_workspace",
+            },
+            "nodes": [
+                {
+                    "node_id": "node-nav",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-nav",
+                    "expansion_role": "action:navigate",
+                    "node_kind": "browser.navigate",
+                    "node_config": {
+                        "url": f"{site_url}/ambiguous",
+                    },
+                },
+                {
+                    "node_id": "node-click",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-click",
+                    "expansion_role": "action:click",
+                    "node_kind": "browser.click",
+                    "node_config": {
+                        "selector": ".btn-success",
+                    },
+                },
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+        start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=json.dumps({"graph_document": graph_document}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(start_request) as response:
+            started_payload = json.loads(response.read().decode("utf-8"))
+
+        session_id = started_payload["runtime_session"]["session_id"]
+        run_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/{session_id}/run",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(run_request)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 400
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert payload["status"] == "failed"
+            assert payload["runtime_session"]["status"] == "failed"
+            assert payload["result"]["failure_reason"] == "runtime.executor_exception"
+            assert (
+                payload["node_states"][1]["error"]["error_code"]
+                == "runtime.executor_exception"
+            )
+            assert "strict mode violation" in payload["node_states"][1]["error"]["message"]
+        else:
+            raise AssertionError("expected runtime strict click failure for non-legacy graph")
+    finally:
+        server.shutdown()
+        server.server_close()
+        site_server.shutdown()
+        site_server.server_close()
+
+
 def test_http_api_can_start_and_query_debug_session(tmp_path: Path) -> None:
     workspace_state_path = tmp_path / "workspace-state.json"
     server, thread = _start_test_server(workspace_state_path=workspace_state_path)
@@ -4707,7 +5056,7 @@ def test_http_host_info_exposes_release_manifest_and_runtime_binding(tmp_path: P
             payload = json.loads(response.read().decode("utf-8"))
 
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.1.1"
+        assert payload["api_version"] == "0.2.0"
         assert payload["server_bind"]["host"] == "127.0.0.1"
         assert payload["server_bind"]["port"] == server.server_address[1]
         assert payload["server_bind"]["base_url"] == base_url

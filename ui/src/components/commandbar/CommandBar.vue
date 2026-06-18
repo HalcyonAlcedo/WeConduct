@@ -14,6 +14,7 @@ import {
   postFileDialog, postReadFile,
 } from '@/services/api'
 import type { RecentProject } from '@/types/domains/api'
+import WebControlConverter from '@/components/shells/WebControlConverter.vue'
 
 const workspace = useWorkspaceStore()
 const compilation = useCompilationStore()
@@ -46,6 +47,7 @@ function closeMenu() { activeMenu.value = null }
 function closeDialog() { activeDialog.value = null }
 
 const pendingConfirm = ref<(() => void) | null>(null)
+const showConverter = ref(false)
 
 const dialogPath = ref('')
 
@@ -116,7 +118,7 @@ async function handleOneClickRun() {
   }
   if (!graphWs.hasGraph) { toast.info('', '当前图为空，请先添加节点'); return }
   // Execute via runtime (not just compile)
-  const result = await runtime.startAndRun(graphWs.graphModel as Record<string, unknown> | undefined)
+  const result = await runtime.startAndRun(graphWs.graphModel as Record<string, unknown> | undefined, graphWs.isDirty)
   await resource.refreshAll()
   if (result.success) {
     toast.success('运行完成', result.message)
@@ -195,6 +197,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
           <button @click="openDialog('recent')">最近项目</button>
           <hr>
           <button @click="openDialog('importGraph')">导入节点图 JSON</button>
+          <button @click="closeMenu(); showConverter = true">转换 WebControl</button>
           <hr>
           <button @click="openDialog('save')">保存</button>
           <button @click="openDialog('saveas')">另存为</button>
@@ -327,7 +330,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
             <!-- About -->
             <template v-else-if="activeDialog === 'about'">
               <p><strong>WeConduct</strong></p>
-              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.1.0' }}</p>
+              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.2.0' }}</p>
               <p class="dlg-meta">当前为 Preview 版本</p>
               <p class="dlg-meta">运行模式: {{ workspace.health?.host_mode ?? '—' }}</p>
               <p class="dlg-meta">工作区会话: {{ workspace.health?.workspace_session_id ?? '—' }}</p>
@@ -364,6 +367,9 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
         </div>
       </div>
     </Teleport>
+
+    <!-- WebControl Converter -->
+    <WebControlConverter v-if="showConverter" @close="showConverter = false" />
   </header>
 </template>
 

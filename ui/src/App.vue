@@ -23,7 +23,7 @@ useKeyboard([
     if (!graphWs.hasGraph) { toast.info('', '当前图为空'); return }
     if (!compilation.sourceText.trim() && graphWs.graphModel) await graphWs.syncSource()
     const runtime = useRuntimeStore()
-    const result = await runtime.startAndRun(graphWs.graphModel as Record<string, unknown> | undefined)
+    const result = await runtime.startAndRun(graphWs.graphModel as Record<string, unknown> | undefined, graphWs.isDirty)
     if (result.success) toast.success('运行完成', result.message)
     else toast.error('运行失败', result.message)
   }, ignoreInput: false },

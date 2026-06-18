@@ -2,6 +2,10 @@ from .compilation_workbench_service import (
     CompilationWorkbenchService,
     GraphDocumentRevisionConflictError,
 )
+from .legacy_webcontrol_converter import (
+    build_conversion_report,
+    convert_legacy_webcontrol_project,
+)
 from .preferences_service import PreferencesService
 from .preferences_store import (
     FilePreferencesStore,
@@ -17,6 +21,8 @@ from .workspace_state_store import (
 __all__ = [
     "CompilationWorkbenchService",
     "GraphDocumentRevisionConflictError",
+    "build_conversion_report",
+    "convert_legacy_webcontrol_project",
     "PreferencesService",
     "FilePreferencesStore",
     "InMemoryPreferencesStore",

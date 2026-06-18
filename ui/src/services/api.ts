@@ -28,6 +28,8 @@ import type {
   PreferencesResponse,
   PreferencesUpdateRequest,
   NodeDraftResponse,
+  WebControlConvertRequest,
+  WebControlConvertResponse,
 } from '@/types/domains/api'
 
 const API_BASE = '/api'
@@ -224,5 +226,10 @@ export function fetchNodeDraft(params: { resource_key: string; node_id?: string;
 export function fetchPreferences(): Promise<PreferencesResponse> { return request<PreferencesResponse>('/workbench/preferences') }
 export function postPreferences(body: PreferencesUpdateRequest): Promise<PreferencesResponse> { return request<PreferencesResponse>('/workbench/preferences', { method: 'POST', body: JSON.stringify(body) }) }
 export function postPreferencesReset(): Promise<PreferencesResponse> { return request<PreferencesResponse>('/workbench/preferences/reset', { method: 'POST', body: '{}' }) }
+
+// ===== P13-B: WebControl Converter =====
+export function postConvertWebcontrol(body: WebControlConvertRequest): Promise<WebControlConvertResponse> {
+  return request<WebControlConvertResponse>('/workbench/project/convert-webcontrol', { method: 'POST', body: JSON.stringify(body) })
+}
 
 export { ApiError }

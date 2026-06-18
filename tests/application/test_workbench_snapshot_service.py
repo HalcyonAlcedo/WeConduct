@@ -181,7 +181,7 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert snapshot["entrypoints"]["graph_source_projection"] == "/api/workbench/graph/source-projection"
     assert snapshot["workbench"]["host_mode"] == "python_core"
-    assert snapshot["workbench"]["api_version"] == "0.1.1"
+    assert snapshot["workbench"]["api_version"] == "0.2.0"
     assert snapshot["compiler"]["available_source_kinds"] == [
         "graph_workspace",
         "native_flow",
@@ -1251,6 +1251,189 @@ def test_service_can_import_legacy_webcontrol_blueprint_as_custom_node_graph(
     assert imported["resource"]["source_graph_document"]["root_metadata"]["source_kind"] == (
         "webcontrol_blueprint"
     )
+
+
+def test_service_can_convert_legacy_webcontrol_project_into_split_project_layout(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    source_path = tmp_path / "legacy-main.yaml"
+    blueprint_path = tmp_path / "bp-login.yaml"
+    output_project_path = tmp_path / "converted" / "converted-demo.weconduct.json"
+    source_path.write_text(
+        """
+project_info:
+  name: 转换后的演示项目
+browser_config:
+  headless: true
+initial_variables:
+  username: alice
+automation_steps:
+  - step: 1
+    action: open_url
+    url: "https://example.com/login"
+  - step: 2
+    action: call_blueprint
+    blueprint_id: "bp-login"
+    inputs:
+      username: "${username}"
+    outputs:
+      logged_in: "logged_in"
+""".strip(),
+        encoding="utf-8",
+    )
+    blueprint_path.write_text(
+        """
+blueprint_info:
+  id: bp-login
+  name: 登录蓝图
+input_schema:
+  username:
+    type: string
+output_schema:
+  logged_in:
+    type: boolean
+automation_steps:
+  - step: 1
+    action: open_url
+    url: "https://example.com/form"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = service.convert_webcontrol_project(
+        source_path=source_path,
+        blueprint_paths=[blueprint_path],
+        output_project_path=output_project_path,
+        auto_open_project=False,
+        preserve_legacy_metadata=True,
+        write_conversion_report=True,
+    )
+
+    report_path = output_project_path.parent / f"{output_project_path.stem}.data" / "conversion-report.json"
+    reopened = CompilationWorkbenchService()
+    opened = reopened.open_project(project_path=output_project_path)
+    registry = reopened.get_resource_registry_document()["resources"]
+
+    assert result["status"] == "converted"
+    assert result["output_project_path"] == str(output_project_path.resolve())
+    assert result["report"]["source_kind"] == "webcontrol_main_flow"
+    assert result["report"]["imported_blueprint_count"] == 1
+    assert result["report"]["generated_resource_count"] == 1
+    assert result["report"]["errors"] == []
+    assert output_project_path.exists() is True
+    assert report_path.exists() is True
+    assert opened["status"] == "opened"
+    assert opened["project"]["project_name"] == "转换后的演示项目"
+    assert opened["graph_document"].root_metadata["source_kind"] == "webcontrol_main_flow"
+    assert opened["graph_document"].root_metadata["legacy_webcontrol_source"]["source_kind"] == (
+        "webcontrol_main_flow"
+    )
+    assert any(item["resource_id"] == "custom_node_graph:bp-login" for item in registry)
+
+
+def test_converted_legacy_webcontrol_project_becomes_editable_graph_workspace(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    source_path = tmp_path / "legacy-main-full.yaml"
+    output_project_path = tmp_path / "converted" / "editable-demo.weconduct.json"
+    source_path.write_text(
+        """
+project_info:
+  name: 可编辑转换项目
+browser_config:
+  headless: false
+  slow_mo: 150
+initial_variables:
+  base_url: https://example.com/login
+  username: alice
+automation_steps:
+  - step: 1
+    action: open_url
+    url: "${base_url}"
+  - step: 2
+    action: screenshot
+    filename: "${base_url}/shot.png"
+  - step: 3
+    action: call_blueprint
+    blueprint_id: "bp-login"
+    inputs:
+      username: "${username}"
+    outputs:
+      logged_in: "logged_in"
+""".strip(),
+        encoding="utf-8",
+    )
+    blueprint_path = tmp_path / "bp-login.yaml"
+    blueprint_path.write_text(
+        """
+blueprint_info:
+  id: bp-login
+  name: 登录蓝图
+input_schema:
+  username:
+    type: string
+output_schema:
+  logged_in:
+    type: boolean
+automation_steps:
+  - step: 1
+    action: open_url
+    url: "https://example.com/form"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    service.convert_webcontrol_project(
+        source_path=source_path,
+        blueprint_paths=[blueprint_path],
+        output_project_path=output_project_path,
+        auto_open_project=False,
+        preserve_legacy_metadata=True,
+        write_conversion_report=True,
+    )
+
+    reopened = CompilationWorkbenchService()
+    opened = reopened.open_project(project_path=output_project_path)
+    graph_document = opened["graph_document"]
+    graph_payload = graph_document.model_dump(mode="json")
+    nodes_by_kind = {}
+    for node in graph_payload["nodes"]:
+        nodes_by_kind.setdefault(node["node_kind"], []).append(node)
+
+    assert "flow.start" in nodes_by_kind
+    assert nodes_by_kind["flow.start"][0]["lowered_kind"] == "control"
+    assert nodes_by_kind["flow.start"][0]["node_config"]["initial_variables"] == {
+        "base_url": "https://example.com/login",
+        "username": "alice",
+    }
+    assert nodes_by_kind["flow.start"][0]["node_config"]["browser_config"] == {
+        "headless": False,
+        "slow_mo_ms": 150,
+    }
+
+    assert "browser.navigate" in nodes_by_kind
+    assert nodes_by_kind["browser.navigate"][0]["node_config"]["url"] == "${base_url}"
+    assert "browser.screenshot" in nodes_by_kind
+    assert nodes_by_kind["browser.screenshot"][0]["node_config"]["path"] == "${base_url}/shot.png"
+    assert "call_blueprint" in nodes_by_kind
+    assert nodes_by_kind["call_blueprint"][0]["node_config"]["blueprint_id"] == "bp-login"
+    assert nodes_by_kind["call_blueprint"][0]["node_config"]["inputs"] == {
+        "username": "${username}",
+    }
+    assert nodes_by_kind["call_blueprint"][0]["node_config"]["outputs"] == {
+        "logged_in": "logged_in",
+    }
+
+    control_edges = [edge for edge in graph_payload["edges"] if edge["relation_layer"] == "control"]
+    assert len(control_edges) == 3
+    assert graph_payload["root_metadata"]["source_kind"] == "webcontrol_main_flow"
+
+    compile_result = reopened.compile_graph_document(None)
+
+    assert compile_result["status"] == "succeeded"
+    assert compile_result["view"]["status"] == "succeeded"
 
 
 def test_service_save_and_open_project_preserves_subgraph_resource_schema(tmp_path) -> None:
@@ -5372,6 +5555,150 @@ def test_service_runtime_flow_graph_executes_foreach_and_honors_loop_exit() -> N
     ]
     assert len(foreach_body_started_events) == 3
     assert len(foreach_body_completed_events) == 3
+
+
+def test_service_runtime_flow_graph_executes_nodes_after_end_foreach_exit_marker() -> None:
+    service = CompilationWorkbenchService()
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow:start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-items",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-items",
+                    "expansion_role": "action:create_list",
+                    "node_kind": "data.create_list",
+                    "node_config": {"variable_name": "items", "items": ["a", "b", "c"]},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-results",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-results",
+                    "expansion_role": "action:create_list",
+                    "node_kind": "data.create_list",
+                    "node_config": {"variable_name": "results", "items": []},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-foreach",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-foreach",
+                    "expansion_role": "control:foreach",
+                    "node_kind": "control.foreach",
+                    "node_config": {"variable": "items", "item_var": "item"},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-append",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-append",
+                    "expansion_role": "action:list_append",
+                    "node_kind": "data.list_append",
+                    "node_config": {"variable_name": "results", "value": "${item}"},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-end",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-end",
+                    "expansion_role": "control:end_foreach",
+                    "node_kind": "control.end_foreach",
+                    "node_config": {},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-after",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-after",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "after_loop", "value": "done"},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-read",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-read",
+                    "expansion_role": "action:get_variable",
+                    "node_kind": "data.get_variable",
+                    "node_config": {"name": "after_loop"},
+                    "ports": [],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-items",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-items",
+                },
+                {
+                    "edge_id": "edge-items-results",
+                    "relation_layer": "control",
+                    "from_node_id": "node-items",
+                    "to_node_id": "node-results",
+                },
+                {
+                    "edge_id": "edge-results-foreach",
+                    "relation_layer": "control",
+                    "from_node_id": "node-results",
+                    "to_node_id": "node-foreach",
+                },
+                {
+                    "edge_id": "edge-foreach-body",
+                    "relation_layer": "control",
+                    "from_node_id": "node-foreach",
+                    "to_node_id": "node-append",
+                },
+                {
+                    "edge_id": "edge-append-end",
+                    "relation_layer": "control",
+                    "from_node_id": "node-append",
+                    "to_node_id": "node-end",
+                },
+                {
+                    "edge_id": "edge-end-after",
+                    "relation_layer": "control",
+                    "from_node_id": "node-end",
+                    "to_node_id": "node-after",
+                },
+                {
+                    "edge_id": "edge-after-read",
+                    "relation_layer": "control",
+                    "from_node_id": "node-after",
+                    "to_node_id": "node-read",
+                },
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert session["runtime_plan"]["scheduler_mode"] == "flow_graph"
+    assert session["result"]["variables"]["results"] == ["a", "b", "c"]
+    assert session["result"]["variables"]["after_loop"] == "done"
+    assert session["result"]["outputs"]["node-read"]["value"] == "done"
+    assert "node-after" in session["result"]["completed_node_ids"]
+    assert "node-read" in session["result"]["completed_node_ids"]
+    assert "node-after" not in session["result"]["skipped_node_ids"]
+    assert "node-read" not in session["result"]["skipped_node_ids"]
 
 
 def test_service_runtime_flow_graph_jump_to_step_requeues_target() -> None:
@@ -11156,7 +11483,7 @@ def test_runtime_health_exposes_host_session_capabilities_and_entrypoints() -> N
     assert health["status"] == "ok"
     assert health["service"] == "weconduct-api"
     assert health["host_mode"] == "python_core"
-    assert health["api_version"] == "0.1.1"
+    assert health["api_version"] == "0.2.0"
     assert health["workspace_state_version"] == 1
     assert health["workspace_session_id"].startswith("ws-")
     assert health["service_started_at"]
