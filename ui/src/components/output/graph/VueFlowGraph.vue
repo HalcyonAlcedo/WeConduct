@@ -195,6 +195,15 @@ function onEdgesChange(changes: any[]) {
     }
   }
 }
+function onViewportChange(vp: { x: number; y: number; zoom: number }) {
+  // Compute viewport center in flow coordinates
+  const el = (document.querySelector('.vf-canvas') as HTMLElement)
+  const w = el?.clientWidth || 800
+  const h = el?.clientHeight || 600
+  const cx = (w / 2 - vp.x) / vp.zoom
+  const cy = (h / 2 - vp.y) / vp.zoom
+  workspace.updateViewport({ x: Math.round(cx), y: Math.round(cy), zoom: vp.zoom })
+}
 </script>
 
 <template>
@@ -230,6 +239,7 @@ function onEdgesChange(changes: any[]) {
       @edge-click="onEdgeClick"
       @edge-context-menu="onEdgeContextMenu"
       @edges-change="onEdgesChange"
+      @viewport-change="onViewportChange"
     >
       <Background :gap="16" :size="1" pattern-color="#aaa" />
       <Controls position="bottom-right" />

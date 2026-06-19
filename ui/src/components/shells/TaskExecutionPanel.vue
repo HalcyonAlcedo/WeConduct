@@ -61,7 +61,14 @@ async function rtStart() {
 }
 async function rtRun(id: string) {
   loading.value='rt-run'
-  try { const r = await postRuntimeRun(id); runtime.setActiveRt(r); toast.success('执行完成', r.status) } catch(e:any){
+  try {
+    runtime.subscribeRuntimeSession(id)
+    const r = await postRuntimeRun(id)
+    runtime.setActiveRt(r)
+    if (r.status === 'completed' || r.status === 'failed') {
+      toast.success('执行完成', r.status)
+    }
+  } catch(e:any){
     if (e?.body) {
       runtime.setActiveRt(e.body)
       const msg = e.body.details?.primary_diagnostic?.message || e.body.message || e.body.error
@@ -94,34 +101,18 @@ async function startAndRun() {
   if (!graphWs.hasGraph) { toast.info('', '当前图为空，无法执行'); return }
   loading.value = 'start-run'
   try {
-    const r = await postRuntimeStart(graphBody())
-    if (!r.runtime_session.session_id) { toast.error('启动失败', '无会话 ID'); runtime.setActiveRt(r); loading.value = ''; return }
-    runtime.setActiveRt(r)
-    await runtime.refreshAll()
-    const runResult = await postRuntimeRun(r.runtime_session.session_id)
-    runtime.setActiveRt(runResult)
-    await runtime.refreshAll()
+    const result = await runtime.startAndRun(
+      graphWs.graphModel as Record<string, unknown> | undefined,
+      graphWs.isDirty,
+    )
     try { execHistory.value = await fetchExecutionHistory() } catch {}
-    const failCount = runResult.node_states?.filter((n: any) => n.node_status === 'failed').length || 0
-    toast.success('运行完成', failCount ? `${failCount} 节点失败 — 查看 Runtime 标签` : `${runResult.node_states?.length || 0} 节点完成`)
-  } catch (e: any) {
-    if (e?.body) {
-      // Backend error response
-      runtime.setActiveRt(e.body as any)
-      toast.error('运行失败', `${e.body.result?.failure_reason || e.body.message || '— 查看 Runtime 标签'}`)
+    if (result.success) {
+      toast.success('运行完成', result.message)
     } else {
-      // Raw network error — construct UI-safe error detail
-      const now = new Date().toISOString()
-      runtime.setActiveRt({
-        status: 'failed',
-        runtime_session: { session_id: null, status: 'failed', execution_supported: false },
-        runtime_plan: null,
-        node_states: [],
-        event_log: [{ event_kind: 'ui.network_error', recorded_at: now, message: e?.message || String(e) }],
-        result: { status: 'failed', failure_reason: 'ui.network_error', message: e?.message || String(e) },
-      } as any)
-      toast.error('运行失败', '网络错误 — 查看 Runtime 标签')
+      toast.error('运行失败', result.message)
     }
+  } catch (e: any) {
+    toast.error('运行失败', e?.message)
   }
   finally { loading.value = '' }
 }
@@ -137,6 +128,28 @@ async function startAndRun() {
       <span class="tep-sep">|</span>
       <button class="tep-btn primary" @click="startAndRun" :disabled="!!loading">▶ 一键运行</button>
       <span v-if="loading" class="tep-loading">{{ loading }}</span>
+    </div>
+
+    <!-- Live Progress -->
+    <div v-if="runtime.runtimeProgress && runtime.runtimeLiveStatus !== 'idle'" class="tep-progress">
+      <div class="tep-pg-bar-wrap">
+        <div class="tep-pg-bar" :style="{ width: (runtime.runtimeProgress.percent ?? 0) + '%' }" :class="{ done: runtime.runtimeLiveStatus === 'completed', fail: runtime.runtimeLiveStatus === 'failed' }"></div>
+      </div>
+      <div class="tep-pg-info">
+        <span>{{ runtime.runtimeProgress.percent ?? 0 }}%</span>
+        <span>总节点 {{ runtime.runtimeProgress.total_node_count ?? 0 }}</span>
+        <span class="ok">完成 {{ runtime.runtimeProgress.completed_node_count ?? 0 }}</span>
+        <span v-if="runtime.runtimeProgress.failed_node_count" class="fail">失败 {{ runtime.runtimeProgress.failed_node_count }}</span>
+        <span v-if="runtime.runtimeProgress.running_node_count" class="running">运行中 {{ runtime.runtimeProgress.running_node_count }}</span>
+      </div>
+      <div class="tep-pg-live">
+        <span v-if="runtime.runtimeLiveStatus === 'connecting'" class="connecting">⏳ 正在连接…</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'streaming'" class="streaming">⟳ 实时同步中</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'completed'" class="done">✓ 运行完成</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'failed'" class="fail">✕ 运行失败</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'disconnected'" class="disconnected">⚠ 实时连接中断（数据已保留）</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'error'" class="fail">⚠ 实时连接错误</span>
+      </div>
     </div>
 
     <div class="tep-grid">
@@ -222,4 +235,20 @@ async function startAndRun() {
 .tep-summary { color: var(--text-disabled); margin-bottom: var(--space-xs); }
 .tep-sub { margin-top: var(--space-xs); }
 .tep-sub h5 { font-size: var(--text-caption); font-weight: 600; color: var(--text-secondary); }
+
+.tep-progress { padding: var(--space-sm) var(--space-md); border-bottom: 1px solid var(--border-subtle); }
+.tep-pg-bar-wrap { height: 6px; background: var(--bg-input); border-radius: 3px; overflow: hidden; margin-bottom: 4px; }
+.tep-pg-bar { height: 100%; background: var(--accent); border-radius: 3px; transition: width 300ms ease-out; }
+.tep-pg-bar.done { background: var(--state-success); }
+.tep-pg-bar.fail { background: var(--state-error); }
+.tep-pg-info { display: flex; gap: var(--space-md); font-size: var(--text-caption); color: var(--text-secondary); margin-bottom: 2px; }
+.tep-pg-info .ok { color: var(--state-success); }
+.tep-pg-info .fail { color: var(--state-error); }
+.tep-pg-info .running { color: var(--accent); }
+.tep-pg-live { font-size: var(--text-caption); }
+.tep-pg-live .connecting { color: var(--state-warning); }
+.tep-pg-live .streaming { color: var(--accent); }
+.tep-pg-live .done { color: var(--state-success); }
+.tep-pg-live .fail { color: var(--state-error); }
+.tep-pg-live .disconnected { color: var(--state-warning); }
 </style>

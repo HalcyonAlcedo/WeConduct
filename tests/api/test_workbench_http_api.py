@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
@@ -1934,6 +1935,175 @@ def test_http_api_can_start_run_and_query_runtime_session(tmp_path: Path) -> Non
         echo_server.server_close()
 
 
+def test_http_api_runtime_run_returns_accepted_while_session_continues(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:workspace",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [
+                        {
+                            "node_id": "node-start",
+                            "lowered_kind": "control",
+                            "source_anchor_ref": "n-start",
+                            "expansion_role": "flow:start",
+                            "node_kind": "flow.start",
+                            "node_config": {},
+                            "ports": [],
+                        },
+                        {
+                            "node_id": "node-timeout",
+                            "lowered_kind": "execution",
+                            "source_anchor_ref": "n-timeout",
+                            "expansion_role": "action:wait_for_timeout",
+                            "node_kind": "browser.wait_for_timeout",
+                            "node_config": {"timeout": 300},
+                            "ports": [],
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "edge_id": "edge-start-timeout",
+                            "relation_layer": "control",
+                            "from_node_id": "node-start",
+                            "to_node_id": "node-timeout",
+                        }
+                    ],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+
+        start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(start_request) as response:
+            started_payload = json.loads(response.read().decode("utf-8"))
+
+        session_id = started_payload["runtime_session"]["session_id"]
+        run_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/{session_id}/run",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        started_at = time.monotonic()
+        with urllib.request.urlopen(run_request) as response:
+            run_payload = json.loads(response.read().decode("utf-8"))
+        elapsed_ms = (time.monotonic() - started_at) * 1000
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/runtime/{session_id}") as response:
+            session_payload = json.loads(response.read().decode("utf-8"))
+
+        assert elapsed_ms < 250
+        assert run_payload["status"] == "accepted"
+        assert run_payload["runtime_session"]["status"] == "running"
+        assert session_payload["runtime_session"]["status"] in {"running", "completed"}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_runtime_stream_emits_snapshot_summary_and_completed(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:workspace",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [
+                        {
+                            "node_id": "node-start",
+                            "lowered_kind": "control",
+                            "source_anchor_ref": "n-start",
+                            "expansion_role": "flow:start",
+                            "node_kind": "flow.start",
+                            "node_config": {},
+                            "ports": [],
+                        },
+                        {
+                            "node_id": "node-timeout",
+                            "lowered_kind": "execution",
+                            "source_anchor_ref": "n-timeout",
+                            "expansion_role": "action:wait_for_timeout",
+                            "node_kind": "browser.wait_for_timeout",
+                            "node_config": {"timeout": 50},
+                            "ports": [],
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "edge_id": "edge-start-timeout",
+                            "relation_layer": "control",
+                            "from_node_id": "node-start",
+                            "to_node_id": "node-timeout",
+                        }
+                    ],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+
+        start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(start_request) as response:
+            started_payload = json.loads(response.read().decode("utf-8"))
+
+        session_id = started_payload["runtime_session"]["session_id"]
+        run_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/{session_id}/run",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(run_request).read()
+
+        request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/{session_id}/stream",
+            headers={"Accept": "text/event-stream"},
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=3) as response:
+            stream_text = response.read(8192).decode("utf-8")
+
+        assert "event: runtime.snapshot" in stream_text
+        assert "event: runtime.summary" in stream_text
+        assert "event: runtime.completed" in stream_text
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_http_api_blocks_runtime_session_start_when_required_resource_is_disabled(tmp_path: Path) -> None:
     workspace_state_path = tmp_path / "workspace-state.json"
     server, thread = _start_test_server(workspace_state_path=workspace_state_path)
@@ -3313,7 +3483,7 @@ def test_http_api_exposes_runtime_health(tmp_path: Path) -> None:
         assert payload["status"] == "ok"
         assert payload["service"] == "weconduct-api"
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.2.0"
+        assert payload["api_version"] == "0.2.1"
         assert payload["workspace_state_version"] == 1
         assert payload["workspace_session_id"].startswith("ws-")
         assert payload["service_started_at"]
@@ -5056,7 +5226,7 @@ def test_http_host_info_exposes_release_manifest_and_runtime_binding(tmp_path: P
             payload = json.loads(response.read().decode("utf-8"))
 
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.2.0"
+        assert payload["api_version"] == "0.2.1"
         assert payload["server_bind"]["host"] == "127.0.0.1"
         assert payload["server_bind"]["port"] == server.server_address[1]
         assert payload["server_bind"]["base_url"] == base_url

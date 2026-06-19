@@ -208,6 +208,14 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
 
         if self.path.startswith("/api/workbench/runtime/") and self.command == "GET":
             session_id = self.path.removeprefix("/api/workbench/runtime/")
+            if session_id.endswith("/stream"):
+                runtime_session_id = session_id.removesuffix("/stream")
+                if runtime_session_id and "/" not in runtime_session_id:
+                    try:
+                        self._write_runtime_stream(service, runtime_session_id)
+                    except ValueError as exc:
+                        self._write_invalid_request_error(exc)
+                    return
             if session_id and "/" not in session_id:
                 try:
                     result = service.get_runtime_session(session_id=session_id)
@@ -382,6 +390,28 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     self._build_runtime_failure_error_payload(
                         result,
                         error_code="runtime_start_failed",
+                    )
+                )
+            self._write_json(status_code, response_payload)
+            return
+
+        if self.path.startswith("/api/workbench/runtime/") and self.path.endswith("/run"):
+            try:
+                session_id = self.path.removeprefix("/api/workbench/runtime/").removesuffix("/run")
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid runtime session path")
+                self._read_optional_json_request_body()
+                result = service.start_runtime_session_execution(session_id=session_id)
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            status_code = HTTPStatus.OK if result["status"] in {"accepted", "completed", "failed"} else HTTPStatus.BAD_REQUEST
+            response_payload = dict(result)
+            if result["status"] == "failed":
+                response_payload.update(
+                    self._build_runtime_failure_error_payload(
+                        result,
+                        error_code="runtime_run_failed",
                     )
                 )
             self._write_json(status_code, response_payload)
@@ -1284,6 +1314,73 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
         return True
+
+    def _write_runtime_stream(
+        self,
+        service: CompilationWorkbenchService,
+        session_id: str,
+    ) -> None:
+        self.send_response(HTTPStatus.OK.value)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        initial_snapshot = service.get_runtime_stream_snapshot(session_id=session_id)
+        self._write_sse_event("runtime.snapshot", initial_snapshot)
+        initial_status = initial_snapshot.get("status")
+        if initial_status == "completed":
+            self._write_sse_event(
+                "runtime.summary",
+                {
+                    "session_id": initial_snapshot.get("session_id"),
+                    "status": initial_snapshot.get("status"),
+                    "total_node_count": len(initial_snapshot.get("node_states", [])),
+                    "completed_node_count": initial_snapshot.get("execution_summary", {}).get("completed_node_count", 0),
+                    "failed_node_count": initial_snapshot.get("execution_summary", {}).get("failed_node_count", 0),
+                    "running_node_count": 0,
+                    "pending_node_count": 0,
+                    "percent": 100.0,
+                    "event_count": initial_snapshot.get("execution_summary", {}).get("event_count", 0),
+                },
+            )
+            self._write_sse_event("runtime.completed", initial_snapshot)
+            return
+        if initial_status == "failed":
+            total_node_count = len(initial_snapshot.get("node_states", []))
+            failed_count = initial_snapshot.get("execution_summary", {}).get("failed_node_count", 0)
+            completed_count = initial_snapshot.get("execution_summary", {}).get("completed_node_count", 0)
+            pending_count = max(total_node_count - completed_count - failed_count, 0)
+            percent = ((completed_count + failed_count) / total_node_count * 100.0) if total_node_count else 0.0
+            self._write_sse_event(
+                "runtime.summary",
+                {
+                    "session_id": initial_snapshot.get("session_id"),
+                    "status": initial_snapshot.get("status"),
+                    "total_node_count": total_node_count,
+                    "completed_node_count": completed_count,
+                    "failed_node_count": failed_count,
+                    "running_node_count": 0,
+                    "pending_node_count": pending_count,
+                    "percent": round(percent, 1),
+                    "event_count": initial_snapshot.get("execution_summary", {}).get("event_count", 0),
+                },
+            )
+            self._write_sse_event("runtime.failed", initial_snapshot)
+            return
+        for event_name, payload in service.iter_runtime_stream_events(session_id=session_id):
+            if event_name == "runtime.snapshot":
+                continue
+            self._write_sse_event(event_name, payload)
+            if event_name in {"runtime.completed", "runtime.failed"}:
+                break
+
+    def _write_sse_event(self, event_name: str, payload: dict) -> None:
+        body = (
+            f"event: {event_name}\n"
+            f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        ).encode("utf-8")
+        self.wfile.write(body)
+        self.wfile.flush()
 
     def _read_json_request_body(self) -> dict:
         content_length = int(self.headers.get("Content-Length", "0"))

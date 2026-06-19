@@ -539,15 +539,44 @@ export interface RuntimeSessionsResponse { sessions: RuntimeSessionSummary[] }
 export interface RuntimeSessionSummary {
   session_id: string; status: string; graph_model_id: string | null
 }
+export interface RuntimeExecutionSummary {
+  status: string
+  completed_node_count: number
+  failed_node_count: number
+  event_count: number
+  diagnostic_event_count: number
+  node_status_counts?: Record<string, number>
+  latest_event_kind?: string | null
+}
+export interface RuntimeProgress {
+  session_id: string
+  status: string
+  total_node_count: number
+  completed_node_count: number
+  failed_node_count: number
+  running_node_count: number
+  pending_node_count: number
+  percent: number
+  event_count: number
+}
 export interface RuntimeSessionDetailResponse {
   status: string; request: Record<string, unknown>
   runtime_session: { session_id: string | null; status: string; execution_supported: boolean }
   runtime_plan: RuntimePlan | null
   node_states: Record<string, unknown>[]
   event_log: Record<string, unknown>[]
+  execution_summary?: RuntimeExecutionSummary
   result: Record<string, unknown> | null
   diagnostics: { total_count: number; highest_severity: string | null; entries: unknown[] }
 }
+export interface RuntimeStreamSnapshot extends RuntimeSessionDetailResponse {
+  session_id: string
+}
+export type RuntimeStreamTerminalEventName = 'runtime.completed' | 'runtime.failed'
+export type RuntimeStreamEventName =
+  | 'runtime.snapshot'
+  | 'runtime.summary'
+  | RuntimeStreamTerminalEventName
 
 // ===== P6: Debug Sessions =====
 

@@ -23,6 +23,7 @@ import type {
   ResourceEnabledResponse, ResourceTagsResponse, ResourceImportResponse, ResourcesResponse, ResourceExportRequest, ResourceImportRequest,
   ComponentLibraryResponse,
   RuntimeSessionsResponse, RuntimeSessionDetailResponse,
+  RuntimeProgress,
   DebugSessionsResponse, DebugSessionDetailResponse,
   ExecutionHistoryResponse,
   PreferencesResponse,
@@ -192,6 +193,27 @@ export function fetchRuntimeSessions(): Promise<RuntimeSessionsResponse> { retur
 export function fetchRuntimeSession(id: string): Promise<RuntimeSessionDetailResponse> { return request(`/workbench/runtime/${id}`) }
 export function postRuntimeStart(body?: Record<string, unknown>): Promise<RuntimeSessionDetailResponse> { return request('/workbench/runtime/start', { method: 'POST', body: body ? JSON.stringify(body) : undefined }) }
 export function postRuntimeRun(sessionId: string): Promise<RuntimeSessionDetailResponse> { return request(`/workbench/runtime/${sessionId}/run`, { method: 'POST', body: '{}' }) }
+export function getRuntimeStreamUrl(sessionId: string): string { return `${API_BASE}/workbench/runtime/${sessionId}/stream` }
+export function buildRuntimeProgressFromSession(detail: RuntimeSessionDetailResponse): RuntimeProgress {
+  const nodeStates = Array.isArray(detail.node_states) ? detail.node_states : []
+  const totalNodeCount = nodeStates.length
+  const completedNodeCount = nodeStates.filter((node: any) => node?.node_status === 'completed').length
+  const failedNodeCount = nodeStates.filter((node: any) => node?.node_status === 'failed').length
+  const runningNodeCount = nodeStates.filter((node: any) => node?.node_status === 'running').length
+  const pendingNodeCount = nodeStates.filter((node: any) => node?.node_status === 'pending').length
+  const percent = totalNodeCount > 0 ? Number((((completedNodeCount + failedNodeCount) / totalNodeCount) * 100).toFixed(1)) : 0
+  return {
+    session_id: detail.runtime_session.session_id ?? '',
+    status: detail.runtime_session.status ?? detail.status,
+    total_node_count: totalNodeCount,
+    completed_node_count: completedNodeCount,
+    failed_node_count: failedNodeCount,
+    running_node_count: runningNodeCount,
+    pending_node_count: pendingNodeCount,
+    percent,
+    event_count: Array.isArray(detail.event_log) ? detail.event_log.length : 0,
+  }
+}
 
 // ===== P6: Debug =====
 export function fetchDebugSessions(): Promise<DebugSessionsResponse> { return request('/workbench/debug/sessions') }

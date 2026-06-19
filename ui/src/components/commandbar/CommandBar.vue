@@ -117,6 +117,8 @@ async function handleOneClickRun() {
     await graphWs.syncSource()
   }
   if (!graphWs.hasGraph) { toast.info('', '当前图为空，请先添加节点'); return }
+  // Auto-open task execution panel if not visible
+  if (!dock.isPanelVisible('tasks')) dock.restorePanel('tasks')
   // Execute via runtime (not just compile)
   const result = await runtime.startAndRun(graphWs.graphModel as Record<string, unknown> | undefined, graphWs.isDirty)
   await resource.refreshAll()
@@ -330,7 +332,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
             <!-- About -->
             <template v-else-if="activeDialog === 'about'">
               <p><strong>WeConduct</strong></p>
-              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.2.0' }}</p>
+              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.2.1' }}</p>
               <p class="dlg-meta">当前为 Preview 版本</p>
               <p class="dlg-meta">运行模式: {{ workspace.health?.host_mode ?? '—' }}</p>
               <p class="dlg-meta">工作区会话: {{ workspace.health?.workspace_session_id ?? '—' }}</p>

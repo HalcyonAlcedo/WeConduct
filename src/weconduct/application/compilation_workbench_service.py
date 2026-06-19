@@ -3,6 +3,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 from time import perf_counter
+from threading import Lock, Thread
 import uuid
 
 from pydantic import ValidationError
@@ -33,6 +34,7 @@ from weconduct.application.legacy_webcontrol_converter import (
     build_conversion_report,
     convert_legacy_webcontrol_project,
 )
+from weconduct.application.runtime_session_stream import RuntimeSessionStreamBroker
 from weconduct.application.workspace_state_store import (
     FileWorkspaceStateStore,
     InMemoryWorkspaceStateStore,
@@ -159,10 +161,14 @@ class CompilationWorkbenchService:
         *,
         state_store: WorkspaceStateStore | None = None,
         preferences_service: PreferencesService | None = None,
+        runtime_stream_broker: RuntimeSessionStreamBroker | None = None,
     ) -> None:
         self._compiler = CompilerFacade()
         self._state_store = state_store or InMemoryWorkspaceStateStore()
         self._preferences_service = preferences_service or PreferencesService()
+        self._runtime_stream_broker = runtime_stream_broker or RuntimeSessionStreamBroker()
+        self._runtime_execution_lock = Lock()
+        self._runtime_execution_threads: dict[str, Thread] = {}
         self._suppress_dirty_workspace_recovery = False
         self._allow_dirty_workspace_recovery_conversion = True
         loaded_state = self._state_store.load()
@@ -1283,6 +1289,17 @@ class CompilationWorkbenchService:
             "result": None,
         }
         self._remember_runtime_session(session_document)
+        self._runtime_stream_broker.publish_snapshot(
+            session_id,
+            self._build_runtime_stream_snapshot_payload(
+                session_id=session_id,
+                session=session_document,
+                runtime_session=session_document["runtime_session"],
+                node_states=session_document["node_states"],
+                event_log=session_document["event_log"],
+                result=None,
+            ),
+        )
         return {
             "status": "started",
             **session_document,
@@ -1290,6 +1307,38 @@ class CompilationWorkbenchService:
         }
 
     def run_runtime_session(self, *, session_id: str) -> dict:
+        return self._run_runtime_session_sync(session_id=session_id)
+
+    def start_runtime_session_execution(self, *, session_id: str) -> dict:
+        self._refresh_state_from_store()
+        existing_session = self._find_runtime_session(session_id)
+        if existing_session["runtime_session"]["status"] in {"completed", "failed"}:
+            return {
+                "status": existing_session["runtime_session"]["status"],
+                **existing_session,
+            }
+        with self._runtime_execution_lock:
+            existing_thread = self._runtime_execution_threads.get(session_id)
+            if existing_thread is not None and existing_thread.is_alive():
+                return {
+                    "status": "accepted",
+                    **existing_session,
+                }
+            thread = Thread(
+                target=self._run_runtime_session_sync,
+                kwargs={"session_id": session_id},
+                daemon=True,
+                name=f"runtime-{session_id}",
+            )
+            self._runtime_execution_threads[session_id] = thread
+            thread.start()
+        refreshed = self.get_runtime_session(session_id=session_id)
+        return {
+            "status": "accepted",
+            **refreshed,
+        }
+
+    def _run_runtime_session_sync(self, *, session_id: str) -> dict:
         self._refresh_state_from_store()
         existing_session = self._find_runtime_session(session_id)
         if existing_session["runtime_session"]["status"] in {"completed", "failed"}:
@@ -1352,6 +1401,36 @@ class CompilationWorkbenchService:
                 node_kind_by_id = {
                     item["node_id"]: item.get("node_kind") for item in executable_nodes
                 }
+
+                def publish_live_update(event_name: str, payload: dict) -> None:
+                    runtime_session = {
+                        **session["runtime_session"],
+                        "status": session_status if failure_reason is not None else "running",
+                        "completed_node_count": len(completed_node_ids),
+                        "failed_node_count": len(failed_node_ids),
+                    }
+                    self._runtime_stream_broker.publish_event(session_id, event_name, dict(payload))
+                    self._runtime_stream_broker.publish_event(
+                        session_id,
+                        "runtime.summary",
+                        self._build_runtime_stream_summary_payload(
+                            session_id=session_id,
+                            runtime_session=runtime_session,
+                            node_states=node_states,
+                            event_log=event_log,
+                        ),
+                    )
+                    self._runtime_stream_broker.publish_snapshot(
+                        session_id,
+                        self._build_runtime_stream_snapshot_payload(
+                            session_id=session_id,
+                            session=session,
+                            runtime_session=runtime_session,
+                            node_states=node_states,
+                            event_log=event_log,
+                            result=None,
+                        ),
+                    )
 
                 def queue_control_edge(edge: dict, *, repeat_mode_value: bool) -> None:
                     target_node_id = edge.get("to_node_id")
@@ -1551,6 +1630,18 @@ class CompilationWorkbenchService:
                             "node_id": node_state["node_id"],
                         }
                     )
+                    publish_live_update(
+                        "runtime.node",
+                        {
+                            "session_id": session_id,
+                            "node_id": node_state["node_id"],
+                            "node_status": node_state["node_status"],
+                            "started_at": node_state["started_at"],
+                            "completed_at": node_state.get("completed_at"),
+                            "output": node_state.get("output"),
+                            "error": node_state.get("error"),
+                        },
+                    )
                     resource_status = executable_node.get("resource_status")
                     if resource_status != "enabled":
                         completed_at = datetime.now(timezone.utc).isoformat()
@@ -1594,6 +1685,18 @@ class CompilationWorkbenchService:
                             "error_code": error_code,
                         }
                     )
+                        publish_live_update(
+                            "runtime.node",
+                            {
+                                "session_id": session_id,
+                                "node_id": node_state["node_id"],
+                                "node_status": node_state["node_status"],
+                                "started_at": node_state["started_at"],
+                                "completed_at": node_state["completed_at"],
+                                "output": node_state.get("output"),
+                                "error": node_state.get("error"),
+                            },
+                        )
                         break
                     completed_at = datetime.now(timezone.utc).isoformat()
                     try:
@@ -1651,6 +1754,18 @@ class CompilationWorkbenchService:
                             "error_code": error_code,
                         }
                     )
+                        publish_live_update(
+                            "runtime.node",
+                            {
+                                "session_id": session_id,
+                                "node_id": node_state["node_id"],
+                                "node_status": node_state["node_status"],
+                                "started_at": node_state["started_at"],
+                                "completed_at": node_state["completed_at"],
+                                "output": node_state.get("output"),
+                                "error": node_state.get("error"),
+                            },
+                        )
                         break
                     node_state["node_status"] = "completed"
                     node_state["completed_at"] = completed_at
@@ -1662,6 +1777,18 @@ class CompilationWorkbenchService:
                             "session_id": session_id,
                             "node_id": node_state["node_id"],
                         }
+                    )
+                    publish_live_update(
+                        "runtime.node",
+                        {
+                            "session_id": session_id,
+                            "node_id": node_state["node_id"],
+                            "node_status": node_state["node_status"],
+                            "started_at": node_state["started_at"],
+                            "completed_at": node_state["completed_at"],
+                            "output": node_state.get("output"),
+                            "error": node_state.get("error"),
+                        },
                     )
                     next_program_counter = program_counter + 1
                     node_kind = executable_node.get("node_kind")
@@ -2078,12 +2205,37 @@ class CompilationWorkbenchService:
             current_state["execution_history"] = execution_history
             return current_state
 
-        self._state = self._state_store.mutate(mutation)
-        session_document = self.get_runtime_session(session_id=session_id)
-        return {
-            "status": session_document["runtime_session"]["status"],
-            **session_document,
-        }
+        try:
+            self._state = self._state_store.mutate(mutation)
+            session_document = self.get_runtime_session(session_id=session_id)
+            self._runtime_stream_broker.publish_snapshot(
+                session_id,
+                self._build_runtime_stream_terminal_payload(
+                    session_id=session_id,
+                    session_document=session_document,
+                ),
+            )
+            terminal_event_name = (
+                "runtime.completed"
+                if session_document["runtime_session"]["status"] == "completed"
+                else "runtime.failed"
+            )
+            self._runtime_stream_broker.publish_event(
+                session_id,
+                terminal_event_name,
+                self._build_runtime_stream_terminal_payload(
+                    session_id=session_id,
+                    session_document=session_document,
+                ),
+            )
+            return {
+                "status": session_document["runtime_session"]["status"],
+                **session_document,
+            }
+        finally:
+            with self._runtime_execution_lock:
+                self._runtime_execution_threads.pop(session_id, None)
+            self._runtime_stream_broker.close_session(session_id)
 
     def _execute_runtime_plan_node(
         self,
@@ -5525,7 +5677,7 @@ class CompilationWorkbenchService:
             "workspace_state_version": WORKSPACE_STATE_VERSION,
             "workbench": {
                 "host_mode": "python_core",
-                "api_version": "0.2.0",
+                "api_version": "0.2.1",
                 "workspace_session_id": f"ws-{uuid.uuid4().hex[:12]}",
                 "service_started_at": datetime.now(timezone.utc).isoformat(),
                 "compile_counter": 0,
@@ -9271,6 +9423,20 @@ class CompilationWorkbenchService:
                 return item
         raise ValueError(f"runtime session not found: {session_id}")
 
+    def get_runtime_stream_snapshot(self, *, session_id: str) -> dict:
+        session_document = self.get_runtime_session(session_id=session_id)
+        return self._build_runtime_stream_terminal_payload(
+            session_id=session_id,
+            session_document=session_document,
+        )
+
+    def iter_runtime_stream_events(self, *, session_id: str):
+        subscriber_id, queue = self._runtime_stream_broker.subscribe(session_id)
+        try:
+            yield from self._runtime_stream_broker.iter_events(queue)
+        finally:
+            self._runtime_stream_broker.unsubscribe(session_id, subscriber_id)
+
     def _get_debug_sessions(self) -> list[dict]:
         return self._extract_debug_sessions(self._state)
 
@@ -9831,6 +9997,83 @@ class CompilationWorkbenchService:
                 else None
             ),
         }
+
+    def _build_runtime_stream_snapshot_payload(
+        self,
+        *,
+        session_id: str,
+        session: dict,
+        runtime_session: dict,
+        node_states: list[dict],
+        event_log: list[dict],
+        result: dict | None,
+    ) -> dict:
+        payload = {
+            "session_id": session_id,
+            "status": runtime_session.get("status"),
+            "runtime_session": dict(runtime_session),
+            "runtime_plan": dict(session.get("runtime_plan", {})),
+            "node_states": [dict(item) for item in node_states],
+            "event_log": [dict(item) for item in event_log],
+            "execution_summary": self._build_runtime_execution_summary(
+                runtime_session=runtime_session,
+                node_states=node_states,
+                event_log=event_log,
+                diagnostic_events=[
+                    item
+                    for item in event_log
+                    if item.get("event_kind") == "diagnostic.raised"
+                ],
+                result=result,
+            ),
+            "result": dict(result) if isinstance(result, dict) else result,
+        }
+        return payload
+
+    def _build_runtime_stream_summary_payload(
+        self,
+        *,
+        session_id: str,
+        runtime_session: dict,
+        node_states: list[dict],
+        event_log: list[dict],
+    ) -> dict:
+        completed_count = sum(1 for item in node_states if item.get("node_status") == "completed")
+        failed_count = sum(1 for item in node_states if item.get("node_status") == "failed")
+        running_count = sum(1 for item in node_states if item.get("node_status") == "running")
+        pending_count = sum(1 for item in node_states if item.get("node_status") == "pending")
+        total_count = len(node_states)
+        percent = ((completed_count + failed_count) / total_count * 100.0) if total_count > 0 else 0.0
+        return {
+            "session_id": session_id,
+            "status": runtime_session.get("status"),
+            "total_node_count": total_count,
+            "completed_node_count": completed_count,
+            "failed_node_count": failed_count,
+            "running_node_count": running_count,
+            "pending_node_count": pending_count,
+            "percent": round(percent, 1),
+            "event_count": len(event_log),
+        }
+
+    def _build_runtime_stream_terminal_payload(
+        self,
+        *,
+        session_id: str,
+        session_document: dict,
+    ) -> dict:
+        runtime_session = session_document.get("runtime_session", {})
+        node_states = session_document.get("node_states", [])
+        event_log = session_document.get("event_log", [])
+        result = session_document.get("result")
+        return self._build_runtime_stream_snapshot_payload(
+            session_id=session_id,
+            session=session_document,
+            runtime_session=runtime_session if isinstance(runtime_session, dict) else {},
+            node_states=node_states if isinstance(node_states, list) else [],
+            event_log=event_log if isinstance(event_log, list) else [],
+            result=result if isinstance(result, dict) else None,
+        )
 
     def _build_execution_status_counts(self, entries: list[dict]) -> dict[str, int]:
         counts: dict[str, int] = {}

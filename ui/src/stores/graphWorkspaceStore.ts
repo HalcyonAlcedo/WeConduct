@@ -106,14 +106,18 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     markChanged()
   }
 
-  /** Add a node via Core node-draft API. Returns new nodeId, or null on failure. */
+  /** Add a node via Core node-draft API. Returns new nodeId, or null on failure.
+   *  If no position given, places node at current viewport center. */
   async function addNode(item: { resource_key: string; display_name: string; resource_type?: string }, position?: { x: number; y: number }): Promise<string | null> {
     const toast = useToastStore()
     try {
+      // Use viewport center when no explicit position (click, not drag)
+      const x = position?.x ?? viewport.value.x
+      const y = position?.y ?? viewport.value.y
       const draft = await fetchNodeDraft({
         resource_key: item.resource_key,
-        x: position?.x,
-        y: position?.y,
+        x,
+        y,
       })
       pushUndo()
       if (!graphModel.value) {
@@ -231,6 +235,10 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   // ---- Parameter schema cache (from node drafts) ----
   const parameterSchemas = ref<Record<string, Record<string, ParameterFieldSchema>>>({})
 
+  // ---- Current viewport (for placing new nodes at view center) ----
+  const viewport = ref<{ x: number; y: number; zoom: number }>({ x: 0, y: 0, zoom: 1 })
+  function updateViewport(v: { x: number; y: number; zoom: number }) { viewport.value = v }
+
   function cacheParameterSchema(resourceKey: string, schema?: Record<string, ParameterFieldSchema>) {
     if (schema) parameterSchemas.value[resourceKey] = { ...parameterSchemas.value[resourceKey], ...schema }
   }
@@ -300,5 +308,6 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     updateNodePosition, addEdge, removeEdge, updateEdgeRelation, pushUndo, undo, redo, reset,
     syncStatus, syncError, syncSource, scheduleAutoSync,
     parameterSchemas, cacheParameterSchema,
+    viewport, updateViewport,
   }
 })
