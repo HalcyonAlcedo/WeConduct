@@ -93,6 +93,8 @@ class _BrowserMockSiteHandler(BaseHTTPRequestHandler):
   <body>
     <form method="post" action="/submit">
       <input id="name" name="name" value="{self.last_form_value}">
+      <label><input id="agree" type="checkbox" name="agree"> Agree</label>
+      <input id="upload-file" type="file" name="upload_file">
       <button id="submit" type="submit">Submit</button>
     </form>
     <select id="city">
@@ -181,7 +183,7 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert snapshot["entrypoints"]["graph_source_projection"] == "/api/workbench/graph/source-projection"
     assert snapshot["workbench"]["host_mode"] == "python_core"
-    assert snapshot["workbench"]["api_version"] == "0.2.1"
+    assert snapshot["workbench"]["api_version"] == "0.3.0"
     assert snapshot["compiler"]["available_source_kinds"] == [
         "graph_workspace",
         "native_flow",
@@ -2010,6 +2012,9 @@ def test_service_builds_graph_node_drafts_for_extended_builtin_resources() -> No
 
     expected_resource_keys = [
         "browser.hover",
+        "browser.check",
+        "browser.uncheck",
+        "browser.set_input_files",
         "browser.select_option",
         "browser.wait_for_navigation",
         "browser.wait_for_timeout",
@@ -2080,6 +2085,12 @@ def test_service_builds_graph_node_drafts_for_extended_builtin_resources() -> No
         assert isinstance(draft["node"]["node_config"], dict)
 
     assert drafts["browser.hover"]["node"]["node_config"] == {"selector": ""}
+    assert drafts["browser.check"]["node"]["node_config"] == {"selector": ""}
+    assert drafts["browser.uncheck"]["node"]["node_config"] == {"selector": ""}
+    assert drafts["browser.set_input_files"]["node"]["node_config"] == {
+        "selector": "",
+        "path": "",
+    }
     assert drafts["browser.select_option"]["node"]["node_config"] == {
         "selector": "",
         "value": "",
@@ -2286,6 +2297,20 @@ def test_service_builds_graph_node_drafts_for_extended_builtin_resources() -> No
     assert drafts["browser.run_js"]["node"]["node_config"] == {
         "script": "",
         "variable_name": "",
+    }
+    assert drafts["browser.get_local_storage"]["node"]["node_config"] == {
+        "key": "",
+        "variable_name": "",
+        "default_value": None,
+    }
+    assert drafts["browser.go_back"]["node"]["node_config"] == {}
+    assert drafts["browser.go_forward"]["node"]["node_config"] == {}
+    assert drafts["browser.refresh"]["node"]["node_config"] == {}
+    assert drafts["browser.refresh_no_cache"]["node"]["node_config"] == {}
+    assert drafts["time.get_current_time"]["node"]["node_config"] == {
+        "variable_name": "",
+        "format": "iso",
+        "timezone": "utc",
     }
 
     assert drafts["control.jump_to_step"]["node"]["node_config"] == {
@@ -6705,6 +6730,230 @@ def test_service_runtime_flow_graph_parallel_fork_and_join_wait_for_all_inputs()
     assert any(item.get("node_id") == "node-fork" for item in node_ready_events)
 
 
+def test_service_runtime_flow_graph_implicit_join_waits_for_all_control_inputs() -> None:
+    service = CompilationWorkbenchService()
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow:start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-fork",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-fork",
+                    "expansion_role": "control:parallel_fork",
+                    "node_kind": "control.parallel_fork",
+                    "node_config": {
+                        "branches": [
+                            {"key": "left", "label": "Left"},
+                            {"key": "right", "label": "Right"},
+                        ]
+                    },
+                    "ports": [
+                        {
+                            "port_id": "in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control",
+                        },
+                        {
+                            "port_id": "branch:left",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.branch:left",
+                        },
+                        {
+                            "port_id": "branch:right",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.branch:right",
+                        },
+                    ],
+                },
+                {
+                    "node_id": "node-left",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-left",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "left_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-right",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-right",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "right_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-right-final",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-right-final",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "right_final_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-collector",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-collector",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {
+                        "name": "collector_ready",
+                        "value": {"left": "${left_done}", "right": "${right_final_done}"},
+                    },
+                    "ports": [
+                        {
+                            "port_id": "in:left",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control:left",
+                        },
+                        {
+                            "port_id": "in:right",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control:right",
+                        },
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        },
+                    ],
+                },
+                {
+                    "node_id": "node-read",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-read",
+                    "expansion_role": "action:get_variable",
+                    "node_kind": "data.get_variable",
+                    "node_config": {"name": "collector_ready"},
+                    "ports": [],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-fork",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-fork",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-fork-left",
+                    "relation_layer": "control",
+                    "from_node_id": "node-fork",
+                    "to_node_id": "node-left",
+                    "from_port_id": "branch:left",
+                },
+                {
+                    "edge_id": "edge-fork-right",
+                    "relation_layer": "control",
+                    "from_node_id": "node-fork",
+                    "to_node_id": "node-right",
+                    "from_port_id": "branch:right",
+                },
+                {
+                    "edge_id": "edge-left-collector",
+                    "relation_layer": "control",
+                    "from_node_id": "node-left",
+                    "to_node_id": "node-collector",
+                    "from_port_id": "out",
+                    "to_port_id": "in:left",
+                },
+                {
+                    "edge_id": "edge-right-right-final",
+                    "relation_layer": "control",
+                    "from_node_id": "node-right",
+                    "to_node_id": "node-right-final",
+                    "from_port_id": "out",
+                },
+                {
+                    "edge_id": "edge-right-final-collector",
+                    "relation_layer": "control",
+                    "from_node_id": "node-right-final",
+                    "to_node_id": "node-collector",
+                    "from_port_id": "out",
+                    "to_port_id": "in:right",
+                },
+                {
+                    "edge_id": "edge-collector-read",
+                    "relation_layer": "control",
+                    "from_node_id": "node-collector",
+                    "to_node_id": "node-read",
+                    "from_port_id": "out",
+                },
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert session["result"]["outputs"]["node-read"]["value"] == {"left": True, "right": True}
+    assert session["result"]["completed_node_ids"].count("node-collector") == 1
+    assert session["result"]["completed_node_ids"].index("node-right-final") < (
+        session["result"]["completed_node_ids"].index("node-collector")
+    )
+    implicit_join_waiting_events = [
+        item for item in session["event_log"] if item.get("event_kind") == "join.waiting"
+    ]
+    implicit_join_released_events = [
+        item for item in session["event_log"] if item.get("event_kind") == "join.released"
+    ]
+    assert any(item.get("node_id") == "node-collector" for item in implicit_join_waiting_events)
+    assert any(item.get("node_id") == "node-collector" for item in implicit_join_released_events)
+
+
 def test_service_runtime_flow_graph_if_uses_semantic_slot_when_control_port_ids_are_renamed() -> None:
     service = CompilationWorkbenchService()
 
@@ -10959,6 +11208,8 @@ def test_service_runtime_executes_browser_atomic_components(tmp_path) -> None:
     service = CompilationWorkbenchService()
     site_server, site_thread = _start_browser_mock_site()
     screenshot_path = tmp_path / "browser-shot.png"
+    upload_file_path = tmp_path / "upload.txt"
+    upload_file_path.write_text("upload-content", encoding="utf-8")
 
     try:
         service.save_graph_document(
@@ -10987,6 +11238,52 @@ def test_service_runtime_executes_browser_atomic_components(tmp_path) -> None:
                         "node_config": {
                             "selector": "#name",
                             "value": "Alice",
+                        },
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-check",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-check",
+                        "expansion_role": "action:check",
+                        "node_kind": "browser.check",
+                        "node_config": {
+                            "selector": "#agree",
+                        },
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-uncheck",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-uncheck",
+                        "expansion_role": "action:uncheck",
+                        "node_kind": "browser.uncheck",
+                        "node_config": {
+                            "selector": "#agree",
+                        },
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-upload",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-upload",
+                        "expansion_role": "action:set_input_files",
+                        "node_kind": "browser.set_input_files",
+                        "node_config": {
+                            "selector": "#upload-file",
+                            "path": str(upload_file_path),
+                        },
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-upload-verify",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-upload-verify",
+                        "expansion_role": "action:run_js",
+                        "node_kind": "browser.run_js",
+                        "node_config": {
+                            "script": "(() => { const input = document.querySelector('#upload-file'); return JSON.stringify({ checked: document.querySelector('#agree').checked, fileName: input.files && input.files[0] ? input.files[0].name : '' }); })()",
+                            "variable_name": "browser_atomic_state",
                         },
                         "ports": [],
                     },
@@ -11024,12 +11321,211 @@ def test_service_runtime_executes_browser_atomic_components(tmp_path) -> None:
         assert session["status"] == "completed"
         assert session["result"]["outputs"]["node-nav"]["page_url"].startswith("http://127.0.0.1:")
         assert session["result"]["outputs"]["node-fill"]["value"] == "Alice"
+        assert session["result"]["outputs"]["node-check"]["selector"] == "#agree"
+        assert session["result"]["outputs"]["node-uncheck"]["selector"] == "#agree"
+        assert session["result"]["outputs"]["node-upload"]["path"] == str(upload_file_path.resolve())
+        assert json.loads(session["result"]["variables"]["browser_atomic_state"]) == {
+            "checked": False,
+            "fileName": "upload.txt",
+        }
         assert session["result"]["outputs"]["node-click"]["page_url"].startswith("http://127.0.0.1:")
         assert session["result"]["outputs"]["node-shot"]["path"] == str(screenshot_path.resolve())
         assert session["result"]["outputs"]["node-shot"]["bytes_written"] > 0
         assert screenshot_path.exists() is True
         assert _BrowserMockSiteHandler.clicked is True
         assert _BrowserMockSiteHandler.last_form_value == "Alice"
+    finally:
+        site_server.shutdown()
+        site_server.server_close()
+
+
+def test_service_runtime_executes_browser_get_local_storage_component() -> None:
+    service = CompilationWorkbenchService()
+    site_server, site_thread = _start_browser_mock_site()
+
+    try:
+        service.save_graph_document(
+            {
+                "graph_model_id": "graph:workspace",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [
+                    {
+                        "node_id": "node-nav",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-nav",
+                        "expansion_role": "action:navigate",
+                        "node_kind": "browser.navigate",
+                        "node_config": {
+                            "url": f"http://127.0.0.1:{site_server.server_address[1]}/",
+                        },
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-seed-storage",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-seed-storage",
+                        "expansion_role": "action:run_js",
+                        "node_kind": "browser.run_js",
+                        "node_config": {
+                            "script": "(() => { window.localStorage.setItem('authToken', 'token-123'); return true; })()",
+                            "variable_name": "seeded",
+                        },
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-read-storage",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-read-storage",
+                        "expansion_role": "action:get_local_storage",
+                        "node_kind": "browser.get_local_storage",
+                        "node_config": {
+                            "key": "authToken",
+                            "variable_name": "auth_token",
+                            "default_value": "missing",
+                        },
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-read-storage-default",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-read-storage-default",
+                        "expansion_role": "action:get_local_storage",
+                        "node_kind": "browser.get_local_storage",
+                        "node_config": {
+                            "key": "missingKey",
+                            "variable_name": "missing_token",
+                            "default_value": "fallback",
+                        },
+                        "ports": [],
+                    },
+                ],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+
+        started = service.start_runtime_session(None)
+        session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+        assert session["status"] == "completed"
+        assert session["result"]["outputs"]["node-read-storage"]["value"] == "token-123"
+        assert session["result"]["outputs"]["node-read-storage"]["key"] == "authToken"
+        assert session["result"]["variables"]["auth_token"] == "token-123"
+        assert session["result"]["outputs"]["node-read-storage-default"]["value"] == "fallback"
+        assert session["result"]["variables"]["missing_token"] == "fallback"
+    finally:
+        site_server.shutdown()
+        site_server.server_close()
+
+
+def test_service_runtime_executes_browser_history_refresh_and_current_time_components() -> None:
+    service = CompilationWorkbenchService()
+    site_server, site_thread = _start_browser_mock_site()
+
+    try:
+        base_url = f"http://127.0.0.1:{site_server.server_address[1]}"
+        service.save_graph_document(
+            {
+                "graph_model_id": "graph:workspace",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [
+                    {
+                        "node_id": "node-nav-home",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-nav-home",
+                        "expansion_role": "action:navigate",
+                        "node_kind": "browser.navigate",
+                        "node_config": {"url": f"{base_url}/"},
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-click-dashboard",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-click-dashboard",
+                        "expansion_role": "action:click",
+                        "node_kind": "browser.click",
+                        "node_config": {"selector": "#go-dashboard"},
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-wait-dashboard",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-wait-dashboard",
+                        "expansion_role": "action:wait_for_navigation",
+                        "node_kind": "browser.wait_for_navigation",
+                        "node_config": {"url_pattern": "/dashboard", "timeout": 3000},
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-go-back",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-go-back",
+                        "expansion_role": "action:go_back",
+                        "node_kind": "browser.go_back",
+                        "node_config": {},
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-go-forward",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-go-forward",
+                        "expansion_role": "action:go_forward",
+                        "node_kind": "browser.go_forward",
+                        "node_config": {},
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-refresh",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-refresh",
+                        "expansion_role": "action:refresh",
+                        "node_kind": "browser.refresh",
+                        "node_config": {},
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-refresh-no-cache",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-refresh-no-cache",
+                        "expansion_role": "action:refresh_no_cache",
+                        "node_kind": "browser.refresh_no_cache",
+                        "node_config": {},
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-now",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-now",
+                        "expansion_role": "action:get_current_time",
+                        "node_kind": "time.get_current_time",
+                        "node_config": {
+                            "variable_name": "current_time_value",
+                            "format": "iso",
+                            "timezone": "utc",
+                        },
+                        "ports": [],
+                    },
+                ],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+
+        started = service.start_runtime_session(None)
+        session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+        assert session["status"] == "completed"
+        assert session["result"]["outputs"]["node-go-back"]["page_url"] == f"{base_url}/"
+        assert session["result"]["outputs"]["node-go-forward"]["page_url"].endswith("/dashboard")
+        assert session["result"]["outputs"]["node-refresh"]["page_url"].endswith("/dashboard")
+        assert session["result"]["outputs"]["node-refresh-no-cache"]["page_url"].endswith("/dashboard")
+        assert session["result"]["outputs"]["node-now"]["timezone"] == "utc"
+        assert session["result"]["outputs"]["node-now"]["format"] == "iso"
+        assert isinstance(session["result"]["outputs"]["node-now"]["value"], str)
+        assert session["result"]["variables"]["current_time_value"] == session["result"]["outputs"]["node-now"]["value"]
+        assert "T" in session["result"]["outputs"]["node-now"]["value"]
     finally:
         site_server.shutdown()
         site_server.server_close()
@@ -11483,7 +11979,7 @@ def test_runtime_health_exposes_host_session_capabilities_and_entrypoints() -> N
     assert health["status"] == "ok"
     assert health["service"] == "weconduct-api"
     assert health["host_mode"] == "python_core"
-    assert health["api_version"] == "0.2.1"
+    assert health["api_version"] == "0.3.0"
     assert health["workspace_state_version"] == 1
     assert health["workspace_session_id"].startswith("ws-")
     assert health["service_started_at"]

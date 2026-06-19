@@ -349,6 +349,102 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             "value": "",
         },
     },
+    "browser.check": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:check",
+        "ports": [
+            {
+                "port_id": "in",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.control",
+            },
+            {
+                "port_id": "in:selector",
+                "direction": "input",
+                "relation_layer": "data",
+                "semantic_slot": "in.selector",
+            },
+            {
+                "port_id": "out",
+                "direction": "output",
+                "relation_layer": "control",
+                "semantic_slot": "out.control",
+            },
+        ],
+        "node_config": {
+            "selector": "",
+        },
+    },
+    "browser.uncheck": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:uncheck",
+        "ports": [
+            {
+                "port_id": "in",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.control",
+            },
+            {
+                "port_id": "in:selector",
+                "direction": "input",
+                "relation_layer": "data",
+                "semantic_slot": "in.selector",
+            },
+            {
+                "port_id": "out",
+                "direction": "output",
+                "relation_layer": "control",
+                "semantic_slot": "out.control",
+            },
+        ],
+        "node_config": {
+            "selector": "",
+        },
+    },
+    "browser.set_input_files": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:set_input_files",
+        "ports": [
+            {
+                "port_id": "in",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.control",
+            },
+            {
+                "port_id": "in:selector",
+                "direction": "input",
+                "relation_layer": "data",
+                "semantic_slot": "in.selector",
+            },
+            {
+                "port_id": "in:path",
+                "direction": "input",
+                "relation_layer": "data",
+                "semantic_slot": "in.path",
+            },
+            {
+                "port_id": "out",
+                "direction": "output",
+                "relation_layer": "control",
+                "semantic_slot": "out.control",
+            },
+        ],
+        "node_config": {
+            "selector": "",
+            "path": "",
+        },
+        "parameter_schema": {
+            "path": {
+                "type": "string",
+                "required": True,
+                "editor_kind": "path",
+                "path_kind": "open_file",
+            },
+        },
+    },
     "browser.click": {
         "lowered_kind": "execution",
         "expansion_role": "action:click",
@@ -2210,6 +2306,186 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
         "node_config": {
             "script": "",
             "variable_name": "",
+        },
+    },
+    "browser.get_local_storage": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:get_local_storage",
+        "ports": [
+            {
+                "port_id": "in",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.control",
+            },
+            {
+                "port_id": "in:key",
+                "direction": "input",
+                "relation_layer": "data",
+                "semantic_slot": "in.key",
+            },
+            {
+                "port_id": "out",
+                "direction": "output",
+                "relation_layer": "control",
+                "semantic_slot": "out.control",
+            },
+            {
+                "port_id": "out:value",
+                "direction": "output",
+                "relation_layer": "data",
+                "semantic_slot": "out.value",
+            },
+        ],
+        "node_config": {
+            "key": "",
+            "variable_name": "",
+            "default_value": None,
+        },
+        "parameter_schema": {
+            "key": {
+                "type": "string",
+                "required": True,
+                "editor_kind": "text",
+                "path_kind": None,
+            },
+            "variable_name": {
+                "type": "string",
+                "required": False,
+                "editor_kind": "text",
+                "path_kind": None,
+            },
+            "default_value": {
+                "type": "any",
+                "required": False,
+                "editor_kind": "json",
+                "path_kind": None,
+            },
+        },
+    },
+    "browser.go_back": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:go_back",
+        "ports": [
+            {
+                "port_id": "in",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.control",
+            },
+            {
+                "port_id": "out",
+                "direction": "output",
+                "relation_layer": "control",
+                "semantic_slot": "out.control",
+            },
+        ],
+        "node_config": {},
+    },
+    "browser.go_forward": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:go_forward",
+        "ports": [
+            {
+                "port_id": "in",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.control",
+            },
+            {
+                "port_id": "out",
+                "direction": "output",
+                "relation_layer": "control",
+                "semantic_slot": "out.control",
+            },
+        ],
+        "node_config": {},
+    },
+    "browser.refresh": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:refresh",
+        "ports": [
+            {
+                "port_id": "in",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.control",
+            },
+            {
+                "port_id": "out",
+                "direction": "output",
+                "relation_layer": "control",
+                "semantic_slot": "out.control",
+            },
+        ],
+        "node_config": {},
+    },
+    "browser.refresh_no_cache": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:refresh_no_cache",
+        "ports": [
+            {
+                "port_id": "in",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.control",
+            },
+            {
+                "port_id": "out",
+                "direction": "output",
+                "relation_layer": "control",
+                "semantic_slot": "out.control",
+            },
+        ],
+        "node_config": {},
+    },
+    "time.get_current_time": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:get_current_time",
+        "ports": [
+            {
+                "port_id": "in",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.control",
+            },
+            {
+                "port_id": "out",
+                "direction": "output",
+                "relation_layer": "control",
+                "semantic_slot": "out.control",
+            },
+            {
+                "port_id": "out:value",
+                "direction": "output",
+                "relation_layer": "data",
+                "semantic_slot": "out.value",
+            },
+        ],
+        "node_config": {
+            "variable_name": "",
+            "format": "iso",
+            "timezone": "utc",
+        },
+        "parameter_schema": {
+            "variable_name": {
+                "type": "string",
+                "required": False,
+                "editor_kind": "text",
+                "path_kind": None,
+            },
+            "format": {
+                "type": "string",
+                "required": False,
+                "editor_kind": "text",
+                "path_kind": None,
+            },
+            "timezone": {
+                "type": "string",
+                "required": False,
+                "editor_kind": "text",
+                "path_kind": None,
+            },
         },
     },
     "python.run": {

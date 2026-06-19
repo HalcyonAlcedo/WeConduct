@@ -5,6 +5,7 @@ import binascii
 from dataclasses import dataclass, field
 from contextlib import redirect_stderr, redirect_stdout
 import csv
+from datetime import datetime, timezone
 import io
 import json
 from pathlib import Path
@@ -53,18 +54,26 @@ class RuntimeExecutorRegistry:
             "http.request": self._execute_http_request,
             "browser.navigate": self._execute_browser_navigate,
             "browser.fill": self._execute_browser_fill,
+            "browser.check": self._execute_browser_check,
+            "browser.uncheck": self._execute_browser_uncheck,
+            "browser.set_input_files": self._execute_browser_set_input_files,
             "browser.click": self._execute_browser_click,
             "browser.hover": self._execute_browser_hover,
             "browser.select_option": self._execute_browser_select_option,
             "browser.wait_for_element": self._execute_browser_wait_for_element,
             "browser.wait_for_navigation": self._execute_browser_wait_for_navigation,
             "browser.wait_for_timeout": self._execute_browser_wait_for_timeout,
+            "browser.go_back": self._execute_browser_go_back,
+            "browser.go_forward": self._execute_browser_go_forward,
+            "browser.refresh": self._execute_browser_refresh,
+            "browser.refresh_no_cache": self._execute_browser_refresh_no_cache,
             "browser.screenshot": self._execute_browser_screenshot,
             "browser.recognize_captcha": self._execute_browser_recognize_captcha,
             "browser.extract_web_table": self._execute_browser_extract_web_table,
             "browser.extract_web_table_to_excel": self._execute_browser_extract_web_table_to_excel,
             "browser.inject_js": self._execute_browser_inject_js,
             "browser.run_js": self._execute_browser_run_js,
+            "browser.get_local_storage": self._execute_browser_get_local_storage,
             "browser.switch_to_frame": self._execute_browser_switch_to_frame,
             "browser.switch_to_parent_frame": self._execute_browser_switch_to_parent_frame,
             "browser.switch_to_default_content": self._execute_browser_switch_to_default_content,
@@ -93,6 +102,7 @@ class RuntimeExecutorRegistry:
             "data.list_reverse": self._execute_list_reverse,
             "data.evaluate_expression": self._execute_evaluate_expression,
             "data.regex_replace": self._execute_regex_replace,
+            "time.get_current_time": self._execute_time_get_current_time,
             "file.write_text_file": self._execute_write_text_file,
             "file.read_text_file": self._execute_read_text_file,
             "file.read_csv_cell": self._execute_read_csv_cell,
@@ -274,6 +284,55 @@ class RuntimeExecutorRegistry:
             "page_url": _require_browser_page(context).url,
         }
 
+    def _execute_browser_check(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        selector = _resolve_value(node_config.get("selector"), context)
+        if not isinstance(selector, str) or not selector.strip():
+            return _failed_result(node, "browser.selector_required", "selector is required")
+        target = _require_browser_target(context)
+        target.locator(selector).check()
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "selector": selector,
+            "page_url": _require_browser_page(context).url,
+        }
+
+    def _execute_browser_uncheck(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        selector = _resolve_value(node_config.get("selector"), context)
+        if not isinstance(selector, str) or not selector.strip():
+            return _failed_result(node, "browser.selector_required", "selector is required")
+        target = _require_browser_target(context)
+        target.locator(selector).uncheck()
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "selector": selector,
+            "page_url": _require_browser_page(context).url,
+        }
+
+    def _execute_browser_set_input_files(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        selector = _resolve_value(node_config.get("selector"), context)
+        path_value = _resolve_value(node_config.get("path"), context)
+        if not isinstance(selector, str) or not selector.strip():
+            return _failed_result(node, "browser.selector_required", "selector is required")
+        if not isinstance(path_value, str) or not path_value.strip():
+            return _failed_result(node, "browser.path_required", "path is required")
+        resolved_path = _resolve_runtime_path(path_value, context)
+        if not resolved_path.exists():
+            return _failed_result(node, "browser.file_not_found", f"input file does not exist: {resolved_path}")
+        target = _require_browser_target(context)
+        target.locator(selector).set_input_files(str(resolved_path))
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "selector": selector,
+            "path": str(resolved_path.resolve()),
+            "page_url": _require_browser_page(context).url,
+        }
+
     def _execute_browser_click(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
         selector = _resolve_value(node_config.get("selector"), context)
@@ -372,6 +431,67 @@ class RuntimeExecutorRegistry:
             "timeout_ms": timeout_ms,
         }
 
+    def _execute_browser_go_back(self, node: dict, context: RuntimeContext) -> dict:
+        page = _require_browser_page(context)
+        response = page.go_back(wait_until="domcontentloaded")
+        _reset_browser_frame_context(context)
+        context.variables["last_browser_url"] = page.url
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "page_url": page.url,
+            "title": page.title(),
+            "navigated": response is not None,
+        }
+
+    def _execute_browser_go_forward(self, node: dict, context: RuntimeContext) -> dict:
+        page = _require_browser_page(context)
+        response = page.go_forward(wait_until="domcontentloaded")
+        _reset_browser_frame_context(context)
+        context.variables["last_browser_url"] = page.url
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "page_url": page.url,
+            "title": page.title(),
+            "navigated": response is not None,
+        }
+
+    def _execute_browser_refresh(self, node: dict, context: RuntimeContext) -> dict:
+        page = _require_browser_page(context)
+        page.reload(wait_until="domcontentloaded")
+        _reset_browser_frame_context(context)
+        context.variables["last_browser_url"] = page.url
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "page_url": page.url,
+            "title": page.title(),
+            "bypass_cache": False,
+        }
+
+    def _execute_browser_refresh_no_cache(self, node: dict, context: RuntimeContext) -> dict:
+        page = _require_browser_page(context)
+        page.evaluate(
+            """
+            () => {
+              const currentUrl = window.location.href;
+              const marker = currentUrl.includes('?') ? '&' : '?';
+              window.location.replace(`${currentUrl}${marker}weconduct_no_cache=${Date.now()}`);
+            }
+            """
+        )
+        page.wait_for_load_state("domcontentloaded")
+        _reset_browser_frame_context(context)
+        context.variables["last_browser_url"] = page.url
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "page_url": page.url,
+            "title": "",
+            "bypass_cache": True,
+        }
+
     def _execute_browser_screenshot(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
         path_value = _resolve_value(node_config.get("path"), context)
@@ -418,6 +538,58 @@ class RuntimeExecutorRegistry:
             "script_length": len(script),
             "value": value,
             "page_url": _require_browser_page(context).url,
+        }
+
+    def _execute_browser_get_local_storage(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        key = _resolve_value(node_config.get("key"), context)
+        if not isinstance(key, str) or not key.strip():
+            return _failed_result(
+                node,
+                "browser.local_storage_key_required",
+                "localStorage key is required",
+            )
+        target = _require_browser_target(context)
+        value = target.evaluate(
+            "(storageKey) => window.localStorage.getItem(storageKey)",
+            key.strip(),
+        )
+        if value is None:
+            value = _resolve_value(node_config.get("default_value"), context)
+        _store_optional_variable(node_config, context, value)
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "key": key.strip(),
+            "value": value,
+            "page_url": _require_browser_page(context).url,
+        }
+
+    def _execute_time_get_current_time(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        format_name = _resolve_value(node_config.get("format") or "iso", context)
+        timezone_name = _resolve_value(node_config.get("timezone") or "utc", context)
+        normalized_timezone = (
+            timezone_name.strip().lower()
+            if isinstance(timezone_name, str) and timezone_name.strip()
+            else "utc"
+        )
+        tzinfo = timezone.utc if normalized_timezone == "utc" else datetime.now().astimezone().tzinfo
+        now = datetime.now(tzinfo)
+        if format_name == "timestamp":
+            value: Any = int(now.timestamp())
+        elif format_name == "timestamp_ms":
+            value = int(now.timestamp() * 1000)
+        else:
+            format_name = "iso"
+            value = now.isoformat()
+        _store_optional_variable(_node_config(node), context, value)
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "value": value,
+            "format": format_name,
+            "timezone": normalized_timezone,
         }
 
     def _execute_browser_recognize_captcha(self, node: dict, context: RuntimeContext) -> dict:
