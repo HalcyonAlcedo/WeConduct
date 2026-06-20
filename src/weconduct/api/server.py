@@ -146,10 +146,15 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             result = service.get_project_documents_document()
             self._write_json(
                 HTTPStatus.OK,
-                {
-                    "main_graph_document_id": result["main_graph_document_id"],
-                    "documents": result["documents"],
-                },
+                result,
+            )
+            return
+
+        if self.path == "/api/workbench/project/resource-audit":
+            result = service.get_project_resource_audit_document()
+            self._write_json(
+                HTTPStatus.OK,
+                result,
             )
             return
 
@@ -915,6 +920,52 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 if not resource_id:
                     raise ValueError("resource_id must not be empty")
                 result = service.update_resource_tags(resource_id=resource_id, tags=tags)
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "status": result["status"],
+                    "registry_revision": result["registry_revision"],
+                    "resource": result["resource"],
+                },
+            )
+            return
+
+        if self.path == "/api/workbench/resources/delete":
+            try:
+                payload = self._read_json_request_body()
+                resource_id = payload.get("resource_id")
+                if not isinstance(resource_id, str) or not resource_id.strip():
+                    raise ValueError("field must be a non-empty string: resource_id")
+                result = service.delete_resource(resource_id=resource_id.strip())
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "status": result["status"],
+                    "registry_revision": result["registry_revision"],
+                    "resource": result["resource"],
+                },
+            )
+            return
+
+        if self.path == "/api/workbench/resources/rename":
+            try:
+                payload = self._read_json_request_body()
+                resource_id = payload.get("resource_id")
+                if not isinstance(resource_id, str) or not resource_id.strip():
+                    raise ValueError("field must be a non-empty string: resource_id")
+                display_name = payload.get("display_name")
+                if not isinstance(display_name, str) or not display_name.strip():
+                    raise ValueError("field must be a non-empty string: display_name")
+                result = service.rename_resource(
+                    resource_id=resource_id.strip(),
+                    display_name=display_name.strip(),
+                )
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
                 return

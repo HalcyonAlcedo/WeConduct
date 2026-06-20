@@ -43,6 +43,94 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             },
         },
     },
+    "component.input": {
+        "lowered_kind": "execution",
+        "expansion_role": "component:input",
+        "ports": [
+            {
+                "port_id": "out",
+                "direction": "output",
+                "relation_layer": "data",
+                "semantic_slot": "component.input.value",
+            },
+        ],
+        "node_config": {
+            "name": "",
+            "required": False,
+            "value_type": "string",
+            "default_value": None,
+            "description": "",
+        },
+        "parameter_schema": {
+            "name": {
+                "type": "string",
+                "required": True,
+                "editor_kind": "text",
+                "path_kind": None,
+            },
+            "required": {
+                "type": "boolean",
+                "required": False,
+                "editor_kind": "boolean",
+                "path_kind": None,
+            },
+            "value_type": {
+                "type": "string",
+                "required": True,
+                "editor_kind": "select",
+                "path_kind": None,
+            },
+            "default_value": {
+                "type": "object",
+                "required": False,
+                "editor_kind": "json",
+                "path_kind": None,
+            },
+            "description": {
+                "type": "string",
+                "required": False,
+                "editor_kind": "textarea",
+                "path_kind": None,
+            },
+        },
+    },
+    "component.output": {
+        "lowered_kind": "execution",
+        "expansion_role": "component:output",
+        "ports": [
+            {
+                "port_id": "in",
+                "direction": "input",
+                "relation_layer": "data",
+                "semantic_slot": "component.output.value",
+            },
+        ],
+        "node_config": {
+            "name": "",
+            "value_type": "string",
+            "description": "",
+        },
+        "parameter_schema": {
+            "name": {
+                "type": "string",
+                "required": True,
+                "editor_kind": "text",
+                "path_kind": None,
+            },
+            "value_type": {
+                "type": "string",
+                "required": True,
+                "editor_kind": "select",
+                "path_kind": None,
+            },
+            "description": {
+                "type": "string",
+                "required": False,
+                "editor_kind": "textarea",
+                "path_kind": None,
+            },
+        },
+    },
     "control.if": {
         "lowered_kind": "control",
         "expansion_role": "control:if",

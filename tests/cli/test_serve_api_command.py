@@ -41,7 +41,7 @@ def test_cli_serve_api_starts_server_and_prints_runtime_binding(tmp_path: Path) 
     try:
         startup_line = process.stdout.readline().strip()
 
-        assert "WeConduct API server listening on http://127.0.0.1:" in startup_line
+        assert "WeConduct server listening on http://127.0.0.1:" in startup_line
         assert str(workspace_state_path) in startup_line
         assert str(ui_dist_path) in startup_line
     finally:

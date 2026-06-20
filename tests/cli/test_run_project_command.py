@@ -6,7 +6,7 @@ from weconduct.application import CompilationWorkbenchService
 from weconduct.cli import main as cli_main
 
 
-def _build_python_project_file(project_path: Path) -> None:
+def _build_project_file(project_path: Path) -> None:
     service = CompilationWorkbenchService()
     service.create_project(project_name="CLI Run Project Smoke")
     service.save_graph_document(
@@ -16,14 +16,16 @@ def _build_python_project_file(project_path: Path) -> None:
             "graph_schema_version": "graph-v1",
             "nodes": [
                 {
-                    "node_id": "node-python",
+                    "node_id": "node-batch",
                     "lowered_kind": "execution",
-                    "source_anchor_ref": "n-python",
-                    "expansion_role": "action:run_python",
-                    "display_name": "Run Python",
-                    "node_kind": "python.run",
+                    "source_anchor_ref": "n-batch",
+                    "expansion_role": "action:set_variables_batch",
+                    "display_name": "Set Variables Batch",
+                    "node_kind": "data.set_variables_batch",
                     "node_config": {
-                        "code": "result = 42\nresult_variable = 'answer'\n",
+                        "variables": {
+                            "answer": 42,
+                        },
                     },
                     "position": {"x": 120, "y": 80},
                 }
@@ -41,7 +43,7 @@ def test_cli_run_project_opens_project_file_and_executes_runtime(
     capsys,
 ) -> None:
     project_path = tmp_path / "cli-run-project.weconduct.json"
-    _build_python_project_file(project_path)
+    _build_project_file(project_path)
 
     monkeypatch.setattr(
         sys,
@@ -61,8 +63,9 @@ def test_cli_run_project_opens_project_file_and_executes_runtime(
     assert payload["project"]["project_name"] == "CLI Run Project Smoke"
     assert payload["runtime_session"]["status"] == "completed"
     assert payload["result"]["status"] == "succeeded"
-    assert payload["result"]["outputs"]["node-python"]["result"] == 42
     assert payload["result"]["variables"]["answer"] == 42
+    assert payload["result"]["outputs"]["node-batch"]["variable_names"] == ["answer"]
+    assert payload["node_states"][0]["input_snapshot"] == {"variables": {"answer": 42}}
     assert payload["execution_summary"]["status"] == "succeeded"
     assert payload["execution_summary"]["node_status_counts"]["completed"] == 1
     assert payload["runtime_preview_summary"]["scheduler_mode"] == "legacy_sequence"

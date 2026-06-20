@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler
 from socketserver import TCPServer
 import urllib.parse
 from openpyxl import Workbook, load_workbook
+import pytest
 
 from weconduct.application import CompilationWorkbenchService
 from weconduct.application.workspace_state_store import InMemoryWorkspaceStateStore
@@ -276,7 +277,7 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert snapshot["entrypoints"]["graph_source_projection"] == "/api/workbench/graph/source-projection"
     assert snapshot["workbench"]["host_mode"] == "python_core"
-    assert snapshot["workbench"]["api_version"] == "0.4.0"
+    assert snapshot["workbench"]["api_version"] == "0.4.1"
     assert snapshot["compiler"]["available_source_kinds"] == [
         "graph_workspace",
         "native_flow",
@@ -990,6 +991,1003 @@ def test_service_can_save_custom_node_graph_resource_and_expose_it_in_registry()
         and item["display_name"] == "Greeting Graph"
         for item in registry
     )
+
+
+def test_service_builds_component_boundary_node_drafts() -> None:
+    service = CompilationWorkbenchService()
+
+    component_input = service.build_graph_node_draft(resource_key="component.input")
+    component_output = service.build_graph_node_draft(resource_key="component.output")
+
+    assert component_input["node"]["node_kind"] == "component.input"
+    assert component_output["node"]["node_kind"] == "component.output"
+    assert component_input["node"]["node_config"] == {
+        "name": "",
+        "required": False,
+        "value_type": "string",
+        "default_value": None,
+        "description": "",
+    }
+    assert component_output["node"]["node_config"] == {
+        "name": "",
+        "value_type": "string",
+        "description": "",
+    }
+    assert component_input["parameter_schema"] == {
+        "name": {
+            "type": "string",
+            "required": True,
+            "editor_kind": "text",
+            "path_kind": None,
+        },
+        "required": {
+            "type": "boolean",
+            "required": False,
+            "editor_kind": "boolean",
+            "path_kind": None,
+        },
+        "value_type": {
+            "type": "string",
+            "required": True,
+            "editor_kind": "select",
+            "path_kind": None,
+        },
+        "default_value": {
+            "type": "object",
+            "required": False,
+            "editor_kind": "json",
+            "path_kind": None,
+        },
+        "description": {
+            "type": "string",
+            "required": False,
+            "editor_kind": "textarea",
+            "path_kind": None,
+        },
+    }
+    assert component_output["parameter_schema"] == {
+        "name": {
+            "type": "string",
+            "required": True,
+            "editor_kind": "text",
+            "path_kind": None,
+        },
+        "value_type": {
+            "type": "string",
+            "required": True,
+            "editor_kind": "select",
+            "path_kind": None,
+        },
+        "description": {
+            "type": "string",
+            "required": False,
+            "editor_kind": "textarea",
+            "path_kind": None,
+        },
+    }
+
+
+def test_service_builds_custom_node_graph_instance_draft_from_resource_schema() -> None:
+    service = CompilationWorkbenchService()
+    component_input = service.build_graph_node_draft(resource_key="component.input")
+    component_output = service.build_graph_node_draft(resource_key="component.output")
+
+    component_input["node"]["node_id"] = "node-component-input-1"
+    component_input["node"]["source_anchor_ref"] = "n-node-component-input-1"
+    component_input["node"]["node_config"] = {
+        "name": "username",
+        "value_type": "string",
+        "required": True,
+        "default_value": "alice",
+        "description": "登录用户名",
+    }
+    password_input = service.build_graph_node_draft(resource_key="component.input")
+    password_input["node"]["node_id"] = "node-component-input-2"
+    password_input["node"]["source_anchor_ref"] = "n-node-component-input-2"
+    password_input["node"]["node_config"] = {
+        "name": "password",
+        "value_type": "string",
+        "required": True,
+        "description": "登录密码",
+    }
+    component_output["node"]["node_id"] = "node-component-output-1"
+    component_output["node"]["source_anchor_ref"] = "n-node-component-output-1"
+    component_output["node"]["node_config"] = {
+        "name": "token",
+        "value_type": "string",
+        "required": False,
+        "description": "登录令牌",
+    }
+    expires_output = service.build_graph_node_draft(resource_key="component.output")
+    expires_output["node"]["node_id"] = "node-component-output-2"
+    expires_output["node"]["source_anchor_ref"] = "n-node-component-output-2"
+    expires_output["node"]["node_config"] = {
+        "name": "expires_at",
+        "value_type": "string",
+        "required": False,
+        "description": "过期时间",
+    }
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:custom-node-graph",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                component_input["node"],
+                password_input["node"],
+                component_output["node"],
+                expires_output["node"],
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Login Graph")
+
+    draft = service.build_graph_node_draft(resource_key=saved["resource"]["resource_key"])
+
+    assert draft["resource"]["resource_type"] == "custom_node_graph"
+    assert draft["node"]["node_kind"] == saved["resource"]["resource_key"]
+    assert draft["node"]["expansion_role"] == "action:custom_node_graph"
+    assert draft["node"]["node_config"] == {
+        "inputs": {
+            "username": "alice",
+            "password": "",
+        },
+        "outputs": {
+            "token": "token",
+            "expires_at": "expires_at",
+        },
+    }
+    assert draft["parameter_schema"] == {
+        "inputs": {
+            "type": "object",
+            "properties": {
+                "username": {
+                    "type": "string",
+                    "required": True,
+                    "default_value": "alice",
+                    "description": "登录用户名",
+                },
+                "password": {
+                    "type": "string",
+                    "required": True,
+                    "description": "登录密码",
+                },
+            },
+        },
+        "outputs": {
+            "type": "object",
+            "properties": {
+                "token": {
+                    "type": "string",
+                    "required": False,
+                    "description": "登录令牌",
+                },
+                "expires_at": {
+                    "type": "string",
+                    "required": False,
+                    "description": "过期时间",
+                },
+            },
+        },
+    }
+
+
+def test_service_builds_custom_node_graph_instance_draft_uses_type_compatible_defaults() -> None:
+    service = CompilationWorkbenchService()
+
+    number_input = service.build_graph_node_draft(resource_key="component.input")
+    number_input["node"]["node_id"] = "node-component-input-number"
+    number_input["node"]["source_anchor_ref"] = "n-node-component-input-number"
+    number_input["node"]["node_config"] = {
+        "name": "retry_count",
+        "value_type": "number",
+        "required": True,
+        "description": "重试次数",
+    }
+    boolean_input = service.build_graph_node_draft(resource_key="component.input")
+    boolean_input["node"]["node_id"] = "node-component-input-boolean"
+    boolean_input["node"]["source_anchor_ref"] = "n-node-component-input-boolean"
+    boolean_input["node"]["node_config"] = {
+        "name": "enabled",
+        "value_type": "boolean",
+        "required": False,
+        "description": "是否启用",
+    }
+    array_input = service.build_graph_node_draft(resource_key="component.input")
+    array_input["node"]["node_id"] = "node-component-input-array"
+    array_input["node"]["source_anchor_ref"] = "n-node-component-input-array"
+    array_input["node"]["node_config"] = {
+        "name": "tags",
+        "value_type": "array",
+        "required": False,
+        "description": "标签列表",
+    }
+    object_input = service.build_graph_node_draft(resource_key="component.input")
+    object_input["node"]["node_id"] = "node-component-input-object"
+    object_input["node"]["source_anchor_ref"] = "n-node-component-input-object"
+    object_input["node"]["node_config"] = {
+        "name": "options",
+        "value_type": "object",
+        "required": False,
+        "description": "额外配置",
+    }
+    component_output = service.build_graph_node_draft(resource_key="component.output")
+    component_output["node"]["node_id"] = "node-component-output-typed-defaults"
+    component_output["node"]["source_anchor_ref"] = "n-node-component-output-typed-defaults"
+    component_output["node"]["node_config"] = {
+        "name": "result",
+        "value_type": "string",
+        "description": "输出结果",
+    }
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:custom-node-graph",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                number_input["node"],
+                boolean_input["node"],
+                array_input["node"],
+                object_input["node"],
+                component_output["node"],
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Typed Default Graph")
+
+    draft = service.build_graph_node_draft(resource_key=saved["resource"]["resource_key"])
+    inputs = draft["node"]["node_config"]["inputs"]
+
+    assert inputs["retry_count"] == 0
+    assert inputs["enabled"] is False
+    assert inputs["tags"] == []
+    assert inputs["options"] == {}
+
+    validation_result = service.validate_graph_document(
+        {
+            "graph_model_id": "graph:typed-default-validation",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [draft["node"]],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    categories = [item["category"] for item in validation_result["diagnostics"]]
+
+    assert "custom_node_graph.input_mapping_type_mismatch" not in categories
+
+
+def test_service_builds_custom_node_graph_instance_draft_preserves_explicit_non_string_defaults() -> None:
+    service = CompilationWorkbenchService()
+
+    number_default = 3.5
+    boolean_default = True
+    array_default = ["alpha", {"nested": ["beta"]}]
+    object_default = {"enabled": True, "limits": {"retry": 2}}
+
+    number_input = service.build_graph_node_draft(resource_key="component.input")
+    number_input["node"]["node_id"] = "node-component-input-explicit-number"
+    number_input["node"]["source_anchor_ref"] = "n-node-component-input-explicit-number"
+    number_input["node"]["node_config"] = {
+        "name": "threshold",
+        "value_type": "number",
+        "required": True,
+        "description": "阈值",
+        "default_value": number_default,
+    }
+    boolean_input = service.build_graph_node_draft(resource_key="component.input")
+    boolean_input["node"]["node_id"] = "node-component-input-explicit-boolean"
+    boolean_input["node"]["source_anchor_ref"] = "n-node-component-input-explicit-boolean"
+    boolean_input["node"]["node_config"] = {
+        "name": "enabled",
+        "value_type": "boolean",
+        "required": False,
+        "description": "开关",
+        "default_value": boolean_default,
+    }
+    array_input = service.build_graph_node_draft(resource_key="component.input")
+    array_input["node"]["node_id"] = "node-component-input-explicit-array"
+    array_input["node"]["source_anchor_ref"] = "n-node-component-input-explicit-array"
+    array_input["node"]["node_config"] = {
+        "name": "tags",
+        "value_type": "array",
+        "required": False,
+        "description": "标签",
+        "default_value": array_default,
+    }
+    object_input = service.build_graph_node_draft(resource_key="component.input")
+    object_input["node"]["node_id"] = "node-component-input-explicit-object"
+    object_input["node"]["source_anchor_ref"] = "n-node-component-input-explicit-object"
+    object_input["node"]["node_config"] = {
+        "name": "options",
+        "value_type": "object",
+        "required": False,
+        "description": "配置",
+        "default_value": object_default,
+    }
+    component_output = service.build_graph_node_draft(resource_key="component.output")
+    component_output["node"]["node_id"] = "node-component-output-explicit-defaults"
+    component_output["node"]["source_anchor_ref"] = "n-node-component-output-explicit-defaults"
+    component_output["node"]["node_config"] = {
+        "name": "result",
+        "value_type": "string",
+        "description": "输出结果",
+    }
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:custom-node-graph-explicit-defaults",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                number_input["node"],
+                boolean_input["node"],
+                array_input["node"],
+                object_input["node"],
+                component_output["node"],
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Explicit Default Graph")
+
+    draft = service.build_graph_node_draft(resource_key=saved["resource"]["resource_key"])
+    inputs = draft["node"]["node_config"]["inputs"]
+    input_schema = saved["resource"]["input_schema"]
+
+    assert inputs["threshold"] == number_default
+    assert isinstance(inputs["threshold"], float)
+    assert inputs["enabled"] is boolean_default
+    assert isinstance(inputs["enabled"], bool)
+    assert inputs["tags"] == array_default
+    assert inputs["options"] == object_default
+    assert inputs["tags"] is not array_default
+    assert inputs["options"] is not object_default
+    assert inputs["tags"] is not input_schema["tags"]["default_value"]
+    assert inputs["options"] is not input_schema["options"]["default_value"]
+
+    inputs["tags"].append("draft-only")
+    inputs["tags"][1]["nested"].append("draft-nested")
+    inputs["options"]["limits"]["timeout"] = 30
+
+    assert array_default == ["alpha", {"nested": ["beta"]}]
+    assert object_default == {"enabled": True, "limits": {"retry": 2}}
+    assert input_schema["tags"]["default_value"] == ["alpha", {"nested": ["beta"]}]
+    assert input_schema["options"]["default_value"] == {"enabled": True, "limits": {"retry": 2}}
+
+
+def test_service_build_graph_node_draft_rejects_compatibility_only_nodes() -> None:
+    service = CompilationWorkbenchService()
+
+    with pytest.raises(ValueError, match="compatibility-only resource cannot be created directly"):
+        service.build_graph_node_draft(resource_key="graph.call_subgraph")
+
+    with pytest.raises(ValueError, match="compatibility-only resource cannot be created directly"):
+        service.build_graph_node_draft(resource_key="call_blueprint")
+
+
+def test_service_normalizes_legacy_call_nodes_to_custom_node_graph_instances_on_open(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "legacy-call-open.weconduct.json"
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:blueprint-source",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "root_metadata": {
+                "blueprint_info": {"id": "bp-login"},
+                "input_schema": {
+                    "username": {"type": "string", "required": True},
+                },
+                "output_schema": {
+                    "token": {"type": "string"},
+                },
+            },
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    component_resource = service.save_custom_node_graph_resource(resource_name="Blueprint Login")
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:subgraph-source",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "root_metadata": {
+                "input_schema": {
+                    "query": {"type": "string", "required": False, "default_value": "all"},
+                },
+                "output_schema": {
+                    "rows": {"type": "array"},
+                },
+            },
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    subgraph_resource = service.save_custom_node_graph_resource(resource_name="Subgraph Search")
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "legacy-blueprint",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-legacy-blueprint",
+                    "expansion_role": "module:component",
+                    "display_name": "Legacy Blueprint",
+                    "node_kind": "call_blueprint",
+                    "node_config": {
+                        "blueprint_id": "bp-login",
+                        "inputs": {"username": "${vars.username}"},
+                        "outputs": {"token": "auth_token"},
+                    },
+                    "ports": [],
+                },
+                {
+                    "node_id": "legacy-subgraph",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-legacy-subgraph",
+                    "expansion_role": "module:component",
+                    "display_name": "Legacy Subgraph",
+                    "node_kind": "graph.call_subgraph",
+                    "node_config": {
+                        "subgraph_id": subgraph_resource["resource"]["resource_key"],
+                        "inputs": {"query": "${vars.query}"},
+                        "outputs": {"rows": "result_rows"},
+                    },
+                    "ports": [],
+                },
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    service.save_project_as(project_path=str(project_path))
+
+    reopened = CompilationWorkbenchService()
+    opened = reopened.open_project(project_path=str(project_path))
+    graph_nodes = {node.node_id: node for node in opened["graph_document"].nodes}
+
+    blueprint_node = graph_nodes["legacy-blueprint"]
+    assert blueprint_node.node_kind == component_resource["resource"]["resource_key"]
+    assert blueprint_node.expansion_role == "action:custom_node_graph"
+    assert blueprint_node.node_config == {
+        "inputs": {"username": "${vars.username}"},
+        "outputs": {"token": "auth_token"},
+    }
+
+    subgraph_node = graph_nodes["legacy-subgraph"]
+    assert subgraph_node.node_kind == subgraph_resource["resource"]["resource_key"]
+    assert subgraph_node.expansion_role == "action:custom_node_graph"
+    assert subgraph_node.node_config == {
+        "inputs": {"query": "${vars.query}"},
+        "outputs": {"rows": "result_rows"},
+    }
+
+
+def test_service_save_custom_node_graph_extracts_schema_from_boundary_nodes(tmp_path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "boundary.weconduct.json"
+
+    component_input = service.build_graph_node_draft(resource_key="component.input")
+    component_output = service.build_graph_node_draft(resource_key="component.output")
+    component_input["node"]["node_config"] = {
+        "name": "text",
+        "required": True,
+        "value_type": "string",
+        "default_value": "hello",
+        "description": "input text",
+    }
+    component_output["node"]["node_config"] = {
+        "name": "result",
+        "value_type": "string",
+        "description": "output text",
+    }
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:custom-node-graph",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                component_input["node"],
+                component_output["node"],
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    saved = service.save_custom_node_graph_resource(resource_name="Boundary Graph")
+    service.save_project_as(project_path=str(project_path))
+
+    storage_root = project_path.parent / f"{project_path.stem}.data"
+    index_payload = json.loads((storage_root / "resources" / "index.json").read_text(encoding="utf-8"))
+    resource_ref = next(
+        item for item in index_payload["resources"] if item["resource_id"] == saved["resource"]["resource_id"]
+    )
+    manifest_payload = json.loads(
+        (project_path.parent / Path(resource_ref["manifest_path"])).read_text(encoding="utf-8")
+    )
+
+    assert saved["resource"]["input_schema"]["text"]["type"] == "string"
+    assert saved["resource"]["input_schema"]["text"]["required"] is True
+    assert saved["resource"]["input_schema"]["text"]["default_value"] == "hello"
+    assert saved["resource"]["input_schema"]["text"]["description"] == "input text"
+    assert saved["resource"]["output_schema"]["result"]["type"] == "string"
+    assert saved["resource"]["output_schema"]["result"]["description"] == "output text"
+    assert manifest_payload["input_schema"] == saved["resource"]["input_schema"]
+    assert manifest_payload["output_schema"] == saved["resource"]["output_schema"]
+
+
+def test_service_save_custom_node_graph_falls_back_to_root_metadata_only_without_boundary_nodes() -> None:
+    service = CompilationWorkbenchService()
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:custom-node-graph",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "root_metadata": {
+                "input_schema": {
+                    "legacy_input": {"type": "string", "required": True},
+                },
+                "output_schema": {
+                    "legacy_output": {"type": "number"},
+                },
+            },
+            "nodes": [
+                {
+                    "node_id": "node-1",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-node-1",
+                    "expansion_role": "action:set_variable",
+                    "display_name": "Set Value",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "message", "value": "hello"},
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    fallback_saved = service.save_custom_node_graph_resource(resource_name="Legacy Metadata Graph")
+
+    assert fallback_saved["resource"]["input_schema"] == {
+        "legacy_input": {"type": "string", "required": True},
+    }
+    assert fallback_saved["resource"]["output_schema"] == {
+        "legacy_output": {"type": "number"},
+    }
+
+    component_input = service.build_graph_node_draft(resource_key="component.input")
+    component_input["node"]["node_config"] = {
+        "name": "text",
+        "required": True,
+        "value_type": "string",
+        "default_value": None,
+        "description": "",
+    }
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:custom-node-graph",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "root_metadata": {
+                "input_schema": {
+                    "legacy_input": {"type": "string", "required": True},
+                },
+                "output_schema": {
+                    "legacy_output": {"type": "number"},
+                },
+            },
+            "nodes": [
+                component_input["node"],
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    boundary_saved = service.save_custom_node_graph_resource(resource_name="Boundary Only Input Graph")
+
+    assert boundary_saved["resource"]["input_schema"] == {
+        "text": {
+            "type": "string",
+            "required": True,
+            "default_value": None,
+            "description": "",
+        }
+    }
+    assert boundary_saved["resource"]["output_schema"] == {}
+
+
+def test_service_save_custom_node_graph_ignores_invalid_boundary_nodes_and_falls_back_to_root_metadata() -> None:
+    service = CompilationWorkbenchService()
+
+    component_input = service.build_graph_node_draft(resource_key="component.input")
+    component_output = service.build_graph_node_draft(resource_key="component.output")
+    component_input["node"]["node_config"] = {
+        "name": "   ",
+        "required": True,
+        "value_type": "string",
+        "default_value": "hello",
+        "description": "invalid input",
+    }
+    component_output["node"]["node_config"] = {
+        "name": "",
+        "value_type": "number",
+        "description": "invalid output",
+    }
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:custom-node-graph",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "root_metadata": {
+                "input_schema": {
+                    "legacy_input": {"type": "string", "required": True},
+                },
+                "output_schema": {
+                    "legacy_output": {"type": "number"},
+                },
+            },
+            "nodes": [
+                component_input["node"],
+                component_output["node"],
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    saved = service.save_custom_node_graph_resource(resource_name="Invalid Boundary Graph")
+
+    assert saved["resource"]["input_schema"] == {
+        "legacy_input": {"type": "string", "required": True},
+    }
+    assert saved["resource"]["output_schema"] == {
+        "legacy_output": {"type": "number"},
+    }
+
+
+def test_service_validates_boundary_derived_custom_node_graph_input_type_mismatch() -> None:
+    service = CompilationWorkbenchService()
+
+    component_input = service.build_graph_node_draft(resource_key="component.input")
+    component_output = service.build_graph_node_draft(resource_key="component.output")
+    component_input["node"]["node_config"] = {
+        "name": "text",
+        "required": True,
+        "value_type": "string",
+        "default_value": None,
+        "description": "input text",
+    }
+    component_output["node"]["node_config"] = {
+        "name": "result",
+        "value_type": "string",
+        "description": "output text",
+    }
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:custom-node-graph",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                component_input["node"],
+                component_output["node"],
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Typed Boundary Graph")
+
+    graph_document = {
+        "graph_model_id": "graph:validation",
+        "compilation_id": None,
+        "graph_schema_version": "graph-v1",
+        "nodes": [
+            {
+                "node_id": "node-1",
+                "lowered_kind": "execution",
+                "source_anchor_ref": "n-node-1",
+                "expansion_role": "action:custom_node_graph",
+                "display_name": "Typed Boundary Graph",
+                "node_kind": saved["resource"]["resource_id"],
+                "node_config": {
+                    "inputs": {"text": 123},
+                    "outputs": {},
+                },
+                "ports": [],
+            }
+        ],
+        "edges": [],
+        "graph_effective_diagnostic_anchor_refs": [],
+    }
+
+    result = service.validate_graph_document(graph_document)
+    categories = [item["category"] for item in result["diagnostics"]]
+
+    assert "custom_node_graph.input_mapping_type_mismatch" in categories
+
+
+def test_service_revalidates_custom_node_graph_instances_after_resource_schema_changes() -> None:
+    service = CompilationWorkbenchService()
+
+    username_input = service.build_graph_node_draft(resource_key="component.input")
+    username_input["node"]["node_id"] = "node-component-input-username"
+    username_input["node"]["source_anchor_ref"] = "n-node-component-input-username"
+    username_input["node"]["node_config"] = {
+        "name": "username",
+        "value_type": "string",
+        "required": False,
+        "default_value": "alice",
+        "description": "用户名",
+    }
+    token_output = service.build_graph_node_draft(resource_key="component.output")
+    token_output["node"]["node_id"] = "node-component-output-token"
+    token_output["node"]["source_anchor_ref"] = "n-node-component-output-token"
+    token_output["node"]["node_config"] = {
+        "name": "token",
+        "value_type": "string",
+        "required": False,
+        "description": "令牌",
+    }
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:resource-login-v1",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                username_input["node"],
+                token_output["node"],
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Login Graph")
+
+    instance_draft = service.build_graph_node_draft(resource_key=saved["resource"]["resource_key"])
+    instance_node = instance_draft["node"]
+    instance_node["node_id"] = "node-custom-graph-instance"
+    instance_node["source_anchor_ref"] = "n-node-custom-graph-instance"
+    instance_node["display_name"] = "Login Graph Instance"
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [instance_node],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    clean_snapshot = service.get_workbench_snapshot()
+    assert clean_snapshot["graph_workspace"]["validation_summary"]["status"] == "valid"
+    assert clean_snapshot["graph_workspace"]["validation_summary"]["error_count"] == 0
+    assert clean_snapshot["graph_workspace"]["validation_diagnostics"] == []
+
+    password_input = service.build_graph_node_draft(resource_key="component.input")
+    password_input["node"]["node_id"] = "node-component-input-password"
+    password_input["node"]["source_anchor_ref"] = "n-node-component-input-password"
+    password_input["node"]["node_config"] = {
+        "name": "password",
+        "value_type": "string",
+        "required": True,
+        "description": "密码",
+    }
+    retries_input = service.build_graph_node_draft(resource_key="component.input")
+    retries_input["node"]["node_id"] = "node-component-input-retries"
+    retries_input["node"]["source_anchor_ref"] = "n-node-component-input-retries"
+    retries_input["node"]["node_config"] = {
+        "name": "username",
+        "value_type": "number",
+        "required": False,
+        "default_value": 0,
+        "description": "用户名已改为数字类型",
+    }
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                password_input["node"],
+                retries_input["node"],
+                token_output["node"],
+                instance_node,
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    snapshot_before_resource_update = service.get_workbench_snapshot()
+    assert snapshot_before_resource_update["graph_workspace"]["validation_summary"]["status"] == "valid"
+
+    service.save_custom_node_graph_resource(
+        resource_name="Login Graph",
+        replace_existing_resource_id=saved["resource"]["resource_id"],
+    )
+
+    updated_snapshot = service.get_workbench_snapshot()
+    categories = [item["category"] for item in updated_snapshot["graph_workspace"]["validation_diagnostics"]]
+
+    assert updated_snapshot["graph_workspace"]["validation_summary"]["status"] == "invalid"
+    assert updated_snapshot["graph_workspace"]["validation_summary"]["error_count"] == 2
+    assert "custom_node_graph.input_mapping_missing_required" in categories
+    assert "custom_node_graph.input_mapping_type_mismatch" in categories
+
+
+def test_service_can_export_custom_node_graph_resource_directory(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+
+    text_input = service.build_graph_node_draft(resource_key="component.input")
+    text_input["node"]["node_id"] = "node-component-input-text"
+    text_input["node"]["source_anchor_ref"] = "n-node-component-input-text"
+    text_input["node"]["node_config"] = {
+        "name": "text",
+        "value_type": "string",
+        "required": True,
+        "default_value": None,
+        "description": "输入文本",
+    }
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [text_input["node"]],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Exportable Graph")
+    export_dir = tmp_path / "exported-graph"
+
+    exported = service.export_custom_node_graph_resource(
+        resource_id=saved["resource"]["resource_id"],
+        target_directory=export_dir,
+    )
+
+    assert (export_dir / "manifest.json").exists() is True
+    assert (export_dir / "graph.json").exists() is True
+    assert exported["resource"]["resource_id"] == saved["resource"]["resource_id"]
+
+
+def test_service_can_import_custom_node_graph_resource_directory_with_conflict_rename(
+    tmp_path: Path,
+) -> None:
+    exporter = CompilationWorkbenchService()
+    exporter.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = exporter.save_custom_node_graph_resource(resource_name="Shared Graph")
+    export_dir = tmp_path / "shared-graph"
+    exporter.export_custom_node_graph_resource(
+        resource_id=saved["resource"]["resource_id"],
+        target_directory=export_dir,
+    )
+
+    importer = CompilationWorkbenchService()
+    importer.import_resource_from_record(saved["resource"])
+
+    imported = importer.import_custom_node_graph_resource(
+        source_directory=export_dir,
+        conflict_policy="rename",
+    )
+    registry = importer.get_resource_registry_document()
+
+    assert imported["resource"]["resource_type"] == "custom_node_graph"
+    assert imported["resource"]["resource_id"] != saved["resource"]["resource_id"]
+    assert any(
+        item["resource_id"] == imported["resource"]["resource_id"]
+        for item in registry["resources"]
+    )
+
+
+def test_service_save_project_rewrites_legacy_user_component_as_custom_node_graph(
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "legacy-user-component.weconduct.json"
+    service = CompilationWorkbenchService()
+    legacy_project = {
+        "project_file_schema_version": 1,
+        "project": {
+            "project_id": "proj-legacy-user",
+            "project_name": "Legacy User",
+            "project_schema_version": "project-v1",
+        },
+        "graph_document": {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        },
+        "resource_registry": [
+            {
+                "resource_id": "user_component:legacy-echo",
+                "resource_key": "user_component:legacy-echo",
+                "resource_type": "user_component",
+                "origin": "project",
+                "implementation_kind": "project_component",
+                "display_name": "Legacy Echo",
+                "input_schema": {},
+                "output_schema": {},
+                "source_graph_document": {
+                    "graph_model_id": "graph:legacy-echo",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                },
+            }
+        ],
+    }
+    project_path.write_text(json.dumps(legacy_project, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    service.open_project(project_path=project_path)
+    service.save_project_as(project_path=project_path)
+
+    reopened = json.loads(project_path.read_text(encoding="utf-8"))
+    project_resource_refs = reopened.get("project_resource_refs", [])
+    assert any("custom-node-graphs" in item["source_ref"] for item in project_resource_refs)
+
+    storage_root = project_path.parent / f"{project_path.stem}.data"
+    resources_index = json.loads((storage_root / "resources" / "index.json").read_text(encoding="utf-8"))
+    resource_overrides = json.loads(
+        (storage_root / "resource-overrides.json").read_text(encoding="utf-8")
+    )
+    manifest_path = next(
+        item["manifest_path"]
+        for item in resources_index["resources"]
+        if item["display_name"] == "Legacy Echo"
+    )
+    manifest_payload = json.loads((project_path.parent / Path(manifest_path)).read_text(encoding="utf-8"))
+
+    resource_types = {item["resource_type"] for item in resources_index["resources"]}
+    assert resource_types == {"custom_node_graph"}
+    assert manifest_payload["resource_type"] == "custom_node_graph"
+    assert "custom_node_graph:legacy-echo" in resource_overrides["resources"]
+    assert "user_component:legacy-echo" not in resource_overrides["resources"]
 
 
 def test_service_validates_custom_node_graph_instance_and_reports_missing_resource() -> None:
@@ -1782,6 +2780,310 @@ def test_service_exposes_project_documents_index_and_component_library_view(tmp_
     assert any(item["display_name"] == "Library Component" for item in component_library["items"])
 
 
+def test_service_get_project_documents_document_exposes_split_project_layout(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "demo-project.weconduct.json"
+    service.create_project(project_name="Demo Project")
+    service.save_project_as(project_path=project_path)
+
+    documents = service.get_project_documents_document()
+
+    assert documents["project_file"]["project"]["project_resources_index_path"].endswith(
+        "demo-project.weconduct.data/resources/index.json"
+    )
+    assert documents["project_file"]["project"]["resource_overrides_path"].endswith(
+        "demo-project.weconduct.data/resource-overrides.json"
+    )
+    assert "resource_overrides" in documents
+    assert "project_owned_resources_index" in documents
+
+
+def test_service_can_delete_custom_node_graph_resource() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Disposable Graph")
+
+    deleted = service.delete_resource(resource_id=saved["resource"]["resource_id"])
+    registry = service.get_resource_registry_document()
+
+    assert deleted["status"] == "deleted"
+    assert all(
+        item["resource_id"] != saved["resource"]["resource_id"]
+        for item in registry["resources"]
+    )
+
+
+def test_service_can_rename_custom_node_graph_resource_display_name() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Old Name")
+
+    renamed = service.rename_resource(
+        resource_id=saved["resource"]["resource_id"],
+        display_name="New Name",
+    )
+
+    assert renamed["resource"]["resource_id"] == saved["resource"]["resource_id"]
+    assert renamed["resource"]["display_name"] == "New Name"
+
+
+def test_service_restore_pending_recovery_preserves_recent_projects(tmp_path: Path) -> None:
+    state_file = tmp_path / "workspace" / "state.json"
+    project_a_path = tmp_path / "project-a.weconduct.json"
+    project_b_path = tmp_path / "project-b.weconduct.json"
+
+    first_service = CompilationWorkbenchService(state_store=FileWorkspaceStateStore(state_file))
+    first_service.create_project(project_name="Project A")
+    first_service.save_project_as(project_path=project_a_path)
+    first_service.create_project(project_name="Project B")
+    first_service.save_project_as(project_path=project_b_path)
+    first_service.open_project(project_path=project_a_path)
+    first_service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    restored_service = CompilationWorkbenchService(state_store=FileWorkspaceStateStore(state_file))
+    restore_result = restored_service.restore_pending_recovery()
+    recent_projects = restored_service.get_recent_projects_document()
+
+    assert restore_result["status"] == "restored"
+    assert recent_projects["recent_projects"][0]["project_path"] == str(project_a_path.resolve())
+    assert recent_projects["recent_projects"][1]["project_path"] == str(project_b_path.resolve())
+
+
+def test_service_open_project_preserves_split_project_document_paths(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "path-preserve.weconduct.json"
+    service.create_project(project_name="Path Preserve")
+    service.save_project_as(project_path=project_path)
+
+    reopened_service = CompilationWorkbenchService()
+    reopened_service.open_project(project_path=project_path)
+    documents = reopened_service.get_project_documents_document()
+
+    assert documents["project_file"]["project"]["main_graph_path"].endswith(
+        "path-preserve.weconduct.data/graphs/workspace.graph.json"
+    )
+    assert documents["project_file"]["project"]["project_resources_index_path"].endswith(
+        "path-preserve.weconduct.data/resources/index.json"
+    )
+    assert documents["project_file"]["project"]["resource_overrides_path"].endswith(
+        "path-preserve.weconduct.data/resource-overrides.json"
+    )
+
+
+def test_service_save_project_after_delete_resource_removes_project_storage_artifacts(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "cleanup-project.weconduct.json"
+    service.create_project(project_name="Cleanup Project")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Delete Me")
+    service.save_project_as(project_path=project_path)
+    saved_documents = service.get_project_documents_document()
+    resource_ref = next(
+        item
+        for item in saved_documents["project_owned_resources_index"]["resources"]
+        if item["resource_id"] == saved["resource"]["resource_id"]
+    )
+    resource_directory = project_path.parent / resource_ref["source_ref"]
+
+    assert resource_directory.exists()
+
+    service.delete_resource(resource_id=saved["resource"]["resource_id"])
+    service.save_project()
+
+    saved_project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    index_payload = json.loads(
+        (project_path.parent / saved_project_payload["project"]["project_resources_index_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    overrides_payload = json.loads(
+        (project_path.parent / saved_project_payload["project"]["resource_overrides_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert all(
+        item["resource_id"] != saved["resource"]["resource_id"]
+        for item in saved_project_payload["project_resource_refs"]
+    )
+    assert all(
+        item["resource_id"] != saved["resource"]["resource_id"]
+        for item in index_payload["resources"]
+    )
+    assert saved["resource"]["resource_id"] not in overrides_payload["resources"]
+    assert not resource_directory.exists()
+
+
+def test_service_project_resource_audit_reports_missing_manifest_file(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "audit-project.weconduct.json"
+    service.create_project(project_name="Audit Project")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Audit Target")
+    service.save_project_as(project_path=project_path)
+    documents = service.get_project_documents_document()
+    resource_ref = next(
+        item
+        for item in documents["project_owned_resources_index"]["resources"]
+        if item["resource_id"] == saved["resource"]["resource_id"]
+    )
+    manifest_path = project_path.parent / resource_ref["manifest_path"]
+    manifest_path.unlink()
+
+    audit = service.get_project_resource_audit_document()
+
+    assert audit["status"] == "ready"
+    assert audit["summary"]["issue_count"] == 1
+    assert audit["issues"][0]["category"] == "project.resource.manifest_missing"
+    assert audit["issues"][0]["resource_id"] == saved["resource"]["resource_id"]
+    assert audit["resources"][0]["status"] == "manifest_missing"
+
+
+def test_service_save_project_after_rename_resource_persists_display_name_to_disk_and_reopen(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "rename-project.weconduct.json"
+    service.create_project(project_name="Rename Project")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Old Resource Name")
+    service.rename_resource(
+        resource_id=saved["resource"]["resource_id"],
+        display_name="Renamed Resource",
+    )
+    service.save_project_as(project_path=project_path)
+
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    index_payload = json.loads(
+        (project_path.parent / project_payload["project"]["project_resources_index_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    resource_ref = next(
+        item for item in index_payload["resources"] if item["resource_id"] == saved["resource"]["resource_id"]
+    )
+    manifest_payload = json.loads(
+        (project_path.parent / resource_ref["manifest_path"]).read_text(encoding="utf-8")
+    )
+
+    reopened_service = CompilationWorkbenchService()
+    reopened_service.open_project(project_path=project_path)
+    reopened_registry = reopened_service.get_resource_registry_document()
+    reopened_resource = next(
+        item
+        for item in reopened_registry["resources"]
+        if item["resource_id"] == saved["resource"]["resource_id"]
+    )
+
+    assert resource_ref["display_name"] == "Renamed Resource"
+    assert manifest_payload["display_name"] == "Renamed Resource"
+    assert manifest_payload["display_name_i18n"]["en-US"] == "Renamed Resource"
+    assert reopened_resource["display_name"] == "Renamed Resource"
+    assert reopened_resource["display_name_i18n"]["en-US"] == "Renamed Resource"
+
+
+def test_service_open_project_with_missing_resource_manifest_keeps_project_openable(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "missing-resource-project.weconduct.json"
+    service.create_project(project_name="Missing Resource Project")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Broken Resource")
+    service.save_project_as(project_path=project_path)
+    documents = service.get_project_documents_document()
+    resource_ref = next(
+        item
+        for item in documents["project_owned_resources_index"]["resources"]
+        if item["resource_id"] == saved["resource"]["resource_id"]
+    )
+    manifest_path = project_path.parent / resource_ref["manifest_path"]
+    manifest_path.unlink()
+
+    reopened = CompilationWorkbenchService()
+    opened = reopened.open_project(project_path=project_path)
+    audit = reopened.get_project_resource_audit_document()
+    registry = reopened.get_resource_registry_document()
+    reopened_resource = next(
+        item
+        for item in registry["resources"]
+        if item["resource_id"] == saved["resource"]["resource_id"]
+    )
+
+    assert opened["status"] == "opened"
+    assert audit["summary"]["issue_count"] == 1
+    assert audit["issues"][0]["category"] == "project.resource.manifest_missing"
+    assert reopened_resource["enabled"] is False
+    assert reopened_resource["resource_type"] == "custom_node_graph"
+
+
 def test_service_exposes_node_taxonomy_visibility_for_resources_and_component_library() -> None:
     service = CompilationWorkbenchService()
 
@@ -1914,7 +3216,6 @@ def test_service_builds_graph_node_drafts_for_builtin_resources() -> None:
     file_read_text = service.build_graph_node_draft(resource_key="file.read_text_file")
     excel_write_file = service.build_graph_node_draft(resource_key="excel.write_file")
     python_run = service.build_graph_node_draft(resource_key="python.run")
-    graph_call_subgraph = service.build_graph_node_draft(resource_key="graph.call_subgraph")
     control_foreach = service.build_graph_node_draft(resource_key="control.foreach")
 
     assert flow_start["resource"]["resource_key"] == "flow.start"
@@ -1952,6 +3253,12 @@ def test_service_builds_graph_node_drafts_for_builtin_resources() -> None:
             "direction": "input",
             "relation_layer": "control",
             "semantic_slot": "in.control",
+        },
+        {
+            "port_id": "repeat",
+            "direction": "input",
+            "relation_layer": "control",
+            "semantic_slot": "in.repeat",
         },
         {
             "port_id": "condition",
@@ -2089,11 +3396,6 @@ def test_service_builds_graph_node_drafts_for_builtin_resources() -> None:
         "rows": [],
     }
     assert python_run["node"]["node_config"] == {"code": ""}
-    assert graph_call_subgraph["node"]["node_config"] == {
-        "subgraph_id": "",
-        "inputs": {},
-        "outputs": {},
-    }
     assert control_foreach["node"]["node_config"] == {
         "variable": "",
         "item_var": "item",
@@ -2161,11 +3463,6 @@ def test_service_builds_graph_node_drafts_for_extended_builtin_resources() -> No
         "browser.refresh",
         "browser.refresh_no_cache",
         "time.get_current_time",
-        "control.jump_to_step",
-        "control.end_foreach",
-        "control.foreach_continue",
-        "control.foreach_break",
-        "call_blueprint",
         "session.apply_auth_session",
         "dialog.switch_dialog_mode",
         "dialog.watch_dialogs",
@@ -2421,27 +3718,6 @@ def test_service_builds_graph_node_drafts_for_extended_builtin_resources() -> No
         "timezone": "utc",
     }
 
-    assert drafts["control.jump_to_step"]["node"]["node_config"] == {
-        "target_node_id": "",
-        "target_step": None,
-        "condition": "true",
-        "max_jumps": -1,
-    }
-    assert drafts["control.end_foreach"]["node"]["node_config"] == {}
-    assert drafts["control.foreach_continue"]["node"]["node_config"] == {
-        "condition": "true",
-        "level": 1,
-    }
-    assert drafts["control.foreach_break"]["node"]["node_config"] == {
-        "condition": "true",
-        "level": 1,
-    }
-
-    assert drafts["call_blueprint"]["node"]["node_config"] == {
-        "blueprint_id": "",
-        "inputs": {},
-        "outputs": {},
-    }
     assert drafts["session.apply_auth_session"]["node"]["node_config"] == {
         "cookies": [],
         "local_storage": {},
@@ -3372,6 +4648,60 @@ def test_service_runtime_session_exposes_execution_summary_and_diagnostic_events
     assert listed["sessions"][0]["event_count"] == len(session["event_log"])
     assert session["execution_summary"]["node_status_counts"]["completed"] == 2
     assert session["execution_summary"]["latest_event_kind"] == "session.completed"
+
+
+def test_service_runtime_session_exposes_node_input_snapshots() -> None:
+    service = CompilationWorkbenchService()
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-batch",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-batch",
+                    "expansion_role": "action:set_variables_batch",
+                    "node_kind": "data.set_variables_batch",
+                    "node_config": {
+                        "variables": {
+                            "counter": 5,
+                        },
+                    },
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-increment",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-increment",
+                    "expansion_role": "action:increment_variable",
+                    "node_kind": "data.increment_variable",
+                    "node_config": {
+                        "variable_name": "counter",
+                        "step": 2,
+                    },
+                    "ports": [],
+                },
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+    runtime_session = service.get_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    batch_state = next(item for item in runtime_session["node_states"] if item["node_id"] == "node-batch")
+    increment_state = next(
+        item for item in runtime_session["node_states"] if item["node_id"] == "node-increment"
+    )
+
+    assert session["result"]["status"] == "succeeded"
+    assert batch_state["input_snapshot"] == {"variables": {"counter": 5}}
+    assert increment_state["input_snapshot"] == {"variable_name": "counter", "step": 2}
 
 
 def test_service_runtime_data_edge_outputs_do_not_create_persisted_state_cycle(tmp_path: Path) -> None:
@@ -13837,7 +15167,7 @@ def test_runtime_health_exposes_host_session_capabilities_and_entrypoints() -> N
     assert health["status"] == "ok"
     assert health["service"] == "weconduct-api"
     assert health["host_mode"] == "python_core"
-    assert health["api_version"] == "0.4.0"
+    assert health["api_version"] == "0.4.1"
     assert health["workspace_state_version"] == 1
     assert health["workspace_session_id"].startswith("ws-")
     assert health["service_started_at"]

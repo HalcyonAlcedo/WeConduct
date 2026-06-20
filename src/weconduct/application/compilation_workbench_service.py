@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from copy import deepcopy
 import json
 from pathlib import Path
+import shutil
 from time import perf_counter
 from threading import Lock, Thread
 import uuid
@@ -280,6 +281,11 @@ class CompilationWorkbenchService:
         self._refresh_state_from_store()
         graph_model = self._get_graph_document_model()
         graph_document_meta = self._get_graph_document_meta()
+        project_runtime = self._get_project_runtime()
+        project_file_path = project_runtime.get("project_file_path")
+        project_layout = None
+        if isinstance(project_file_path, str) and project_file_path.strip():
+            project_layout = self._build_project_storage_layout(Path(project_file_path))
         return {
             "main_graph_document_id": graph_model.graph_model_id,
             "documents": [
@@ -294,7 +300,42 @@ class CompilationWorkbenchService:
                     "saved_at": graph_document_meta["saved_at"],
                 }
             ],
+            "project_file": (
+                project_layout["project_manifest"]
+                if isinstance(project_layout, dict)
+                else None
+            ),
+            "graph_document": (
+                project_layout["graph_document"]
+                if isinstance(project_layout, dict)
+                else graph_model.model_dump()
+            ),
+            "project_owned_resources_index": (
+                project_layout["project_owned_resources_index"]
+                if isinstance(project_layout, dict)
+                else None
+            ),
+            "resource_overrides": (
+                project_layout["resource_overrides"]
+                if isinstance(project_layout, dict)
+                else None
+            ),
         }
+
+    def get_project_resource_audit_document(self) -> dict:
+        self._refresh_state_from_store()
+        project_runtime = self._get_project_runtime()
+        project_file_path = project_runtime.get("project_file_path")
+        if not isinstance(project_file_path, str) or not project_file_path.strip():
+            return {
+                "status": "ready",
+                "project_file_path": None,
+                "storage_root": None,
+                "summary": {"resource_count": 0, "issue_count": 0, "healthy_count": 0},
+                "resources": [],
+                "issues": [],
+            }
+        return self._build_project_resource_audit_document(Path(project_file_path))
 
     def get_graph_source_projection_document(
         self,
@@ -408,6 +449,11 @@ class CompilationWorkbenchService:
         resource = self._find_graph_node_draft_resource(normalized_resource_key)
         if resource is None:
             raise ValueError(f"resource not found for graph node draft: {normalized_resource_key}")
+        if resource.get("compatibility_only") is True or resource.get("user_creatable") is False:
+            raise ValueError(
+                "compatibility-only resource cannot be created directly: "
+                f"{normalized_resource_key}"
+            )
         draft_definition = self._build_graph_node_draft_definition(
             resource=resource,
             resource_key=normalized_resource_key,
@@ -887,6 +933,13 @@ class CompilationWorkbenchService:
         graph_model = self._get_graph_document_model()
         graph_document_meta = self._get_graph_document_meta()
         saved_resource_holder: dict[str, dict] = {}
+        derived_input_schema: dict = {}
+        derived_output_schema: dict = {}
+        has_boundary_nodes = False
+        if resource_type == "custom_node_graph":
+            has_boundary_nodes, derived_input_schema, derived_output_schema = (
+                self._extract_custom_node_graph_boundary_schemas(graph_model.model_dump())
+            )
 
         def mutation(state: dict | None) -> dict:
             current_state, _ = self._normalize_workspace_state(state)
@@ -914,13 +967,21 @@ class CompilationWorkbenchService:
                 "source_graph_document_id": graph_model.graph_model_id,
                 "source_graph_document_save_revision": graph_document_meta["save_revision"],
                 "source_graph_document": graph_model.model_dump(),
-                "input_schema": self._extract_graph_resource_schema(
-                    graph_model.root_metadata,
-                    schema_key="input_schema",
+                "input_schema": (
+                    deepcopy(derived_input_schema)
+                    if resource_type == "custom_node_graph" and has_boundary_nodes
+                    else self._extract_graph_resource_schema(
+                        graph_model.root_metadata,
+                        schema_key="input_schema",
+                    )
                 ),
-                "output_schema": self._extract_graph_resource_schema(
-                    graph_model.root_metadata,
-                    schema_key="output_schema",
+                "output_schema": (
+                    deepcopy(derived_output_schema)
+                    if resource_type == "custom_node_graph" and has_boundary_nodes
+                    else self._extract_graph_resource_schema(
+                        graph_model.root_metadata,
+                        schema_key="output_schema",
+                    )
                 ),
                 "tags": (
                     graph_model.root_metadata.get("resource_tags")
@@ -945,6 +1006,8 @@ class CompilationWorkbenchService:
             return current_state
 
         self._state = self._state_store.mutate(mutation)
+        if resource_type == "custom_node_graph":
+            self._refresh_workspace_graph_validation_snapshot()
         return {
             "status": "saved",
             "resource": saved_resource_holder["value"],
@@ -966,6 +1029,29 @@ class CompilationWorkbenchService:
             "status": "exported",
             "resource": resource,
             "export_path": str(resolved_path),
+        }
+
+    def export_custom_node_graph_resource(
+        self,
+        *,
+        resource_id: str,
+        target_directory: str | Path,
+    ) -> dict:
+        self._refresh_state_from_store()
+        resource = self._require_resource(resource_id)
+        if resource.get("resource_type") != "custom_node_graph":
+            raise ValueError(f"custom node graph resource not found: {resource_id}")
+        target = self._resolve_export_path(target_directory)
+        target.mkdir(parents=True, exist_ok=True)
+        self._write_json_file(target / "manifest.json", self._build_project_resource_manifest(resource))
+        self._write_json_file(
+            target / "graph.json",
+            self._build_project_resource_graph_document(resource),
+        )
+        return {
+            "status": "exported",
+            "resource": resource,
+            "target_directory": str(target),
         }
 
     def import_resource(
@@ -1040,6 +1126,55 @@ class CompilationWorkbenchService:
             "registry_revision": self._get_resource_registry_revision(),
         }
 
+    def import_custom_node_graph_resource(
+        self,
+        *,
+        source_directory: str | Path,
+        conflict_policy: str = "rename",
+    ) -> dict:
+        self._refresh_state_from_store()
+        source = self._resolve_export_path(source_directory)
+        manifest_path = source / "manifest.json"
+        graph_path = source / "graph.json"
+        if not manifest_path.exists():
+            raise ValueError(f"custom node graph manifest not found: {manifest_path}")
+        if not graph_path.exists():
+            raise ValueError(f"custom node graph graph file not found: {graph_path}")
+        try:
+            manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"custom node graph manifest must be valid JSON: {manifest_path}") from exc
+        try:
+            graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"custom node graph graph file must be valid JSON: {graph_path}") from exc
+        if not isinstance(manifest_payload, dict):
+            raise ValueError(f"custom node graph manifest must be a JSON object: {manifest_path}")
+        if not isinstance(graph_payload, dict):
+            raise ValueError(f"custom node graph graph file must be a JSON object: {graph_path}")
+        resource = {
+            **manifest_payload,
+            "source_graph_document": graph_payload,
+            "resource_type": "custom_node_graph",
+            "origin": manifest_payload.get("origin", "project"),
+            "implementation_kind": manifest_payload.get(
+                "implementation_kind", "project_component"
+            ),
+        }
+        normalized_resource = self._normalize_resource_record(resource)
+        if normalized_resource is None:
+            raise ValueError("custom node graph import payload is invalid")
+        resolved_resource = self._resolve_imported_custom_node_graph_conflict(
+            normalized_resource,
+            conflict_policy=conflict_policy,
+        )
+        imported = self.import_resource_from_record(resolved_resource)
+        return {
+            "status": imported["status"],
+            "resource": imported["resource"],
+            "registry_revision": imported["registry_revision"],
+        }
+
     def import_resource_from_record(
         self,
         raw_resource: dict,
@@ -1084,6 +1219,28 @@ class CompilationWorkbenchService:
             "resource": imported_resource_holder["value"],
             "registry_revision": self._get_resource_registry_revision(),
         }
+
+    def _resolve_imported_custom_node_graph_conflict(
+        self,
+        resource: dict,
+        *,
+        conflict_policy: str,
+    ) -> dict:
+        normalized_policy = conflict_policy.strip().lower()
+        if normalized_policy != "rename":
+            raise ValueError(
+                "unsupported custom node graph conflict policy: "
+                f"{conflict_policy}"
+            )
+        existing_ids = {item["resource_id"] for item in self._get_resource_registry()}
+        if resource["resource_id"] not in existing_ids:
+            return dict(resource)
+        next_resource = dict(resource)
+        next_resource["resource_id"] = (
+            f"{CUSTOM_NODE_GRAPH_RESOURCE_PREFIX}{uuid.uuid4().hex[:12]}"
+        )
+        next_resource["resource_key"] = next_resource["resource_id"]
+        return next_resource
 
     def _build_legacy_resource_import_payload(
         self,
@@ -1165,6 +1322,86 @@ class CompilationWorkbenchService:
         return {
             "status": "updated",
             "resource": updated_resource_holder["value"],
+            "registry_revision": self._get_resource_registry_revision(),
+        }
+
+    def delete_resource(self, *, resource_id: str) -> dict:
+        self._refresh_state_from_store()
+        deleted_resource_holder: dict[str, dict] = {}
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            resources = self._extract_resource_registry(current_state)
+            matched = False
+            next_resources: list[dict] = []
+            for item in resources:
+                if item["resource_id"] == resource_id:
+                    matched = True
+                    if item.get("resource_type") == "builtin_component":
+                        raise ValueError(f"builtin resource cannot be deleted: {resource_id}")
+                    deleted_resource_holder["value"] = dict(item)
+                    continue
+                next_resources.append(item)
+            if not matched:
+                raise ValueError(f"resource not found: {resource_id}")
+            current_state["resource_registry"] = next_resources
+            current_state["project"]["resource_registry_revision"] += 1
+            current_state["project_runtime"] = {
+                **self._extract_project_runtime(current_state),
+                "is_dirty": True,
+            }
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        deleted_resource = deleted_resource_holder["value"]
+        if deleted_resource.get("resource_type") == "custom_node_graph":
+            self._refresh_workspace_graph_validation_snapshot()
+        return {
+            "status": "deleted",
+            "resource": deleted_resource,
+            "registry_revision": self._get_resource_registry_revision(),
+        }
+
+    def rename_resource(self, *, resource_id: str, display_name: str) -> dict:
+        self._refresh_state_from_store()
+        normalized_display_name = display_name.strip()
+        if not normalized_display_name:
+            raise ValueError("display_name must not be empty")
+        renamed_resource_holder: dict[str, dict] = {}
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            resources = self._extract_resource_registry(current_state)
+            matched = False
+            next_resources: list[dict] = []
+            for item in resources:
+                if item["resource_id"] == resource_id:
+                    matched = True
+                    if item.get("resource_type") == "builtin_component":
+                        raise ValueError(f"builtin resource cannot be renamed: {resource_id}")
+                    updated_item = dict(item)
+                    updated_item["display_name"] = normalized_display_name
+                    display_name_i18n = dict(updated_item.get("display_name_i18n", {}))
+                    display_name_i18n["en-US"] = normalized_display_name
+                    updated_item["display_name_i18n"] = display_name_i18n
+                    renamed_resource_holder["value"] = updated_item
+                    next_resources.append(updated_item)
+                else:
+                    next_resources.append(item)
+            if not matched:
+                raise ValueError(f"resource not found: {resource_id}")
+            current_state["resource_registry"] = next_resources
+            current_state["project"]["resource_registry_revision"] += 1
+            current_state["project_runtime"] = {
+                **self._extract_project_runtime(current_state),
+                "is_dirty": True,
+            }
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        return {
+            "status": "renamed",
+            "resource": renamed_resource_holder["value"],
             "registry_revision": self._get_resource_registry_revision(),
         }
 
@@ -1260,6 +1497,7 @@ class CompilationWorkbenchService:
                     "node_status": "pending",
                     "started_at": None,
                     "completed_at": None,
+                    "input_snapshot": None,
                     "output": None,
                     "runtime_order": None,
                     "static_order": node.get("static_order"),
@@ -1584,6 +1822,11 @@ class CompilationWorkbenchService:
                     started_at = datetime.now(timezone.utc).isoformat()
                     node_state["node_status"] = "running"
                     node_state["started_at"] = started_at
+                    node_state["input_snapshot"] = deepcopy(
+                        executable_node.get("node_config", {})
+                        if isinstance(executable_node.get("node_config"), dict)
+                        else {}
+                    )
                     if not isinstance(node_state.get("runtime_order"), int):
                         node_state["runtime_order"] = runtime_execution_order_counter
                         runtime_execution_order_counter += 1
@@ -2797,7 +3040,7 @@ class CompilationWorkbenchService:
 
     def _find_component_resource_for_blueprint(self, blueprint_id: str) -> dict | None:
         for item in self._get_resource_registry():
-            if item.get("resource_type") != "user_component":
+            if item.get("resource_type") not in {"user_component", "custom_node_graph"}:
                 continue
             source_graph_document = item.get("source_graph_document")
             root_metadata = (
@@ -2986,6 +3229,7 @@ class CompilationWorkbenchService:
                 "node_status": "pending",
                 "started_at": None,
                 "completed_at": None,
+                "input_snapshot": None,
                 "output": None,
                 "error": None,
             }
@@ -3196,6 +3440,11 @@ class CompilationWorkbenchService:
                 started_at = datetime.now(timezone.utc).isoformat()
                 node_state["node_status"] = "running"
                 node_state["started_at"] = started_at
+                node_state["input_snapshot"] = deepcopy(
+                    executable_node.get("node_config", {})
+                    if isinstance(executable_node.get("node_config"), dict)
+                    else {}
+                )
                 event_log.append(
                     {
                         "event_kind": "node.started",
@@ -5482,6 +5731,7 @@ class CompilationWorkbenchService:
             graph_model,
             expected_graph_document_save_revision=expected_graph_document_save_revision,
         )
+        self._refresh_workspace_graph_validation_snapshot()
         project_runtime = self._get_project_runtime()
         project_file_path = project_runtime.get("project_file_path")
         if isinstance(project_file_path, str) and project_file_path.strip():
@@ -6129,7 +6379,7 @@ class CompilationWorkbenchService:
             "workspace_state_version": WORKSPACE_STATE_VERSION,
             "workbench": {
                 "host_mode": "python_core",
-                "api_version": "0.4.0",
+                "api_version": "0.4.1",
                 "workspace_session_id": f"ws-{uuid.uuid4().hex[:12]}",
                 "service_started_at": datetime.now(timezone.utc).isoformat(),
                 "compile_counter": 0,
@@ -6166,6 +6416,17 @@ class CompilationWorkbenchService:
             "graph_document_meta": {
                 "save_revision": 0,
                 "saved_at": None,
+            },
+            "graph_validation_snapshot": {
+                "graph_model_id": "graph:workspace",
+                "graph_document_save_revision": 0,
+                "resource_registry_revision": 0,
+                "status": "valid",
+                "summary": {
+                    "error_count": 0,
+                    "warning_count": 0,
+                },
+                "diagnostics": [],
             },
             "pending_recovery": None,
         }
@@ -6278,7 +6539,9 @@ class CompilationWorkbenchService:
 
     def _build_graph_node_draft_definition(self, *, resource: dict, resource_key: str) -> dict:
         resource_type = resource.get("resource_type")
-        if resource_type in {"user_component", "subgraph_resource", "custom_node_graph"}:
+        if resource_type == "custom_node_graph":
+            return self._build_custom_node_graph_instance_draft_definition(resource)
+        if resource_type in {"user_component", "subgraph_resource"}:
             return {
                 "lowered_kind": "execution",
                 "expansion_role": "module:component",
@@ -6299,6 +6562,78 @@ class CompilationWorkbenchService:
             "node_config": {},
             "parameter_schema": {},
         }
+
+    def _build_custom_node_graph_instance_draft_definition(self, resource: dict) -> dict:
+        input_schema = resource.get("input_schema")
+        output_schema = resource.get("output_schema")
+        if not isinstance(input_schema, dict):
+            input_schema = {}
+        if not isinstance(output_schema, dict):
+            output_schema = {}
+
+        input_defaults: dict[str, object] = {}
+        output_defaults: dict[str, str] = {}
+        normalized_input_properties: dict[str, dict] = {}
+        normalized_output_properties: dict[str, dict] = {}
+
+        for input_name, input_meta in input_schema.items():
+            if not isinstance(input_name, str) or not input_name.strip():
+                continue
+            normalized_name = input_name.strip()
+            if not isinstance(input_meta, dict):
+                input_meta = {}
+            normalized_input_properties[normalized_name] = deepcopy(input_meta)
+            input_defaults[normalized_name] = (
+                deepcopy(input_meta["default_value"])
+                if "default_value" in input_meta
+                else self._build_type_compatible_custom_node_graph_input_default(input_meta)
+            )
+
+        for output_name, output_meta in output_schema.items():
+            if not isinstance(output_name, str) or not output_name.strip():
+                continue
+            normalized_name = output_name.strip()
+            if not isinstance(output_meta, dict):
+                output_meta = {}
+            normalized_output_properties[normalized_name] = deepcopy(output_meta)
+            output_defaults[normalized_name] = normalized_name
+
+        return {
+            "lowered_kind": "execution",
+            "expansion_role": "action:custom_node_graph",
+            "ports": [],
+            "node_config": {
+                "inputs": input_defaults,
+                "outputs": output_defaults,
+            },
+            "parameter_schema": {
+                "inputs": {
+                    "type": "object",
+                    "properties": normalized_input_properties,
+                },
+                "outputs": {
+                    "type": "object",
+                    "properties": normalized_output_properties,
+                },
+            },
+        }
+
+    def _build_type_compatible_custom_node_graph_input_default(self, input_meta: dict) -> object:
+        raw_type = input_meta.get("type")
+        if isinstance(raw_type, str):
+            normalized_type = raw_type.strip().lower()
+        else:
+            normalized_type = ""
+
+        if normalized_type == "number":
+            return 0
+        if normalized_type == "boolean":
+            return False
+        if normalized_type == "array":
+            return []
+        if normalized_type == "object":
+            return {}
+        return ""
 
     def _infer_default_graph_node_expansion_role(self, resource_key: str) -> str:
         if resource_key == "flow.start":
@@ -6333,6 +6668,14 @@ class CompilationWorkbenchService:
             normalized_node_config = deepcopy(normalized_node.get("node_config", {}))
             if not isinstance(normalized_node_config, dict):
                 normalized_node_config = {}
+            legacy_normalized_node, legacy_call_changed = self._normalize_legacy_call_node_to_custom_node_graph(
+                normalized_node=normalized_node,
+                normalized_node_config=normalized_node_config,
+            )
+            if legacy_call_changed:
+                normalized_node = legacy_normalized_node
+                normalized_node_config = deepcopy(normalized_node.get("node_config", {}))
+                changed = True
 
             normalized_branches, branch_config_changed = self._normalize_control_branch_entries(
                 node_kind=normalized_node.get("node_kind"),
@@ -6360,6 +6703,43 @@ class CompilationWorkbenchService:
         normalized_graph_payload = graph_model.model_dump(mode="python")
         normalized_graph_payload["nodes"] = normalized_nodes
         return GraphModel.model_validate(normalized_graph_payload), True
+
+    def _normalize_legacy_call_node_to_custom_node_graph(
+        self,
+        *,
+        normalized_node: dict,
+        normalized_node_config: dict,
+    ) -> tuple[dict, bool]:
+        node_kind = normalized_node.get("node_kind")
+        target_resource = None
+        if node_kind == "graph.call_subgraph":
+            subgraph_id = normalized_node_config.get("subgraph_id")
+            if isinstance(subgraph_id, str) and subgraph_id.strip():
+                target_resource = self._find_subgraph_resource(subgraph_id.strip())
+        elif node_kind == "call_blueprint":
+            blueprint_id = normalized_node_config.get("blueprint_id")
+            if isinstance(blueprint_id, str) and blueprint_id.strip():
+                target_resource = self._find_component_resource_for_blueprint(blueprint_id.strip())
+        if not isinstance(target_resource, dict):
+            return normalized_node, False
+        if target_resource.get("resource_type") != "custom_node_graph":
+            return normalized_node, False
+
+        resource_ref = target_resource.get("resource_key") or target_resource.get("resource_id")
+        if not isinstance(resource_ref, str) or not resource_ref.strip():
+            return normalized_node, False
+
+        inputs = normalized_node_config.get("inputs")
+        outputs = normalized_node_config.get("outputs")
+        normalized_replacement_config = {
+            "inputs": deepcopy(inputs) if isinstance(inputs, dict) else {},
+            "outputs": deepcopy(outputs) if isinstance(outputs, dict) else {},
+        }
+        replacement_node = dict(normalized_node)
+        replacement_node["node_kind"] = resource_ref.strip()
+        replacement_node["expansion_role"] = "action:custom_node_graph"
+        replacement_node["node_config"] = normalized_replacement_config
+        return replacement_node, True
 
     def _normalize_control_branch_entries(
         self,
@@ -6765,8 +7145,112 @@ class CompilationWorkbenchService:
             "last_compiled_graph_save_revision": last_compiled_graph_save_revision,
             "last_compiled_graph_saved_at": last_compiled_graph_saved_at,
             "last_compile_matches_saved_graph": last_compile_matches_saved_graph,
+            "validation_summary": self._build_workspace_graph_validation_summary(graph_model),
+            "validation_diagnostics": self._build_workspace_graph_validation_diagnostics(graph_model),
             "graph_preferences": self._get_graph_preferences(),
             "preferences_state": self._build_preferences_state(),
+        }
+
+    def _refresh_workspace_graph_validation_snapshot(self) -> None:
+        self._refresh_state_from_store()
+        graph_document = self._get_graph_document_model().model_dump(mode="json")
+        validation = self.validate_graph_document(graph_document)
+        self._set_workspace_graph_validation_snapshot(validation)
+
+    def _set_workspace_graph_validation_snapshot(self, validation: dict) -> None:
+        graph_model = validation.get("graph_model")
+        if not isinstance(graph_model, GraphModel):
+            raise ValueError("validation payload missing graph_model")
+        summary = validation.get("summary")
+        diagnostics = validation.get("diagnostics")
+        if not isinstance(summary, dict):
+            summary = {"error_count": 0, "warning_count": 0}
+        if not isinstance(diagnostics, list):
+            diagnostics = []
+        graph_document_meta = self._get_graph_document_meta()
+        snapshot = {
+            "graph_model_id": graph_model.graph_model_id,
+            "graph_document_save_revision": graph_document_meta["save_revision"],
+            "resource_registry_revision": self._get_resource_registry_revision(),
+            "status": validation.get("status") if isinstance(validation.get("status"), str) else "invalid",
+            "summary": {
+                "error_count": summary.get("error_count", 0),
+                "warning_count": summary.get("warning_count", 0),
+            },
+            "diagnostics": diagnostics,
+        }
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            current_state["graph_validation_snapshot"] = snapshot
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+
+    def _build_workspace_graph_validation_summary(self, graph_model: GraphModel) -> dict:
+        snapshot = self._get_graph_validation_snapshot(graph_model)
+        summary = snapshot.get("summary")
+        if not isinstance(summary, dict):
+            summary = {}
+        return {
+            "status": snapshot.get("status"),
+            "error_count": summary.get("error_count", 0),
+            "warning_count": summary.get("warning_count", 0),
+        }
+
+    def _build_workspace_graph_validation_diagnostics(self, graph_model: GraphModel) -> list[dict]:
+        snapshot = self._get_graph_validation_snapshot(graph_model)
+        diagnostics = snapshot.get("diagnostics")
+        if not isinstance(diagnostics, list):
+            return []
+        return diagnostics
+
+    def _get_graph_validation_snapshot(self, graph_model: GraphModel) -> dict:
+        snapshot = self._extract_graph_validation_snapshot(self._state)
+        graph_document_meta = self._get_graph_document_meta()
+        if (
+            snapshot.get("graph_model_id") != graph_model.graph_model_id
+            or snapshot.get("graph_document_save_revision") != graph_document_meta["save_revision"]
+            or snapshot.get("resource_registry_revision") != self._get_resource_registry_revision()
+        ):
+            self._refresh_workspace_graph_validation_snapshot()
+            snapshot = self._extract_graph_validation_snapshot(self._state)
+        return snapshot
+
+    def _extract_graph_validation_snapshot(self, state: dict | None) -> dict:
+        raw_snapshot = state.get("graph_validation_snapshot") if isinstance(state, dict) else None
+        if not isinstance(raw_snapshot, dict):
+            raw_snapshot = {}
+        raw_summary = raw_snapshot.get("summary")
+        if not isinstance(raw_summary, dict):
+            raw_summary = {}
+        raw_diagnostics = raw_snapshot.get("diagnostics")
+        if not isinstance(raw_diagnostics, list):
+            raw_diagnostics = []
+        graph_model_id = raw_snapshot.get("graph_model_id")
+        status = raw_snapshot.get("status")
+        graph_document_save_revision = raw_snapshot.get("graph_document_save_revision")
+        resource_registry_revision = raw_snapshot.get("resource_registry_revision")
+        return {
+            "graph_model_id": (
+                graph_model_id.strip()
+                if isinstance(graph_model_id, str) and graph_model_id.strip()
+                else "graph:workspace"
+            ),
+            "graph_document_save_revision": (
+                graph_document_save_revision if isinstance(graph_document_save_revision, int) else 0
+            ),
+            "resource_registry_revision": (
+                resource_registry_revision if isinstance(resource_registry_revision, int) else 0
+            ),
+            "status": status.strip() if isinstance(status, str) and status.strip() else "valid",
+            "summary": {
+                "error_count": raw_summary.get("error_count") if isinstance(raw_summary.get("error_count"), int) else 0,
+                "warning_count": (
+                    raw_summary.get("warning_count") if isinstance(raw_summary.get("warning_count"), int) else 0
+                ),
+            },
+            "diagnostics": raw_diagnostics,
         }
 
     def _collect_graph_validation_diagnostics(self, graph_model: GraphModel) -> list[dict]:
@@ -8390,6 +8874,10 @@ class CompilationWorkbenchService:
                 "saved_at": None,
             }
             changed = True
+        normalized_graph_validation_snapshot = self._extract_graph_validation_snapshot(state)
+        if normalized_graph_validation_snapshot != state.get("graph_validation_snapshot"):
+            state["graph_validation_snapshot"] = normalized_graph_validation_snapshot
+            changed = True
         normalized_pending_recovery = self._extract_pending_recovery(state)
         if normalized_pending_recovery != state.get("pending_recovery"):
             state["pending_recovery"] = normalized_pending_recovery
@@ -8699,7 +9187,11 @@ class CompilationWorkbenchService:
         resources_dir.mkdir(parents=True, exist_ok=True)
 
         self._write_json_file(graphs_dir / "workspace.graph.json", graph_document)
-        self._write_project_owned_resources(project_path, self._get_resource_registry())
+        written_resources = self._write_project_owned_resources(project_path, self._get_resource_registry())
+        self._cleanup_stale_project_owned_resource_directories(
+            project_path,
+            written_resources,
+        )
         self._write_json_file(resources_dir / "index.json", project_owned_resources_index)
         self._write_json_file(storage_root / "resource-overrides.json", resource_overrides)
         self._write_json_file(project_path, project_manifest)
@@ -8758,13 +9250,18 @@ class CompilationWorkbenchService:
         refs: list[dict] = []
         storage_directory = self._project_storage_directory_name(project_path)
         for resource in resources:
-            if resource.get("resource_type") not in {"user_component", "custom_node_graph"}:
+            normalized_resource = self._normalize_project_storage_resource_record(resource)
+            if normalized_resource is None:
                 continue
-            directory_name = self._project_resource_directory_name(resource["resource_id"])
-            base_directory = self._project_resource_base_directory_name(resource)
+            if normalized_resource.get("resource_type") != "custom_node_graph":
+                continue
+            directory_name = self._project_resource_directory_name(
+                normalized_resource["resource_id"]
+            )
+            base_directory = self._project_resource_base_directory_name(normalized_resource)
             refs.append(
                 {
-                    "resource_id": resource["resource_id"],
+                    "resource_id": normalized_resource["resource_id"],
                     "source_ref": f"{storage_directory}/resources/{base_directory}/{directory_name}",
                 }
             )
@@ -8788,10 +9285,10 @@ class CompilationWorkbenchService:
         if project_path is not None:
             storage_prefix = f"{self._project_storage_directory_name(project_path)}/"
         for resource in resources:
-            normalized_resource = self._normalize_resource_record(resource)
+            normalized_resource = self._normalize_project_storage_resource_record(resource)
             if normalized_resource is None:
                 continue
-            if normalized_resource.get("resource_type") not in {"user_component", "custom_node_graph"}:
+            if normalized_resource.get("resource_type") != "custom_node_graph":
                 continue
             directory_name = self._project_resource_directory_name(normalized_resource["resource_id"])
             base_directory = self._project_resource_base_directory_name(normalized_resource)
@@ -8821,10 +9318,10 @@ class CompilationWorkbenchService:
         normalized_resources: list[dict] = []
         storage_root = self._resolve_project_storage_root(project_path)
         for resource in resources:
-            normalized_resource = self._normalize_resource_record(resource)
+            normalized_resource = self._normalize_project_storage_resource_record(resource)
             if normalized_resource is None:
                 continue
-            if normalized_resource.get("resource_type") not in {"user_component", "custom_node_graph"}:
+            if normalized_resource.get("resource_type") != "custom_node_graph":
                 continue
             directory_name = self._project_resource_directory_name(normalized_resource["resource_id"])
             base_directory = self._project_resource_base_directory_name(normalized_resource)
@@ -8840,6 +9337,34 @@ class CompilationWorkbenchService:
             )
             normalized_resources.append(normalized_resource)
         return normalized_resources
+
+    def _cleanup_stale_project_owned_resource_directories(
+        self,
+        project_path: Path,
+        resources: list[dict],
+    ) -> None:
+        storage_root = self._resolve_project_storage_root(project_path)
+        resources_root = storage_root / "resources"
+        if not resources_root.exists():
+            return
+        expected_directories = {
+            (
+                self._project_resource_base_directory_name(resource),
+                self._project_resource_directory_name(resource["resource_id"]),
+            )
+            for resource in resources
+        }
+        for base_directory in resources_root.iterdir():
+            if not base_directory.is_dir():
+                continue
+            for resource_directory in base_directory.iterdir():
+                if not resource_directory.is_dir():
+                    continue
+                directory_key = (base_directory.name, resource_directory.name)
+                if directory_key not in expected_directories:
+                    shutil.rmtree(resource_directory, ignore_errors=True)
+            if not any(base_directory.iterdir()):
+                base_directory.rmdir()
 
     def _build_project_resource_manifest(self, resource: dict) -> dict:
         return {
@@ -8866,10 +9391,41 @@ class CompilationWorkbenchService:
             return create_empty_graph_model("graph:workspace", None).model_dump()
         return deepcopy(source_graph_document)
 
+    def _normalize_project_storage_resource_record(self, resource: dict | None) -> dict | None:
+        normalized = self._normalize_resource_record(resource)
+        if normalized is None:
+            return None
+        resource_type = normalized.get("resource_type")
+        if resource_type == "user_component":
+            next_resource = deepcopy(normalized)
+            compatibility_aliases = set(next_resource.get("compatibility_aliases", []))
+            compatibility_aliases.update(
+                alias
+                for alias in {
+                    next_resource.get("resource_id"),
+                    next_resource.get("resource_key"),
+                }
+                if isinstance(alias, str) and alias.strip()
+            )
+            legacy_resource_id = next_resource["resource_id"]
+            suffix = legacy_resource_id.split(":", 1)[1] if ":" in legacy_resource_id else legacy_resource_id
+            next_resource["resource_type"] = "custom_node_graph"
+            next_resource["resource_id"] = f"{CUSTOM_NODE_GRAPH_RESOURCE_PREFIX}{suffix}"
+            next_resource["resource_key"] = next_resource["resource_id"]
+            next_resource["compatibility_aliases"] = sorted(
+                {
+                    alias.strip()
+                    for alias in compatibility_aliases
+                    if isinstance(alias, str) and alias.strip()
+                }
+            )
+            return next_resource
+        return normalized
+
     def _build_resource_overrides_document(self, resources: list[dict]) -> dict:
         overrides: dict[str, dict] = {}
         for resource in resources:
-            normalized_resource = self._normalize_resource_record(resource)
+            normalized_resource = self._normalize_project_storage_resource_record(resource)
             if normalized_resource is None:
                 continue
             overrides[normalized_resource["resource_id"]] = self._extract_resource_override_record(
@@ -8938,53 +9494,137 @@ class CompilationWorkbenchService:
 
     def _load_project_owned_resources_from_index(
         self, project_path: Path, index_payload: dict
-    ) -> list[dict]:
+    ) -> tuple[list[dict], list[dict]]:
         resources = index_payload.get("resources")
         if not isinstance(resources, list):
             raise ValueError(
                 f"project resources index must contain array: resources ({project_path})"
             )
         loaded_resources: list[dict] = []
+        issues: list[dict] = []
         for resource_ref in resources:
             if not isinstance(resource_ref, dict):
                 continue
-            loaded_resources.append(
-                self._load_single_project_owned_resource(project_path, resource_ref)
+            loaded_resource, resource_issues = self._load_single_project_owned_resource(
+                project_path, resource_ref
             )
-        return loaded_resources
+            loaded_resources.append(loaded_resource)
+            issues.extend(resource_issues)
+        return loaded_resources, issues
 
-    def _load_single_project_owned_resource(self, project_path: Path, resource_ref: dict) -> dict:
+    def _load_single_project_owned_resource(
+        self, project_path: Path, resource_ref: dict
+    ) -> tuple[dict, list[dict]]:
         manifest_path = resource_ref.get("manifest_path")
         graph_path = resource_ref.get("graph_path")
+        resource_id = resource_ref.get("resource_id")
+        resource_key = resource_ref.get("resource_key")
+        display_name = resource_ref.get("display_name")
         if not isinstance(manifest_path, str) or not manifest_path.strip():
             raise ValueError(f"project resource missing manifest_path ({project_path})")
         if not isinstance(graph_path, str) or not graph_path.strip():
             raise ValueError(f"project resource missing graph_path ({project_path})")
-        manifest_payload = self._read_json_file(project_path.parent / manifest_path)
-        graph_payload = self._read_json_file(project_path.parent / graph_path)
-        return {
-            "resource_id": manifest_payload["resource_id"],
-            "resource_type": manifest_payload["resource_type"],
-            "display_name": manifest_payload["display_name"],
-            "display_name_i18n": manifest_payload.get("display_name_i18n", {}),
-            "resource_key": manifest_payload.get("resource_key", manifest_payload["resource_id"]),
-            "enabled": resource_ref.get("enabled_by_default", True),
-            "origin": manifest_payload.get("origin", "project"),
-            "description": manifest_payload.get("description"),
-            "description_i18n": manifest_payload.get("description_i18n", {}),
-            "implementation_kind": manifest_payload.get(
-                "implementation_kind", "project_component"
-            ),
-            "compatibility_aliases": manifest_payload.get("compatibility_aliases", []),
-            "source_graph_document_id": manifest_payload.get("graph_document_id"),
-            "source_graph_document_save_revision": manifest_payload.get(
-                "graph_document_save_revision"
-            ),
-            "source_graph_document": graph_payload,
-            "input_schema": manifest_payload.get("input_schema", {}),
-            "output_schema": manifest_payload.get("output_schema", {}),
-            "tags": manifest_payload.get("tags", []),
-        }
+        manifest_abspath = project_path.parent / manifest_path
+        graph_abspath = project_path.parent / graph_path
+        issues: list[dict] = []
+        manifest_payload = None
+        graph_payload = None
+        if manifest_abspath.exists():
+            manifest_payload = self._read_json_file(manifest_abspath)
+        else:
+            issues.append(
+                {
+                    "category": "project.resource.manifest_missing",
+                    "message": f"project resource manifest file not found: {manifest_path}",
+                    "resource_id": resource_id,
+                    "path": str(manifest_abspath.resolve()),
+                }
+            )
+        if graph_abspath.exists():
+            graph_payload = self._read_json_file(graph_abspath)
+        else:
+            issues.append(
+                {
+                    "category": "project.resource.graph_missing",
+                    "message": f"project resource graph file not found: {graph_path}",
+                    "resource_id": resource_id,
+                    "path": str(graph_abspath.resolve()),
+                }
+            )
+        if isinstance(manifest_payload, dict) and isinstance(graph_payload, dict):
+            return (
+                {
+                    "resource_id": manifest_payload["resource_id"],
+                    "resource_type": manifest_payload["resource_type"],
+                    "display_name": manifest_payload["display_name"],
+                    "display_name_i18n": manifest_payload.get("display_name_i18n", {}),
+                    "resource_key": manifest_payload.get(
+                        "resource_key", manifest_payload["resource_id"]
+                    ),
+                    "enabled": resource_ref.get("enabled_by_default", True),
+                    "origin": manifest_payload.get("origin", "project"),
+                    "description": manifest_payload.get("description"),
+                    "description_i18n": manifest_payload.get("description_i18n", {}),
+                    "implementation_kind": manifest_payload.get(
+                        "implementation_kind", "project_component"
+                    ),
+                    "compatibility_aliases": manifest_payload.get("compatibility_aliases", []),
+                    "source_graph_document_id": manifest_payload.get("graph_document_id"),
+                    "source_graph_document_save_revision": manifest_payload.get(
+                        "graph_document_save_revision"
+                    ),
+                    "source_graph_document": graph_payload,
+                    "input_schema": manifest_payload.get("input_schema", {}),
+                    "output_schema": manifest_payload.get("output_schema", {}),
+                    "tags": manifest_payload.get("tags", []),
+                },
+                issues,
+            )
+        placeholder_resource_id = (
+            resource_id.strip()
+            if isinstance(resource_id, str) and resource_id.strip()
+            else (
+                resource_key.strip()
+                if isinstance(resource_key, str) and resource_key.strip()
+                else f"{CUSTOM_NODE_GRAPH_RESOURCE_PREFIX}missing-{uuid.uuid4().hex[:8]}"
+            )
+        )
+        placeholder_resource_key = (
+            resource_key.strip()
+            if isinstance(resource_key, str) and resource_key.strip()
+            else placeholder_resource_id
+        )
+        placeholder_display_name = (
+            display_name.strip()
+            if isinstance(display_name, str) and display_name.strip()
+            else placeholder_resource_id
+        )
+        return (
+            {
+                "resource_id": placeholder_resource_id,
+                "resource_type": "custom_node_graph",
+                "display_name": placeholder_display_name,
+                "display_name_i18n": {"en-US": placeholder_display_name},
+                "resource_key": placeholder_resource_key,
+                "enabled": False,
+                "origin": "project",
+                "description": None,
+                "description_i18n": {},
+                "implementation_kind": "project_component",
+                "compatibility_aliases": [],
+                "source_graph_document_id": None,
+                "source_graph_document_save_revision": None,
+                "source_graph_document": (
+                    graph_payload
+                    if isinstance(graph_payload, dict)
+                    else create_empty_graph_model("graph:workspace", None).model_dump()
+                ),
+                "input_schema": {},
+                "output_schema": {},
+                "tags": ["project:broken-resource"],
+            },
+            issues,
+        )
 
     def _load_resource_overrides(self, project_path: Path, relative_path: str) -> dict:
         payload = self._read_json_file(project_path.parent / relative_path)
@@ -9207,7 +9847,7 @@ class CompilationWorkbenchService:
                 f"project file missing required string: project.project_resources_index_path ({project_path})"
             )
         resource_index_payload = self._read_json_file(project_path.parent / resources_index_path)
-        project_resources = self._load_project_owned_resources_from_index(
+        project_resources, project_resource_load_issues = self._load_project_owned_resources_from_index(
             project_path, resource_index_payload
         )
 
@@ -9222,6 +9862,21 @@ class CompilationWorkbenchService:
             project_resources=project_resources,
             resource_overrides=resource_overrides,
         )
+        for issue in project_resource_load_issues:
+            issue_resource_id = issue.get("resource_id")
+            if not isinstance(issue_resource_id, str) or not issue_resource_id.strip():
+                continue
+            for resource in effective_registry:
+                if resource.get("resource_id") == issue_resource_id:
+                    resource["enabled"] = False
+                    tags = {
+                        tag
+                        for tag in resource.get("tags", [])
+                        if isinstance(tag, str) and tag.strip()
+                    }
+                    tags.add("project:broken-resource")
+                    resource["tags"] = sorted(tags)
+                    break
 
         return {
             "project": normalized_project,
@@ -9232,6 +9887,107 @@ class CompilationWorkbenchService:
             ),
             "graph_document": graph_model.model_dump(),
             "graph_document_meta": graph_document_meta,
+        }
+
+    def _build_project_resource_audit_document(self, project_path: Path) -> dict:
+        resolved_project_path = project_path.resolve()
+        project_manifest = self._read_json_file(resolved_project_path)
+        raw_project = project_manifest.get("project")
+        if not isinstance(raw_project, dict):
+            raise ValueError(f"project file missing required object: project ({resolved_project_path})")
+        resources_index_path = raw_project.get("project_resources_index_path")
+        if not isinstance(resources_index_path, str) or not resources_index_path.strip():
+            raise ValueError(
+                f"project file missing required string: project.project_resources_index_path ({resolved_project_path})"
+            )
+        resources_index_payload = self._read_json_file(
+            resolved_project_path.parent / resources_index_path
+        )
+        resources = resources_index_payload.get("resources")
+        if not isinstance(resources, list):
+            raise ValueError(
+                f"project resources index must contain array: resources ({resolved_project_path})"
+            )
+        issues: list[dict] = []
+        resource_entries: list[dict] = []
+        for resource_ref in resources:
+            if not isinstance(resource_ref, dict):
+                continue
+            source_ref = resource_ref.get("source_ref")
+            manifest_path = resource_ref.get("manifest_path")
+            graph_path = resource_ref.get("graph_path")
+            resource_issues: list[dict] = []
+            if not isinstance(source_ref, str) or not source_ref.strip():
+                resource_issues.append(
+                    {
+                        "category": "project.resource.source_ref_missing",
+                        "message": f"project resource source_ref is missing: {resource_ref.get('resource_id')}",
+                        "resource_id": resource_ref.get("resource_id"),
+                    }
+                )
+            if not isinstance(manifest_path, str) or not manifest_path.strip():
+                resource_issues.append(
+                    {
+                        "category": "project.resource.manifest_path_missing",
+                        "message": f"project resource manifest_path is missing: {resource_ref.get('resource_id')}",
+                        "resource_id": resource_ref.get("resource_id"),
+                    }
+                )
+            elif not (resolved_project_path.parent / manifest_path).exists():
+                resource_issues.append(
+                    {
+                        "category": "project.resource.manifest_missing",
+                        "message": f"project resource manifest file not found: {manifest_path}",
+                        "resource_id": resource_ref.get("resource_id"),
+                        "path": str((resolved_project_path.parent / manifest_path).resolve()),
+                    }
+                )
+            if not isinstance(graph_path, str) or not graph_path.strip():
+                resource_issues.append(
+                    {
+                        "category": "project.resource.graph_path_missing",
+                        "message": f"project resource graph_path is missing: {resource_ref.get('resource_id')}",
+                        "resource_id": resource_ref.get("resource_id"),
+                    }
+                )
+            elif not (resolved_project_path.parent / graph_path).exists():
+                resource_issues.append(
+                    {
+                        "category": "project.resource.graph_missing",
+                        "message": f"project resource graph file not found: {graph_path}",
+                        "resource_id": resource_ref.get("resource_id"),
+                        "path": str((resolved_project_path.parent / graph_path).resolve()),
+                    }
+                )
+            issues.extend(resource_issues)
+            status = "healthy" if not resource_issues else resource_issues[0]["category"].removeprefix(
+                "project.resource."
+            )
+            resource_entries.append(
+                {
+                    "resource_id": resource_ref.get("resource_id"),
+                    "resource_key": resource_ref.get("resource_key"),
+                    "display_name": resource_ref.get("display_name"),
+                    "source_ref": source_ref,
+                    "manifest_path": manifest_path,
+                    "graph_path": graph_path,
+                    "status": status,
+                    "issue_categories": [item["category"] for item in resource_issues],
+                }
+            )
+        healthy_count = sum(1 for item in resource_entries if item["status"] == "healthy")
+        return {
+            "status": "ready",
+            "project_file_path": str(resolved_project_path),
+            "storage_root": str(self._resolve_project_storage_root(resolved_project_path)),
+            "project_file": project_manifest,
+            "summary": {
+                "resource_count": len(resource_entries),
+                "issue_count": len(issues),
+                "healthy_count": healthy_count,
+            },
+            "resources": resource_entries,
+            "issues": issues,
         }
 
     def _upsert_recent_project_record(
@@ -9448,6 +10204,54 @@ class CompilationWorkbenchService:
                 continue
             normalized_schema[field_name.strip()] = dict(field_meta)
         return normalized_schema
+
+    def _extract_custom_node_graph_boundary_schemas(
+        self,
+        graph_document: object,
+    ) -> tuple[bool, dict, dict]:
+        if not isinstance(graph_document, dict):
+            return False, {}, {}
+        raw_nodes = graph_document.get("nodes")
+        if not isinstance(raw_nodes, list):
+            return False, {}, {}
+        input_schema: dict[str, dict] = {}
+        output_schema: dict[str, dict] = {}
+        for raw_node in raw_nodes:
+            if not isinstance(raw_node, dict):
+                continue
+            node_kind = raw_node.get("node_kind")
+            if node_kind not in {"component.input", "component.output"}:
+                continue
+            node_config = raw_node.get("node_config")
+            field_name, field_meta = self._extract_boundary_schema_field(node_config)
+            if field_name is None or field_meta is None:
+                continue
+            if node_kind == "component.input":
+                input_schema[field_name] = field_meta
+            else:
+                output_schema[field_name] = field_meta
+        has_boundary_nodes = bool(input_schema or output_schema)
+        return has_boundary_nodes, input_schema, output_schema
+
+    def _extract_boundary_schema_field(self, node_config: object) -> tuple[str | None, dict | None]:
+        if not isinstance(node_config, dict):
+            return None, None
+        raw_name = node_config.get("name")
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            return None, None
+        field_name = raw_name.strip()
+        raw_value_type = node_config.get("value_type")
+        field_meta: dict[str, object] = {}
+        if isinstance(raw_value_type, str) and raw_value_type.strip():
+            field_meta["type"] = raw_value_type.strip()
+        if "required" in node_config:
+            field_meta["required"] = bool(node_config.get("required"))
+        if "default_value" in node_config:
+            field_meta["default_value"] = deepcopy(node_config.get("default_value"))
+        raw_description = node_config.get("description")
+        if isinstance(raw_description, str):
+            field_meta["description"] = raw_description
+        return field_name, field_meta
 
     def _schema_value_matches_type(self, value: object, schema_type: object) -> bool:
         if not isinstance(schema_type, str) or not schema_type.strip():

@@ -1931,8 +1931,320 @@ def test_http_api_can_start_run_and_query_runtime_session(tmp_path: Path) -> Non
     finally:
         server.shutdown()
         server.server_close()
-        echo_server.shutdown()
-        echo_server.server_close()
+
+
+def test_http_api_can_delete_project_resource(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+        graph_update_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:workspace",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(graph_update_request):
+            pass
+
+        save_graph_request = urllib.request.Request(
+            f"{base_url}/api/workbench/resources/custom-node-graphs",
+            data=json.dumps({"resource_name": "Disposable From API"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_graph_request) as response:
+            saved_resource_payload = json.loads(response.read().decode("utf-8"))
+
+        resource_id = saved_resource_payload["resource"]["resource_id"]
+        delete_request = urllib.request.Request(
+            f"{base_url}/api/workbench/resources/delete",
+            data=json.dumps({"resource_id": resource_id}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(delete_request) as response:
+            deleted_payload = json.loads(response.read().decode("utf-8"))
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/resources") as response:
+            registry_payload = json.loads(response.read().decode("utf-8"))
+
+        assert deleted_payload["status"] == "deleted"
+        assert all(item["resource_id"] != resource_id for item in registry_payload["resources"])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_can_rename_project_resource(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+        graph_update_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:workspace",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(graph_update_request):
+            pass
+
+        save_graph_request = urllib.request.Request(
+            f"{base_url}/api/workbench/resources/custom-node-graphs",
+            data=json.dumps({"resource_name": "Old Name"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_graph_request) as response:
+            saved_resource_payload = json.loads(response.read().decode("utf-8"))
+
+        resource_id = saved_resource_payload["resource"]["resource_id"]
+        rename_request = urllib.request.Request(
+            f"{base_url}/api/workbench/resources/rename",
+            data=json.dumps(
+                {"resource_id": resource_id, "display_name": "New Name"}
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(rename_request) as response:
+            renamed_payload = json.loads(response.read().decode("utf-8"))
+
+        assert renamed_payload["resource"]["resource_id"] == resource_id
+        assert renamed_payload["resource"]["display_name"] == "New Name"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_exposes_project_resource_audit_document(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "audit-api-project.weconduct.json"
+
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=json.dumps(
+                {
+                    "project_name": "Audit API Project",
+                    "project_directory": str(tmp_path),
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        graph_update_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:workspace",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(graph_update_request):
+            pass
+
+        save_graph_request = urllib.request.Request(
+            f"{base_url}/api/workbench/resources/custom-node-graphs",
+            data=json.dumps({"resource_name": "Audit Resource"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_graph_request) as response:
+            saved_resource_payload = json.loads(response.read().decode("utf-8"))
+
+        save_project_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_project_request):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/documents") as response:
+            documents_payload = json.loads(response.read().decode("utf-8"))
+        resource_ref = next(
+            item
+            for item in documents_payload["project_owned_resources_index"]["resources"]
+            if item["resource_id"] == saved_resource_payload["resource"]["resource_id"]
+        )
+        manifest_path = project_path.parent / resource_ref["manifest_path"]
+        manifest_path.unlink()
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/resource-audit") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        assert payload["status"] == "ready"
+        assert payload["summary"]["issue_count"] == 1
+        assert payload["issues"][0]["category"] == "project.resource.manifest_missing"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_project_documents_returns_split_project_layout_payload(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "documents-api-project.weconduct.json"
+
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=json.dumps(
+                {
+                    "project_name": "Documents API Project",
+                    "project_directory": str(tmp_path),
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/documents") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        assert payload["project_file"]["project"]["main_graph_path"].endswith(
+            "Documents API Project.weconduct.data/graphs/workspace.graph.json"
+        )
+        assert "project_owned_resources_index" in payload
+        assert "resource_overrides" in payload
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_open_project_with_missing_resource_manifest_stays_openable(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "api-missing-resource.weconduct.json"
+
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=json.dumps({"project_name": "API Missing Resource"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        graph_update_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:workspace",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(graph_update_request):
+            pass
+
+        save_graph_request = urllib.request.Request(
+            f"{base_url}/api/workbench/resources/custom-node-graphs",
+            data=json.dumps({"resource_name": "Broken API Resource"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_graph_request) as response:
+            saved_resource_payload = json.loads(response.read().decode("utf-8"))
+
+        save_project_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_project_request):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/documents") as response:
+            documents_payload = json.loads(response.read().decode("utf-8"))
+        resource_ref = next(
+            item
+            for item in documents_payload["project_owned_resources_index"]["resources"]
+            if item["resource_id"] == saved_resource_payload["resource"]["resource_id"]
+        )
+        manifest_path = project_path.parent / resource_ref["manifest_path"]
+        manifest_path.unlink()
+
+        open_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/open",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(open_request) as response:
+            open_payload = json.loads(response.read().decode("utf-8"))
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/resource-audit") as response:
+            audit_payload = json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(f"{base_url}/api/workbench/resources") as response:
+            registry_payload = json.loads(response.read().decode("utf-8"))
+        reopened_resource = next(
+            item
+            for item in registry_payload["resources"]
+            if item["resource_id"] == saved_resource_payload["resource"]["resource_id"]
+        )
+
+        assert open_payload["status"] == "opened"
+        assert audit_payload["summary"]["issue_count"] == 1
+        assert audit_payload["issues"][0]["category"] == "project.resource.manifest_missing"
+        assert reopened_resource["enabled"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_http_api_runtime_run_returns_accepted_while_session_continues(tmp_path: Path) -> None:
@@ -3483,7 +3795,7 @@ def test_http_api_exposes_runtime_health(tmp_path: Path) -> None:
         assert payload["status"] == "ok"
         assert payload["service"] == "weconduct-api"
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.4.0"
+        assert payload["api_version"] == "0.4.1"
         assert payload["workspace_state_version"] == 1
         assert payload["workspace_session_id"].startswith("ws-")
         assert payload["service_started_at"]
@@ -5226,7 +5538,7 @@ def test_http_host_info_exposes_release_manifest_and_runtime_binding(tmp_path: P
             payload = json.loads(response.read().decode("utf-8"))
 
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.4.0"
+        assert payload["api_version"] == "0.4.1"
         assert payload["server_bind"]["host"] == "127.0.0.1"
         assert payload["server_bind"]["port"] == server.server_address[1]
         assert payload["server_bind"]["base_url"] == base_url

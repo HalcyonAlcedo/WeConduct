@@ -22,6 +22,11 @@ def main() -> int:
     compile_parser.add_argument("source_file")
     run_project_parser = subparsers.add_parser("run-project")
     run_project_parser.add_argument("project_file")
+    regression_run_parser = subparsers.add_parser("regression-run")
+    regression_run_parser.add_argument("project_files", nargs="*")
+    regression_run_parser.add_argument("--project-dir", action="append", default=[])
+    regression_run_parser.add_argument("--manifest", action="append", default=[])
+    regression_run_parser.add_argument("--output", default=None)
     serve_api_parser = subparsers.add_parser("serve-api")
     serve_api_parser.add_argument("--host", default="127.0.0.1")
     serve_api_parser.add_argument("--port", type=int, default=8000)
@@ -99,6 +104,129 @@ def main() -> int:
         }
         _print_json(payload)
         return 0 if run_result.get("result", {}).get("status") == "succeeded" else 1
+
+    if args.command == "regression-run":
+        project_files = _resolve_regression_project_files(
+            raw_project_files=args.project_files,
+            project_dirs=args.project_dir,
+            manifests=args.manifest,
+        )
+        project_payloads: list[dict] = []
+        for project_file in project_files:
+            service = CompilationWorkbenchService()
+            opened = service.open_project(project_path=project_file)
+            started = service.start_runtime_session(None)
+            if started["status"] != "started":
+                project_payloads.append(
+                    {
+                        "status": "failed",
+                        "project_file": str(project_file),
+                        "project": opened["project"],
+                        "start": started,
+                        "primary_failure_reason": _extract_primary_failure_reason_from_start(started),
+                        "failed_node_ids": [],
+                        "failed_node_summaries": [],
+                        "diagnostic_event_count": len(
+                            started.get("diagnostics", {}).get("entries", [])
+                            if isinstance(started.get("diagnostics"), dict)
+                            else []
+                        ),
+                        "result_summary": _build_regression_project_result_summary(None),
+                    }
+                )
+                continue
+            session_id = started["runtime_session"]["session_id"]
+            run_result = service.run_runtime_session(session_id=session_id)
+            project_payloads.append(
+                {
+                    "status": run_result["status"],
+                    "project_file": str(project_file),
+                    "project": opened["project"],
+                    "runtime_session": run_result["runtime_session"],
+                    "execution_summary": run_result.get("execution_summary"),
+                    "result": run_result.get("result"),
+                    "primary_failure_reason": _extract_primary_failure_reason_from_run(run_result),
+                    "failed_node_ids": list(run_result.get("result", {}).get("failed_node_ids", []))
+                    if isinstance(run_result.get("result"), dict)
+                    else [],
+                    "failed_node_summaries": _build_failed_node_summaries(run_result),
+                    "diagnostic_event_count": len(
+                        run_result.get("diagnostic_events", [])
+                        if isinstance(run_result.get("diagnostic_events"), list)
+                        else []
+                    ),
+                    "result_summary": _build_regression_project_result_summary(
+                        run_result.get("execution_summary")
+                    ),
+                }
+            )
+        succeeded_count = len(
+            [
+                item
+                for item in project_payloads
+                if item.get("result", {}).get("status") == "succeeded"
+            ]
+        )
+        failed_project_count_by_reason: dict[str, int] = {}
+        failed_node_count_by_error_code: dict[str, int] = {}
+        failed_node_count_by_kind: dict[str, int] = {}
+        failed_projects: list[dict[str, str]] = []
+        total_diagnostic_event_count = 0
+        for item in project_payloads:
+            diagnostic_event_count = item.get("diagnostic_event_count")
+            if isinstance(diagnostic_event_count, int):
+                total_diagnostic_event_count += diagnostic_event_count
+            if item.get("status") != "failed":
+                continue
+            primary_failure_reason = item.get("primary_failure_reason")
+            if isinstance(primary_failure_reason, str) and primary_failure_reason.strip():
+                failed_project_count_by_reason[primary_failure_reason] = (
+                    failed_project_count_by_reason.get(primary_failure_reason, 0) + 1
+                )
+            for failed_node_summary in item.get("failed_node_summaries", []):
+                if not isinstance(failed_node_summary, dict):
+                    continue
+                error_code = failed_node_summary.get("error_code")
+                if isinstance(error_code, str) and error_code.strip():
+                    failed_node_count_by_error_code[error_code] = (
+                        failed_node_count_by_error_code.get(error_code, 0) + 1
+                    )
+                node_kind = failed_node_summary.get("node_kind")
+                if isinstance(node_kind, str) and node_kind.strip():
+                    failed_node_count_by_kind[node_kind] = (
+                        failed_node_count_by_kind.get(node_kind, 0) + 1
+                    )
+            failed_projects.append(
+                {
+                    "project_file": item.get("project_file"),
+                    "primary_failure_reason": primary_failure_reason,
+                }
+            )
+        payload = {
+            "status": "completed",
+            "summary": {
+                "project_count": len(project_payloads),
+                "succeeded_count": succeeded_count,
+                "failed_count": len(project_payloads) - succeeded_count,
+                "primary_failure_reasons": sorted(
+                    {
+                        reason
+                        for reason in (
+                            item.get("primary_failure_reason") for item in project_payloads
+                        )
+                        if isinstance(reason, str) and reason.strip()
+                    }
+                ),
+                "failed_project_count_by_reason": failed_project_count_by_reason,
+                "failed_node_count_by_error_code": failed_node_count_by_error_code,
+                "failed_node_count_by_kind": failed_node_count_by_kind,
+                "total_diagnostic_event_count": total_diagnostic_event_count,
+                "failed_projects": failed_projects,
+            },
+            "projects": project_payloads,
+        }
+        _print_json(payload, output_path=args.output)
+        return 0 if payload["summary"]["failed_count"] == 0 else 1
 
     if args.command == "serve-api":
         workspace_state_path = (
@@ -242,8 +370,14 @@ def _json_default(value):
     raise TypeError(f"object of type {type(value).__name__} is not JSON serializable")
 
 
-def _print_json(payload) -> None:
-    text = json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default)
+def _serialize_json(payload) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default)
+
+
+def _print_json(payload, *, output_path: str | None = None) -> None:
+    text = _serialize_json(payload)
+    if output_path is not None:
+        Path(output_path).resolve().write_text(text, encoding="utf-8")
     try:
         print(text)
     except UnicodeEncodeError:
@@ -279,6 +413,157 @@ def _build_runtime_regression_summary(runtime_plan: dict) -> dict:
         "node_count": runtime_plan.get("node_count", 0),
         "edge_count": runtime_plan.get("edge_count", 0),
     }
+
+
+def _build_regression_project_result_summary(execution_summary: dict | None) -> dict:
+    if not isinstance(execution_summary, dict):
+        return {
+            "completed_node_count": 0,
+            "failed_node_count": 0,
+            "event_count": 0,
+            "latest_event_kind": None,
+        }
+    raw_event_count = execution_summary.get("event_count", 0)
+    compact_event_count = raw_event_count - 1 if isinstance(raw_event_count, int) and raw_event_count > 0 else 0
+    return {
+        "completed_node_count": execution_summary.get("completed_node_count", 0),
+        "failed_node_count": execution_summary.get("failed_node_count", 0),
+        "event_count": compact_event_count,
+        "latest_event_kind": execution_summary.get("latest_event_kind"),
+    }
+
+
+def _build_failed_node_summaries(run_result: dict) -> list[dict]:
+    node_states = run_result.get("node_states")
+    runtime_plan = run_result.get("runtime_plan")
+    if not isinstance(node_states, list) or not isinstance(runtime_plan, dict):
+        return []
+    executable_nodes = runtime_plan.get("executable_nodes")
+    if not isinstance(executable_nodes, list):
+        return []
+    executable_node_map = {
+        item.get("node_id"): item for item in executable_nodes if isinstance(item, dict)
+    }
+    failed_items: list[dict] = []
+    for node_state in node_states:
+        if not isinstance(node_state, dict):
+            continue
+        if node_state.get("node_status") != "failed":
+            continue
+        node_id = node_state.get("node_id")
+        executable_node = executable_node_map.get(node_id, {})
+        error_payload = node_state.get("error")
+        failed_items.append(
+            {
+                "node_id": node_id,
+                "display_name": executable_node.get("display_name"),
+                "node_kind": executable_node.get("node_kind"),
+                "error_code": (
+                    error_payload.get("error_code")
+                    if isinstance(error_payload, dict)
+                    else None
+                ),
+                "input_snapshot": node_state.get("input_snapshot"),
+            }
+        )
+    return failed_items
+
+
+def _resolve_regression_project_files(
+    *,
+    raw_project_files: list[str],
+    project_dirs: list[str],
+    manifests: list[str],
+) -> list[Path]:
+    resolved_files: list[Path] = []
+    seen: set[str] = set()
+
+    def add_project_file(project_file: Path) -> None:
+        resolved_path = project_file.resolve()
+        serialized = str(resolved_path)
+        if serialized in seen:
+            return
+        seen.add(serialized)
+        resolved_files.append(resolved_path)
+
+    for raw_project_file in raw_project_files:
+        add_project_file(Path(raw_project_file))
+
+    for raw_project_dir in project_dirs:
+        project_dir = Path(raw_project_dir).resolve()
+        if not project_dir.exists() or not project_dir.is_dir():
+            raise ValueError(f"project directory not found: {project_dir}")
+        for project_file in sorted(project_dir.rglob("*.weconduct.json")):
+            add_project_file(project_file)
+
+    for raw_manifest in manifests:
+        manifest_path = Path(raw_manifest).resolve()
+        if not manifest_path.exists():
+            raise ValueError(f"manifest file not found: {manifest_path}")
+        manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        project_file_items = manifest_payload.get("project_files")
+        if not isinstance(project_file_items, list):
+            raise ValueError(f"manifest must contain array: project_files ({manifest_path})")
+        for item in project_file_items:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    f"manifest project_files entries must be non-empty strings ({manifest_path})"
+                )
+            add_project_file(Path(item.strip()))
+
+    if not resolved_files:
+        raise ValueError("regression-run requires at least one project file input")
+    return resolved_files
+
+
+def _extract_primary_failure_reason_from_start(start_result: dict) -> str | None:
+    diagnostics = start_result.get("diagnostics")
+    if isinstance(diagnostics, dict):
+        entries = diagnostics.get("entries")
+        if isinstance(entries, list) and entries:
+            severity_rank = {
+                "info": 0,
+                "warning": 1,
+                "degraded": 2,
+                "error": 3,
+                "fatal": 4,
+            }
+            best_entry = None
+            best_rank = -1
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                severity = entry.get("severity")
+                current_rank = (
+                    severity_rank.get(severity.strip(), -1)
+                    if isinstance(severity, str)
+                    else -1
+                )
+                if current_rank > best_rank:
+                    best_rank = current_rank
+                    best_entry = entry
+            if isinstance(best_entry, dict):
+                category = best_entry.get("category")
+                if isinstance(category, str) and category.strip():
+                    return category.strip()
+    return start_result.get("status") if start_result.get("status") != "started" else None
+
+
+def _extract_primary_failure_reason_from_run(run_result: dict) -> str | None:
+    result = run_result.get("result")
+    if isinstance(result, dict):
+        failure_reason = result.get("failure_reason")
+        if isinstance(failure_reason, str) and failure_reason.strip():
+            return failure_reason.strip()
+        failed_node_ids = result.get("failed_node_ids")
+        if isinstance(failed_node_ids, list) and failed_node_ids:
+            return "runtime.node_failed"
+    execution_summary = run_result.get("execution_summary")
+    if isinstance(execution_summary, dict):
+        status = execution_summary.get("status")
+        if isinstance(status, str) and status.strip() and status.strip() != "succeeded":
+            return status.strip()
+    return None
 
 
 if __name__ == "__main__":
