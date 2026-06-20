@@ -567,7 +567,8 @@ export interface RuntimeSessionDetailResponse {
   event_log: Record<string, unknown>[]
   execution_summary?: RuntimeExecutionSummary
   result: Record<string, unknown> | null
-  diagnostics: { total_count: number; highest_severity: string | null; entries: unknown[] }
+  diagnostics?: { total_count: number; highest_severity: string | null; entries: unknown[] }
+  diagnostic_events?: Record<string, unknown>[]
 }
 export interface RuntimeStreamSnapshot extends RuntimeSessionDetailResponse {
   session_id: string

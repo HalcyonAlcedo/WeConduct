@@ -498,7 +498,11 @@ class CompilationWorkbenchService:
     def get_runtime_session(self, *, session_id: str) -> dict:
         self._refresh_state_from_store()
         session = self._find_runtime_session(session_id)
-        return dict(session)
+        response = dict(session)
+        response["node_states"] = self._decorate_runtime_node_states_for_display(
+            session.get("node_states", [])
+        )
+        return response
 
     def list_runtime_sessions(self) -> dict:
         self._refresh_state_from_store()
@@ -1257,6 +1261,9 @@ class CompilationWorkbenchService:
                     "started_at": None,
                     "completed_at": None,
                     "output": None,
+                    "runtime_order": None,
+                    "static_order": node.get("static_order"),
+                    "plan_index": node.get("plan_index"),
                 }
                 for node in runtime_plan["executable_nodes"]
             ],
@@ -1302,7 +1309,12 @@ class CompilationWorkbenchService:
         )
         return {
             "status": "started",
-            **session_document,
+            **{
+                **session_document,
+                "node_states": self._decorate_runtime_node_states_for_display(
+                    session_document["node_states"]
+                ),
+            },
             "diagnostics": self._build_compilation_diagnostics_summary(compile_result),
         }
 
@@ -1375,6 +1387,7 @@ class CompilationWorkbenchService:
             )
             session_status = "completed"
             failure_reason = None
+            runtime_execution_order_counter = 0
 
             try:
                 executable_nodes = [dict(item) for item in session["runtime_plan"]["executable_nodes"]]
@@ -1398,6 +1411,10 @@ class CompilationWorkbenchService:
                 pending_node_entries: list[dict[str, object]] = []
                 queued_node_ids: set[str] = set()
                 executed_node_ids: set[str] = set()
+                control_edges_by_target = self._build_runtime_relation_edges_by_target(
+                    relation_edges=session["runtime_plan"].get("relation_edges", []),
+                    relation_layer="control",
+                )
                 node_kind_by_id = {
                     item["node_id"]: item.get("node_kind") for item in executable_nodes
                 }
@@ -1436,6 +1453,8 @@ class CompilationWorkbenchService:
                     self._queue_runtime_control_edge_with_wait_all(
                         edge=edge,
                         repeat_mode_value=repeat_mode_value,
+                        control_edges_by_source=control_edges_by_source,
+                        control_edges_by_target=control_edges_by_target,
                         node_index_by_id=node_index_by_id,
                         node_kind_by_id=node_kind_by_id,
                         join_state_by_node_id=join_state_by_node_id,
@@ -1565,6 +1584,9 @@ class CompilationWorkbenchService:
                     started_at = datetime.now(timezone.utc).isoformat()
                     node_state["node_status"] = "running"
                     node_state["started_at"] = started_at
+                    if not isinstance(node_state.get("runtime_order"), int):
+                        node_state["runtime_order"] = runtime_execution_order_counter
+                        runtime_execution_order_counter += 1
                     event_log.append(
                         {
                             "event_kind": "node.started",
@@ -1790,6 +1812,7 @@ class CompilationWorkbenchService:
                                 control_edges_by_source=control_edges_by_source,
                                 node_index_by_id=node_index_by_id,
                                 node_kind_by_id=node_kind_by_id,
+                                control_edges_by_target=control_edges_by_target,
                                 join_state_by_node_id=join_state_by_node_id,
                                 pending_node_entries=pending_node_entries,
                                 queued_node_ids=queued_node_ids,
@@ -1805,6 +1828,7 @@ class CompilationWorkbenchService:
                                 control_edges_by_source=control_edges_by_source,
                                 node_index_by_id=node_index_by_id,
                                 node_kind_by_id=node_kind_by_id,
+                                control_edges_by_target=control_edges_by_target,
                                 join_state_by_node_id=join_state_by_node_id,
                                 pending_node_entries=pending_node_entries,
                                 queued_node_ids=queued_node_ids,
@@ -1819,6 +1843,7 @@ class CompilationWorkbenchService:
                                 control_edges_by_source=control_edges_by_source,
                                 node_index_by_id=node_index_by_id,
                                 node_kind_by_id=node_kind_by_id,
+                                control_edges_by_target=control_edges_by_target,
                                 join_state_by_node_id=join_state_by_node_id,
                                 pending_node_entries=pending_node_entries,
                                 queued_node_ids=queued_node_ids,
@@ -1833,6 +1858,7 @@ class CompilationWorkbenchService:
                                 control_edges_by_source=control_edges_by_source,
                                 node_index_by_id=node_index_by_id,
                                 node_kind_by_id=node_kind_by_id,
+                                control_edges_by_target=control_edges_by_target,
                                 join_state_by_node_id=join_state_by_node_id,
                                 pending_node_entries=pending_node_entries,
                                 queued_node_ids=queued_node_ids,
@@ -1848,6 +1874,7 @@ class CompilationWorkbenchService:
                                 control_edges_by_source=control_edges_by_source,
                                 node_index_by_id=node_index_by_id,
                                 node_kind_by_id=node_kind_by_id,
+                                control_edges_by_target=control_edges_by_target,
                                 join_state_by_node_id=join_state_by_node_id,
                                 pending_node_entries=pending_node_entries,
                                 queued_node_ids=queued_node_ids,
@@ -1863,6 +1890,7 @@ class CompilationWorkbenchService:
                                 control_edges_by_source=control_edges_by_source,
                                 node_index_by_id=node_index_by_id,
                                 node_kind_by_id=node_kind_by_id,
+                                control_edges_by_target=control_edges_by_target,
                                 join_state_by_node_id=join_state_by_node_id,
                                 pending_node_entries=pending_node_entries,
                                 queued_node_ids=queued_node_ids,
@@ -1879,6 +1907,7 @@ class CompilationWorkbenchService:
                                 control_edges_by_source=control_edges_by_source,
                                 node_index_by_id=node_index_by_id,
                                 node_kind_by_id=node_kind_by_id,
+                                control_edges_by_target=control_edges_by_target,
                                 join_state_by_node_id=join_state_by_node_id,
                                 pending_node_entries=pending_node_entries,
                                 queued_node_ids=queued_node_ids,
@@ -3015,6 +3044,10 @@ class CompilationWorkbenchService:
         pending_node_entries: list[dict[str, object]] = []
         queued_node_ids: set[str] = set()
         executed_node_ids: set[str] = set()
+        control_edges_by_target = self._build_runtime_relation_edges_by_target(
+            relation_edges=runtime_plan.get("relation_edges", []),
+            relation_layer="control",
+        )
         node_kind_by_id = {
             item["node_id"]: item.get("node_kind") for item in executable_nodes
         }
@@ -3023,6 +3056,8 @@ class CompilationWorkbenchService:
             self._queue_runtime_control_edge_with_wait_all(
                 edge=edge,
                 repeat_mode_value=repeat_mode_value,
+                control_edges_by_source=control_edges_by_source,
+                control_edges_by_target=control_edges_by_target,
                 node_index_by_id=node_index_by_id,
                 node_kind_by_id=node_kind_by_id,
                 join_state_by_node_id=join_state_by_node_id,
@@ -3358,6 +3393,7 @@ class CompilationWorkbenchService:
                             control_edges_by_source=control_edges_by_source,
                             node_index_by_id=node_index_by_id,
                             node_kind_by_id=node_kind_by_id,
+                            control_edges_by_target=control_edges_by_target,
                             join_state_by_node_id=join_state_by_node_id,
                             pending_node_entries=pending_node_entries,
                             queued_node_ids=queued_node_ids,
@@ -3387,6 +3423,7 @@ class CompilationWorkbenchService:
                             control_edges_by_source=control_edges_by_source,
                             node_index_by_id=node_index_by_id,
                             node_kind_by_id=node_kind_by_id,
+                            control_edges_by_target=control_edges_by_target,
                             join_state_by_node_id=join_state_by_node_id,
                             pending_node_entries=pending_node_entries,
                             queued_node_ids=queued_node_ids,
@@ -3401,6 +3438,7 @@ class CompilationWorkbenchService:
                             control_edges_by_source=control_edges_by_source,
                             node_index_by_id=node_index_by_id,
                             node_kind_by_id=node_kind_by_id,
+                            control_edges_by_target=control_edges_by_target,
                             join_state_by_node_id=join_state_by_node_id,
                             pending_node_entries=pending_node_entries,
                             queued_node_ids=queued_node_ids,
@@ -3416,6 +3454,7 @@ class CompilationWorkbenchService:
                             control_edges_by_source=control_edges_by_source,
                             node_index_by_id=node_index_by_id,
                             node_kind_by_id=node_kind_by_id,
+                            control_edges_by_target=control_edges_by_target,
                             join_state_by_node_id=join_state_by_node_id,
                             pending_node_entries=pending_node_entries,
                             queued_node_ids=queued_node_ids,
@@ -4296,6 +4335,211 @@ class CompilationWorkbenchService:
             result.setdefault(target_node_id.strip(), []).append(dict(edge))
         return result
 
+    def _build_runtime_relation_edges_by_target(
+        self,
+        *,
+        relation_edges: list[dict],
+        relation_layer: str,
+    ) -> dict[str, list[dict]]:
+        result: dict[str, list[dict]] = {}
+        for edge in relation_edges:
+            if not isinstance(edge, dict):
+                continue
+            if edge.get("relation_layer") != relation_layer:
+                continue
+            target_node_id = edge.get("to_node_id")
+            if not isinstance(target_node_id, str) or not target_node_id.strip():
+                continue
+            result.setdefault(target_node_id.strip(), []).append(dict(edge))
+        return result
+
+    def _is_runtime_concurrent_fanout_node_kind(self, node_kind: object) -> bool:
+        if not isinstance(node_kind, str) or not node_kind.strip():
+            return True
+        return node_kind not in {
+            "control.if",
+            "control.switch",
+            "control.failover",
+            "control.while",
+            "control.retry",
+            "control.jump_to_step",
+        }
+
+    def _is_runtime_exclusive_fanout_node_kind(self, node_kind: object) -> bool:
+        return isinstance(node_kind, str) and node_kind in {
+            "control.if",
+            "control.switch",
+            "control.failover",
+            "control.while",
+            "control.retry",
+            "control.jump_to_step",
+        }
+
+    def _resolve_runtime_exclusive_control_origin(
+        self,
+        *,
+        source_node_id: str,
+        control_edges_by_source: dict[str, list[dict]],
+        control_edges_by_target: dict[str, list[dict]],
+        node_kind_by_id: dict[str, object],
+    ) -> tuple[str, str] | None:
+        current_node_id = source_node_id
+        visited_node_ids: set[str] = set()
+        while current_node_id not in visited_node_ids:
+            visited_node_ids.add(current_node_id)
+            incoming_edges = control_edges_by_target.get(current_node_id, [])
+            if len(incoming_edges) != 1:
+                return None
+            incoming_edge = incoming_edges[0]
+            upstream_node_id = incoming_edge.get("from_node_id")
+            if not isinstance(upstream_node_id, str) or not upstream_node_id.strip():
+                return None
+            normalized_upstream_node_id = upstream_node_id.strip()
+            upstream_outgoing_edges = control_edges_by_source.get(normalized_upstream_node_id, [])
+            upstream_kind = node_kind_by_id.get(normalized_upstream_node_id)
+            if (
+                len(upstream_outgoing_edges) > 1
+                and self._is_runtime_exclusive_fanout_node_kind(upstream_kind)
+            ):
+                branch_key = incoming_edge.get("from_port_id")
+                if isinstance(branch_key, str) and branch_key.strip():
+                    return normalized_upstream_node_id, branch_key.strip()
+                branch_slot = incoming_edge.get("from_port_semantic_slot")
+                if isinstance(branch_slot, str) and branch_slot.strip():
+                    return normalized_upstream_node_id, branch_slot.strip()
+                return None
+            current_node_id = normalized_upstream_node_id
+        return None
+
+    def _incoming_runtime_control_edges_are_mutually_exclusive(
+        self,
+        *,
+        incoming_control_edges: list[dict],
+        control_edges_by_source: dict[str, list[dict]],
+        control_edges_by_target: dict[str, list[dict]],
+        node_kind_by_id: dict[str, object],
+    ) -> bool:
+        origins: list[tuple[str, str]] = []
+        for edge in incoming_control_edges:
+            if not isinstance(edge, dict):
+                return False
+            source_node_id = edge.get("from_node_id")
+            if not isinstance(source_node_id, str) or not source_node_id.strip():
+                return False
+            origin = self._resolve_runtime_exclusive_control_origin(
+                source_node_id=source_node_id.strip(),
+                control_edges_by_source=control_edges_by_source,
+                control_edges_by_target=control_edges_by_target,
+                node_kind_by_id=node_kind_by_id,
+            )
+            if origin is None:
+                return False
+            origins.append(origin)
+        if len(origins) < 2:
+            return False
+        origin_node_ids = {item[0] for item in origins}
+        if len(origin_node_ids) != 1:
+            return False
+        return len({item[1] for item in origins}) == len(origins)
+
+    def _resolve_runtime_parallel_fork_join_tokens(
+        self,
+        *,
+        incoming_control_edges: list[dict],
+        control_edges_by_source: dict[str, list[dict]],
+        control_edges_by_target: dict[str, list[dict]],
+        node_kind_by_id: dict[str, object],
+    ) -> list[str]:
+        if len(incoming_control_edges) <= 1:
+            return []
+        if self._incoming_runtime_control_edges_are_mutually_exclusive(
+            incoming_control_edges=incoming_control_edges,
+            control_edges_by_source=control_edges_by_source,
+            control_edges_by_target=control_edges_by_target,
+            node_kind_by_id=node_kind_by_id,
+        ):
+            return []
+        tokens: list[str] = []
+        seen_tokens: set[str] = set()
+        for edge in incoming_control_edges:
+            if not isinstance(edge, dict):
+                continue
+            edge_id = edge.get("edge_id")
+            if isinstance(edge_id, str) and edge_id.strip():
+                token = f"edge:{edge_id.strip()}"
+            else:
+                source_node_id = str(edge.get("from_node_id") or "").strip()
+                target_node_id = str(edge.get("to_node_id") or "").strip()
+                token = f"path:{source_node_id}:{target_node_id}:{len(tokens)}"
+            if token in seen_tokens:
+                continue
+            seen_tokens.add(token)
+            tokens.append(token)
+        return sorted(tokens) if len(tokens) > 1 else []
+
+    def _resolve_runtime_parallel_fork_branch_token(
+        self,
+        *,
+        source_node_id: str,
+        control_edges_by_source: dict[str, list[dict]],
+        control_edges_by_target: dict[str, list[dict]],
+        node_kind_by_id: dict[str, object],
+    ) -> str | None:
+        current_node_id = source_node_id
+        visited_node_ids: set[str] = set()
+        while current_node_id not in visited_node_ids:
+            visited_node_ids.add(current_node_id)
+            incoming_edges = control_edges_by_target.get(current_node_id, [])
+            if len(incoming_edges) > 1:
+                candidate_tokens: list[str] = []
+                seen_tokens: set[str] = set()
+                for incoming_edge in incoming_edges:
+                    upstream_node_id = incoming_edge.get("from_node_id")
+                    if not isinstance(upstream_node_id, str) or not upstream_node_id.strip():
+                        return None
+                    token = self._resolve_runtime_parallel_fork_branch_token(
+                        source_node_id=upstream_node_id.strip(),
+                        control_edges_by_source=control_edges_by_source,
+                        control_edges_by_target=control_edges_by_target,
+                        node_kind_by_id=node_kind_by_id,
+                    )
+                    if not isinstance(token, str) or not token.strip():
+                        return None
+                    normalized_token = token.strip()
+                    if normalized_token in seen_tokens:
+                        continue
+                    seen_tokens.add(normalized_token)
+                    candidate_tokens.append(normalized_token)
+                if len(candidate_tokens) == 1:
+                    return candidate_tokens[0]
+                return None
+            if len(incoming_edges) != 1:
+                return None
+            incoming_edge = incoming_edges[0]
+            upstream_node_id = incoming_edge.get("from_node_id")
+            if not isinstance(upstream_node_id, str) or not upstream_node_id.strip():
+                return None
+            normalized_upstream_node_id = upstream_node_id.strip()
+            if node_kind_by_id.get(normalized_upstream_node_id) == "control.parallel_fork":
+                branch_port_id = incoming_edge.get("from_port_id")
+                return branch_port_id.strip() if isinstance(branch_port_id, str) and branch_port_id.strip() else None
+            upstream_outgoing_edges = control_edges_by_source.get(normalized_upstream_node_id, [])
+            if (
+                len(upstream_outgoing_edges) > 1
+                and self._is_runtime_concurrent_fanout_node_kind(
+                    node_kind_by_id.get(normalized_upstream_node_id)
+                )
+            ):
+                edge_id = incoming_edge.get("edge_id")
+                if isinstance(edge_id, str) and edge_id.strip():
+                    return f"edge:{edge_id.strip()}"
+                branch_port_id = incoming_edge.get("from_port_id")
+                if isinstance(branch_port_id, str) and branch_port_id.strip():
+                    return f"path:{normalized_upstream_node_id}:{branch_port_id.strip()}:{current_node_id}"
+                return f"path:{normalized_upstream_node_id}:{current_node_id}"
+            current_node_id = normalized_upstream_node_id
+        return None
+
     def _resolve_runtime_data_edge_value(
         self,
         *,
@@ -4506,13 +4750,15 @@ class CompilationWorkbenchService:
             matched_edges.append(edge)
         return matched_edges
 
-    def _resolve_runtime_wait_all_input_ports(
+    def _resolve_runtime_wait_all_tokens(
         self,
         *,
         executable_node: dict,
     ) -> list[str]:
         node_kind = executable_node.get("node_kind")
         ports = self._resolve_runtime_node_ports(executable_node)
+        if node_kind in {"control.if", "control.while"}:
+            return []
         if node_kind == "control.join":
             return sorted(
                 port_id
@@ -4540,13 +4786,17 @@ class CompilationWorkbenchService:
             if port_meta.get("direction") == "input"
             and port_meta.get("relation_layer") == "control"
         )
-        return control_input_ports if len(control_input_ports) > 1 else []
+        if len(control_input_ports) > 1:
+            return control_input_ports
+        return []
 
     def _queue_runtime_control_edge_with_wait_all(
         self,
         *,
         edge: dict,
         repeat_mode_value: bool,
+        control_edges_by_source: dict[str, list[dict]],
+        control_edges_by_target: dict[str, list[dict]],
         node_index_by_id: dict[str, int],
         node_kind_by_id: dict[str, object],
         join_state_by_node_id: dict[str, dict[str, object]],
@@ -4564,25 +4814,136 @@ class CompilationWorkbenchService:
         if target_node_index is None:
             return
         target_node_kind = node_kind_by_id.get(target_node_id)
-        effective_repeat_mode = (
-            repeat_mode_value
-            or target_node_kind in {"control.while", "control.retry"}
-        )
+        effective_repeat_mode = repeat_mode_value or target_node_kind == "control.retry"
+        if target_node_kind == "control.if":
+            target_port_id = edge.get("to_port_id")
+            if target_port_id == "repeat":
+                self._enqueue_runtime_flow_graph_node(
+                    pending_node_entries=pending_node_entries,
+                    queued_node_ids=queued_node_ids,
+                    executed_node_ids=executed_node_ids,
+                    executable_nodes=executable_nodes,
+                    node_index=target_node_index,
+                    repeat_mode=True,
+                    event_log=event_log,
+                    session_id=session_id,
+                    source_node_id=edge.get("from_node_id")
+                    if isinstance(edge.get("from_node_id"), str)
+                    else None,
+                    source_port_id=edge.get("from_port_id")
+                    if isinstance(edge.get("from_port_id"), str)
+                    else None,
+                )
+                return
+            self._enqueue_runtime_flow_graph_node(
+                pending_node_entries=pending_node_entries,
+                queued_node_ids=queued_node_ids,
+                executed_node_ids=executed_node_ids,
+                executable_nodes=executable_nodes,
+                node_index=target_node_index,
+                repeat_mode=False,
+                event_log=event_log,
+                session_id=session_id,
+                source_node_id=edge.get("from_node_id")
+                if isinstance(edge.get("from_node_id"), str)
+                else None,
+                source_port_id=edge.get("from_port_id")
+                if isinstance(edge.get("from_port_id"), str)
+                else None,
+            )
+            return
+        if target_node_kind == "control.while":
+            target_port_id = edge.get("to_port_id")
+            if target_port_id == "repeat":
+                self._enqueue_runtime_flow_graph_node(
+                    pending_node_entries=pending_node_entries,
+                    queued_node_ids=queued_node_ids,
+                    executed_node_ids=executed_node_ids,
+                    executable_nodes=executable_nodes,
+                    node_index=target_node_index,
+                    repeat_mode=True,
+                    event_log=event_log,
+                    session_id=session_id,
+                    source_node_id=edge.get("from_node_id")
+                    if isinstance(edge.get("from_node_id"), str)
+                    else None,
+                    source_port_id=edge.get("from_port_id")
+                    if isinstance(edge.get("from_port_id"), str)
+                    else None,
+                )
+                return
+            else:
+                effective_repeat_mode = False
+                self._enqueue_runtime_flow_graph_node(
+                    pending_node_entries=pending_node_entries,
+                    queued_node_ids=queued_node_ids,
+                    executed_node_ids=executed_node_ids,
+                    executable_nodes=executable_nodes,
+                    node_index=target_node_index,
+                    repeat_mode=False,
+                    event_log=event_log,
+                    session_id=session_id,
+                    source_node_id=edge.get("from_node_id")
+                    if isinstance(edge.get("from_node_id"), str)
+                    else None,
+                    source_port_id=edge.get("from_port_id")
+                    if isinstance(edge.get("from_port_id"), str)
+                    else None,
+                )
+                return
         target_node = executable_nodes[target_node_index]
-        required_inputs = self._resolve_runtime_wait_all_input_ports(executable_node=target_node)
-        if required_inputs:
+        required_tokens = self._resolve_runtime_wait_all_tokens(executable_node=target_node)
+        if not required_tokens and target_node_kind != "control.join":
+            required_tokens = self._resolve_runtime_parallel_fork_join_tokens(
+                incoming_control_edges=control_edges_by_target.get(target_node_id, []),
+                control_edges_by_source=control_edges_by_source,
+                control_edges_by_target=control_edges_by_target,
+                node_kind_by_id=node_kind_by_id,
+            )
+        if required_tokens:
             join_state = join_state_by_node_id.setdefault(
                 target_node_id,
-                {"arrived_input_ports": set(), "join_mode": "explicit" if target_node_kind == "control.join" else "implicit"},
+                {"arrived_tokens": set(), "join_mode": "explicit" if target_node_kind == "control.join" else "implicit"},
             )
-            arrived_ports = join_state.get("arrived_input_ports")
-            if not isinstance(arrived_ports, set):
-                arrived_ports = set()
-                join_state["arrived_input_ports"] = arrived_ports
-            to_port_id = edge.get("to_port_id")
-            if isinstance(to_port_id, str) and to_port_id.strip():
-                arrived_ports.add(to_port_id.strip())
-            if not all(port_id in arrived_ports for port_id in required_inputs):
+            arrived_tokens = join_state.get("arrived_tokens")
+            if not isinstance(arrived_tokens, set):
+                arrived_tokens = set()
+                join_state["arrived_tokens"] = arrived_tokens
+            token: str | None = None
+            if target_node_kind == "control.join":
+                to_port_id = edge.get("to_port_id")
+                if isinstance(to_port_id, str) and to_port_id.strip():
+                    token = to_port_id.strip()
+            else:
+                expects_parallel_branch_tokens = any(
+                    isinstance(required_token, str)
+                    and (
+                        required_token.startswith("branch:")
+                        or required_token.startswith("edge:")
+                        or required_token.startswith("path:")
+                    )
+                    for required_token in required_tokens
+                )
+                if expects_parallel_branch_tokens:
+                    edge_id = edge.get("edge_id")
+                    if isinstance(edge_id, str) and edge_id.strip():
+                        token = f"edge:{edge_id.strip()}"
+                    else:
+                        source_node_id = edge.get("from_node_id")
+                        if isinstance(source_node_id, str) and source_node_id.strip():
+                            token = self._resolve_runtime_parallel_fork_branch_token(
+                                source_node_id=source_node_id.strip(),
+                                control_edges_by_source=control_edges_by_source,
+                                control_edges_by_target=control_edges_by_target,
+                                node_kind_by_id=node_kind_by_id,
+                            )
+                if token is None:
+                    to_port_id = edge.get("to_port_id")
+                    if isinstance(to_port_id, str) and to_port_id.strip():
+                        token = to_port_id.strip()
+            if token is not None:
+                arrived_tokens.add(token)
+            if not all(required_token in arrived_tokens for required_token in required_tokens):
                 if event_log is not None:
                     event_log.append(
                         {
@@ -4591,8 +4952,8 @@ class CompilationWorkbenchService:
                             "session_id": session_id,
                             "node_id": target_node_id,
                             "join_mode": join_state.get("join_mode"),
-                            "arrived_input_ports": sorted(arrived_ports),
-                            "required_input_ports": required_inputs,
+                            "arrived_input_ports": sorted(arrived_tokens),
+                            "required_input_ports": required_tokens,
                         }
                     )
                 return
@@ -4631,6 +4992,7 @@ class CompilationWorkbenchService:
         control_edges_by_source: dict[str, list[dict]],
         node_index_by_id: dict[str, int],
         node_kind_by_id: dict[str, object],
+        control_edges_by_target: dict[str, list[dict]],
         join_state_by_node_id: dict[str, dict[str, object]],
         pending_node_entries: list[dict[str, object]],
         queued_node_ids: set[str],
@@ -4650,6 +5012,8 @@ class CompilationWorkbenchService:
             self._queue_runtime_control_edge_with_wait_all(
                 edge=edge,
                 repeat_mode_value=repeat_mode,
+                control_edges_by_source=control_edges_by_source,
+                control_edges_by_target=control_edges_by_target,
                 node_index_by_id=node_index_by_id,
                 node_kind_by_id=node_kind_by_id,
                 join_state_by_node_id=join_state_by_node_id,
@@ -4682,6 +5046,7 @@ class CompilationWorkbenchService:
         control_edges_by_source: dict[str, list[dict]],
         node_index_by_id: dict[str, int],
         node_kind_by_id: dict[str, object],
+        control_edges_by_target: dict[str, list[dict]],
         join_state_by_node_id: dict[str, dict[str, object]],
         pending_node_entries: list[dict[str, object]],
         queued_node_ids: set[str],
@@ -4710,6 +5075,7 @@ class CompilationWorkbenchService:
             control_edges_by_source=control_edges_by_source,
             node_index_by_id=node_index_by_id,
             node_kind_by_id=node_kind_by_id,
+            control_edges_by_target=control_edges_by_target,
             join_state_by_node_id=join_state_by_node_id,
             pending_node_entries=pending_node_entries,
             queued_node_ids=queued_node_ids,
@@ -4729,6 +5095,7 @@ class CompilationWorkbenchService:
         control_edges_by_source: dict[str, list[dict]],
         node_index_by_id: dict[str, int],
         node_kind_by_id: dict[str, object],
+        control_edges_by_target: dict[str, list[dict]],
         join_state_by_node_id: dict[str, dict[str, object]],
         pending_node_entries: list[dict[str, object]],
         queued_node_ids: set[str],
@@ -4775,6 +5142,7 @@ class CompilationWorkbenchService:
             control_edges_by_source=control_edges_by_source,
             node_index_by_id=node_index_by_id,
             node_kind_by_id=node_kind_by_id,
+            control_edges_by_target=control_edges_by_target,
             join_state_by_node_id=join_state_by_node_id,
             pending_node_entries=pending_node_entries,
             queued_node_ids=queued_node_ids,
@@ -4793,6 +5161,7 @@ class CompilationWorkbenchService:
         control_edges_by_source: dict[str, list[dict]],
         node_index_by_id: dict[str, int],
         node_kind_by_id: dict[str, object],
+        control_edges_by_target: dict[str, list[dict]],
         join_state_by_node_id: dict[str, dict[str, object]],
         pending_node_entries: list[dict[str, object]],
         queued_node_ids: set[str],
@@ -4807,6 +5176,7 @@ class CompilationWorkbenchService:
             control_edges_by_source=control_edges_by_source,
             node_index_by_id=node_index_by_id,
             node_kind_by_id=node_kind_by_id,
+            control_edges_by_target=control_edges_by_target,
             join_state_by_node_id=join_state_by_node_id,
             pending_node_entries=pending_node_entries,
             queued_node_ids=queued_node_ids,
@@ -4825,6 +5195,7 @@ class CompilationWorkbenchService:
         control_edges_by_source: dict[str, list[dict]],
         node_index_by_id: dict[str, int],
         node_kind_by_id: dict[str, object],
+        control_edges_by_target: dict[str, list[dict]],
         join_state_by_node_id: dict[str, dict[str, object]],
         pending_node_entries: list[dict[str, object]],
         queued_node_ids: set[str],
@@ -4848,6 +5219,7 @@ class CompilationWorkbenchService:
             control_edges_by_source=control_edges_by_source,
             node_index_by_id=node_index_by_id,
             node_kind_by_id=node_kind_by_id,
+            control_edges_by_target=control_edges_by_target,
             join_state_by_node_id=join_state_by_node_id,
             pending_node_entries=pending_node_entries,
             queued_node_ids=queued_node_ids,
@@ -4867,6 +5239,7 @@ class CompilationWorkbenchService:
         control_edges_by_source: dict[str, list[dict]],
         node_index_by_id: dict[str, int],
         node_kind_by_id: dict[str, object],
+        control_edges_by_target: dict[str, list[dict]],
         join_state_by_node_id: dict[str, dict[str, object]],
         pending_node_entries: list[dict[str, object]],
         queued_node_ids: set[str],
@@ -4875,6 +5248,7 @@ class CompilationWorkbenchService:
         event_log: list[dict] | None = None,
         session_id: str | None = None,
     ) -> None:
+        join_state_by_node_id.pop(executable_node["node_id"], None)
         loop_selected = self._evaluate_runtime_control_condition(
             executable_node.get("node_config", {}),
             runtime_context,
@@ -4906,6 +5280,7 @@ class CompilationWorkbenchService:
             control_edges_by_source=control_edges_by_source,
             node_index_by_id=node_index_by_id,
             node_kind_by_id=node_kind_by_id,
+            control_edges_by_target=control_edges_by_target,
             join_state_by_node_id=join_state_by_node_id,
             pending_node_entries=pending_node_entries,
             queued_node_ids=queued_node_ids,
@@ -4925,6 +5300,7 @@ class CompilationWorkbenchService:
         control_edges_by_source: dict[str, list[dict]],
         node_index_by_id: dict[str, int],
         node_kind_by_id: dict[str, object],
+        control_edges_by_target: dict[str, list[dict]],
         join_state_by_node_id: dict[str, dict[str, object]],
         pending_node_entries: list[dict[str, object]],
         queued_node_ids: set[str],
@@ -4978,6 +5354,7 @@ class CompilationWorkbenchService:
             control_edges_by_source=control_edges_by_source,
             node_index_by_id=node_index_by_id,
             node_kind_by_id=node_kind_by_id,
+            control_edges_by_target=control_edges_by_target,
             join_state_by_node_id=join_state_by_node_id,
             pending_node_entries=pending_node_entries,
             queued_node_ids=queued_node_ids,
@@ -4997,6 +5374,7 @@ class CompilationWorkbenchService:
         control_edges_by_source: dict[str, list[dict]],
         node_index_by_id: dict[str, int],
         node_kind_by_id: dict[str, object],
+        control_edges_by_target: dict[str, list[dict]],
         join_state_by_node_id: dict[str, dict[str, object]],
         pending_node_entries: list[dict[str, object]],
         queued_node_ids: set[str],
@@ -5050,6 +5428,7 @@ class CompilationWorkbenchService:
             control_edges_by_source=control_edges_by_source,
             node_index_by_id=node_index_by_id,
             node_kind_by_id=node_kind_by_id,
+            control_edges_by_target=control_edges_by_target,
             join_state_by_node_id=join_state_by_node_id,
             pending_node_entries=pending_node_entries,
             queued_node_ids=queued_node_ids,
@@ -5750,7 +6129,7 @@ class CompilationWorkbenchService:
             "workspace_state_version": WORKSPACE_STATE_VERSION,
             "workbench": {
                 "host_mode": "python_core",
-                "api_version": "0.3.0",
+                "api_version": "0.4.0",
                 "workspace_session_id": f"ws-{uuid.uuid4().hex[:12]}",
                 "service_started_at": datetime.now(timezone.utc).isoformat(),
                 "compile_counter": 0,
@@ -7043,7 +7422,7 @@ class CompilationWorkbenchService:
             return diagnostics
 
         if normalized_node_kind == "control.while":
-            for required_port_id in ("in", "loop", "done"):
+            for required_port_id in ("in", "repeat", "loop", "done"):
                 if not has_port(required_port_id):
                     append_missing_port(required_port_id)
             expression = node_config.get("expression")
@@ -7594,6 +7973,74 @@ class CompilationWorkbenchService:
                 control_successors[edge.from_node_id] = []
             control_successors[edge.from_node_id].append(edge.to_node_id)
         return control_successors
+
+    def _build_runtime_static_node_order(self, graph_model: GraphModel) -> dict[str, int]:
+        node_ids_in_model_order = [node.node_id for node in graph_model.nodes]
+        if not node_ids_in_model_order:
+            return {}
+
+        control_successors = self._build_graph_control_successors(graph_model)
+        entry_node_ids = [
+            node.node_id
+            for node in graph_model.nodes
+            if node.node_kind == "flow.start"
+        ]
+
+        if not entry_node_ids:
+            return {node_id: index for index, node_id in enumerate(node_ids_in_model_order)}
+
+        static_order: dict[str, int] = {}
+        queued_node_ids: set[str] = set()
+        pending_node_ids: list[str] = []
+
+        for node_id in entry_node_ids:
+            if node_id in queued_node_ids:
+                continue
+            queued_node_ids.add(node_id)
+            pending_node_ids.append(node_id)
+
+        while pending_node_ids:
+            current_node_id = pending_node_ids.pop(0)
+            if current_node_id not in static_order:
+                static_order[current_node_id] = len(static_order)
+            for target_node_id in control_successors.get(current_node_id, []):
+                if target_node_id in queued_node_ids:
+                    continue
+                queued_node_ids.add(target_node_id)
+                pending_node_ids.append(target_node_id)
+
+        for node_id in node_ids_in_model_order:
+            if node_id not in static_order:
+                static_order[node_id] = len(static_order)
+
+        return static_order
+
+    def _sort_runtime_node_states_for_display(self, node_states: list[dict]) -> list[dict]:
+        def sort_key(item: dict) -> tuple[int, int, int]:
+            runtime_order = item.get("runtime_order")
+            static_order = item.get("static_order")
+            plan_index = item.get("plan_index")
+            if isinstance(runtime_order, int):
+                return (0, runtime_order, plan_index if isinstance(plan_index, int) else 10**9)
+            return (
+                1,
+                static_order if isinstance(static_order, int) else 10**9,
+                plan_index if isinstance(plan_index, int) else 10**9,
+            )
+
+        return [
+            dict(item)
+            for item in sorted(
+                (item for item in node_states if isinstance(item, dict)),
+                key=sort_key,
+            )
+        ]
+
+    def _decorate_runtime_node_states_for_display(self, node_states: list[dict]) -> list[dict]:
+        decorated = self._sort_runtime_node_states_for_display(node_states)
+        for item in decorated:
+            item.pop("plan_index", None)
+        return decorated
 
     def _collect_flow_graph_reachable_node_ids(self, graph_model: GraphModel) -> set[str]:
         entry_node_ids = [
@@ -9698,6 +10145,7 @@ class CompilationWorkbenchService:
 
     def _build_runtime_plan(self, graph_model: GraphModel) -> dict:
         resources = self._get_resource_registry()
+        static_order_by_node_id = self._build_runtime_static_node_order(graph_model)
         node_by_id = {node.node_id: node for node in graph_model.nodes}
         outgoing_edge_ids: dict[str, list[str]] = {node.node_id: [] for node in graph_model.nodes}
         incoming_edge_ids: dict[str, list[str]] = {node.node_id: [] for node in graph_model.nodes}
@@ -9773,9 +10221,11 @@ class CompilationWorkbenchService:
                 ],
                 "incoming_edge_ids": incoming_edge_ids.get(node.node_id, []),
                 "outgoing_edge_ids": outgoing_edge_ids.get(node.node_id, []),
+                "plan_index": index,
+                "static_order": static_order_by_node_id.get(node.node_id, index),
                 **self._resolve_runtime_node_resource(node_kind=node.node_kind, resources=resources),
             }
-            for node in graph_model.nodes
+            for index, node in enumerate(graph_model.nodes)
         ]
 
         entry_node_ids = [
@@ -10086,7 +10536,7 @@ class CompilationWorkbenchService:
             "status": runtime_session.get("status"),
             "runtime_session": dict(runtime_session),
             "runtime_plan": dict(session.get("runtime_plan", {})),
-            "node_states": [dict(item) for item in node_states],
+            "node_states": self._decorate_runtime_node_states_for_display(node_states),
             "event_log": [dict(item) for item in event_log],
             "execution_summary": self._build_runtime_execution_summary(
                 runtime_session=runtime_session,

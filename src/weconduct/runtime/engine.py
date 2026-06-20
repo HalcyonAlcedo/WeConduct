@@ -37,8 +37,11 @@ class RuntimeContext:
     workspace_root: Path | None = None
 
     def close(self) -> None:
+        browser_context = self.browser_runtime.get("browser_context")
         browser = self.browser_runtime.get("browser")
         playwright = self.browser_runtime.get("playwright")
+        if browser_context is not None:
+            browser_context.close()
         if browser is not None:
             browser.close()
         if playwright is not None:
@@ -74,6 +77,42 @@ class RuntimeExecutorRegistry:
             "browser.inject_js": self._execute_browser_inject_js,
             "browser.run_js": self._execute_browser_run_js,
             "browser.get_local_storage": self._execute_browser_get_local_storage,
+            "browser.wait_for_text": self._execute_browser_wait_for_text,
+            "browser.wait_for_attribute": self._execute_browser_wait_for_attribute,
+            "browser.wait_for_value": self._execute_browser_wait_for_value,
+            "browser.wait_for_request": self._execute_browser_wait_for_request,
+            "browser.wait_for_response": self._execute_browser_wait_for_response,
+            "browser.wait_for_popup": self._execute_browser_wait_for_popup,
+            "browser.get_cookie": self._execute_browser_get_cookie,
+            "browser.set_cookie": self._execute_browser_set_cookie,
+            "browser.delete_cookie": self._execute_browser_delete_cookie,
+            "browser.list_cookies": self._execute_browser_list_cookies,
+            "browser.set_local_storage": self._execute_browser_set_local_storage,
+            "browser.remove_local_storage": self._execute_browser_remove_local_storage,
+            "browser.clear_local_storage": self._execute_browser_clear_local_storage,
+            "browser.get_session_storage": self._execute_browser_get_session_storage,
+            "browser.set_session_storage": self._execute_browser_set_session_storage,
+            "browser.press_key": self._execute_browser_press_key,
+            "browser.keyboard_type": self._execute_browser_keyboard_type,
+            "browser.hotkey": self._execute_browser_hotkey,
+            "browser.scroll_to_element": self._execute_browser_scroll_to_element,
+            "browser.scroll_page": self._execute_browser_scroll_page,
+            "browser.drag_and_drop": self._execute_browser_drag_and_drop,
+            "browser.element_screenshot": self._execute_browser_element_screenshot,
+            "browser.open_tab": self._execute_browser_open_tab,
+            "browser.switch_tab": self._execute_browser_switch_tab,
+            "browser.close_tab": self._execute_browser_close_tab,
+            "browser.exists": self._execute_browser_exists,
+            "browser.is_visible": self._execute_browser_is_visible,
+            "browser.is_enabled": self._execute_browser_is_enabled,
+            "browser.is_checked": self._execute_browser_is_checked,
+            "browser.get_html": self._execute_browser_get_html,
+            "browser.get_inner_html": self._execute_browser_get_inner_html,
+            "browser.download_file": self._execute_browser_download_file,
+            "browser.wait_for_download": self._execute_browser_wait_for_download,
+            "browser.set_user_agent": self._execute_browser_set_user_agent,
+            "browser.set_extra_headers": self._execute_browser_set_extra_headers,
+            "browser.wait_for_url_change": self._execute_browser_wait_for_url_change,
             "browser.switch_to_frame": self._execute_browser_switch_to_frame,
             "browser.switch_to_parent_frame": self._execute_browser_switch_to_parent_frame,
             "browser.switch_to_default_content": self._execute_browser_switch_to_default_content,
@@ -88,6 +127,7 @@ class RuntimeExecutorRegistry:
             "data.set_variables_batch": self._execute_set_variables_batch,
             "data.increment_variable": self._execute_increment_variable,
             "data.decrement_variable": self._execute_decrement_variable,
+            "data.convert_value": self._execute_convert_value,
             "data.create_list": self._execute_create_list,
             "data.list_append": self._execute_list_append,
             "data.list_extend": self._execute_list_extend,
@@ -565,6 +605,479 @@ class RuntimeExecutorRegistry:
             "page_url": _require_browser_page(context).url,
         }
 
+    def _execute_browser_wait_for_text(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        selector = _require_selector(node, context)
+        if isinstance(selector, dict):
+            return selector
+        expected_text = _resolve_value(node_config.get("text"), context)
+        if not isinstance(expected_text, str):
+            expected_text = "" if expected_text is None else str(expected_text)
+        match_mode = str(_resolve_value(node_config.get("match_mode", "contains"), context) or "contains").strip().lower()
+        timeout_ms = _resolve_int(_resolve_value(node_config.get("timeout"), context), default=10000)
+        target = _require_browser_target(context)
+        locator = target.locator(selector)
+        _wait_until(
+            timeout_ms,
+            lambda: _match_text(str(locator.inner_text()), expected_text, match_mode),
+            on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
+        )
+        matched_text = str(locator.inner_text())
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "selector": selector,
+            "matched_text": matched_text,
+            "match_mode": match_mode,
+            "page_url": _require_browser_page(context).url,
+        }
+
+    def _execute_browser_wait_for_attribute(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        selector = _require_selector(node, context)
+        if isinstance(selector, dict):
+            return selector
+        attribute = _resolve_value(node_config.get("attribute"), context)
+        if not isinstance(attribute, str) or not attribute.strip():
+            return _failed_result(node, "browser.attribute_required", "attribute is required")
+        expected_value = _resolve_value(node_config.get("value"), context)
+        if not isinstance(expected_value, str):
+            expected_value = "" if expected_value is None else str(expected_value)
+        match_mode = str(_resolve_value(node_config.get("match_mode", "equals"), context) or "equals").strip().lower()
+        timeout_ms = _resolve_int(_resolve_value(node_config.get("timeout"), context), default=10000)
+        target = _require_browser_target(context)
+        locator = target.locator(selector)
+        _wait_until(
+            timeout_ms,
+            lambda: _match_text(locator.get_attribute(attribute.strip()) or "", expected_value, match_mode),
+            on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
+        )
+        value = locator.get_attribute(attribute.strip()) or ""
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "selector": selector,
+            "attribute": attribute.strip(),
+            "value": value,
+            "match_mode": match_mode,
+            "page_url": _require_browser_page(context).url,
+        }
+
+    def _execute_browser_wait_for_value(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        selector = _require_selector(node, context)
+        if isinstance(selector, dict):
+            return selector
+        expected_value = _resolve_value(node_config.get("value"), context)
+        if not isinstance(expected_value, str):
+            expected_value = "" if expected_value is None else str(expected_value)
+        match_mode = str(_resolve_value(node_config.get("match_mode", "equals"), context) or "equals").strip().lower()
+        timeout_ms = _resolve_int(_resolve_value(node_config.get("timeout"), context), default=10000)
+        target = _require_browser_target(context)
+        locator = target.locator(selector)
+        _wait_until(
+            timeout_ms,
+            lambda: _match_text(locator.input_value(), expected_value, match_mode),
+            on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
+        )
+        value = locator.input_value()
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "selector": selector,
+            "value": value,
+            "match_mode": match_mode,
+            "page_url": _require_browser_page(context).url,
+        }
+
+    def _execute_browser_wait_for_request(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        url_pattern = _resolve_value(node_config.get("url_pattern"), context)
+        method = _resolve_value(node_config.get("method"), context)
+        timeout_ms = _resolve_int(_resolve_value(node_config.get("timeout"), context), default=10000)
+        if not isinstance(url_pattern, str) or not url_pattern.strip():
+            return _failed_result(node, "browser.url_pattern_required", "url_pattern is required")
+        normalized_method = method.strip().upper() if isinstance(method, str) and method.strip() else None
+        record = _wait_for_record(
+            context.browser_runtime.setdefault("request_records", []),
+            timeout_ms,
+            lambda item: _request_record_matches(item, url_pattern.strip(), normalized_method),
+            on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
+        )
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "url_pattern": url_pattern.strip(),
+            "method": record["method"],
+            "url": record["url"],
+            "headers": record["headers"],
+        }
+
+    def _execute_browser_wait_for_response(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        url_pattern = _resolve_value(node_config.get("url_pattern"), context)
+        status_code = _resolve_value(node_config.get("status_code"), context)
+        timeout_ms = _resolve_int(_resolve_value(node_config.get("timeout"), context), default=10000)
+        if not isinstance(url_pattern, str) or not url_pattern.strip():
+            return _failed_result(node, "browser.url_pattern_required", "url_pattern is required")
+        expected_status = _resolve_int(status_code, default=-1) if status_code is not None else None
+        record = _wait_for_record(
+            context.browser_runtime.setdefault("response_records", []),
+            timeout_ms,
+            lambda item: _response_record_matches(item, url_pattern.strip(), expected_status),
+            on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
+        )
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "url_pattern": url_pattern.strip(),
+            "url": record["url"],
+            "status_code": record["status_code"],
+            "headers": record["headers"],
+            "body_text": record["body_text"],
+        }
+
+    def _execute_browser_wait_for_popup(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        timeout_ms = _resolve_int(_resolve_value(node_config.get("timeout"), context), default=10000)
+        activate = bool(_resolve_value(node_config.get("activate", True), context))
+        record = _wait_for_record(
+            context.browser_runtime.setdefault("popup_records", []),
+            timeout_ms,
+            lambda item: isinstance(item, dict) and isinstance(item.get("page"), Page),
+            on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
+        )
+        popup_page = record["page"]
+        if activate:
+            page_index = _set_active_browser_page(context, popup_page)
+        else:
+            page_index = record.get("page_index")
+        result = {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "page_url": popup_page.url,
+            "page_index": page_index,
+            "label": _page_label(context, popup_page),
+            "activated": activate,
+        }
+        _store_optional_variable(node_config, context, {key: value for key, value in result.items() if key != "node_id" and key != "status"})
+        return result
+
+    def _execute_browser_get_cookie(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        name = _resolve_value(node_config.get("name"), context)
+        if not isinstance(name, str) or not name.strip():
+            return _failed_result(node, "browser.cookie_name_required", "cookie name is required")
+        cookies = _require_browser_page(context).context.cookies()
+        value = None
+        selected = None
+        for cookie in cookies:
+            if cookie.get("name") == name.strip():
+                selected = cookie
+                value = cookie.get("value")
+                break
+        if value is None:
+            value = _resolve_value(node_config.get("default_value"), context)
+        _store_optional_variable(node_config, context, value)
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "name": name.strip(),
+            "value": value,
+            "cookie": selected,
+        }
+
+    def _execute_browser_set_cookie(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        name = _resolve_value(node_config.get("name"), context)
+        if not isinstance(name, str) or not name.strip():
+            return _failed_result(node, "browser.cookie_name_required", "cookie name is required")
+        browser_context = _require_browser_page(context).context
+        cookie = {
+            "name": name.strip(),
+            "value": "" if _resolve_value(node_config.get("value"), context) is None else str(_resolve_value(node_config.get("value"), context)),
+        }
+        for field_name in ("url", "domain"):
+            field_value = _resolve_value(node_config.get(field_name), context)
+            if isinstance(field_value, str) and field_value.strip():
+                cookie[field_name] = field_value.strip()
+        if "url" not in cookie and "domain" not in cookie:
+            cookie["url"] = _require_browser_page(context).url
+        if "url" not in cookie:
+            cookie["path"] = str(_resolve_value(node_config.get("path", "/"), context) or "/")
+        for field_name in ("http_only", "secure"):
+            cookie[field_name] = bool(_resolve_value(node_config.get(field_name, False), context))
+        same_site = _resolve_value(node_config.get("same_site", "Lax"), context)
+        if isinstance(same_site, str) and same_site.strip():
+            cookie["sameSite"] = same_site.strip()
+        expires_value = _resolve_value(node_config.get("expires"), context)
+        if expires_value is not None:
+            cookie["expires"] = float(expires_value)
+        browser_context.add_cookies([cookie])
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "cookie_name": cookie["name"],
+            "url": cookie.get("url"),
+            "domain": cookie.get("domain"),
+        }
+
+    def _execute_browser_delete_cookie(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        name = _resolve_value(node_config.get("name"), context)
+        if not isinstance(name, str) or not name.strip():
+            return _failed_result(node, "browser.cookie_name_required", "cookie name is required")
+        browser_context = _require_browser_page(context).context
+        kept = []
+        removed_count = 0
+        for cookie in browser_context.cookies():
+            if cookie.get("name") == name.strip():
+                removed_count += 1
+                continue
+            kept.append(cookie)
+        browser_context.clear_cookies()
+        normalized = _normalize_browser_context_cookies(kept)
+        if normalized:
+            browser_context.add_cookies(normalized)
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "cookie_name": name.strip(),
+            "removed_count": removed_count,
+        }
+
+    def _execute_browser_list_cookies(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        cookies = _require_browser_page(context).context.cookies()
+        _store_optional_variable(node_config, context, cookies)
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "cookie_count": len(cookies),
+            "cookies": cookies,
+        }
+
+    def _execute_browser_set_local_storage(self, node: dict, context: RuntimeContext) -> dict:
+        return _set_browser_storage_item(node=node, context=context, storage_name="localStorage")
+
+    def _execute_browser_remove_local_storage(self, node: dict, context: RuntimeContext) -> dict:
+        return _remove_browser_storage_item(node=node, context=context, storage_name="localStorage")
+
+    def _execute_browser_clear_local_storage(self, node: dict, context: RuntimeContext) -> dict:
+        return _clear_browser_storage(node=node, context=context, storage_name="localStorage")
+
+    def _execute_browser_get_session_storage(self, node: dict, context: RuntimeContext) -> dict:
+        return _get_browser_storage_item(node=node, context=context, storage_name="sessionStorage")
+
+    def _execute_browser_set_session_storage(self, node: dict, context: RuntimeContext) -> dict:
+        return _set_browser_storage_item(node=node, context=context, storage_name="sessionStorage")
+
+    def _execute_browser_press_key(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        key = _resolve_value(node_config.get("key"), context)
+        if not isinstance(key, str) or not key.strip():
+            return _failed_result(node, "browser.key_required", "key is required")
+        selector = _resolve_value(node_config.get("selector"), context)
+        target = _require_browser_target(context)
+        if isinstance(selector, str) and selector.strip():
+            target.locator(selector.strip()).press(key.strip())
+        else:
+            _require_browser_page(context).keyboard.press(key.strip())
+        return {"status": "succeeded", "node_id": node["node_id"], "key": key.strip(), "page_url": _require_browser_page(context).url}
+
+    def _execute_browser_keyboard_type(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        text = _resolve_value(node_config.get("text"), context)
+        if not isinstance(text, str):
+            text = "" if text is None else str(text)
+        delay_ms = _resolve_int(_resolve_value(node_config.get("delay_ms"), context), default=0)
+        selector = _resolve_value(node_config.get("selector"), context)
+        target = _require_browser_target(context)
+        if isinstance(selector, str) and selector.strip():
+            target.locator(selector.strip()).click()
+        _require_browser_page(context).keyboard.type(text, delay=delay_ms)
+        return {"status": "succeeded", "node_id": node["node_id"], "text": text, "delay_ms": delay_ms, "page_url": _require_browser_page(context).url}
+
+    def _execute_browser_hotkey(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        combo = _resolve_value(node_config.get("combo"), context)
+        if not isinstance(combo, str) or not combo.strip():
+            return _failed_result(node, "browser.hotkey_required", "combo is required")
+        selector = _resolve_value(node_config.get("selector"), context)
+        target = _require_browser_target(context)
+        if isinstance(selector, str) and selector.strip():
+            target.locator(selector.strip()).click()
+        _require_browser_page(context).keyboard.press(combo.strip())
+        return {"status": "succeeded", "node_id": node["node_id"], "combo": combo.strip(), "page_url": _require_browser_page(context).url}
+
+    def _execute_browser_scroll_to_element(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        selector = _require_selector(node, context)
+        if isinstance(selector, dict):
+            return selector
+        block = str(_resolve_value(node_config.get("block", "center"), context) or "center")
+        inline = str(_resolve_value(node_config.get("inline", "nearest"), context) or "nearest")
+        target = _require_browser_target(context)
+        target.locator(selector).scroll_into_view_if_needed()
+        target.locator(selector).evaluate(
+            "(el, args) => el.scrollIntoView({ block: args.block, inline: args.inline })",
+            {"block": block, "inline": inline},
+        )
+        return {"status": "succeeded", "node_id": node["node_id"], "selector": selector, "block": block, "inline": inline, "page_url": _require_browser_page(context).url}
+
+    def _execute_browser_scroll_page(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        x = _resolve_int(_resolve_value(node_config.get("x"), context), default=0)
+        y = _resolve_int(_resolve_value(node_config.get("y"), context), default=0)
+        mode = str(_resolve_value(node_config.get("mode", "by"), context) or "by").strip().lower()
+        page = _require_browser_page(context)
+        if mode == "to":
+            page.evaluate("(coords) => window.scrollTo(coords.x, coords.y)", {"x": x, "y": y})
+        else:
+            mode = "by"
+            page.evaluate("(coords) => window.scrollBy(coords.x, coords.y)", {"x": x, "y": y})
+        return {"status": "succeeded", "node_id": node["node_id"], "x": x, "y": y, "mode": mode, "page_url": page.url}
+
+    def _execute_browser_drag_and_drop(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        source_selector = _resolve_value(node_config.get("source_selector"), context)
+        target_selector = _resolve_value(node_config.get("target_selector"), context)
+        if not isinstance(source_selector, str) or not source_selector.strip():
+            return _failed_result(node, "browser.source_selector_required", "source_selector is required")
+        if not isinstance(target_selector, str) or not target_selector.strip():
+            return _failed_result(node, "browser.target_selector_required", "target_selector is required")
+        target = _require_browser_target(context)
+        target.locator(source_selector.strip()).drag_to(target.locator(target_selector.strip()))
+        return {"status": "succeeded", "node_id": node["node_id"], "source_selector": source_selector.strip(), "target_selector": target_selector.strip(), "page_url": _require_browser_page(context).url}
+
+    def _execute_browser_element_screenshot(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        selector = _require_selector(node, context)
+        if isinstance(selector, dict):
+            return selector
+        path_value = _resolve_value(node_config.get("path"), context)
+        if not isinstance(path_value, str) or not path_value.strip():
+            return _failed_result(node, "browser.screenshot_path_required", "screenshot path is required")
+        path = _resolve_runtime_path(path_value, context)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _require_browser_target(context).locator(selector).screenshot(path=str(path))
+        return {"status": "succeeded", "node_id": node["node_id"], "selector": selector, "path": str(path.resolve()), "bytes_written": path.stat().st_size, "page_url": _require_browser_page(context).url}
+
+    def _execute_browser_open_tab(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        url = _resolve_value(node_config.get("url"), context)
+        if not isinstance(url, str) or not url.strip():
+            return _failed_result(node, "browser.url_required", "browser.open_tab requires node_config.url")
+        browser_context = _require_browser_page(context).context
+        context.browser_runtime["suppress_next_page_record"] = int(context.browser_runtime.get("suppress_next_page_record", 0)) + 1
+        page = browser_context.new_page()
+        page.goto(url.strip(), wait_until="domcontentloaded")
+        page_index = _register_browser_page(context, page)
+        label = _resolve_value(node_config.get("label"), context)
+        if isinstance(label, str) and label.strip():
+            context.browser_runtime.setdefault("page_labels", {})[label.strip()] = page
+        activate = bool(_resolve_value(node_config.get("activate", True), context))
+        if activate:
+            _set_active_browser_page(context, page)
+        return {"status": "succeeded", "node_id": node["node_id"], "page_url": page.url, "page_index": page_index, "label": label.strip() if isinstance(label, str) and label.strip() else None, "activated": activate}
+
+    def _execute_browser_switch_tab(self, node: dict, context: RuntimeContext) -> dict:
+        page = _resolve_browser_page_reference(_node_config(node), context)
+        if page is None:
+            return _failed_result(node, "browser.tab_not_found", "target tab was not found")
+        page_index = _set_active_browser_page(context, page)
+        return {"status": "succeeded", "node_id": node["node_id"], "page_url": page.url, "page_index": page_index, "label": _page_label(context, page)}
+
+    def _execute_browser_close_tab(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        page = _require_browser_page(context) if bool(_resolve_value(node_config.get("current", False), context)) else _resolve_browser_page_reference(node_config, context)
+        if page is None:
+            return _failed_result(node, "browser.tab_not_found", "target tab was not found")
+        page.close()
+        pages = _browser_pages(context)
+        if pages:
+            _set_active_browser_page(context, pages[min(len(pages) - 1, int(context.browser_runtime.get("active_page_index", 0)))])
+        return {"status": "succeeded", "node_id": node["node_id"], "closed": True}
+
+    def _execute_browser_exists(self, node: dict, context: RuntimeContext) -> dict:
+        return _probe_browser_locator(node=node, context=context, probe="exists")
+
+    def _execute_browser_is_visible(self, node: dict, context: RuntimeContext) -> dict:
+        return _probe_browser_locator(node=node, context=context, probe="visible")
+
+    def _execute_browser_is_enabled(self, node: dict, context: RuntimeContext) -> dict:
+        return _probe_browser_locator(node=node, context=context, probe="enabled")
+
+    def _execute_browser_is_checked(self, node: dict, context: RuntimeContext) -> dict:
+        return _probe_browser_locator(node=node, context=context, probe="checked")
+
+    def _execute_browser_get_html(self, node: dict, context: RuntimeContext) -> dict:
+        return _read_browser_html(node=node, context=context, mode="outer")
+
+    def _execute_browser_get_inner_html(self, node: dict, context: RuntimeContext) -> dict:
+        return _read_browser_html(node=node, context=context, mode="inner")
+
+    def _execute_browser_download_file(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        url = _resolve_value(node_config.get("url"), context)
+        if not isinstance(url, str) or not url.strip():
+            return _failed_result(node, "browser.url_required", "browser.download_file requires node_config.url")
+        path_value = _resolve_value(node_config.get("path"), context)
+        if not isinstance(path_value, str) or not path_value.strip():
+            return _failed_result(node, "browser.download_path_required", "download path is required")
+        path = _resolve_runtime_path(path_value, context)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(url.strip()) as response, path.open("wb") as handle:
+            handle.write(response.read())
+        return {"status": "succeeded", "node_id": node["node_id"], "url": url.strip(), "path": str(path.resolve()), "bytes_written": path.stat().st_size}
+
+    def _execute_browser_wait_for_download(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        timeout_ms = _resolve_int(_resolve_value(node_config.get("timeout"), context), default=10000)
+        record = _wait_for_record(
+            context.browser_runtime.setdefault("download_records", []),
+            timeout_ms,
+            lambda item: isinstance(item, dict) and item.get("download") is not None,
+            on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
+        )
+        path_value = _resolve_value(node_config.get("path"), context)
+        if isinstance(path_value, str) and path_value.strip():
+            path = _resolve_runtime_path(path_value, context)
+        else:
+            path = _resolve_runtime_path(record["suggested_filename"], context)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record["download"].save_as(str(path))
+        result = {"status": "succeeded", "node_id": node["node_id"], "url": record["url"], "path": str(path.resolve()), "suggested_filename": record["suggested_filename"], "page_index": record.get("page_index")}
+        _store_optional_variable(node_config, context, {key: value for key, value in result.items() if key not in {"status", "node_id"}})
+        return result
+
+    def _execute_browser_set_user_agent(self, node: dict, context: RuntimeContext) -> dict:
+        user_agent = _resolve_value(_node_config(node).get("user_agent"), context)
+        if not isinstance(user_agent, str) or not user_agent.strip():
+            return _failed_result(node, "browser.user_agent_required", "user_agent is required")
+        launch_options = context.browser_runtime.setdefault("launch_options", {})
+        launch_options["user_agent"] = user_agent.strip()
+        return {"status": "succeeded", "node_id": node["node_id"], "user_agent": user_agent.strip()}
+
+    def _execute_browser_set_extra_headers(self, node: dict, context: RuntimeContext) -> dict:
+        headers = _resolve_value(_node_config(node).get("headers"), context)
+        if not isinstance(headers, dict):
+            return _failed_result(node, "browser.headers_invalid", "headers must be an object")
+        launch_options = context.browser_runtime.setdefault("launch_options", {})
+        launch_options["extra_http_headers"] = {str(key): "" if value is None else str(value) for key, value in headers.items()}
+        return {"status": "succeeded", "node_id": node["node_id"], "header_count": len(headers)}
+
+    def _execute_browser_wait_for_url_change(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        from_url = _resolve_value(node_config.get("from_url"), context)
+        url_pattern = _resolve_value(node_config.get("url_pattern"), context)
+        timeout_ms = _resolve_int(_resolve_value(node_config.get("timeout"), context), default=10000)
+        page = _require_browser_page(context)
+        if not isinstance(from_url, str) or not from_url.strip():
+            from_url = page.url
+        matched_url = _wait_for_url_change(page=page, from_url=from_url, url_pattern=url_pattern if isinstance(url_pattern, str) else "", timeout_ms=timeout_ms)
+        return {"status": "succeeded", "node_id": node["node_id"], "from_url": from_url, "matched_url": matched_url, "page_url": page.url}
+
     def _execute_time_get_current_time(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
         format_name = _resolve_value(node_config.get("format") or "iso", context)
@@ -841,11 +1354,18 @@ class RuntimeExecutorRegistry:
         }
 
     def _execute_get_text(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
         selector_result = _require_selector(node, context)
         if isinstance(selector_result, dict):
             return selector_result
         value = _require_browser_target(context).locator(selector_result).inner_text()
-        _store_optional_variable(_node_config(node), context, value)
+        target_type = node_config.get("target_type")
+        if target_type is not None:
+            try:
+                value = _convert_runtime_value(value, target_type)
+            except ValueError as exc:
+                return _failed_result(node, "data.get_text_type_invalid", str(exc))
+        _store_optional_variable(node_config, context, value)
         return {
             "status": "succeeded",
             "node_id": node["node_id"],
@@ -919,6 +1439,37 @@ class RuntimeExecutorRegistry:
 
     def _execute_decrement_variable(self, node: dict, context: RuntimeContext) -> dict:
         return self._execute_numeric_variable_delta(node, context, multiplier=-1)
+
+    def _execute_convert_value(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        target_type = _resolve_value(node_config.get("target_type", "string"), context)
+        source_value = _resolve_value(node_config.get("source_value"), context)
+        if source_value is None and "value" in node_config:
+            source_value = _resolve_value(node_config.get("value"), context)
+        try:
+            converted = _convert_runtime_value(source_value, target_type)
+        except ValueError as exc:
+            return _failed_result(node, "data.convert_value_invalid", str(exc))
+
+        in_place = bool(_resolve_value(node_config.get("in_place", False), context))
+        source_variable_name = _resolve_value(node_config.get("source_variable_name"), context)
+        output_variable_name = _resolve_value(node_config.get("variable_name"), context)
+        target_variable_name = None
+        if in_place and isinstance(source_variable_name, str) and source_variable_name.strip():
+            target_variable_name = source_variable_name.strip()
+        elif isinstance(output_variable_name, str) and output_variable_name.strip():
+            target_variable_name = output_variable_name.strip()
+        if target_variable_name:
+            context.variables[target_variable_name] = converted
+
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "target_type": _normalize_runtime_target_type(target_type),
+            "value": converted,
+            "variable_name": target_variable_name,
+            "in_place": in_place,
+        }
 
     def _execute_numeric_variable_delta(self, node: dict, context: RuntimeContext, *, multiplier: int) -> dict:
         node_config = _node_config(node)
@@ -2274,15 +2825,36 @@ def _resolve_value(value: Any, context: RuntimeContext) -> Any:
 def _resolve_string(value: str, context: RuntimeContext) -> Any:
     matches = list(_VARIABLE_PATTERN.finditer(value))
     if len(matches) == 1 and matches[0].span() == (0, len(value)):
-        return _lookup_runtime_reference(matches[0].group(1), context)
+        return _lookup_runtime_reference_expression(matches[0].group(1), context)
 
     def replace_match(match: re.Match) -> str:
-        resolved = _lookup_runtime_reference(match.group(1), context)
+        resolved = _lookup_runtime_reference_expression(match.group(1), context)
         if isinstance(resolved, (dict, list)):
             return json.dumps(resolved, ensure_ascii=False)
         return "" if resolved is None else str(resolved)
 
     return _VARIABLE_PATTERN.sub(replace_match, value)
+
+
+def _lookup_runtime_reference_expression(reference_expression: str, context: RuntimeContext) -> Any:
+    reference, target_type = _split_runtime_reference_expression(reference_expression)
+    resolved = _lookup_runtime_reference(reference, context)
+    if target_type is None:
+        return resolved
+    return _convert_runtime_value(resolved, target_type)
+
+
+def _split_runtime_reference_expression(reference_expression: str) -> tuple[str, str | None]:
+    reference = str(reference_expression or "").strip()
+    if not reference:
+        return "", None
+    reference_body, separator, target_type = reference.rpartition("|")
+    if not separator:
+        return reference, None
+    normalized_target_type = _normalize_runtime_target_type(target_type)
+    if normalized_target_type is None:
+        return reference, None
+    return reference_body.strip(), normalized_target_type
 
 
 def _lookup_runtime_reference(reference: str, context: RuntimeContext) -> Any:
@@ -2304,6 +2876,93 @@ def _lookup_runtime_reference(reference: str, context: RuntimeContext) -> Any:
                 return None
         return current
     return context.variables.get(reference)
+
+
+def _normalize_runtime_target_type(target_type: Any) -> str | None:
+    if not isinstance(target_type, str):
+        return None
+    normalized = target_type.strip().lower().replace("-", "_")
+    aliases = {
+        "str": "string",
+        "text": "string",
+        "string": "string",
+        "int": "int",
+        "integer": "int",
+        "float": "float",
+        "number": "float",
+        "bool": "bool",
+        "boolean": "bool",
+        "json": "json",
+        "object": "json",
+        "array": "json",
+    }
+    return aliases.get(normalized)
+
+
+def _convert_runtime_value(value: Any, target_type: Any) -> Any:
+    normalized_target_type = _normalize_runtime_target_type(target_type)
+    if normalized_target_type is None:
+        raise ValueError("target_type must be one of: string, int, float, bool, json")
+    if normalized_target_type == "string":
+        if value is None:
+            return ""
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
+    if normalized_target_type == "int":
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("cannot convert empty string to int")
+            return int(float(stripped)) if any(marker in stripped for marker in (".", "e", "E")) else int(stripped)
+        raise ValueError(f"cannot convert {type(value).__name__} to int")
+    if normalized_target_type == "float":
+        if isinstance(value, bool):
+            return float(int(value))
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("cannot convert empty string to float")
+            return float(stripped)
+        raise ValueError(f"cannot convert {type(value).__name__} to float")
+    if normalized_target_type == "bool":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            stripped = value.strip().lower()
+            truthy = {"true", "1", "yes", "y", "on"}
+            falsy = {"false", "0", "no", "n", "off", ""}
+            if stripped in truthy:
+                return True
+            if stripped in falsy:
+                return False
+            raise ValueError(f"cannot convert string '{value}' to bool")
+        return bool(value)
+    if normalized_target_type == "json":
+        if value is None:
+            return None
+        if isinstance(value, (dict, list, int, float, bool)):
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"cannot parse json: {exc.msg}") from exc
+        raise ValueError(f"cannot convert {type(value).__name__} to json")
+    raise ValueError("unsupported target_type")
 
 
 def _read_csv_table(node: dict, context: RuntimeContext) -> dict:
@@ -2514,10 +3173,30 @@ def _require_browser_page(context: RuntimeContext) -> Page:
     playwright: Playwright = sync_playwright().start()
     chromium_launch_kwargs["channel"] = "msedge"
     browser: Browser = playwright.chromium.launch(**chromium_launch_kwargs)
-    page = browser.new_page()
+    context_kwargs: dict[str, Any] = {"accept_downloads": True}
+    user_agent = launch_options.get("user_agent")
+    if isinstance(user_agent, str) and user_agent.strip():
+        context_kwargs["user_agent"] = user_agent.strip()
+    extra_http_headers = launch_options.get("extra_http_headers")
+    if isinstance(extra_http_headers, dict) and extra_http_headers:
+        context_kwargs["extra_http_headers"] = {
+            str(key): "" if value is None else str(value)
+            for key, value in extra_http_headers.items()
+        }
+    browser_context = browser.new_context(**context_kwargs)
+    page = browser_context.new_page()
     context.browser_runtime["playwright"] = playwright
     context.browser_runtime["browser"] = browser
+    context.browser_runtime["browser_context"] = browser_context
     context.browser_runtime["page"] = page
+    context.browser_runtime["pages"] = []
+    context.browser_runtime["active_page_index"] = 0
+    context.browser_runtime["page_labels"] = {}
+    context.browser_runtime.setdefault("request_records", [])
+    context.browser_runtime.setdefault("response_records", [])
+    context.browser_runtime.setdefault("popup_records", [])
+    context.browser_runtime.setdefault("download_records", [])
+    _ensure_browser_context_handlers(context)
     return page
 
 
@@ -2530,7 +3209,307 @@ def _resolve_browser_launch_config(value: Any, context: RuntimeContext) -> dict[
         browser_config["headless"] = bool(resolved.get("headless"))
     if "slow_mo_ms" in resolved:
         browser_config["slow_mo_ms"] = _resolve_int(resolved.get("slow_mo_ms"), default=0)
+    if isinstance(resolved.get("user_agent"), str) and resolved.get("user_agent").strip():
+        browser_config["user_agent"] = resolved.get("user_agent").strip()
+    extra_http_headers = resolved.get("extra_http_headers")
+    if isinstance(extra_http_headers, dict):
+        browser_config["extra_http_headers"] = dict(extra_http_headers)
     return browser_config
+
+
+def _ensure_browser_context_handlers(context: RuntimeContext) -> None:
+    browser_context = context.browser_runtime.get("browser_context")
+    if browser_context is None or context.browser_runtime.get("context_handlers_installed") is True:
+        return
+
+    def handle_request(request: Any) -> None:
+        context.browser_runtime.setdefault("request_records", []).append(
+            {
+                "url": request.url,
+                "method": request.method,
+                "headers": dict(request.headers),
+                "resource_type": request.resource_type,
+            }
+        )
+
+    def handle_response(response: Any) -> None:
+        try:
+            body_text = response.text()
+        except Exception:
+            body_text = None
+        context.browser_runtime.setdefault("response_records", []).append(
+            {
+                "url": response.url,
+                "status_code": response.status,
+                "headers": dict(response.headers),
+                "body_text": body_text,
+                "ok": response.ok,
+            }
+        )
+
+    def handle_page(page: Page) -> None:
+        page_index = _register_browser_page(context, page)
+        suppressed_count = int(context.browser_runtime.get("suppress_next_page_record", 0))
+        if suppressed_count > 0:
+            context.browser_runtime["suppress_next_page_record"] = suppressed_count - 1
+            return
+        context.browser_runtime.setdefault("popup_records", []).append(
+            {
+                "page": page,
+                "page_url": page.url,
+                "page_index": page_index,
+            }
+        )
+
+    browser_context.on("request", handle_request)
+    browser_context.on("response", handle_response)
+    browser_context.on("page", handle_page)
+    context.browser_runtime["context_handlers_installed"] = True
+    _register_browser_page(context, context.browser_runtime["page"])
+
+
+def _browser_pages(context: RuntimeContext) -> list[Page]:
+    pages = context.browser_runtime.get("pages")
+    if not isinstance(pages, list):
+        page = _require_browser_page(context)
+        pages = [page]
+        context.browser_runtime["pages"] = pages
+    alive_pages = [page for page in pages if not page.is_closed()]
+    if alive_pages != pages:
+        context.browser_runtime["pages"] = alive_pages
+    return context.browser_runtime["pages"]
+
+
+def _set_active_browser_page(context: RuntimeContext, page: Page) -> int:
+    pages = _browser_pages(context)
+    if page not in pages:
+        pages.append(page)
+    index = pages.index(page)
+    context.browser_runtime["page"] = page
+    context.browser_runtime["active_page_index"] = index
+    _reset_browser_frame_context(context)
+    return index
+
+
+def _page_label(context: RuntimeContext, page: Page) -> str | None:
+    labels = context.browser_runtime.get("page_labels")
+    if not isinstance(labels, dict):
+        return None
+    for label, labeled_page in labels.items():
+        if labeled_page is page:
+            return label
+    return None
+
+
+def _register_browser_page(context: RuntimeContext, page: Page) -> int:
+    pages = context.browser_runtime.setdefault("pages", [])
+    if page not in pages:
+        pages.append(page)
+    registered_page_ids = context.browser_runtime.setdefault("download_handler_page_ids", set())
+    if id(page) not in registered_page_ids:
+        def handle_download(download: Any) -> None:
+            context.browser_runtime.setdefault("download_records", []).append(
+                {
+                    "download": download,
+                    "url": download.url,
+                    "suggested_filename": download.suggested_filename,
+                    "page": page,
+                    "page_index": _browser_pages(context).index(page) if page in _browser_pages(context) else None,
+                }
+            )
+
+        page.on("download", handle_download)
+        registered_page_ids.add(id(page))
+    return pages.index(page)
+
+
+def _normalize_browser_context_cookies(cookies: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        name = cookie.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        item = dict(cookie)
+        item["name"] = name.strip()
+        if item.get("value") is None:
+            item["value"] = ""
+        normalized.append(item)
+    return normalized
+
+
+def _pump_browser_events(page: Page | None, delay_ms: int = 25) -> None:
+    if page is None:
+        return
+    try:
+        page.wait_for_timeout(delay_ms)
+    except Exception:
+        return
+
+
+def _wait_until(timeout_ms: int, predicate: Any, *, on_poll: Any | None = None) -> None:
+    started_at = monotonic()
+    while (monotonic() - started_at) * 1000 <= timeout_ms:
+        if predicate():
+            return
+        if on_poll is not None:
+            on_poll()
+    raise TimeoutError(f"condition was not met within {timeout_ms} ms")
+
+
+def _match_text(actual: str, expected: str, match_mode: str) -> bool:
+    if match_mode == "equals":
+        return actual == expected
+    if match_mode == "starts_with":
+        return actual.startswith(expected)
+    if match_mode == "ends_with":
+        return actual.endswith(expected)
+    return expected in actual
+
+
+def _wait_for_record(records: list[dict], timeout_ms: int, predicate: Any, *, on_poll: Any | None = None) -> dict:
+    started_at = monotonic()
+    while (monotonic() - started_at) * 1000 <= timeout_ms:
+        for record in records:
+            if predicate(record):
+                return record
+        if on_poll is not None:
+            on_poll()
+    raise TimeoutError(f"record was not observed within {timeout_ms} ms")
+
+
+def _request_record_matches(record: dict, url_pattern: str, method: str | None) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if url_pattern not in str(record.get("url", "")):
+        return False
+    if method is not None and str(record.get("method", "")).upper() != method:
+        return False
+    return True
+
+
+def _response_record_matches(record: dict, url_pattern: str, expected_status: int | None) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if url_pattern not in str(record.get("url", "")):
+        return False
+    if expected_status is not None and expected_status >= 0 and int(record.get("status_code", -1)) != expected_status:
+        return False
+    return True
+
+
+def _get_browser_storage_item(*, node: dict, context: RuntimeContext, storage_name: str) -> dict:
+    node_config = _node_config(node)
+    key = _resolve_value(node_config.get("key"), context)
+    if not isinstance(key, str) or not key.strip():
+        return _failed_result(node, "browser.storage_key_required", f"{storage_name} key is required")
+    target = _require_browser_target(context)
+    script = (
+        "(storageKey) => window.sessionStorage.getItem(storageKey)"
+        if storage_name == "sessionStorage"
+        else "(storageKey) => window.localStorage.getItem(storageKey)"
+    )
+    value = target.evaluate(script, key.strip())
+    if value is None:
+        value = _resolve_value(node_config.get("default_value"), context)
+    _store_optional_variable(node_config, context, value)
+    return {"status": "succeeded", "node_id": node["node_id"], "key": key.strip(), "value": value, "storage_name": storage_name}
+
+
+def _set_browser_storage_item(*, node: dict, context: RuntimeContext, storage_name: str) -> dict:
+    node_config = _node_config(node)
+    key = _resolve_value(node_config.get("key"), context)
+    if not isinstance(key, str) or not key.strip():
+        return _failed_result(node, "browser.storage_key_required", f"{storage_name} key is required")
+    value = _resolve_value(node_config.get("value"), context)
+    target = _require_browser_target(context)
+    script = (
+        "(payload) => window.sessionStorage.setItem(payload.key, String(payload.value))"
+        if storage_name == "sessionStorage"
+        else "(payload) => window.localStorage.setItem(payload.key, String(payload.value))"
+    )
+    target.evaluate(script, {"key": key.strip(), "value": "" if value is None else value})
+    return {"status": "succeeded", "node_id": node["node_id"], "key": key.strip(), "value": value, "storage_name": storage_name}
+
+
+def _remove_browser_storage_item(*, node: dict, context: RuntimeContext, storage_name: str) -> dict:
+    key = _resolve_value(_node_config(node).get("key"), context)
+    if not isinstance(key, str) or not key.strip():
+        return _failed_result(node, "browser.storage_key_required", f"{storage_name} key is required")
+    target = _require_browser_target(context)
+    script = (
+        "(storageKey) => window.sessionStorage.removeItem(storageKey)"
+        if storage_name == "sessionStorage"
+        else "(storageKey) => window.localStorage.removeItem(storageKey)"
+    )
+    target.evaluate(script, key.strip())
+    return {"status": "succeeded", "node_id": node["node_id"], "key": key.strip(), "storage_name": storage_name}
+
+
+def _clear_browser_storage(*, node: dict, context: RuntimeContext, storage_name: str) -> dict:
+    target = _require_browser_target(context)
+    script = "() => window.sessionStorage.clear()" if storage_name == "sessionStorage" else "() => window.localStorage.clear()"
+    target.evaluate(script)
+    return {"status": "succeeded", "node_id": node["node_id"], "storage_name": storage_name}
+
+
+def _probe_browser_locator(*, node: dict, context: RuntimeContext, probe: str) -> dict:
+    selector = _require_selector(node, context)
+    if isinstance(selector, dict):
+        return selector
+    locator = _require_browser_target(context).locator(selector)
+    if probe == "visible":
+        value = locator.is_visible()
+    elif probe == "enabled":
+        value = locator.is_enabled()
+    elif probe == "checked":
+        value = locator.is_checked()
+    else:
+        value = locator.count() > 0
+    _store_optional_variable(_node_config(node), context, value)
+    return {"status": "succeeded", "node_id": node["node_id"], "selector": selector, "value": value, "probe": probe}
+
+
+def _read_browser_html(*, node: dict, context: RuntimeContext, mode: str) -> dict:
+    selector = _require_selector(node, context)
+    if isinstance(selector, dict):
+        return selector
+    locator = _require_browser_target(context).locator(selector)
+    value = locator.evaluate("(el) => el.innerHTML" if mode == "inner" else "(el) => el.outerHTML")
+    _store_optional_variable(_node_config(node), context, value)
+    return {"status": "succeeded", "node_id": node["node_id"], "selector": selector, "value": value, "mode": mode}
+
+
+def _resolve_browser_page_reference(node_config: dict, context: RuntimeContext) -> Page | None:
+    pages = _browser_pages(context)
+    label = _resolve_value(node_config.get("label"), context)
+    labels = context.browser_runtime.get("page_labels")
+    if isinstance(label, str) and label.strip() and isinstance(labels, dict):
+        labeled_page = labels.get(label.strip())
+        if isinstance(labeled_page, Page) and not labeled_page.is_closed():
+            return labeled_page
+    index_value = _resolve_value(node_config.get("index"), context)
+    if index_value is not None:
+        index = _resolve_int(index_value, default=-1)
+        if 0 <= index < len(pages):
+            return pages[index]
+    url_pattern = _resolve_value(node_config.get("url_pattern"), context)
+    if isinstance(url_pattern, str) and url_pattern.strip():
+        for page in pages:
+            if url_pattern.strip() in page.url:
+                return page
+    return None
+
+
+def _wait_for_url_change(*, page: Page, from_url: str, url_pattern: str, timeout_ms: int) -> str:
+    started_at = monotonic()
+    while (monotonic() - started_at) * 1000 <= timeout_ms:
+        current_url = page.url
+        if current_url != from_url and (not url_pattern or url_pattern in current_url):
+            return current_url
+        _pump_browser_events(page)
+    raise TimeoutError(f"url did not change within {timeout_ms} ms")
 
 
 def _apply_local_storage(page: Page, local_storage: Any) -> int:

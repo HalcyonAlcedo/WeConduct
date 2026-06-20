@@ -4,6 +4,7 @@ import { useToastStore } from '@/stores/toastStore'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useRuntimeStore } from '@/stores/runtimeStore'
+import { useDockStore } from '@/stores/dockStore'
 import {
   postRuntimePrepare, postRuntimeStart, postRuntimeRun,
   fetchRuntimeSession,
@@ -100,6 +101,10 @@ async function dbDetail(id: string) { try { const r = await fetchDebugSession(id
 async function startAndRun() {
   if (!graphWs.hasGraph) { toast.info('', '当前图为空，无法执行'); return }
   loading.value = 'start-run'
+  // Auto-open output panel and switch to Runtime tab
+  const dock = useDockStore()
+  if (!dock.isPanelVisible('output')) dock.restorePanel('output')
+  runtime.requestRuntimeTab()
   try {
     const result = await runtime.startAndRun(
       graphWs.graphModel as Record<string, unknown> | undefined,
@@ -131,7 +136,7 @@ async function startAndRun() {
     </div>
 
     <!-- Live Progress -->
-    <div v-if="runtime.runtimeProgress && runtime.runtimeLiveStatus !== 'idle'" class="tep-progress">
+    <div v-if="runtime.runtimeProgress && runtime.runtimeProgress.total_node_count > 0" class="tep-progress">
       <div class="tep-pg-bar-wrap">
         <div class="tep-pg-bar" :style="{ width: (runtime.runtimeProgress.percent ?? 0) + '%' }" :class="{ done: runtime.runtimeLiveStatus === 'completed', fail: runtime.runtimeLiveStatus === 'failed' }"></div>
       </div>

@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useCompilationStore } from '@/stores/compilationStore'
+import { useRuntimeStore } from '@/stores/runtimeStore'
+import { useGraphStore } from '@/stores/graphStore'
 import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
 import type { DiagnosticSeverity, Diagnostic } from '@/types/domains/diagnostics'
 
 const compilation = useCompilationStore()
+const runtimeStore = useRuntimeStore()
+const graphStore = useGraphStore()
 
 const severityFilter = ref<DiagnosticSeverity | 'all'>('all')
 const stageFilter = ref<string>('all')
@@ -13,7 +17,8 @@ const sortBy = ref<'severity' | 'stage' | 'count'>('severity')
 const expandedKeys = ref<Set<string>>(new Set())
 
 const groups = computed(() => {
-  let result = compilation.diagnosticGroups
+  // Merge compilation + runtime diagnostics
+  let result = [...compilation.diagnosticGroups, ...runtimeStore.runtimeDiagnosticGroups]
   if (severityFilter.value !== 'all') {
     result = result.filter(g => g.severity === severityFilter.value)
   }
@@ -41,22 +46,25 @@ const groups = computed(() => {
 })
 
 const hasCompiled = computed(() => compilation.compilePhase !== 'idle')
-const hasDiagnostics = computed(() => compilation.diagnosticGroups.length > 0)
+const hasAnyActivity = computed(() => hasCompiled.value || runtimeStore.hasRuntimeDiagnostics || runtimeStore.runtimeLiveStatus !== 'idle')
+const hasDiagnostics = computed(() => compilation.diagnosticGroups.length > 0 || runtimeStore.hasRuntimeDiagnostics)
 
 /** Look up individual Diagnostic entries matching a group */
-function groupEntries(stage: string, category: string, severity: string): Diagnostic[] {
-  const catalog = compilation.outcome?.diagnostic_catalog
-  if (!catalog) return []
-  return catalog.entries.filter(
-    e => e.stage === stage && e.category === category && e.severity === severity
+function groupEntries(stage: string, category: string, severity: string, message: string): Diagnostic[] {
+  const fromCompile = compilation.outcome?.diagnostic_catalog?.entries.filter(
+    e => e.stage === stage && e.category === category && e.severity === severity && e.message === message
+  ) || []
+  const fromRuntime = runtimeStore.getRuntimeDiagnosticEntries().filter(
+    e => e.stage === stage && e.category === category && e.severity === severity && e.message === message
   )
+  return [...fromCompile, ...fromRuntime]
 }
 
-function groupKey(g: { stage: string; category: string; severity: string }): string {
-  return `${g.stage}|${g.category}|${g.severity}`
+function groupKey(g: { stage: string; category: string; severity: string; message: string }): string {
+  return `${g.stage}|${g.category}|${g.severity}|${g.message}`
 }
 
-function toggleExpand(g: { stage: string; category: string; severity: string }) {
+function toggleExpand(g: { stage: string; category: string; severity: string; message: string }) {
   const key = groupKey(g)
   if (expandedKeys.value.has(key)) {
     expandedKeys.value.delete(key)
@@ -65,7 +73,7 @@ function toggleExpand(g: { stage: string; category: string; severity: string }) 
   }
 }
 
-function isExpanded(g: { stage: string; category: string; severity: string }): boolean {
+function isExpanded(g: { stage: string; category: string; severity: string; message: string }): boolean {
   return expandedKeys.value.has(groupKey(g))
 }
 
@@ -94,15 +102,54 @@ function extSummary(ext: Record<string, unknown> | null): string {
 }
 
 // ---- Context menu ----
-const ctxMenu = ref<{ x: number; y: number; text: string } | null>(null)
-function onCtxMenu(e: MouseEvent, text: string) {
+const ctxMenu = ref<{ x: number; y: number; text: string; entry?: Diagnostic } | null>(null)
+function onCtxMenu(e: MouseEvent, text: string, entry?: Diagnostic) {
   e.preventDefault()
-  ctxMenu.value = { x: e.clientX, y: e.clientY, text }
+  ctxMenu.value = { x: e.clientX, y: e.clientY, text, entry }
 }
 function closeCtxMenu() { ctxMenu.value = null }
 async function copyToClipboard(text: string) {
   try { await navigator.clipboard.writeText(text) } catch {}
   closeCtxMenu()
+}
+
+function extractNodeId(entry: Diagnostic): string | null {
+  // 1. object_ref: "node:<node_id>" or "n-<node_id>" or "node-<node_id>"
+  const objRef = entry.object_ref
+  if (objRef) {
+    const m = objRef.match(/node:([^\s]+)/) || objRef.match(/\b(node-[a-z0-9]+)\b/i)
+    if (m) return m[1]
+  }
+  // 2. stage_extension.graph_ref.node_id
+  const ext = entry.stage_extension as Record<string, any> | undefined
+  if (ext?.graph_ref?.node_id) return String(ext.graph_ref.node_id)
+  // 3. message contains "node-xxx"
+  const msgMatch = entry.message?.match(/\b(node-[a-z0-9]+)\b/i)
+  if (msgMatch) return msgMatch[1]
+  // 4. any stage_extension value that looks like "node-xxx"
+  if (ext) {
+    for (const v of Object.values(ext)) {
+      if (typeof v === 'string') {
+        const m = v.match(/\b(node-[a-z0-9]+)\b/i)
+        if (m) return m[1]
+      }
+    }
+  }
+  return null
+}
+
+function diagnosticHasNodeRef(entry?: Diagnostic): boolean {
+  if (!entry) return false
+  return !!extractNodeId(entry)
+}
+
+function locateNodeFromDiagnostic(entry?: Diagnostic) {
+  if (!entry) return
+  const nodeId = extractNodeId(entry)
+  if (!nodeId) return
+  graphStore.selectNode(nodeId)
+  closeCtxMenu()
+  try { (window as any).__panToNode?.(nodeId) } catch {}
 }
 function formatDiagnosticForCopy(g: { stage: string; category: string; severity: string; message: string; count: number }): string {
   return `[${severityLabel(g.severity)}] ${g.stage}/${g.category}: ${g.message} (${g.count} 条)`
@@ -120,10 +167,10 @@ function formatEntryForCopy(entry: Diagnostic): string {
 <template>
   <div class="diag-tab">
     <PlaceholderBanner
-      v-if="!hasCompiled"
+      v-if="!hasAnyActivity"
       type="empty"
-      title="编译源代码后查看诊断信息"
-      description="运行编译以生成诊断结果"
+      title="编译或运行后查看诊断信息"
+      description="运行编译或执行任务以生成诊断结果"
     />
 
     <div v-else-if="compilation.isCompiling" class="loading-block">
@@ -131,10 +178,10 @@ function formatEntryForCopy(entry: Diagnostic): string {
     </div>
 
     <PlaceholderBanner
-      v-else-if="hasCompiled && !hasDiagnostics"
+      v-else-if="!hasDiagnostics"
       type="empty"
-      title="本次编译无诊断信息"
-      description="编译成功完成，未产生诊断条目"
+      title="无诊断信息"
+      description="编译与运行均未产生诊断条目"
     />
 
     <template v-else>
@@ -182,7 +229,7 @@ function formatEntryForCopy(entry: Diagnostic): string {
                 class="dt-group-row"
                 :class="{ 'dt-expanded': isExpanded(g) }"
                 @click="toggleExpand(g)"
-                @contextmenu="onCtxMenu($event, formatDiagnosticForCopy(g))"
+                @contextmenu="onCtxMenu($event, formatDiagnosticForCopy(g), groupEntries(g.stage, g.category, g.severity, g.message)[0])"
               >
                 <td class="col-exp">
                   <span class="exp-arrow">{{ isExpanded(g) ? '▾' : '▸' }}</span>
@@ -201,10 +248,10 @@ function formatEntryForCopy(entry: Diagnostic): string {
                 <td colspan="6">
                   <div class="dt-detail-box">
                     <div
-                      v-for="entry in groupEntries(g.stage, g.category, g.severity)"
+                      v-for="entry in groupEntries(g.stage, g.category, g.severity, g.message)"
                       :key="entry.diagnostic_id"
                       class="dt-entry"
-                      @contextmenu.stop="onCtxMenu($event, formatEntryForCopy(entry))"
+                      @contextmenu.stop="onCtxMenu($event, formatEntryForCopy(entry), entry)"
                     >
                       <div class="dt-entry-header">
                         <code class="dt-entry-id">{{ entry.diagnostic_id }}</code>
@@ -241,6 +288,7 @@ function formatEntryForCopy(entry: Diagnostic): string {
       <div v-if="ctxMenu" class="dt-ctx-overlay" @click="closeCtxMenu" @contextmenu.prevent="closeCtxMenu">
         <div class="dt-ctx-box" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }">
           <button class="dt-ctx-btn" @click="copyToClipboard(ctxMenu.text)">📋 复制诊断信息</button>
+          <button v-if="diagnosticHasNodeRef(ctxMenu.entry)" class="dt-ctx-btn" @click="locateNodeFromDiagnostic(ctxMenu.entry)">📍 定位节点</button>
         </div>
       </div>
     </Teleport>

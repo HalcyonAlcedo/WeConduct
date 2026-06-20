@@ -54,6 +54,12 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
                 "semantic_slot": "in.control",
             },
             {
+                "port_id": "repeat",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.repeat",
+            },
+            {
                 "port_id": "condition",
                 "direction": "input",
                 "relation_layer": "data",
@@ -203,6 +209,12 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
                 "direction": "input",
                 "relation_layer": "control",
                 "semantic_slot": "in.control",
+            },
+            {
+                "port_id": "repeat",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.repeat",
             },
             {
                 "port_id": "condition",
@@ -912,6 +924,28 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
         "node_config": {
             "selector": "",
             "variable_name": "",
+            "target_type": "string",
+        },
+        "parameter_schema": {
+            "selector": {
+                "type": "string",
+                "required": True,
+                "editor_kind": "text",
+                "path_kind": None,
+            },
+            "variable_name": {
+                "type": "string",
+                "required": False,
+                "editor_kind": "text",
+                "path_kind": None,
+            },
+            "target_type": {
+                "type": "string",
+                "required": False,
+                "editor_kind": "select",
+                "path_kind": None,
+                "options": ["string", "int", "float", "bool", "json"],
+            },
         },
     },
     "data.map": {
@@ -1133,6 +1167,76 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
         "node_config": {
             "variable_name": "",
             "step": 1,
+        },
+    },
+    "data.convert_value": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:convert_value",
+        "ports": [
+            {
+                "port_id": "in",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.control",
+            },
+            {
+                "port_id": "in:source_value",
+                "direction": "input",
+                "relation_layer": "data",
+                "semantic_slot": "in.source_value",
+            },
+            {
+                "port_id": "out",
+                "direction": "output",
+                "relation_layer": "control",
+                "semantic_slot": "out.control",
+            },
+            {
+                "port_id": "out:value",
+                "direction": "output",
+                "relation_layer": "data",
+                "semantic_slot": "out.value",
+            },
+        ],
+        "node_config": {
+            "source_value": None,
+            "target_type": "string",
+            "variable_name": "",
+            "in_place": False,
+            "source_variable_name": "",
+        },
+        "parameter_schema": {
+            "source_value": {
+                "type": "any",
+                "required": False,
+                "editor_kind": "value",
+                "path_kind": None,
+            },
+            "target_type": {
+                "type": "string",
+                "required": True,
+                "editor_kind": "select",
+                "path_kind": None,
+                "options": ["string", "int", "float", "bool", "json"],
+            },
+            "variable_name": {
+                "type": "string",
+                "required": False,
+                "editor_kind": "text",
+                "path_kind": None,
+            },
+            "in_place": {
+                "type": "boolean",
+                "required": False,
+                "editor_kind": "checkbox",
+                "path_kind": None,
+            },
+            "source_variable_name": {
+                "type": "string",
+                "required": False,
+                "editor_kind": "text",
+                "path_kind": None,
+            },
         },
     },
     "data.evaluate_expression": {
@@ -2362,6 +2466,391 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
                 "path_kind": None,
             },
         },
+    },
+    "browser.wait_for_text": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:wait_for_text",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:selector", "direction": "input", "relation_layer": "data", "semantic_slot": "in.selector"},
+            {"port_id": "in:text", "direction": "input", "relation_layer": "data", "semantic_slot": "in.text"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"selector": "", "text": "", "match_mode": "contains", "timeout": 10000},
+    },
+    "browser.wait_for_attribute": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:wait_for_attribute",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:selector", "direction": "input", "relation_layer": "data", "semantic_slot": "in.selector"},
+            {"port_id": "in:attribute", "direction": "input", "relation_layer": "data", "semantic_slot": "in.attribute"},
+            {"port_id": "in:value", "direction": "input", "relation_layer": "data", "semantic_slot": "in.value"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"selector": "", "attribute": "", "value": "", "match_mode": "equals", "timeout": 10000},
+    },
+    "browser.wait_for_value": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:wait_for_value",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:selector", "direction": "input", "relation_layer": "data", "semantic_slot": "in.selector"},
+            {"port_id": "in:value", "direction": "input", "relation_layer": "data", "semantic_slot": "in.value"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"selector": "", "value": "", "match_mode": "equals", "timeout": 10000},
+    },
+    "browser.wait_for_request": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:wait_for_request",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"url_pattern": "", "method": "", "timeout": 10000},
+    },
+    "browser.wait_for_response": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:wait_for_response",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"url_pattern": "", "status_code": None, "timeout": 10000},
+    },
+    "browser.wait_for_popup": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:wait_for_popup",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"timeout": 10000, "activate": True, "variable_name": ""},
+    },
+    "browser.get_cookie": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:get_cookie",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:name", "direction": "input", "relation_layer": "data", "semantic_slot": "in.name"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"name": "", "url": "", "domain": "", "variable_name": "", "default_value": None},
+    },
+    "browser.set_cookie": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:set_cookie",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"name": "", "value": "", "url": "", "domain": "", "path": "/", "http_only": False, "secure": False, "same_site": "Lax", "expires": None},
+        "parameter_schema": {
+            "same_site": {"type": "string", "required": False, "editor_kind": "select", "path_kind": None},
+        },
+    },
+    "browser.delete_cookie": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:delete_cookie",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"name": "", "url": "", "domain": "", "path": "/"},
+    },
+    "browser.list_cookies": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:list_cookies",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"url": "", "variable_name": ""},
+    },
+    "browser.set_local_storage": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:set_local_storage",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:key", "direction": "input", "relation_layer": "data", "semantic_slot": "in.key"},
+            {"port_id": "in:value", "direction": "input", "relation_layer": "data", "semantic_slot": "in.value"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"key": "", "value": None},
+    },
+    "browser.remove_local_storage": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:remove_local_storage",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:key", "direction": "input", "relation_layer": "data", "semantic_slot": "in.key"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"key": ""},
+    },
+    "browser.clear_local_storage": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:clear_local_storage",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {},
+    },
+    "browser.get_session_storage": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:get_session_storage",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:key", "direction": "input", "relation_layer": "data", "semantic_slot": "in.key"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"key": "", "variable_name": "", "default_value": None},
+    },
+    "browser.set_session_storage": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:set_session_storage",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:key", "direction": "input", "relation_layer": "data", "semantic_slot": "in.key"},
+            {"port_id": "in:value", "direction": "input", "relation_layer": "data", "semantic_slot": "in.value"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"key": "", "value": None},
+    },
+    "browser.press_key": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:press_key",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"selector": "", "key": ""},
+    },
+    "browser.keyboard_type": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:keyboard_type",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:text", "direction": "input", "relation_layer": "data", "semantic_slot": "in.text"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"selector": "", "text": "", "delay_ms": 0},
+    },
+    "browser.hotkey": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:hotkey",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"selector": "", "combo": ""},
+    },
+    "browser.scroll_to_element": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:scroll_to_element",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:selector", "direction": "input", "relation_layer": "data", "semantic_slot": "in.selector"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"selector": "", "block": "center", "inline": "nearest"},
+    },
+    "browser.scroll_page": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:scroll_page",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"x": 0, "y": 0, "mode": "by"},
+    },
+    "browser.drag_and_drop": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:drag_and_drop",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:source_selector", "direction": "input", "relation_layer": "data", "semantic_slot": "in.source_selector"},
+            {"port_id": "in:target_selector", "direction": "input", "relation_layer": "data", "semantic_slot": "in.target_selector"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"source_selector": "", "target_selector": ""},
+    },
+    "browser.element_screenshot": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:element_screenshot",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:selector", "direction": "input", "relation_layer": "data", "semantic_slot": "in.selector"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"selector": "", "path": ""},
+        "parameter_schema": {
+            "path": {"type": "string", "required": True, "editor_kind": "path", "path_kind": "save_file"},
+        },
+    },
+    "browser.open_tab": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:open_tab",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:url", "direction": "input", "relation_layer": "data", "semantic_slot": "in.url"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"url": "", "label": "", "activate": True},
+    },
+    "browser.switch_tab": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:switch_tab",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"index": None, "label": "", "url_pattern": ""},
+    },
+    "browser.close_tab": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:close_tab",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"index": None, "label": "", "current": False},
+    },
+    "browser.exists": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:exists",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:selector", "direction": "input", "relation_layer": "data", "semantic_slot": "in.selector"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"selector": "", "variable_name": ""},
+    },
+    "browser.is_visible": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:is_visible",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:selector", "direction": "input", "relation_layer": "data", "semantic_slot": "in.selector"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"selector": "", "variable_name": ""},
+    },
+    "browser.is_enabled": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:is_enabled",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:selector", "direction": "input", "relation_layer": "data", "semantic_slot": "in.selector"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"selector": "", "variable_name": ""},
+    },
+    "browser.is_checked": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:is_checked",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:selector", "direction": "input", "relation_layer": "data", "semantic_slot": "in.selector"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"selector": "", "variable_name": ""},
+    },
+    "browser.get_html": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:get_html",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:selector", "direction": "input", "relation_layer": "data", "semantic_slot": "in.selector"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"selector": "", "variable_name": ""},
+    },
+    "browser.get_inner_html": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:get_inner_html",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:selector", "direction": "input", "relation_layer": "data", "semantic_slot": "in.selector"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"selector": "", "variable_name": ""},
+    },
+    "browser.download_file": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:download_file",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "in:url", "direction": "input", "relation_layer": "data", "semantic_slot": "in.url"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"url": "", "path": ""},
+        "parameter_schema": {
+            "path": {"type": "string", "required": True, "editor_kind": "path", "path_kind": "save_file"},
+        },
+    },
+    "browser.wait_for_download": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:wait_for_download",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"path": "", "timeout": 10000, "variable_name": ""},
+        "parameter_schema": {
+            "path": {"type": "string", "required": False, "editor_kind": "path", "path_kind": "save_file"},
+        },
+    },
+    "browser.set_user_agent": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:set_user_agent",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"user_agent": ""},
+    },
+    "browser.set_extra_headers": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:set_extra_headers",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        ],
+        "node_config": {"headers": {}},
+        "parameter_schema": {
+            "headers": {"type": "object", "required": True, "editor_kind": "object", "path_kind": None},
+        },
+    },
+    "browser.wait_for_url_change": {
+        "lowered_kind": "execution",
+        "expansion_role": "action:wait_for_url_change",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"},
+        ],
+        "node_config": {"from_url": "", "url_pattern": "", "timeout": 10000},
     },
     "browser.go_back": {
         "lowered_kind": "execution",

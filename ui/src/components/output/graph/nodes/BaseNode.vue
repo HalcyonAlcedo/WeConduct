@@ -5,6 +5,8 @@ import { useResourceStore } from '@/stores/resourceStore'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { postFileDialog, postGraphNormalize } from '@/services/api'
 import { useToastStore } from '@/stores/toastStore'
+import { PARAM_TEMPLATES } from '@/config/fieldTemplates'
+import type { FieldTemplate } from '@/config/fieldTemplates'
 
 const toast = useToastStore()
 
@@ -63,23 +65,47 @@ const configSections = computed(() => {
       const rows: CfgRow[] = []
       for (const [sk, sv] of Object.entries(v as Record<string, unknown>)) {
         const binding = findBinding(`${k}.${sk}`) || findBinding(sk)
-        rows.push({ path: `${k}.${sk}`, key: sk, value: sv, editable: !binding && isEditable(sv), display: binding ? `⇠ ${binding.nodeName}:${binding.portId}` : formatVal(sv) })
+        rows.push({ path: `${k}.${sk}`, key: sk, value: sv, editable: !binding && isEditable(sv, sk), display: binding ? `⇠ ${binding.nodeName}:${binding.portId}` : formatVal(sv, sk) })
       }
       sections.push({ section: k, rows })
     } else {
       const binding = findBinding(k)
-      sections.push({ rows: [{ path: k, key: k, value: v, editable: !binding && isEditable(v), display: binding ? `⇠ ${binding.nodeName}:${binding.portId}` : formatVal(v) }] })
+      sections.push({ rows: [{ path: k, key: k, value: v, editable: !binding && isEditable(v, k), display: binding ? `⇠ ${binding.nodeName}:${binding.portId}` : formatVal(v, k) }] })
     }
   }
   return sections
 })
-function isEditable(v: unknown) { return typeof v === 'string' || typeof v === 'boolean' || typeof v === 'number' }
-function formatVal(v: unknown): string {
+function getFieldTemplate(fieldKey: string): FieldTemplate | undefined {
+  const nk = props.data.nodeKind || ''
+  const tpls = PARAM_TEMPLATES[nk]
+  return tpls?.find(t => t.key === fieldKey)
+}
+
+function isEditable(v: unknown, fieldKey?: string): boolean {
+  if (fieldKey) {
+    const t = getFieldTemplate(fieldKey)
+    if (t && (t.type === 'object-map' || t.type === 'branch-list' || t.type === 'code' || t.type === 'typed-value')) return false
+  }
+  return typeof v === 'string' || typeof v === 'boolean' || typeof v === 'number'
+}
+function formatVal(v: unknown, fieldKey?: string): string {
+  if (fieldKey) {
+    const t = getFieldTemplate(fieldKey)
+    if (t?.options && !t.options.includes(String(v))) return `${String(v)} (非标)`
+  }
   if (typeof v === 'string') return v.slice(0, 30)
   if (typeof v === 'number' || typeof v === 'boolean') return String(v)
   if (Array.isArray(v)) {
     const labels = v.filter((b: any) => b && b.label).map((b: any) => b.label).slice(0, 3)
     return labels.join(', ') + (v.length > 3 ? ` …(${v.length})` : ` (${v.length})`)
+  }
+  // For typed-value, object-map, code fields — show summary + hint
+  if (fieldKey) {
+    const t = getFieldTemplate(fieldKey)
+    if (t?.type === 'typed-value') return typeof v === 'object' ? `(object)` : `(${typeof v}: ${String(v).slice(0,20)})`
+    if (t?.type === 'object-map') return `(${typeof v === 'object' && v !== null ? Object.keys(v as object).length + ' keys' : 'empty'})`
+    if (t?.type === 'branch-list') return `(${Array.isArray(v) ? v.length + ' branches' : 'empty'})`
+    if (t?.type === 'code') return `(code: ${String(v).length} chars)`
   }
   return '(' + typeof v + ')'
 }
@@ -203,6 +229,9 @@ async function applyBranches() {
               <div v-for="e in sec.rows" :key="e.path" class="vf-cfg-row">
                 <span class="vf-cfg-key">{{ e.key }}</span>
                 <input v-if="e.editable && typeof e.value === 'boolean'" type="checkbox" :checked="!!e.value" @change="updateConfigField(e.path, String(($event.target as HTMLInputElement).checked))" @mousedown.stop @click.stop />
+                <select v-else-if="e.editable && getFieldTemplate(e.key)?.options" class="vf-cfg-input" :value="String(e.value ?? '')" @change="updateConfigField(e.path, ($event.target as HTMLSelectElement).value)" @mousedown.stop @click.stop style="flex:1">
+                  <option v-for="o in getFieldTemplate(e.key)!.options" :key="o" :value="o">{{ o }}</option>
+                </select>
                 <input v-else-if="e.editable && typeof e.value === 'number'" class="vf-cfg-input" type="number" :value="e.value as number" @change="updateConfigField(e.path, ($event.target as HTMLInputElement).value)" @mousedown.stop @click.stop />
                 <span v-else-if="e.editable" style="display:flex;gap:1px;align-items:center">
                   <input class="vf-cfg-input" :value="String(e.value ?? '')" @change="updateConfigField(e.path, ($event.target as HTMLInputElement).value)" @mousedown.stop @click.stop />

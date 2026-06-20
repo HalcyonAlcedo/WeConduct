@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, markRaw } from 'vue'
-import { VueFlow } from '@vue-flow/core'
+import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import BaseNode from './nodes/BaseNode.vue'
@@ -20,6 +20,13 @@ const graphStore = useGraphStore()
 const workspace = useGraphWorkspaceStore()
 const dock = useDockStore()
 const toast = useToastStore()
+
+const { setCenter } = useVueFlow()
+// Expose for external node navigation (diagnostics locate, metadata select, etc.)
+;(window as any).__panToNode = (nodeId: string) => {
+  const n = workspace.graphModel?.nodes.find(x => x.node_id === nodeId)
+  if (n?.position) setCenter(n.position.x + 90, n.position.y + 28, { zoom: 1.2, duration: 400 })
+}
 
 // Right-click context menu
 const contextMenu = ref<{ x: number; y: number; nodeId: string } | null>(null)

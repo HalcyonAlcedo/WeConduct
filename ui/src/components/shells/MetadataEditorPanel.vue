@@ -5,6 +5,7 @@ import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useCompilationStore } from '@/stores/compilationStore'
 import { useResourceStore } from '@/stores/resourceStore'
 import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
+import MonacoEditor from '@/components/input/MonacoEditor.vue'
 import { postFileDialog, postGraphNormalize } from '@/services/api'
 import { useToastStore } from '@/stores/toastStore'
 
@@ -61,19 +62,20 @@ function kindLabel(k: string) {
 }
 
 // ---- Field templates ----
-interface ParamField { key: string; type: 'string' | 'number' | 'boolean' | 'json' | 'object-map' | 'typed-value' | 'branch-list' }
+interface ParamField { key: string; type: 'string' | 'number' | 'boolean' | 'json' | 'object-map' | 'typed-value' | 'branch-list' | 'code'; options?: string[] }
 const PARAM_TEMPLATES: Record<string, ParamField[]> = {
-  'data.get_text':          [{ key: 'selector', type: 'string' }, { key: 'variable_name', type: 'string' }],
+  'data.get_text':          [{ key: 'selector', type: 'string' }, { key: 'variable_name', type: 'string' }, { key: 'target_type', type: 'string', options: ['string', 'int', 'float', 'bool', 'json'] }],
   'data.get_attribute':     [{ key: 'selector', type: 'string' }, { key: 'attribute', type: 'string' }, { key: 'variable_name', type: 'string' }],
   'data.get_value':         [{ key: 'selector', type: 'string' }, { key: 'variable_name', type: 'string' }],
   'data.get_element_count': [{ key: 'selector', type: 'string' }, { key: 'variable_name', type: 'string' }],
   'data.set_variables_batch': [{ key: 'variables', type: 'object-map' }],
   'data.set_variable':       [{ key: 'name', type: 'string' }, { key: 'value', type: 'typed-value' }],
+  'data.convert_value':      [{ key: 'source_value', type: 'typed-value' }, { key: 'target_type', type: 'string', options: ['string', 'int', 'float', 'bool', 'json'] }, { key: 'variable_name', type: 'string' }, { key: 'in_place', type: 'boolean' }, { key: 'source_variable_name', type: 'string' }],
   'data.increment_variable': [{ key: 'variable_name', type: 'string' }, { key: 'step', type: 'number' }],
   'data.decrement_variable': [{ key: 'variable_name', type: 'string' }, { key: 'step', type: 'number' }],
   'data.list_index':         [{ key: 'variable_name', type: 'string' }, { key: 'value', type: 'typed-value' }, { key: 'output_variable_name', type: 'string' }],
-  'browser.inject_js':       [{ key: 'script', type: 'string' }],
-  'browser.run_js':          [{ key: 'script', type: 'string' }, { key: 'variable_name', type: 'string' }],
+  'browser.inject_js':       [{ key: 'script', type: 'code' }],
+  'browser.run_js':          [{ key: 'script', type: 'code' }, { key: 'variable_name', type: 'string' }],
   'browser.extract_web_table': [{ key: 'selector', type: 'string' }, { key: 'variable_name', type: 'string' }],
   'browser.extract_web_table_to_excel': [{ key: 'selector', type: 'string' }, { key: 'path', type: 'string' }, { key: 'sheet_name', type: 'string' }],
   'session.apply_auth_session': [{ key: 'cookies', type: 'json' }, { key: 'local_storage', type: 'object-map' }],
@@ -287,6 +289,12 @@ function finishRename() {
 }
 function cancelRename() { renamingEntry.value = null }
 
+function locateSelectedNode() {
+  if (selectedNodeId.value) {
+    try { (window as any).__panToNode?.(selectedNodeId.value) } catch {}
+  }
+}
+
 // ---- Branch-list editor ----
 interface BranchItem { key: string; label: string }
 function getBranches(fieldKey: string): BranchItem[] {
@@ -383,7 +391,10 @@ async function pickPathForField(fieldKey: string) {
       <PlaceholderBanner type="empty" title="未选中节点" description="在节点图或节点列表中点击节点以查看属性" />
     </template>
     <template v-else>
-      <h4 class="mep-title">{{ selectedNode.node_id }}</h4>
+      <div style="display:flex;align-items:center;gap:var(--space-sm);margin-bottom:var(--space-md)">
+        <h4 class="mep-title" style="margin-bottom:0">{{ selectedNode.node_id }}</h4>
+        <button class="mep-locate-btn" @click="locateSelectedNode" title="在节点图中定位此节点">📍 定位</button>
+      </div>
       <div class="mep-grid">
         <div class="mep-row"><label>节点 ID</label><code>{{ selectedNode.node_id }}</code><span class="mep-hint">只读</span></div>
         <div class="mep-row"><label>类型</label><span>{{ kindLabel(selectedNode.lowered_kind) }}</span></div>
@@ -426,11 +437,14 @@ async function pickPathForField(fieldKey: string) {
         <h5>节点配置 (node_config)</h5>
         <div class="mep-config">
           <!-- Template fields (non-object-map, non-typed-value) -->
-          <div v-for="f in paramFields.filter(p => p.type !== 'object-map' && p.type !== 'typed-value' && p.type !== 'branch-list')" :key="f.key" class="mep-cfg-row">
+          <div v-for="f in paramFields.filter(p => p.type !== 'object-map' && p.type !== 'typed-value' && p.type !== 'branch-list' && p.type !== 'code')" :key="f.key" class="mep-cfg-row">
             <label :title="f.key">{{ f.key }}</label>
             <span v-if="isFieldBound(f.key)" class="mep-bound">{{ getCfgVal(f.key) }} <em>⇠ {{ isFieldBound(f.key)!.nodeName }}:{{ isFieldBound(f.key)!.portId }}</em></span>
             <template v-else>
-              <span v-if="f.type === 'string'" style="display:flex;gap:2px;flex:1">
+              <select v-if="f.options" class="mep-cfg-input" :value="String(getCfgVal(f.key) ?? f.options[0])" @change="setCfgVal(f.key, ($event.target as HTMLSelectElement).value)">
+                <option v-for="o in f.options" :key="o" :value="o">{{ o }}</option>
+              </select>
+              <span v-else-if="f.type === 'string'" style="display:flex;gap:2px;flex:1">
                 <input class="mep-cfg-input" :value="String(getCfgVal(f.key) ?? '')" @change="setCfgVal(f.key, ($event.target as HTMLInputElement).value)" />
                 <button v-if="getParamSchema(f.key)?.editor_kind === 'path'" class="mep-path-btn" @click="pickPathForField(f.key)" title="选择路径">…</button>
               </span>
@@ -463,6 +477,18 @@ async function pickPathForField(fieldKey: string) {
               <!-- null -->
               <span v-else class="mep-null">null</span>
             </template>
+          </div>
+
+          <!-- Code fields -->
+          <div v-for="f in paramFields.filter(p => p.type === 'code')" :key="f.key" class="mep-code-row">
+            <label class="mep-code-label">{{ f.key }}</label>
+            <div class="mep-code-editor">
+              <MonacoEditor
+                :model-value="String(getCfgVal(f.key) ?? '')"
+                :language="'javascript'"
+                @update:model-value="setCfgVal(f.key, $event)"
+              />
+            </div>
           </div>
 
           <!-- Branch-list fields -->
@@ -532,7 +558,9 @@ async function pickPathForField(fieldKey: string) {
 .mep-search-item:hover { background: var(--bg-hover); }
 .mep-search-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mep-search-kid { font-family: var(--font-mono); font-size: var(--text-caption); color: var(--text-disabled); }
-.mep-title { font-size: var(--text-body); font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-md); }
+.mep-title { font-size: var(--text-body); font-weight: 600; color: var(--text-primary); }
+.mep-locate-btn { padding: 1px 8px; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: transparent; color: var(--accent); cursor: pointer; font-size: var(--text-caption); font-family: var(--font-ui); }
+.mep-locate-btn:hover { background: var(--accent-light); }
 .mep-grid { display: flex; flex-direction: column; gap: var(--space-xs); margin-bottom: var(--space-lg); }
 .mep-row { display: flex; gap: var(--space-sm); align-items: baseline; }
 .mep-row label { width: 56px; flex-shrink: 0; color: var(--text-disabled); font-size: var(--text-caption); }
@@ -584,4 +612,8 @@ async function pickPathForField(fieldKey: string) {
 .mep-br-norm { margin-top: 4px; padding: 2px 10px; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: transparent; color: var(--accent); cursor: pointer; font-size: var(--text-caption); font-family: var(--font-ui); }
 .mep-br-norm:hover:not(:disabled) { background: var(--accent-light); }
 .mep-br-norm:disabled { opacity: 0.5; }
+
+.mep-code-row { display: flex; flex-direction: column; padding: 4px 0; }
+.mep-code-label { font-family: var(--font-mono); font-size: var(--text-caption); color: var(--text-disabled); margin-bottom: 2px; }
+.mep-code-editor { height: 120px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); overflow: hidden; }
 </style>

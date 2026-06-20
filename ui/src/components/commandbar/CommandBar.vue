@@ -117,8 +117,10 @@ async function handleOneClickRun() {
     await graphWs.syncSource()
   }
   if (!graphWs.hasGraph) { toast.info('', '当前图为空，请先添加节点'); return }
-  // Auto-open task execution panel if not visible
+  // Auto-open task execution and output panels if not visible
   if (!dock.isPanelVisible('tasks')) dock.restorePanel('tasks')
+  if (!dock.isPanelVisible('output')) dock.restorePanel('output')
+  runtime.requestRuntimeTab()
   // Execute via runtime (not just compile)
   const result = await runtime.startAndRun(graphWs.graphModel as Record<string, unknown> | undefined, graphWs.isDirty)
   await resource.refreshAll()
@@ -324,15 +326,17 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
             <template v-else-if="activeDialog === 'recent'">
               <div v-if="!recentProjects.length" class="dlg-meta">暂无最近项目</div>
               <div v-for="r in recentProjects" :key="r.project_path" class="dlg-recent-row">
-                <span class="dlg-recent-name" @click="doOpenRecent(r.project_path)">{{ r.project_name }}</span>
-                <span class="dlg-meta">{{ r.project_path }}</span>
-                <button class="dlg-sm-btn" @click="doRemoveRecent(r.project_path)">✕</button>
+                <div class="dlg-recent-info" @click="doOpenRecent(r.project_path)">
+                  <span class="dlg-recent-name">{{ r.project_name }}</span>
+                  <span class="dlg-recent-path" :title="r.project_path">{{ r.project_path }}</span>
+                </div>
+                <button class="dlg-recent-rm" @click.stop="doRemoveRecent(r.project_path)" title="从列表中移除">✕</button>
               </div>
             </template>
             <!-- About -->
             <template v-else-if="activeDialog === 'about'">
               <p><strong>WeConduct</strong></p>
-              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.3.0' }}</p>
+              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.4.0' }}</p>
               <p class="dlg-meta">当前为 Preview 版本</p>
               <p class="dlg-meta">运行模式: {{ workspace.health?.host_mode ?? '—' }}</p>
               <p class="dlg-meta">工作区会话: {{ workspace.health?.workspace_session_id ?? '—' }}</p>
@@ -476,9 +480,15 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
 .dlg-act-btn { padding: 4px 16px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; border-radius: var(--radius-sm); font-size: var(--text-body); font-family: var(--font-ui); }
 .dlg-act-btn:hover:not(:disabled) { background: var(--accent-hover); }
 .dlg-act-btn:disabled { opacity: 0.5; }
-.dlg-recent-row { display: flex; align-items: center; gap: var(--space-sm); padding: 3px 0; border-bottom: 1px solid var(--border-subtle); }
-.dlg-recent-name { flex: 1; cursor: pointer; color: var(--text-primary); }
-.dlg-recent-name:hover { color: var(--accent); }
+.dlg-recent-row { display: flex; align-items: center; gap: var(--space-sm); padding: 6px 8px; border-radius: var(--radius-sm); transition: background 80ms; }
+.dlg-recent-row:hover { background: var(--bg-hover); }
+.dlg-recent-row + .dlg-recent-row { border-top: 1px solid var(--border-subtle); }
+.dlg-recent-info { flex: 1; min-width: 0; cursor: pointer; }
+.dlg-recent-info:hover .dlg-recent-name { color: var(--accent); }
+.dlg-recent-name { display: block; font-size: var(--text-body); font-weight: 500; color: var(--text-primary); line-height: 1.4; }
+.dlg-recent-path { display: block; font-family: var(--font-mono); font-size: var(--text-caption); color: var(--text-disabled); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; margin-top: 1px; }
+.dlg-recent-rm { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--text-disabled); cursor: pointer; font-size: 10px; border-radius: var(--radius-sm); flex-shrink: 0; }
+.dlg-recent-rm:hover { color: var(--state-error); background: rgba(208,112,96,0.08); }
 .dlg-sm-btn { width: 18px; height: 18px; border: none; background: transparent; color: var(--text-disabled); cursor: pointer; font-size: 10px; border-radius: 2px; }
 .dlg-sm-btn:hover { color: var(--state-error); background: rgba(208,112,96,0.08); }
 .dlg-path-row { display: flex; gap: var(--space-xs); margin-bottom: var(--space-sm); }

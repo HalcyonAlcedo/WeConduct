@@ -4,6 +4,7 @@ import threading
 import base64
 from http.server import BaseHTTPRequestHandler
 from socketserver import TCPServer
+import urllib.parse
 from openpyxl import Workbook, load_workbook
 
 from weconduct.application import CompilationWorkbenchService
@@ -58,16 +59,51 @@ class _BrowserMockSiteHandler(BaseHTTPRequestHandler):
     last_form_value = ""
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/dashboard":
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        if path == "/dashboard":
             body = b"""
 <!doctype html>
 <html>
   <body>
     <div id="dashboard-status">dashboard-ready</div>
+    <button id="open-popup" type="button" onclick="window.open('/popup', 'phase14Popup')">Open Popup</button>
+    <a id="download-link" href="/download">Download</a>
   </body>
 </html>
 """.strip()
-        elif self.path == "/frame":
+        elif path == "/popup":
+            body = b"""
+<!doctype html>
+<html>
+  <body>
+    <div id="popup-status">popup-ready</div>
+  </body>
+</html>
+""".strip()
+        elif path == "/headers":
+            payload = {
+                "user_agent": self.headers.get("User-Agent"),
+                "x_weconduct_extra": self.headers.get("X-WeConduct-Extra"),
+            }
+            body = f"""
+<!doctype html>
+<html>
+  <body>
+    <pre id="header-json">{json.dumps(payload, ensure_ascii=False)}</pre>
+  </body>
+</html>
+""".strip().encode("utf-8")
+        elif path == "/download":
+            body = b"phase14-download"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="phase14.txt"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        elif path == "/frame":
             body = b"""
 <!doctype html>
 <html>
@@ -77,7 +113,7 @@ class _BrowserMockSiteHandler(BaseHTTPRequestHandler):
   </body>
 </html>
 """.strip()
-        elif self.path == "/frame-details":
+        elif path == "/frame-details":
             body = b"""
 <!doctype html>
 <html>
@@ -102,10 +138,47 @@ class _BrowserMockSiteHandler(BaseHTTPRequestHandler):
       <option value="beijing">Beijing</option>
       <option value="shanghai">Shanghai</option>
     </select>
+    <input
+      id="key-input"
+      value=""
+      oninput="document.getElementById('key-output').textContent = this.value"
+      onkeydown="if (event.key === 'Enter') document.getElementById('key-enter-status').textContent = 'enter'; if (event.ctrlKey && event.key.toLowerCase() === 'a') document.getElementById('key-hotkey-status').textContent = 'ctrl+a';"
+    >
+    <div id="key-output"></div>
+    <div id="key-enter-status"></div>
+    <div id="key-hotkey-status"></div>
     <div id="hover-target" onmouseover="document.getElementById('hover-result').style.display='block'">hover-me</div>
     <div id="hover-result" style="display:none">hovered</div>
     <button id="go-dashboard" type="button" onclick="window.location='/dashboard'">Go Dashboard</button>
     <button id="alert-button" type="button" onclick="alert('hello-dialog')">Alert</button>
+    <button id="open-popup" type="button" onclick="window.open('/popup', 'phase14Popup')">Open Popup</button>
+    <button
+      id="fetch-button"
+      type="button"
+      onclick="fetch('/api/ping?token=abc', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json', 'X-Client-Action': 'fetch' }}, body: JSON.stringify({{ kind: 'ping' }}) }}).then((response) => response.json()).then((payload) => {{ const el = document.getElementById('fetch-status'); el.textContent = payload.message; el.setAttribute('data-response', payload.status); }});"
+    >
+      Fetch
+    </button>
+    <div id="fetch-status" data-response="idle"></div>
+    <button id="disabled-button" type="button" disabled>Disabled</button>
+    <div
+      id="drag-source"
+      draggable="true"
+      ondragstart="event.dataTransfer.setData('text/plain', 'drag-payload')"
+    >
+      drag-source
+    </div>
+    <div
+      id="drop-target"
+      ondragover="event.preventDefault()"
+      ondrop="event.preventDefault(); document.getElementById('drop-status').textContent = event.dataTransfer.getData('text/plain') || 'dropped';"
+      style="width:120px;height:60px;border:1px solid #333;"
+    >
+      drop-target
+    </div>
+    <div id="drop-status"></div>
+    <div id="scroll-target" style="margin-top: 2200px;">scroll-target</div>
+    <a id="download-link" href="/download">Download</a>
     <table id="sample-table">
       <thead>
         <tr><th>Name</th><th>Score</th></tr>
@@ -117,6 +190,9 @@ class _BrowserMockSiteHandler(BaseHTTPRequestHandler):
     </table>
     <iframe id="content-frame" name="contentFrame" src="/frame"></iframe>
     <div id="status">{"clicked" if self.clicked else "ready"}</div>
+    <script>
+      window.sessionStorage.setItem('boot', 'ready');
+    </script>
   </body>
 </html>
 """.strip().encode("utf-8")
@@ -129,6 +205,23 @@ class _BrowserMockSiteHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         content_length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(content_length).decode("utf-8")
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/ping":
+            payload = json.loads(body or "{}")
+            response_body = json.dumps(
+                {
+                    "status": "ok",
+                    "message": "pong",
+                    "query": urllib.parse.parse_qs(parsed.query),
+                    "payload": payload,
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response_body)))
+            self.end_headers()
+            self.wfile.write(response_body)
+            return
         form_value = ""
         for part in body.split("&"):
             if part.startswith("name="):
@@ -183,7 +276,7 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert snapshot["entrypoints"]["graph_source_projection"] == "/api/workbench/graph/source-projection"
     assert snapshot["workbench"]["host_mode"] == "python_core"
-    assert snapshot["workbench"]["api_version"] == "0.3.0"
+    assert snapshot["workbench"]["api_version"] == "0.4.0"
     assert snapshot["compiler"]["available_source_kinds"] == [
         "graph_workspace",
         "native_flow",
@@ -1986,6 +2079,7 @@ def test_service_builds_graph_node_drafts_for_builtin_resources() -> None:
     assert data_get_text["node"]["node_config"] == {
         "selector": "",
         "variable_name": "",
+        "target_type": "string",
     }
 
     assert file_read_text["node"]["node_config"] == {"path": "", "encoding": "utf-8"}
@@ -2030,6 +2124,7 @@ def test_service_builds_graph_node_drafts_for_extended_builtin_resources() -> No
         "data.set_variables_batch",
         "data.increment_variable",
         "data.decrement_variable",
+        "data.convert_value",
         "data.evaluate_expression",
         "data.regex_replace",
         "data.create_list",
@@ -2060,6 +2155,12 @@ def test_service_builds_graph_node_drafts_for_extended_builtin_resources() -> No
         "browser.extract_web_table_to_excel",
         "browser.inject_js",
         "browser.run_js",
+        "browser.get_local_storage",
+        "browser.go_back",
+        "browser.go_forward",
+        "browser.refresh",
+        "browser.refresh_no_cache",
+        "time.get_current_time",
         "control.jump_to_step",
         "control.end_foreach",
         "control.foreach_continue",
@@ -2148,6 +2249,13 @@ def test_service_builds_graph_node_drafts_for_extended_builtin_resources() -> No
     assert drafts["data.decrement_variable"]["node"]["node_config"] == {
         "variable_name": "",
         "step": 1,
+    }
+    assert drafts["data.convert_value"]["node"]["node_config"] == {
+        "source_value": None,
+        "target_type": "string",
+        "variable_name": "",
+        "in_place": False,
+        "source_variable_name": "",
     }
     assert drafts["data.evaluate_expression"]["node"]["node_config"] == {
         "expression": "",
@@ -2350,6 +2458,89 @@ def test_service_builds_graph_node_drafts_for_extended_builtin_resources() -> No
     }
 
 
+def test_service_builds_graph_node_drafts_for_phase14_browser_resources() -> None:
+    service = CompilationWorkbenchService()
+
+    expected_resource_keys = [
+        "browser.wait_for_text",
+        "browser.wait_for_attribute",
+        "browser.wait_for_value",
+        "browser.wait_for_request",
+        "browser.wait_for_response",
+        "browser.wait_for_popup",
+        "browser.get_cookie",
+        "browser.set_cookie",
+        "browser.delete_cookie",
+        "browser.list_cookies",
+        "browser.set_local_storage",
+        "browser.remove_local_storage",
+        "browser.clear_local_storage",
+        "browser.get_session_storage",
+        "browser.set_session_storage",
+        "browser.press_key",
+        "browser.keyboard_type",
+        "browser.hotkey",
+        "browser.scroll_to_element",
+        "browser.scroll_page",
+        "browser.drag_and_drop",
+        "browser.element_screenshot",
+        "browser.open_tab",
+        "browser.switch_tab",
+        "browser.close_tab",
+        "browser.exists",
+        "browser.is_visible",
+        "browser.is_enabled",
+        "browser.is_checked",
+        "browser.get_html",
+        "browser.get_inner_html",
+        "browser.download_file",
+        "browser.wait_for_download",
+        "browser.set_user_agent",
+        "browser.set_extra_headers",
+        "browser.wait_for_url_change",
+    ]
+
+    drafts = {
+        resource_key: service.build_graph_node_draft(resource_key=resource_key)
+        for resource_key in expected_resource_keys
+    }
+
+    for resource_key, draft in drafts.items():
+        assert draft["resource"]["resource_key"] == resource_key
+        assert draft["node"]["node_kind"] == resource_key
+        assert isinstance(draft["node"]["ports"], list) and draft["node"]["ports"]
+        assert isinstance(draft["node"]["node_config"], dict)
+
+    assert drafts["browser.wait_for_text"]["node"]["node_config"] == {
+        "selector": "",
+        "text": "",
+        "match_mode": "contains",
+        "timeout": 10000,
+    }
+    assert drafts["browser.set_cookie"]["node"]["node_config"] == {
+        "name": "",
+        "value": "",
+        "url": "",
+        "domain": "",
+        "path": "/",
+        "http_only": False,
+        "secure": False,
+        "same_site": "Lax",
+        "expires": None,
+    }
+    assert drafts["browser.element_screenshot"]["node"]["node_config"] == {
+        "selector": "",
+        "path": "",
+    }
+    assert drafts["browser.download_file"]["node"]["node_config"] == {
+        "url": "",
+        "path": "",
+    }
+    assert drafts["browser.set_extra_headers"]["node"]["node_config"] == {
+        "headers": {},
+    }
+
+
 def test_service_graph_node_draft_exposes_parameter_metadata_and_enhanced_flow_control_drafts() -> None:
     service = CompilationWorkbenchService()
 
@@ -2357,6 +2548,7 @@ def test_service_graph_node_draft_exposes_parameter_metadata_and_enhanced_flow_c
     browser_screenshot = service.build_graph_node_draft(resource_key="browser.screenshot")
     parallel_fork = service.build_graph_node_draft(resource_key="control.parallel_fork")
     control_join = service.build_graph_node_draft(resource_key="control.join")
+    control_while = service.build_graph_node_draft(resource_key="control.while")
 
     assert flow_start["node"]["ports"] == [
         {
@@ -2425,6 +2617,38 @@ def test_service_graph_node_draft_exposes_parameter_metadata_and_enhanced_flow_c
         "editor_kind": "number",
         "path_kind": None,
     }
+    assert control_while["node"]["ports"] == [
+        {
+            "port_id": "in",
+            "direction": "input",
+            "relation_layer": "control",
+            "semantic_slot": "in.control",
+        },
+        {
+            "port_id": "repeat",
+            "direction": "input",
+            "relation_layer": "control",
+            "semantic_slot": "in.repeat",
+        },
+        {
+            "port_id": "condition",
+            "direction": "input",
+            "relation_layer": "data",
+            "semantic_slot": "in.condition",
+        },
+        {
+            "port_id": "loop",
+            "direction": "output",
+            "relation_layer": "control",
+            "semantic_slot": "out.loop",
+        },
+        {
+            "port_id": "done",
+            "direction": "output",
+            "relation_layer": "control",
+            "semantic_slot": "out.done",
+        },
+    ]
 
 
 def test_service_graph_node_draft_exposes_path_parameter_metadata_for_file_and_excel_nodes() -> None:
@@ -2479,6 +2703,47 @@ def test_service_graph_node_draft_exposes_path_parameter_metadata_for_file_and_e
         "required": True,
         "editor_kind": "path",
         "path_kind": "open_file",
+    }
+
+
+def test_service_graph_node_draft_exposes_phase14_browser_parameter_metadata() -> None:
+    service = CompilationWorkbenchService()
+
+    element_screenshot = service.build_graph_node_draft(resource_key="browser.element_screenshot")
+    download_file = service.build_graph_node_draft(resource_key="browser.download_file")
+    wait_for_download = service.build_graph_node_draft(resource_key="browser.wait_for_download")
+    set_cookie = service.build_graph_node_draft(resource_key="browser.set_cookie")
+    set_extra_headers = service.build_graph_node_draft(resource_key="browser.set_extra_headers")
+
+    assert element_screenshot["parameter_schema"]["path"] == {
+        "type": "string",
+        "required": True,
+        "editor_kind": "path",
+        "path_kind": "save_file",
+    }
+    assert download_file["parameter_schema"]["path"] == {
+        "type": "string",
+        "required": True,
+        "editor_kind": "path",
+        "path_kind": "save_file",
+    }
+    assert wait_for_download["parameter_schema"]["path"] == {
+        "type": "string",
+        "required": False,
+        "editor_kind": "path",
+        "path_kind": "save_file",
+    }
+    assert set_cookie["parameter_schema"]["same_site"] == {
+        "type": "string",
+        "required": False,
+        "editor_kind": "select",
+        "path_kind": None,
+    }
+    assert set_extra_headers["parameter_schema"]["headers"] == {
+        "type": "object",
+        "required": True,
+        "editor_kind": "object",
+        "path_kind": None,
     }
 
 
@@ -2662,6 +2927,52 @@ def test_builtin_registry_covers_p9_webcontrol_gap_components() -> None:
         "dialog.watch_dialogs",
         "dialog.handle_dialogs",
         "dialog.set_agent_config",
+    }.issubset(component_keys)
+
+
+def test_builtin_registry_covers_phase14_browser_components() -> None:
+    component_keys = {
+        item["resource_key"]
+        for item in BUILTIN_COMPONENT_DEFINITIONS
+    }
+
+    assert {
+        "browser.wait_for_text",
+        "browser.wait_for_attribute",
+        "browser.wait_for_value",
+        "browser.wait_for_request",
+        "browser.wait_for_response",
+        "browser.wait_for_popup",
+        "browser.get_cookie",
+        "browser.set_cookie",
+        "browser.delete_cookie",
+        "browser.list_cookies",
+        "browser.set_local_storage",
+        "browser.remove_local_storage",
+        "browser.clear_local_storage",
+        "browser.get_session_storage",
+        "browser.set_session_storage",
+        "browser.press_key",
+        "browser.keyboard_type",
+        "browser.hotkey",
+        "browser.scroll_to_element",
+        "browser.scroll_page",
+        "browser.drag_and_drop",
+        "browser.element_screenshot",
+        "browser.open_tab",
+        "browser.switch_tab",
+        "browser.close_tab",
+        "browser.exists",
+        "browser.is_visible",
+        "browser.is_enabled",
+        "browser.is_checked",
+        "browser.get_html",
+        "browser.get_inner_html",
+        "browser.download_file",
+        "browser.wait_for_download",
+        "browser.set_user_agent",
+        "browser.set_extra_headers",
+        "browser.wait_for_url_change",
     }.issubset(component_keys)
 
 
@@ -6084,6 +6395,124 @@ def test_service_runtime_flow_graph_if_routes_only_selected_branch() -> None:
     assert branch_events[0]["selected_port_id"] == "true"
 
 
+def test_service_runtime_flow_graph_if_allows_initial_entry_with_repeat_port_present() -> None:
+    service = CompilationWorkbenchService()
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow:start",
+                    "node_kind": "flow.start",
+                    "node_config": {"initial_variables": {"flag": True}},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-if",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-if",
+                    "expansion_role": "control:if",
+                    "node_kind": "control.if",
+                    "node_config": {"expression": "flag"},
+                    "ports": [
+                        {
+                            "port_id": "in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control",
+                        },
+                        {
+                            "port_id": "repeat",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.repeat",
+                        },
+                        {
+                            "port_id": "true",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.true",
+                        },
+                        {
+                            "port_id": "false",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.false",
+                        },
+                    ],
+                },
+                {
+                    "node_id": "node-true",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-true",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "branch", "value": "true-branch"},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-read",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-read",
+                    "expansion_role": "action:get_variable",
+                    "node_kind": "data.get_variable",
+                    "node_config": {"name": "branch"},
+                    "ports": [],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-if",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-if",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-if-true",
+                    "relation_layer": "control",
+                    "from_node_id": "node-if",
+                    "to_node_id": "node-true",
+                    "from_port_id": "true",
+                },
+                {
+                    "edge_id": "edge-true-read",
+                    "relation_layer": "control",
+                    "from_node_id": "node-true",
+                    "to_node_id": "node-read",
+                },
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert session["result"]["variables"]["branch"] == "true-branch"
+    assert "node-if" in session["result"]["completed_node_ids"]
+    assert "node-true" in session["result"]["completed_node_ids"]
+    join_waiting_events = [
+        item for item in session["event_log"] if item.get("event_kind") == "join.waiting"
+    ]
+    assert all(item.get("node_id") != "node-if" for item in join_waiting_events)
+
+
 def test_service_runtime_flow_graph_data_edge_binds_source_output_into_target_input() -> None:
     service = CompilationWorkbenchService()
 
@@ -6249,6 +6678,118 @@ def test_service_runtime_node_config_merges_nested_runtime_input_overrides() -> 
         "headless": False,
         "slow_mo_ms": 150,
     }
+
+
+def test_runtime_reference_supports_explicit_type_cast_suffixes() -> None:
+    context = RuntimeContext(
+        variables={
+            "count": "3",
+            "enabled": "true",
+            "payload": '{"name":"alice"}',
+        }
+    )
+    registry = RuntimeExecutorRegistry()
+
+    set_result = execute_runtime_node(
+        {
+            "node_id": "node-set",
+            "node_kind": "data.set_variable",
+            "node_config": {
+                "name": "resolved_count",
+                "value": "${count|int}",
+            },
+        },
+        context,
+        registry,
+    )
+    expression_result = execute_runtime_node(
+        {
+            "node_id": "node-expr",
+            "node_kind": "data.evaluate_expression",
+            "node_config": {
+                "expression": "count > 1 and enabled",
+                "variable_name": "expr_result",
+            },
+            "__runtime_input_overrides__": {
+                "expression": "${count|int} > 1 and ${enabled|bool}",
+            },
+        },
+        context,
+        registry,
+    )
+    payload_result = execute_runtime_node(
+        {
+            "node_id": "node-payload",
+            "node_kind": "data.set_variable",
+            "node_config": {
+                "name": "resolved_payload",
+                "value": "${payload|json}",
+            },
+        },
+        context,
+        registry,
+    )
+
+    assert set_result["status"] == "succeeded"
+    assert set_result["value"] == 3
+    assert isinstance(context.variables["resolved_count"], int)
+    assert expression_result["status"] == "succeeded"
+    assert expression_result["value"] is True
+    assert context.variables["expr_result"] is True
+    assert payload_result["status"] == "succeeded"
+    assert payload_result["value"] == {"name": "alice"}
+    assert context.variables["resolved_payload"] == {"name": "alice"}
+
+
+def test_runtime_convert_value_node_supports_new_and_in_place_targets() -> None:
+    context = RuntimeContext(
+        variables={
+            "count": "7",
+            "enabled": "false",
+        }
+    )
+    registry = RuntimeExecutorRegistry()
+
+    first = execute_runtime_node(
+        {
+            "node_id": "node-convert-new",
+            "node_kind": "data.convert_value",
+            "node_config": {
+                "source_value": "${count}",
+                "target_type": "int",
+                "variable_name": "count_number",
+                "in_place": False,
+                "source_variable_name": "count",
+            },
+        },
+        context,
+        registry,
+    )
+    second = execute_runtime_node(
+        {
+            "node_id": "node-convert-inplace",
+            "node_kind": "data.convert_value",
+            "node_config": {
+                "source_value": "${enabled}",
+                "target_type": "bool",
+                "in_place": True,
+                "source_variable_name": "enabled",
+                "variable_name": "",
+            },
+        },
+        context,
+        registry,
+    )
+
+    assert first["status"] == "succeeded"
+    assert first["value"] == 7
+    assert first["variable_name"] == "count_number"
+    assert context.variables["count_number"] == 7
+    assert context.variables["count"] == "7"
+    assert second["status"] == "succeeded"
+    assert second["value"] is False
+    assert second["variable_name"] == "enabled"
+    assert context.variables["enabled"] is False
 
 
 def test_service_runtime_browser_launch_uses_system_edge_channel(monkeypatch) -> None:
@@ -6954,6 +7495,779 @@ def test_service_runtime_flow_graph_implicit_join_waits_for_all_control_inputs()
     assert any(item.get("node_id") == "node-collector" for item in implicit_join_released_events)
 
 
+def test_service_runtime_flow_graph_implicit_join_waits_for_all_control_edges_even_on_same_input_port() -> None:
+    service = CompilationWorkbenchService()
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow:start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-fork",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-fork",
+                    "expansion_role": "control:parallel_fork",
+                    "node_kind": "control.parallel_fork",
+                    "node_config": {
+                        "branches": [
+                            {"key": "left", "label": "Left"},
+                            {"key": "right", "label": "Right"},
+                        ]
+                    },
+                    "ports": [
+                        {
+                            "port_id": "in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control",
+                        },
+                        {
+                            "port_id": "branch:left",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.branch:left",
+                        },
+                        {
+                            "port_id": "branch:right",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.branch:right",
+                        },
+                    ],
+                },
+                {
+                    "node_id": "node-left",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-left",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "left_same_port_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-right",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-right",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "right_same_port_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-right-final",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-right-final",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "right_same_port_final_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-collector",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-collector",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {
+                        "name": "collector_same_port_ready",
+                        "value": {"left": "${left_same_port_done}", "right": "${right_same_port_final_done}"},
+                    },
+                    "ports": [
+                        {
+                            "port_id": "in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control",
+                        },
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        },
+                    ],
+                },
+                {
+                    "node_id": "node-read",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-read",
+                    "expansion_role": "action:get_variable",
+                    "node_kind": "data.get_variable",
+                    "node_config": {"name": "collector_same_port_ready"},
+                    "ports": [],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-fork",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-fork",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-fork-left",
+                    "relation_layer": "control",
+                    "from_node_id": "node-fork",
+                    "to_node_id": "node-left",
+                    "from_port_id": "branch:left",
+                },
+                {
+                    "edge_id": "edge-fork-right",
+                    "relation_layer": "control",
+                    "from_node_id": "node-fork",
+                    "to_node_id": "node-right",
+                    "from_port_id": "branch:right",
+                },
+                {
+                    "edge_id": "edge-left-collector",
+                    "relation_layer": "control",
+                    "from_node_id": "node-left",
+                    "to_node_id": "node-collector",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-right-right-final",
+                    "relation_layer": "control",
+                    "from_node_id": "node-right",
+                    "to_node_id": "node-right-final",
+                    "from_port_id": "out",
+                },
+                {
+                    "edge_id": "edge-right-final-collector",
+                    "relation_layer": "control",
+                    "from_node_id": "node-right-final",
+                    "to_node_id": "node-collector",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-collector-read",
+                    "relation_layer": "control",
+                    "from_node_id": "node-collector",
+                    "to_node_id": "node-read",
+                    "from_port_id": "out",
+                },
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert session["result"]["outputs"]["node-read"]["value"] == {"left": True, "right": True}
+    assert session["result"]["completed_node_ids"].count("node-collector") == 1
+    assert session["result"]["completed_node_ids"].index("node-right-final") < (
+        session["result"]["completed_node_ids"].index("node-collector")
+    )
+    implicit_join_waiting_events = [
+        item for item in session["event_log"] if item.get("event_kind") == "join.waiting"
+    ]
+    implicit_join_released_events = [
+        item for item in session["event_log"] if item.get("event_kind") == "join.released"
+    ]
+    assert any(item.get("node_id") == "node-collector" for item in implicit_join_waiting_events)
+    assert any(item.get("node_id") == "node-collector" for item in implicit_join_released_events)
+
+
+def test_service_runtime_flow_graph_implicit_join_waits_for_all_branches_from_regular_node_fanout() -> None:
+    service = CompilationWorkbenchService()
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow:start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-split",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-split",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "fanout_root_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control",
+                        },
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        },
+                    ],
+                },
+                {
+                    "node_id": "node-left",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-left",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "regular_left_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-middle",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-middle",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "regular_middle_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-right-step-1",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-right-step-1",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "regular_right_step_1_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-right-step-2",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-right-step-2",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "regular_right_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-collector",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-collector",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {
+                        "name": "regular_fanout_collected",
+                        "value": {
+                            "left": "${regular_left_done}",
+                            "middle": "${regular_middle_done}",
+                            "right": "${regular_right_done}",
+                        },
+                    },
+                    "ports": [
+                        {
+                            "port_id": "in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control",
+                        },
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        },
+                    ],
+                },
+                {
+                    "node_id": "node-read",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-read",
+                    "expansion_role": "action:get_variable",
+                    "node_kind": "data.get_variable",
+                    "node_config": {"name": "regular_fanout_collected"},
+                    "ports": [],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-split",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-split",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-split-left",
+                    "relation_layer": "control",
+                    "from_node_id": "node-split",
+                    "to_node_id": "node-left",
+                    "from_port_id": "out",
+                },
+                {
+                    "edge_id": "edge-split-middle",
+                    "relation_layer": "control",
+                    "from_node_id": "node-split",
+                    "to_node_id": "node-middle",
+                    "from_port_id": "out",
+                },
+                {
+                    "edge_id": "edge-split-right",
+                    "relation_layer": "control",
+                    "from_node_id": "node-split",
+                    "to_node_id": "node-right-step-1",
+                    "from_port_id": "out",
+                },
+                {
+                    "edge_id": "edge-right-step-1-step-2",
+                    "relation_layer": "control",
+                    "from_node_id": "node-right-step-1",
+                    "to_node_id": "node-right-step-2",
+                    "from_port_id": "out",
+                },
+                {
+                    "edge_id": "edge-left-collector",
+                    "relation_layer": "control",
+                    "from_node_id": "node-left",
+                    "to_node_id": "node-collector",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-middle-collector",
+                    "relation_layer": "control",
+                    "from_node_id": "node-middle",
+                    "to_node_id": "node-collector",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-right-collector",
+                    "relation_layer": "control",
+                    "from_node_id": "node-right-step-2",
+                    "to_node_id": "node-collector",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-collector-read",
+                    "relation_layer": "control",
+                    "from_node_id": "node-collector",
+                    "to_node_id": "node-read",
+                    "from_port_id": "out",
+                },
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert session["result"]["outputs"]["node-read"]["value"] == {
+        "left": True,
+        "middle": True,
+        "right": True,
+    }
+    assert session["result"]["completed_node_ids"].count("node-collector") == 1
+    assert session["result"]["completed_node_ids"].index("node-right-step-2") < (
+        session["result"]["completed_node_ids"].index("node-collector")
+    )
+    implicit_join_waiting_events = [
+        item for item in session["event_log"] if item.get("event_kind") == "join.waiting"
+    ]
+    implicit_join_released_events = [
+        item for item in session["event_log"] if item.get("event_kind") == "join.released"
+    ]
+    assert any(item.get("node_id") == "node-collector" for item in implicit_join_waiting_events)
+    assert any(item.get("node_id") == "node-collector" for item in implicit_join_released_events)
+
+
+def test_service_runtime_flow_graph_implicit_join_waits_when_one_branch_contains_internal_join() -> None:
+    service = CompilationWorkbenchService()
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow:start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-split",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-split",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "root_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control",
+                        },
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        },
+                    ],
+                },
+                {
+                    "node_id": "node-left",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-left",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "left_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-right",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-right",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "right_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-branch-wait",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-branch-wait",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "branch_wait_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-branch-ready",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-branch-ready",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "branch_ready_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-branch-join",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-branch-join",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "branch_join_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control",
+                        },
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        },
+                    ],
+                },
+                {
+                    "node_id": "node-branch-final",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-branch-final",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "branch_final_done", "value": True},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-collector",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-collector",
+                    "expansion_role": "action:set_variable",
+                    "node_kind": "data.set_variable",
+                    "node_config": {
+                        "name": "collector_nested_join_ready",
+                        "value": {
+                            "left": "${left_done}",
+                            "right": "${right_done}",
+                            "branch": "${branch_final_done}",
+                        },
+                    },
+                    "ports": [
+                        {
+                            "port_id": "in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control",
+                        },
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        },
+                    ],
+                },
+                {
+                    "node_id": "node-read",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-read",
+                    "expansion_role": "action:get_variable",
+                    "node_kind": "data.get_variable",
+                    "node_config": {"name": "collector_nested_join_ready"},
+                    "ports": [],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-split",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-split",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-split-left",
+                    "relation_layer": "control",
+                    "from_node_id": "node-split",
+                    "to_node_id": "node-left",
+                    "from_port_id": "out",
+                },
+                {
+                    "edge_id": "edge-split-right",
+                    "relation_layer": "control",
+                    "from_node_id": "node-split",
+                    "to_node_id": "node-right",
+                    "from_port_id": "out",
+                },
+                {
+                    "edge_id": "edge-split-branch-wait",
+                    "relation_layer": "control",
+                    "from_node_id": "node-split",
+                    "to_node_id": "node-branch-wait",
+                    "from_port_id": "out",
+                },
+                {
+                    "edge_id": "edge-split-branch-ready",
+                    "relation_layer": "control",
+                    "from_node_id": "node-split",
+                    "to_node_id": "node-branch-ready",
+                    "from_port_id": "out",
+                },
+                {
+                    "edge_id": "edge-branch-wait-join",
+                    "relation_layer": "control",
+                    "from_node_id": "node-branch-wait",
+                    "to_node_id": "node-branch-join",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-branch-ready-join",
+                    "relation_layer": "control",
+                    "from_node_id": "node-branch-ready",
+                    "to_node_id": "node-branch-join",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-branch-join-final",
+                    "relation_layer": "control",
+                    "from_node_id": "node-branch-join",
+                    "to_node_id": "node-branch-final",
+                    "from_port_id": "out",
+                },
+                {
+                    "edge_id": "edge-left-collector",
+                    "relation_layer": "control",
+                    "from_node_id": "node-left",
+                    "to_node_id": "node-collector",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-right-collector",
+                    "relation_layer": "control",
+                    "from_node_id": "node-right",
+                    "to_node_id": "node-collector",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-branch-final-collector",
+                    "relation_layer": "control",
+                    "from_node_id": "node-branch-final",
+                    "to_node_id": "node-collector",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                },
+                {
+                    "edge_id": "edge-collector-read",
+                    "relation_layer": "control",
+                    "from_node_id": "node-collector",
+                    "to_node_id": "node-read",
+                    "from_port_id": "out",
+                },
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert session["result"]["outputs"]["node-read"]["value"] == {
+        "left": True,
+        "right": True,
+        "branch": True,
+    }
+    assert session["result"]["completed_node_ids"].count("node-collector") == 1
+    assert session["result"]["completed_node_ids"].index("node-branch-final") < (
+        session["result"]["completed_node_ids"].index("node-collector")
+    )
+    implicit_join_waiting_events = [
+        item for item in session["event_log"] if item.get("event_kind") == "join.waiting"
+    ]
+    implicit_join_released_events = [
+        item for item in session["event_log"] if item.get("event_kind") == "join.released"
+    ]
+    assert any(item.get("node_id") == "node-branch-join" for item in implicit_join_waiting_events)
+    assert any(item.get("node_id") == "node-collector" for item in implicit_join_waiting_events)
+    assert any(item.get("node_id") == "node-branch-join" for item in implicit_join_released_events)
+    assert any(item.get("node_id") == "node-collector" for item in implicit_join_released_events)
+
+
 def test_service_runtime_flow_graph_if_uses_semantic_slot_when_control_port_ids_are_renamed() -> None:
     service = CompilationWorkbenchService()
 
@@ -7258,6 +8572,369 @@ def test_service_runtime_flow_graph_join_uses_semantic_slot_when_control_port_id
     )
 
 
+def test_service_runtime_session_node_states_use_static_flow_order_before_execution() -> None:
+    service = CompilationWorkbenchService()
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-read",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-read",
+                    "expansion_role": "action:get_variable",
+                    "display_name": "Read",
+                    "node_kind": "data.get_variable",
+                    "node_config": {"name": "right_done"},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-join",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-join",
+                    "expansion_role": "control:join",
+                    "display_name": "Join",
+                    "node_kind": "control.join",
+                    "node_config": {"mode": "all"},
+                    "ports": [
+                        {
+                            "port_id": "join-left",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.branch:left",
+                        },
+                        {
+                            "port_id": "join-right",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.branch:right",
+                        },
+                        {
+                            "port_id": "join-output",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        },
+                    ],
+                },
+                {
+                    "node_id": "node-left",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-left",
+                    "expansion_role": "action:set_variable",
+                    "display_name": "Left",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "left_done", "value": True},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow:start",
+                    "display_name": "Start",
+                    "node_kind": "flow.start",
+                    "node_config": {"initial_variables": {}},
+                    "ports": [
+                        {
+                            "port_id": "entry-control",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-right",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-right",
+                    "expansion_role": "action:set_variable",
+                    "display_name": "Right",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "right_done", "value": True},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-fork",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-fork",
+                    "expansion_role": "control:parallel_fork",
+                    "display_name": "Fork",
+                    "node_kind": "control.parallel_fork",
+                    "node_config": {
+                        "branches": [
+                            {"key": "left", "label": "Left"},
+                            {"key": "right", "label": "Right"},
+                        ]
+                    },
+                    "ports": [
+                        {
+                            "port_id": "fork-input",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control",
+                        },
+                        {
+                            "port_id": "fork-left",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.branch:left",
+                        },
+                        {
+                            "port_id": "fork-right",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.branch:right",
+                        },
+                    ],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-fork",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-fork",
+                    "from_port_id": "entry-control",
+                    "to_port_id": "fork-input",
+                },
+                {
+                    "edge_id": "edge-fork-left",
+                    "relation_layer": "control",
+                    "from_node_id": "node-fork",
+                    "to_node_id": "node-left",
+                    "from_port_id": "fork-left",
+                },
+                {
+                    "edge_id": "edge-fork-right",
+                    "relation_layer": "control",
+                    "from_node_id": "node-fork",
+                    "to_node_id": "node-right",
+                    "from_port_id": "fork-right",
+                },
+                {
+                    "edge_id": "edge-left-join",
+                    "relation_layer": "control",
+                    "from_node_id": "node-left",
+                    "to_node_id": "node-join",
+                    "to_port_id": "join-left",
+                },
+                {
+                    "edge_id": "edge-right-join",
+                    "relation_layer": "control",
+                    "from_node_id": "node-right",
+                    "to_node_id": "node-join",
+                    "to_port_id": "join-right",
+                },
+                {
+                    "edge_id": "edge-join-read",
+                    "relation_layer": "control",
+                    "from_node_id": "node-join",
+                    "to_node_id": "node-read",
+                    "from_port_id": "join-output",
+                },
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+
+    assert [item["node_id"] for item in started["node_states"]] == [
+        "node-start",
+        "node-fork",
+        "node-left",
+        "node-right",
+        "node-join",
+        "node-read",
+    ]
+
+
+def test_service_runtime_session_node_states_use_execution_order_after_run() -> None:
+    service = CompilationWorkbenchService()
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-read",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-read",
+                    "expansion_role": "action:get_variable",
+                    "display_name": "Read",
+                    "node_kind": "data.get_variable",
+                    "node_config": {"name": "right_done"},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-join",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-join",
+                    "expansion_role": "control:join",
+                    "display_name": "Join",
+                    "node_kind": "control.join",
+                    "node_config": {"mode": "all"},
+                    "ports": [
+                        {
+                            "port_id": "join-left",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.branch:left",
+                        },
+                        {
+                            "port_id": "join-right",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.branch:right",
+                        },
+                        {
+                            "port_id": "join-output",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        },
+                    ],
+                },
+                {
+                    "node_id": "node-left",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-left",
+                    "expansion_role": "action:set_variable",
+                    "display_name": "Left",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "left_done", "value": True},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow:start",
+                    "display_name": "Start",
+                    "node_kind": "flow.start",
+                    "node_config": {"initial_variables": {}},
+                    "ports": [
+                        {
+                            "port_id": "entry-control",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-right",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-right",
+                    "expansion_role": "action:set_variable",
+                    "display_name": "Right",
+                    "node_kind": "data.set_variable",
+                    "node_config": {"name": "right_done", "value": True},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-fork",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-fork",
+                    "expansion_role": "control:parallel_fork",
+                    "display_name": "Fork",
+                    "node_kind": "control.parallel_fork",
+                    "node_config": {
+                        "branches": [
+                            {"key": "left", "label": "Left"},
+                            {"key": "right", "label": "Right"},
+                        ]
+                    },
+                    "ports": [
+                        {
+                            "port_id": "fork-input",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control",
+                        },
+                        {
+                            "port_id": "fork-left",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.branch:left",
+                        },
+                        {
+                            "port_id": "fork-right",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.branch:right",
+                        },
+                    ],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-fork",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-fork",
+                    "from_port_id": "entry-control",
+                    "to_port_id": "fork-input",
+                },
+                {
+                    "edge_id": "edge-fork-left",
+                    "relation_layer": "control",
+                    "from_node_id": "node-fork",
+                    "to_node_id": "node-left",
+                    "from_port_id": "fork-left",
+                },
+                {
+                    "edge_id": "edge-fork-right",
+                    "relation_layer": "control",
+                    "from_node_id": "node-fork",
+                    "to_node_id": "node-right",
+                    "from_port_id": "fork-right",
+                },
+                {
+                    "edge_id": "edge-left-join",
+                    "relation_layer": "control",
+                    "from_node_id": "node-left",
+                    "to_node_id": "node-join",
+                    "to_port_id": "join-left",
+                },
+                {
+                    "edge_id": "edge-right-join",
+                    "relation_layer": "control",
+                    "from_node_id": "node-right",
+                    "to_node_id": "node-join",
+                    "to_port_id": "join-right",
+                },
+                {
+                    "edge_id": "edge-join-read",
+                    "relation_layer": "control",
+                    "from_node_id": "node-join",
+                    "to_node_id": "node-read",
+                    "from_port_id": "join-output",
+                },
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert [item["node_id"] for item in session["node_states"]] == [
+        "node-start",
+        "node-fork",
+        "node-left",
+        "node-right",
+        "node-join",
+        "node-read",
+    ]
+
+
 def test_service_runtime_flow_graph_switch_routes_selected_case_only() -> None:
     service = CompilationWorkbenchService()
 
@@ -7457,6 +9134,12 @@ def test_service_runtime_flow_graph_while_routes_loop_then_done() -> None:
                             "semantic_slot": "in.control",
                         },
                         {
+                            "port_id": "repeat",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.repeat",
+                        },
+                        {
                             "port_id": "loop",
                             "direction": "output",
                             "relation_layer": "control",
@@ -7510,7 +9193,7 @@ def test_service_runtime_flow_graph_while_routes_loop_then_done() -> None:
                     "relation_layer": "control",
                     "from_node_id": "node-inc",
                     "to_node_id": "node-while",
-                    "to_port_id": "in",
+                    "to_port_id": "repeat",
                 },
                 {
                     "edge_id": "edge-while-done",
@@ -9372,6 +11055,18 @@ def test_service_runtime_scheduler_custom_node_graph_internal_while_repeats_unti
                     "node_config": {"expression": "count < 2"},
                     "ports": [
                         {
+                            "port_id": "in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control",
+                        },
+                        {
+                            "port_id": "repeat",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.repeat",
+                        },
+                        {
                             "port_id": "loop",
                             "direction": "output",
                             "relation_layer": "control",
@@ -9408,6 +11103,7 @@ def test_service_runtime_scheduler_custom_node_graph_internal_while_repeats_unti
                     "relation_layer": "control",
                     "from_node_id": "node-inc",
                     "to_node_id": "node-while",
+                    "to_port_id": "repeat",
                 },
             ],
             "root_metadata": {
@@ -11531,6 +13227,168 @@ def test_service_runtime_executes_browser_history_refresh_and_current_time_compo
         site_server.server_close()
 
 
+def test_service_runtime_executes_phase14_browser_storage_wait_keyboard_and_probe_components(
+    tmp_path,
+) -> None:
+    project_dir = tmp_path / "phase14-browser-project"
+    project_path = project_dir / "phase14-browser.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Phase14Browser", project_directory=project_dir)
+    site_server, site_thread = _start_browser_mock_site()
+    element_shot_rel = r"artifacts\table-element.png"
+
+    try:
+        base_url = f"http://127.0.0.1:{site_server.server_address[1]}"
+        service.save_graph_document(
+            {
+                "graph_model_id": "graph:workspace",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [
+                    {"node_id": "node-nav", "lowered_kind": "execution", "source_anchor_ref": "n-nav", "expansion_role": "action:navigate", "node_kind": "browser.navigate", "node_config": {"url": f"{base_url}/"}, "ports": []},
+                    {"node_id": "node-set-cookie", "lowered_kind": "execution", "source_anchor_ref": "n-set-cookie", "expansion_role": "action:set_cookie", "node_kind": "browser.set_cookie", "node_config": {"name": "phase14", "value": "cookie-123", "url": f"{base_url}/"}, "ports": []},
+                    {"node_id": "node-list-cookies", "lowered_kind": "execution", "source_anchor_ref": "n-list-cookies", "expansion_role": "action:list_cookies", "node_kind": "browser.list_cookies", "node_config": {"url": f"{base_url}/", "variable_name": "cookies_before_delete"}, "ports": []},
+                    {"node_id": "node-get-cookie", "lowered_kind": "execution", "source_anchor_ref": "n-get-cookie", "expansion_role": "action:get_cookie", "node_kind": "browser.get_cookie", "node_config": {"name": "phase14", "url": f"{base_url}/", "variable_name": "phase14_cookie"}, "ports": []},
+                    {"node_id": "node-set-local-storage", "lowered_kind": "execution", "source_anchor_ref": "n-set-local-storage", "expansion_role": "action:set_local_storage", "node_kind": "browser.set_local_storage", "node_config": {"key": "authToken", "value": "token-123"}, "ports": []},
+                    {"node_id": "node-get-local-storage", "lowered_kind": "execution", "source_anchor_ref": "n-get-local-storage", "expansion_role": "action:get_local_storage", "node_kind": "browser.get_local_storage", "node_config": {"key": "authToken", "variable_name": "auth_token"}, "ports": []},
+                    {"node_id": "node-set-session-storage", "lowered_kind": "execution", "source_anchor_ref": "n-set-session-storage", "expansion_role": "action:set_session_storage", "node_kind": "browser.set_session_storage", "node_config": {"key": "sessionToken", "value": "session-123"}, "ports": []},
+                    {"node_id": "node-get-session-storage", "lowered_kind": "execution", "source_anchor_ref": "n-get-session-storage", "expansion_role": "action:get_session_storage", "node_kind": "browser.get_session_storage", "node_config": {"key": "sessionToken", "variable_name": "session_token"}, "ports": []},
+                    {"node_id": "node-keyboard-type", "lowered_kind": "execution", "source_anchor_ref": "n-keyboard-type", "expansion_role": "action:keyboard_type", "node_kind": "browser.keyboard_type", "node_config": {"selector": "#key-input", "text": "Alice", "delay_ms": 0}, "ports": []},
+                    {"node_id": "node-wait-value", "lowered_kind": "execution", "source_anchor_ref": "n-wait-value", "expansion_role": "action:wait_for_value", "node_kind": "browser.wait_for_value", "node_config": {"selector": "#key-input", "value": "Alice", "timeout": 3000}, "ports": []},
+                    {"node_id": "node-press-enter", "lowered_kind": "execution", "source_anchor_ref": "n-press-enter", "expansion_role": "action:press_key", "node_kind": "browser.press_key", "node_config": {"selector": "#key-input", "key": "Enter"}, "ports": []},
+                    {"node_id": "node-hotkey", "lowered_kind": "execution", "source_anchor_ref": "n-hotkey", "expansion_role": "action:hotkey", "node_kind": "browser.hotkey", "node_config": {"selector": "#key-input", "combo": "Control+A"}, "ports": []},
+                    {"node_id": "node-hover", "lowered_kind": "execution", "source_anchor_ref": "n-hover", "expansion_role": "action:hover", "node_kind": "browser.hover", "node_config": {"selector": "#hover-target"}, "ports": []},
+                    {"node_id": "node-wait-text", "lowered_kind": "execution", "source_anchor_ref": "n-wait-text", "expansion_role": "action:wait_for_text", "node_kind": "browser.wait_for_text", "node_config": {"selector": "#hover-result", "text": "hovered", "match_mode": "contains", "timeout": 3000}, "ports": []},
+                    {"node_id": "node-check", "lowered_kind": "execution", "source_anchor_ref": "n-check", "expansion_role": "action:check", "node_kind": "browser.check", "node_config": {"selector": "#agree"}, "ports": []},
+                    {"node_id": "node-is-checked", "lowered_kind": "execution", "source_anchor_ref": "n-is-checked", "expansion_role": "action:is_checked", "node_kind": "browser.is_checked", "node_config": {"selector": "#agree", "variable_name": "agree_checked"}, "ports": []},
+                    {"node_id": "node-click-fetch", "lowered_kind": "execution", "source_anchor_ref": "n-click-fetch", "expansion_role": "action:click", "node_kind": "browser.click", "node_config": {"selector": "#fetch-button"}, "ports": []},
+                    {"node_id": "node-wait-request", "lowered_kind": "execution", "source_anchor_ref": "n-wait-request", "expansion_role": "action:wait_for_request", "node_kind": "browser.wait_for_request", "node_config": {"url_pattern": "/api/ping", "method": "POST", "timeout": 3000}, "ports": []},
+                    {"node_id": "node-wait-response", "lowered_kind": "execution", "source_anchor_ref": "n-wait-response", "expansion_role": "action:wait_for_response", "node_kind": "browser.wait_for_response", "node_config": {"url_pattern": "/api/ping", "status_code": 200, "timeout": 3000}, "ports": []},
+                    {"node_id": "node-wait-attribute", "lowered_kind": "execution", "source_anchor_ref": "n-wait-attribute", "expansion_role": "action:wait_for_attribute", "node_kind": "browser.wait_for_attribute", "node_config": {"selector": "#fetch-status", "attribute": "data-response", "value": "ok", "timeout": 3000}, "ports": []},
+                    {"node_id": "node-exists", "lowered_kind": "execution", "source_anchor_ref": "n-exists", "expansion_role": "action:exists", "node_kind": "browser.exists", "node_config": {"selector": "#hover-result", "variable_name": "hover_exists"}, "ports": []},
+                    {"node_id": "node-is-visible", "lowered_kind": "execution", "source_anchor_ref": "n-is-visible", "expansion_role": "action:is_visible", "node_kind": "browser.is_visible", "node_config": {"selector": "#hover-result", "variable_name": "hover_visible"}, "ports": []},
+                    {"node_id": "node-is-enabled", "lowered_kind": "execution", "source_anchor_ref": "n-is-enabled", "expansion_role": "action:is_enabled", "node_kind": "browser.is_enabled", "node_config": {"selector": "#submit", "variable_name": "submit_enabled"}, "ports": []},
+                    {"node_id": "node-get-html", "lowered_kind": "execution", "source_anchor_ref": "n-get-html", "expansion_role": "action:get_html", "node_kind": "browser.get_html", "node_config": {"selector": "#sample-table", "variable_name": "table_html"}, "ports": []},
+                    {"node_id": "node-get-inner-html", "lowered_kind": "execution", "source_anchor_ref": "n-get-inner-html", "expansion_role": "action:get_inner_html", "node_kind": "browser.get_inner_html", "node_config": {"selector": "#sample-table", "variable_name": "table_inner_html"}, "ports": []},
+                    {"node_id": "node-drag-drop", "lowered_kind": "execution", "source_anchor_ref": "n-drag-drop", "expansion_role": "action:drag_and_drop", "node_kind": "browser.drag_and_drop", "node_config": {"source_selector": "#drag-source", "target_selector": "#drop-target"}, "ports": []},
+                    {"node_id": "node-wait-drop", "lowered_kind": "execution", "source_anchor_ref": "n-wait-drop", "expansion_role": "action:wait_for_text", "node_kind": "browser.wait_for_text", "node_config": {"selector": "#drop-status", "text": "drag-payload", "match_mode": "contains", "timeout": 3000}, "ports": []},
+                    {"node_id": "node-scroll-to", "lowered_kind": "execution", "source_anchor_ref": "n-scroll-to", "expansion_role": "action:scroll_to_element", "node_kind": "browser.scroll_to_element", "node_config": {"selector": "#scroll-target", "block": "center", "inline": "nearest"}, "ports": []},
+                    {"node_id": "node-scroll-page", "lowered_kind": "execution", "source_anchor_ref": "n-scroll-page", "expansion_role": "action:scroll_page", "node_kind": "browser.scroll_page", "node_config": {"x": 0, "y": -120, "mode": "by"}, "ports": []},
+                    {"node_id": "node-element-shot", "lowered_kind": "execution", "source_anchor_ref": "n-element-shot", "expansion_role": "action:element_screenshot", "node_kind": "browser.element_screenshot", "node_config": {"selector": "#sample-table", "path": element_shot_rel}, "ports": []},
+                    {"node_id": "node-remove-local-storage", "lowered_kind": "execution", "source_anchor_ref": "n-remove-local-storage", "expansion_role": "action:remove_local_storage", "node_kind": "browser.remove_local_storage", "node_config": {"key": "authToken"}, "ports": []},
+                    {"node_id": "node-clear-local-storage", "lowered_kind": "execution", "source_anchor_ref": "n-clear-local-storage", "expansion_role": "action:clear_local_storage", "node_kind": "browser.clear_local_storage", "node_config": {}, "ports": []},
+                    {"node_id": "node-delete-cookie", "lowered_kind": "execution", "source_anchor_ref": "n-delete-cookie", "expansion_role": "action:delete_cookie", "node_kind": "browser.delete_cookie", "node_config": {"name": "phase14"}, "ports": []},
+                    {"node_id": "node-list-cookies-after-delete", "lowered_kind": "execution", "source_anchor_ref": "n-list-cookies-after-delete", "expansion_role": "action:list_cookies", "node_kind": "browser.list_cookies", "node_config": {"url": f"{base_url}/", "variable_name": "cookies_after_delete"}, "ports": []},
+                ],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+        service.save_project_as(project_path=project_path)
+
+        started = service.start_runtime_session(None)
+        session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+        expected_element_path = project_dir / "artifacts" / "table-element.png"
+
+        assert session["status"] == "completed"
+        assert session["result"]["outputs"]["node-get-cookie"]["value"] == "cookie-123"
+        assert session["result"]["variables"]["phase14_cookie"] == "cookie-123"
+        assert session["result"]["outputs"]["node-get-local-storage"]["value"] == "token-123"
+        assert session["result"]["variables"]["auth_token"] == "token-123"
+        assert session["result"]["outputs"]["node-get-session-storage"]["value"] == "session-123"
+        assert session["result"]["variables"]["session_token"] == "session-123"
+        assert session["result"]["outputs"]["node-wait-value"]["value"] == "Alice"
+        assert session["result"]["outputs"]["node-wait-text"]["matched_text"] == "hovered"
+        assert session["result"]["outputs"]["node-is-checked"]["value"] is True
+        assert session["result"]["outputs"]["node-wait-request"]["method"] == "POST"
+        assert session["result"]["outputs"]["node-wait-response"]["status_code"] == 200
+        assert session["result"]["outputs"]["node-wait-attribute"]["value"] == "ok"
+        assert session["result"]["outputs"]["node-exists"]["value"] is True
+        assert session["result"]["outputs"]["node-is-visible"]["value"] is True
+        assert session["result"]["outputs"]["node-is-enabled"]["value"] is True
+        assert "<table" in session["result"]["outputs"]["node-get-html"]["value"]
+        assert "<tbody>" in session["result"]["outputs"]["node-get-inner-html"]["value"]
+        assert session["result"]["outputs"]["node-wait-drop"]["matched_text"] == "drag-payload"
+        assert session["result"]["outputs"]["node-element-shot"]["path"] == str(expected_element_path.resolve())
+        assert expected_element_path.exists() is True
+        assert session["result"]["outputs"]["node-list-cookies"]["cookie_count"] >= 1
+        assert session["result"]["outputs"]["node-list-cookies-after-delete"]["cookie_count"] == 0
+        assert session["result"]["variables"]["agree_checked"] is True
+        assert session["result"]["variables"]["hover_exists"] is True
+        assert session["result"]["variables"]["hover_visible"] is True
+        assert session["result"]["variables"]["submit_enabled"] is True
+    finally:
+        site_server.shutdown()
+        site_server.server_close()
+
+
+def test_service_runtime_executes_phase14_browser_tabs_popup_download_and_context_components(
+    tmp_path,
+) -> None:
+    project_dir = tmp_path / "phase14-context-project"
+    project_path = project_dir / "phase14-context.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Phase14Context", project_directory=project_dir)
+    site_server, site_thread = _start_browser_mock_site()
+
+    try:
+        base_url = f"http://127.0.0.1:{site_server.server_address[1]}"
+        service.save_graph_document(
+            {
+                "graph_model_id": "graph:workspace",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [
+                    {"node_id": "node-set-user-agent", "lowered_kind": "execution", "source_anchor_ref": "n-set-user-agent", "expansion_role": "action:set_user_agent", "node_kind": "browser.set_user_agent", "node_config": {"user_agent": "WeConductPhase14/1.0"}, "ports": []},
+                    {"node_id": "node-set-extra-headers", "lowered_kind": "execution", "source_anchor_ref": "n-set-extra-headers", "expansion_role": "action:set_extra_headers", "node_kind": "browser.set_extra_headers", "node_config": {"headers": {"X-WeConduct-Extra": "phase14"}}, "ports": []},
+                    {"node_id": "node-nav-headers", "lowered_kind": "execution", "source_anchor_ref": "n-nav-headers", "expansion_role": "action:navigate", "node_kind": "browser.navigate", "node_config": {"url": f"{base_url}/headers"}, "ports": []},
+                    {"node_id": "node-read-headers", "lowered_kind": "execution", "source_anchor_ref": "n-read-headers", "expansion_role": "action:run_js", "node_kind": "browser.run_js", "node_config": {"script": "JSON.parse(document.getElementById('header-json').textContent)", "variable_name": "header_payload"}, "ports": []},
+                    {"node_id": "node-nav-root", "lowered_kind": "execution", "source_anchor_ref": "n-nav-root", "expansion_role": "action:navigate", "node_kind": "browser.navigate", "node_config": {"url": f"{base_url}/"}, "ports": []},
+                    {"node_id": "node-click-go", "lowered_kind": "execution", "source_anchor_ref": "n-click-go", "expansion_role": "action:click", "node_kind": "browser.click", "node_config": {"selector": "#go-dashboard"}, "ports": []},
+                    {"node_id": "node-wait-url-change", "lowered_kind": "execution", "source_anchor_ref": "n-wait-url-change", "expansion_role": "action:wait_for_url_change", "node_kind": "browser.wait_for_url_change", "node_config": {"from_url": f"{base_url}/", "url_pattern": "/dashboard", "timeout": 3000}, "ports": []},
+                    {"node_id": "node-open-tab", "lowered_kind": "execution", "source_anchor_ref": "n-open-tab", "expansion_role": "action:open_tab", "node_kind": "browser.open_tab", "node_config": {"url": f"{base_url}/dashboard", "label": "dashboard-tab", "activate": True}, "ports": []},
+                    {"node_id": "node-switch-main", "lowered_kind": "execution", "source_anchor_ref": "n-switch-main", "expansion_role": "action:switch_tab", "node_kind": "browser.switch_tab", "node_config": {"index": 0}, "ports": []},
+                    {"node_id": "node-click-popup", "lowered_kind": "execution", "source_anchor_ref": "n-click-popup", "expansion_role": "action:click", "node_kind": "browser.click", "node_config": {"selector": "#open-popup"}, "ports": []},
+                    {"node_id": "node-wait-popup", "lowered_kind": "execution", "source_anchor_ref": "n-wait-popup", "expansion_role": "action:wait_for_popup", "node_kind": "browser.wait_for_popup", "node_config": {"timeout": 3000, "activate": True, "variable_name": "popup_record"}, "ports": []},
+                    {"node_id": "node-close-tab", "lowered_kind": "execution", "source_anchor_ref": "n-close-tab", "expansion_role": "action:close_tab", "node_kind": "browser.close_tab", "node_config": {"current": True}, "ports": []},
+                    {"node_id": "node-switch-dashboard", "lowered_kind": "execution", "source_anchor_ref": "n-switch-dashboard", "expansion_role": "action:switch_tab", "node_kind": "browser.switch_tab", "node_config": {"label": "dashboard-tab"}, "ports": []},
+                    {"node_id": "node-switch-main-again", "lowered_kind": "execution", "source_anchor_ref": "n-switch-main-again", "expansion_role": "action:switch_tab", "node_kind": "browser.switch_tab", "node_config": {"index": 0}, "ports": []},
+                    {"node_id": "node-click-download", "lowered_kind": "execution", "source_anchor_ref": "n-click-download", "expansion_role": "action:click", "node_kind": "browser.click", "node_config": {"selector": "#download-link"}, "ports": []},
+                    {"node_id": "node-wait-download", "lowered_kind": "execution", "source_anchor_ref": "n-wait-download", "expansion_role": "action:wait_for_download", "node_kind": "browser.wait_for_download", "node_config": {"path": r"artifacts\browser-download.txt", "timeout": 3000, "variable_name": "download_record"}, "ports": []},
+                    {"node_id": "node-download-file", "lowered_kind": "execution", "source_anchor_ref": "n-download-file", "expansion_role": "action:download_file", "node_kind": "browser.download_file", "node_config": {"url": f"{base_url}/download", "path": r"artifacts\direct-download.txt"}, "ports": []},
+                ],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+        service.save_project_as(project_path=project_path)
+
+        started = service.start_runtime_session(None)
+        session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+        wait_download_path = project_dir / "artifacts" / "browser-download.txt"
+        direct_download_path = project_dir / "artifacts" / "direct-download.txt"
+
+        assert session["status"] == "completed"
+        assert session["result"]["variables"]["header_payload"]["user_agent"] == "WeConductPhase14/1.0"
+        assert session["result"]["variables"]["header_payload"]["x_weconduct_extra"] == "phase14"
+        assert session["result"]["outputs"]["node-wait-url-change"]["matched_url"].endswith("/dashboard")
+        assert session["result"]["outputs"]["node-open-tab"]["page_url"].endswith("/dashboard")
+        assert session["result"]["outputs"]["node-switch-main"]["page_index"] == 0
+        assert session["result"]["outputs"]["node-wait-popup"]["page_url"].endswith("/popup")
+        assert session["result"]["variables"]["popup_record"]["page_url"].endswith("/popup")
+        assert session["result"]["outputs"]["node-close-tab"]["closed"] is True
+        assert session["result"]["outputs"]["node-switch-dashboard"]["label"] == "dashboard-tab"
+        assert session["result"]["outputs"]["node-wait-download"]["path"] == str(wait_download_path.resolve())
+        assert session["result"]["outputs"]["node-download-file"]["path"] == str(direct_download_path.resolve())
+        assert wait_download_path.read_text(encoding="utf-8") == "phase14-download"
+        assert direct_download_path.read_text(encoding="utf-8") == "phase14-download"
+    finally:
+        site_server.shutdown()
+        site_server.server_close()
+
+
 def test_service_runtime_executes_p9_browser_extraction_js_and_table_components(tmp_path) -> None:
     service = CompilationWorkbenchService()
     site_server, site_thread = _start_browser_mock_site()
@@ -11979,7 +13837,7 @@ def test_runtime_health_exposes_host_session_capabilities_and_entrypoints() -> N
     assert health["status"] == "ok"
     assert health["service"] == "weconduct-api"
     assert health["host_mode"] == "python_core"
-    assert health["api_version"] == "0.3.0"
+    assert health["api_version"] == "0.4.0"
     assert health["workspace_state_version"] == 1
     assert health["workspace_session_id"].startswith("ws-")
     assert health["service_started_at"]
@@ -12525,6 +14383,62 @@ def test_service_validates_flow_graph_and_reports_unreachable_business_nodes() -
         },
     }
 
+
+def test_p13_debugweb_project_captcha_branch_is_reachable() -> None:
+    service = CompilationWorkbenchService()
+    project_path = (
+        Path(__file__).resolve().parents[3]
+        / "docs"
+        / "dev"
+        / "phase-13"
+        / "artifacts"
+        / "p13_d_debugweb_test_project"
+        / "p13_d_debugweb_test_project.weconduct.json"
+    )
+
+    opened = service.open_project(project_path=project_path)
+    graph_document = opened["graph_document"].model_dump(mode="json")
+    validation_result = service.validate_graph_document(graph_document)
+
+    assert validation_result["status"] == "valid"
+    unreachable_refs = {
+        item["object_ref"]
+        for item in validation_result["diagnostics"]
+        if item.get("category") == "graph.node.unreachable_in_flow_graph"
+    }
+    assert "node-43503c860c7a" not in unreachable_refs
+    assert "node-60cf3b303191" not in unreachable_refs
+
+
+def test_p13_debugweb_project_progress_nodes_use_runtime_auth_token() -> None:
+    service = CompilationWorkbenchService()
+    project_path = (
+        Path(__file__).resolve().parents[3]
+        / "docs"
+        / "dev"
+        / "phase-13"
+        / "artifacts"
+        / "p13_d_debugweb_test_project"
+        / "p13_d_debugweb_test_project.weconduct.json"
+    )
+
+    opened = service.open_project(project_path=project_path)
+    graph_document = opened["graph_document"].model_dump(mode="json")
+    progress_nodes = [
+        node
+        for node in graph_document["nodes"]
+        if node.get("node_kind") == "http.request"
+        and node.get("node_config", {}).get("url") == "${base_url}/api/progress"
+    ]
+
+    assert progress_nodes
+    for node in progress_nodes:
+        assert (
+            node.get("node_config", {})
+            .get("headers", {})
+            .get("Authorization")
+            == "Bearer ${auth_token}"
+        )
 
 def test_service_validates_graph_call_subgraph_and_reports_missing_subgraph_id() -> None:
     service = CompilationWorkbenchService()
@@ -13079,6 +14993,12 @@ def test_service_validates_parallel_fork_join_while_retry_and_failover_shapes() 
                             "direction": "input",
                             "relation_layer": "control",
                             "semantic_slot": "in.control",
+                        },
+                        {
+                            "port_id": "repeat",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.repeat",
                         },
                         {
                             "port_id": "loop",

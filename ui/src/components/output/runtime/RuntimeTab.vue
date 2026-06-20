@@ -30,6 +30,21 @@ function hasStructuredFields(output: any): boolean {
         </div>
       </div>
 
+      <!-- Live Progress Summary (from SSE runtime.summary) -->
+      <div class="rt-section" v-if="runtime.runtimeProgress && runtime.runtimeProgress.total_node_count > 0">
+        <h4>执行进度</h4>
+        <div class="rt-progress">
+          <div class="rt-pg-bar-wrap"><div class="rt-pg-bar" :style="{ width: (runtime.runtimeProgress.percent ?? 0) + '%' }" :class="runtime.runtimeLiveStatus === 'completed' ? 'done' : runtime.runtimeLiveStatus === 'failed' ? 'fail' : ''"></div></div>
+          <div class="rt-pg-stats">
+            <span>{{ runtime.runtimeProgress.percent ?? 0 }}%</span>
+            <span class="ok">完成 {{ runtime.runtimeProgress.completed_node_count ?? 0 }}</span>
+            <span v-if="runtime.runtimeProgress.failed_node_count" class="fail">失败 {{ runtime.runtimeProgress.failed_node_count }}</span>
+            <span v-if="runtime.runtimeProgress.running_node_count" class="running">运行中 {{ runtime.runtimeProgress.running_node_count }}</span>
+            <span>事件 {{ runtime.runtimeProgress.event_count ?? 0 }}</span>
+          </div>
+        </div>
+      </div>
+
       <!-- Node States -->
       <div class="rt-section" v-if="runtime.activeRt.node_states?.length">
         <h4>节点状态 ({{ runtime.activeRt.node_states.length }})</h4>
@@ -122,6 +137,15 @@ function hasStructuredFields(output: any): boolean {
 .rt-live.connecting { color: var(--state-warning); }
 .rt-live.disconnected { color: var(--state-warning); }
 .rt-live.error { color: var(--state-error); }
+.rt-progress { padding: 4px 0; }
+.rt-pg-bar-wrap { height: 4px; background: var(--bg-input); border-radius: 2px; overflow: hidden; margin-bottom: 4px; }
+.rt-pg-bar { height: 100%; background: var(--accent); border-radius: 2px; transition: width 300ms ease-out; }
+.rt-pg-bar.done { background: var(--state-success); }
+.rt-pg-bar.fail { background: var(--state-error); }
+.rt-pg-stats { display: flex; gap: var(--space-md); font-size: var(--text-caption); color: var(--text-secondary); }
+.rt-pg-stats .ok { color: var(--state-success); }
+.rt-pg-stats .fail { color: var(--state-error); }
+.rt-pg-stats .running { color: var(--accent); }
 .rt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-xs); color: var(--text-secondary); }
 .rt-node { padding: 2px 0; border-bottom: 1px solid var(--border-subtle); }
 .rt-node-header { display: flex; align-items: center; gap: 6px; }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useCompilationStore } from '@/stores/compilationStore'
+import { useRuntimeStore } from '@/stores/runtimeStore'
 import SummaryTab from '@/components/output/summary/SummaryTab.vue'
 import DiagnosticsTab from '@/components/output/diagnostics/DiagnosticsTab.vue'
 import GraphTab from '@/components/output/graph/GraphTab.vue'
@@ -10,9 +11,11 @@ import DebugTab from '@/components/output/debug/DebugTab.vue'
 import HostInfoTab from '@/components/output/host/HostInfoTab.vue'
 
 const compilation = useCompilationStore()
+const runtimeStore = useRuntimeStore()
 
 type TabId = 'summary' | 'diagnostics' | 'graph' | 'history' | 'runtime' | 'debug' | 'host'
 const activeTab = ref<TabId>('summary')
+watch(() => runtimeStore.runtimeTabRequest, () => { activeTab.value = 'runtime' })
 
 function tabClass(tab: TabId) {
   return {

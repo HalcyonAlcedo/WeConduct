@@ -3,7 +3,7 @@
  *  automatically reflect latest sessions from the task execution panel.
  */
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import {
   fetchRuntimeSessions,
   fetchRuntimeSession,
@@ -22,6 +22,7 @@ import type {
   DebugSessionSummary,
   DebugSessionDetailResponse,
 } from '@/types/domains/api'
+import type { Diagnostic } from '@/types/domains/diagnostics'
 
 type RuntimeLiveStatus =
   | 'idle'
@@ -44,6 +45,83 @@ export const useRuntimeStore = defineStore('runtime', () => {
   const runtimeProgress = ref<RuntimeProgress | null>(null)
   const runtimeLiveConnected = ref(false)
   const runtimeLiveStatus = ref<RuntimeLiveStatus>('idle')
+  /** Bump to request OutputPanel to switch to Runtime tab */
+  const runtimeTabRequest = ref(0)
+  function requestRuntimeTab() { runtimeTabRequest.value++ }
+
+  /** Extract raw runtime events that carry diagnostic info.
+   *  Priority: diagnostic_events → event_log (filter diagnostic.raised) → result.failure_reason */
+  function extractRuntimeDiagnosticEvents(): Array<Record<string, unknown>> {
+    const rt = activeRt.value
+    if (!rt) return []
+    // 1. diagnostic_events field
+    const diagEvents = rt.diagnostic_events
+    if (Array.isArray(diagEvents) && diagEvents.length) return diagEvents as Array<Record<string, unknown>>
+    // 2. event_log filtered for diagnostic.raised
+    const eventLog = rt.event_log
+    if (Array.isArray(eventLog)) {
+      const diagEntries = eventLog.filter((e: any) => e?.event_kind === 'diagnostic.raised')
+      if (diagEntries.length) return diagEntries as Array<Record<string, unknown>>
+    }
+    // 3. result.failure_reason as fallback
+    const result = rt.result as Record<string, unknown> | undefined
+    if (result?.failure_reason || result?.message) {
+      return [{
+        message: result.failure_reason || result.message,
+        severity: rt.status === 'failed' ? 'error' : 'info',
+        error_code: 'runtime.result',
+      }]
+    }
+    return []
+  }
+
+  /** Normalize a runtime event into a Diagnostic-compatible shape */
+  function normalizeRuntimeEvent(e: Record<string, unknown>, idx: number): Diagnostic {
+    const sessionId = activeRt.value?.runtime_session?.session_id || ''
+    const nodeId = String(e.node_id || '')
+    return {
+      diagnostic_id: String(e.diagnostic_id || `runtime:${sessionId}:${idx}`),
+      stage: (e.stage || 'runtime') as Diagnostic['stage'],
+      category: String(e.error_code || e.event_kind || e.category || 'runtime.node_failed'),
+      severity: (e.severity || 'error') as Diagnostic['severity'],
+      message: String(e.message || ''),
+      object_ref: nodeId ? `node:${nodeId}` : null,
+      trace_ref: null,
+      stage_extension: {
+        graph_ref: nodeId ? { node_id: nodeId } : null,
+        session_id: sessionId || null,
+        node_kind: e.node_kind ?? null,
+        event_kind: e.event_kind ?? null,
+        recorded_at: e.recorded_at ?? null,
+        error_code: e.error_code ?? null,
+      },
+      degraded_extension: null,
+    }
+  }
+
+  /** Runtime diagnostics from activeRt, for the Diagnostics tab. */
+  const runtimeDiagnosticGroups = computed(() => {
+    const events = extractRuntimeDiagnosticEvents()
+    if (!events.length) return []
+    const map = new Map<string, { stage: string; category: string; severity: string; count: number; message: string }>()
+    for (const e of events) {
+      const stage = String(e.stage || 'runtime')
+      const category = String(e.error_code || e.event_kind || e.category || 'runtime')
+      const severity = String(e.severity || 'error')
+      const message = String(e.message || '')
+      const key = `${stage}|${category}|${severity}|${message}`
+      const existing = map.get(key)
+      if (existing) { existing.count++ }
+      else map.set(key, { stage, category, severity, count: 1, message })
+    }
+    return [...map.values()]
+  })
+
+  const hasRuntimeDiagnostics = computed(() => runtimeDiagnosticGroups.value.length > 0)
+
+  function getRuntimeDiagnosticEntries(): Diagnostic[] {
+    return extractRuntimeDiagnosticEvents().map((e, i) => normalizeRuntimeEvent(e, i))
+  }
 
   let runtimeEventSource: EventSource | null = null
   let subscribedRuntimeSessionId: string | null = null
@@ -85,7 +163,12 @@ export const useRuntimeStore = defineStore('runtime', () => {
 
   function setActiveRt(detail: RuntimeSessionDetailResponse) {
     activeRt.value = detail
-    runtimeProgress.value = buildRuntimeProgressFromSession(detail)
+    // Only update progress from node_states if there is actual data (avoids overwriting SSE summary)
+    const nodeStates = Array.isArray(detail.node_states) ? detail.node_states : []
+    const hasNodeData = nodeStates.length > 0
+    if (hasNodeData || !runtimeProgress.value) {
+      runtimeProgress.value = buildRuntimeProgressFromSession(detail)
+    }
   }
 
   function setActiveDb(detail: DebugSessionDetailResponse) {
@@ -110,6 +193,40 @@ export const useRuntimeStore = defineStore('runtime', () => {
     runtimeLiveStatus.value = isTerminalRuntimeStatus(summary.status)
       ? (summary.status as RuntimeLiveStatus)
       : 'streaming'
+  }
+
+  /** Incrementally update activeRt.node_states from runtime.node SSE event */
+  function applyRuntimeNode(payload: { session_id?: string; node_id?: string; node_status?: string; started_at?: string; completed_at?: string; output?: unknown; error?: unknown; node_kind?: string; display_name?: string }) {
+    if (!payload.node_id || !activeRt.value) return
+    const ns = activeRt.value.node_states ? [...activeRt.value.node_states] : []
+    const idx = ns.findIndex((n: any) => n.node_id === payload.node_id)
+    if (idx >= 0) {
+      ns[idx] = { ...ns[idx], ...payload }
+    } else {
+      ns.push({
+        node_id: payload.node_id,
+        node_status: payload.node_status || 'running',
+        started_at: payload.started_at || null,
+        completed_at: payload.completed_at || null,
+        output: payload.output ?? null,
+        error: payload.error ?? null,
+        node_kind: payload.node_kind || null,
+        display_name: payload.display_name || payload.node_id,
+      } as any)
+    }
+    activeRt.value = { ...activeRt.value, node_states: ns }
+    // Append local event_log entry for node state transitions
+    const eventKind = payload.node_status === 'running' ? 'node.started'
+      : payload.node_status === 'completed' ? 'node.completed'
+      : payload.node_status === 'failed' ? 'node.failed'
+      : null
+    if (eventKind) {
+      const log = activeRt.value.event_log ? [...activeRt.value.event_log] : []
+      log.push({ event_kind: eventKind, node_id: payload.node_id, node_status: payload.node_status, recorded_at: new Date().toISOString(), message: payload.error || payload.output || '' })
+      activeRt.value = { ...activeRt.value, event_log: log }
+    }
+    // Update progress
+    runtimeProgress.value = buildRuntimeProgressFromSession(activeRt.value)
   }
 
   function applyRuntimeSnapshot(snapshot: RuntimeStreamSnapshot) {
@@ -158,6 +275,11 @@ export const useRuntimeStore = defineStore('runtime', () => {
       applyRuntimeSummary(payload)
     }) as EventListener)
 
+    eventSource.addEventListener('runtime.node', ((event: MessageEvent) => {
+      const payload = JSON.parse(event.data)
+      applyRuntimeNode(payload)
+    }) as EventListener)
+
     eventSource.addEventListener('runtime.completed', ((event: MessageEvent) => {
       const payload = JSON.parse(event.data) as RuntimeStreamSnapshot
       applyRuntimeSnapshot(payload)
@@ -204,6 +326,8 @@ export const useRuntimeStore = defineStore('runtime', () => {
     graphDocument?: Record<string, unknown>,
     isDirty?: boolean,
   ): Promise<{ success: boolean; message: string }> {
+    // Trigger output panel + diagnostics tab
+    requestRuntimeTab()
     try {
       const body = (graphDocument && isDirty) ? { graph_document: graphDocument } : undefined
       const r = await postRuntimeStart(body)
@@ -262,5 +386,10 @@ export const useRuntimeStore = defineStore('runtime', () => {
     subscribeRuntimeSession,
     unsubscribeRuntimeSession,
     startAndRun,
+    runtimeTabRequest,
+    requestRuntimeTab,
+    runtimeDiagnosticGroups,
+    hasRuntimeDiagnostics,
+    getRuntimeDiagnosticEntries,
   }
 })
