@@ -90,6 +90,7 @@ def launch_desktop_shell(
     base_url = f"http://{runtime_host}:{runtime_port}"
     window_ref: dict[str, Any] = {}
     server.file_dialog_provider = _build_file_dialog_provider(webview, window_ref)
+    server.open_path_provider = _build_open_path_provider(window_ref)
     server_thread = Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     try:
@@ -208,3 +209,23 @@ def _normalize_file_dialog_paths(selected: Any) -> list[str]:
     if isinstance(selected, (str, Path)):
         return [str(selected)]
     return [str(path) for path in selected if path]
+
+
+def _build_open_path_provider(window_ref: dict[str, Any]):
+    def provider(payload: dict) -> dict:
+        raw_path = payload.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ValueError("field must be a non-empty string: path")
+        resolved_path = Path(raw_path).expanduser().resolve()
+        if not resolved_path.exists():
+            raise ValueError("path does not exist")
+
+        os.startfile(str(resolved_path))  # type: ignore[attr-defined]
+
+        return {
+            "status": "opened",
+            "path": str(resolved_path),
+            "target_kind": "directory" if resolved_path.is_dir() else "file",
+        }
+
+    return provider

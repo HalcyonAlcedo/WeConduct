@@ -28,6 +28,8 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   const hasGraph = computed(() => !!graphModel.value && (graphModel.value.nodes?.length ?? 0) > 0)
   const isLoaded = computed(() => loadState.value === 'loaded')
   const lastCompileMatches = computed(() => view.value?.last_compile_matches_saved_graph ?? false)
+  /** Graph is editable (false when .wcrun loaded or source_of_truth === wcrun_package) */
+  const isGraphEditable = computed(() => view.value?.is_editable !== false)
 
   // Actions
   async function loadGraph() {
@@ -109,6 +111,7 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   /** Add a node via Core node-draft API. Returns new nodeId, or null on failure.
    *  If no position given, places node at current viewport center. */
   async function addNode(item: { resource_key: string; display_name: string; resource_type?: string }, position?: { x: number; y: number }): Promise<string | null> {
+    if (!isGraphEditable.value) return null
     const toast = useToastStore()
     try {
       // Use viewport center when no explicit position (click, not drag)
@@ -155,6 +158,7 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
    *  Only inherits user-editable data (display_name, node_config, offset position).
    *  Gets fresh node_id, source_anchor_ref, ports, lowered_kind from Core. */
   async function pasteNode(source: { node_kind?: string; display_name?: string; node_config?: Record<string, unknown>; position?: { x: number; y: number } }): Promise<string | null> {
+    if (!isGraphEditable.value) return null
     if (!source.node_kind) {
       useToastStore().error('无法粘贴', '复制缓存缺少 node_kind')
       return null
@@ -187,6 +191,7 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
 
   /** Remove a node from the local graph model */
   function removeNode(nodeId: string) {
+    if (!isGraphEditable.value) return
     pushUndo()
     if (!graphModel.value) return
     graphModel.value.nodes = graphModel.value.nodes.filter(n => n.node_id !== nodeId)
@@ -195,6 +200,7 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   }
 
   function updateNode(nodeId: string, patch: Partial<{ display_name: string; node_config: Record<string, unknown> }>) {
+    if (!isGraphEditable.value) return
     pushUndo()
     const gm = graphModel.value; if (!gm) return
     const node = gm.nodes.find(n => n.node_id === nodeId); if (!node) return
@@ -208,17 +214,20 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     node.position = pos; markChanged()
   }
   function addEdge(edge: { edge_id: string; relation_layer: string; from_node_id: string; to_node_id: string; from_port_id?: string; to_port_id?: string }) {
+    if (!isGraphEditable.value) return
     pushUndo()
     const gm = graphModel.value; if (!gm) return
     gm.edges.push({ edge_id: edge.edge_id, relation_layer: edge.relation_layer as any, from_node_id: edge.from_node_id, to_node_id: edge.to_node_id, from_port_id: edge.from_port_id ?? null, to_port_id: edge.to_port_id ?? null })
     markChanged()
   }
   function removeEdge(edgeId: string) {
+    if (!isGraphEditable.value) return
     pushUndo()
     const gm = graphModel.value; if (!gm) return
     gm.edges = gm.edges.filter(e => e.edge_id !== edgeId); markChanged()
   }
   function updateEdgeRelation(edgeId: string, layer: string) {
+    if (!isGraphEditable.value) return
     pushUndo()
     const gm = graphModel.value; if (!gm) return
     const edge = gm.edges.find(e => e.edge_id === edgeId); if (!edge) return
@@ -303,7 +312,7 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   return {
     loadState, saveState, loadError, saveError,
     document, graphModel, view, isDirty, changeRevision,
-    saveRevision, hasGraph, isLoaded, lastCompileMatches,
+    saveRevision, hasGraph, isLoaded, lastCompileMatches, isGraphEditable,
     loadGraph, saveGraph, addNode, pasteNode, removeNode, updateNode,
     updateNodePosition, addEdge, removeEdge, updateEdgeRelation, pushUndo, undo, redo, reset,
     syncStatus, syncError, syncSource, scheduleAutoSync,

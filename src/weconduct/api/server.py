@@ -97,9 +97,50 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 {
                     "project": result["project"],
+                    "project_settings": result.get("project_settings"),
                     "graph_workspace": result["graph_workspace"],
                 },
             )
+            return
+
+        if self.path == "/api/workbench/project/settings":
+            result = service.get_project_settings_document()
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "project_settings": result["project_settings"],
+                    "state": result["state"],
+                },
+            )
+            return
+
+        if self.path == "/api/workbench/project/runtime-defaults":
+            result = service.get_project_settings_document()
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "runtime_defaults": result["project_settings"]["runtime_defaults"],
+                    "state": result["state"],
+                },
+            )
+            return
+
+        if self.path == "/api/workbench/project/package/preflight":
+            result = service.run_project_package_preflight()
+            status_code = HTTPStatus.OK if result["status"] == "ok" else HTTPStatus.BAD_REQUEST
+            self._write_json(status_code, result)
+            return
+
+        if request_path == "/api/workbench/project/package/inspect":
+            try:
+                package_path = self._get_optional_query_param(query_params, "package_path")
+                if not isinstance(package_path, str) or not package_path.strip():
+                    raise ValueError("query parameter must be a non-empty string: package_path")
+                result = service.inspect_project_package(package_path=package_path)
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
             return
 
         if self.path == "/api/workbench/preferences":
@@ -261,6 +302,10 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/api/host/file-dialog":
             self._handle_host_file_dialog()
+            return
+
+        if self.path == "/api/host/open-path":
+            self._handle_host_open_path()
             return
 
         if self.path == "/api/host/read-file":
@@ -472,6 +517,130 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     "graph_document": result["graph_document"].model_dump(),
                 },
             )
+            return
+
+        if self.path == "/api/workbench/project/settings":
+            try:
+                payload = self._read_json_request_body()
+                project_settings = payload.get("project_settings")
+                result = service.update_project_settings(project_settings=project_settings)
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "project_settings": result["project_settings"],
+                    "state": result["state"],
+                },
+            )
+            return
+
+        if self.path == "/api/workbench/project/runtime-defaults":
+            try:
+                payload = self._read_json_request_body()
+                runtime_defaults = payload.get("runtime_defaults")
+                if not isinstance(runtime_defaults, dict):
+                    raise ValueError("field must be a JSON object: runtime_defaults")
+                result = service.update_project_runtime_defaults(
+                    runtime_defaults=runtime_defaults
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "status": result["status"],
+                    "runtime_defaults": result["runtime_defaults"],
+                    "graph_projection_refresh": result["graph_projection_refresh"],
+                },
+            )
+            return
+
+        if self.path == "/api/workbench/project/package/preflight":
+            try:
+                self._read_json_request_body()
+                result = service.run_project_package_preflight()
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            status_code = HTTPStatus.OK if result["status"] == "ok" else HTTPStatus.BAD_REQUEST
+            self._write_json(status_code, result)
+            return
+
+        if self.path == "/api/workbench/project/package/build":
+            try:
+                payload = self._read_json_request_body()
+                mode = payload.get("mode")
+                source_of_truth = payload.get("source_of_truth")
+                output_path = payload.get("output_path")
+                if not isinstance(mode, str) or not mode.strip():
+                    raise ValueError("field must be a non-empty string: mode")
+                if not isinstance(source_of_truth, str) or not source_of_truth.strip():
+                    raise ValueError("field must be a non-empty string: source_of_truth")
+                if output_path is not None and not isinstance(output_path, str):
+                    raise ValueError("field must be a string when provided: output_path")
+                result = service.build_project_package(
+                    mode=mode,
+                    source_of_truth=source_of_truth,
+                    output_path=output_path,
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            status_code = HTTPStatus.OK if result["status"] == "built" else HTTPStatus.BAD_REQUEST
+            response_payload = dict(result)
+            if result["status"] != "built":
+                response_payload.update(
+                    {
+                        "error": "project_package_build_failed",
+                        "message": "project package build failed",
+                    }
+                )
+            self._write_json(status_code, response_payload)
+            return
+
+        if self.path == "/api/workbench/project/package/load":
+            try:
+                payload = self._read_json_request_body()
+                package_path = payload.get("package_path")
+                if not isinstance(package_path, str) or not package_path.strip():
+                    raise ValueError("field must be a non-empty string: package_path")
+                result = service.load_project_package(package_path=package_path)
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
+        if self.path == "/api/workbench/project/package/unload":
+            try:
+                self._read_json_request_body()
+                result = service.unload_project_package()
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
+        if self.path == "/api/workbench/project/package/external-resources/bind":
+            try:
+                payload = self._read_json_request_body()
+                resource_id = payload.get("resource_id")
+                value = payload.get("value")
+                if not isinstance(resource_id, str) or not resource_id.strip():
+                    raise ValueError("field must be a non-empty string: resource_id")
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError("field must be a non-empty string: value")
+                result = service.bind_loaded_package_external_resource(
+                    resource_id=resource_id,
+                    value=value,
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
             return
 
         if self.path == "/api/workbench/preferences":
@@ -1069,6 +1238,15 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def _write_host_open_path_unavailable_error(self) -> None:
+        self._write_json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {
+                "error": "host.open_path_unavailable",
+                "message": "host open path is unavailable",
+            },
+        )
+
     def _write_graph_revision_conflict_error(
         self,
         exc: GraphDocumentRevisionConflictError,
@@ -1268,6 +1446,60 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             or any(not isinstance(item, str) for item in file_types)
         ):
             raise ValueError("field must be a string list when provided: file_types")
+
+    def _handle_host_open_path(self) -> None:
+        try:
+            payload = self._read_json_request_body()
+            resolved_path = self._validate_host_open_path_payload(payload)
+        except ValueError as exc:
+            self._write_invalid_request_error(exc)
+            return
+
+        provider = getattr(self.server, "open_path_provider", None)
+        if provider is None:
+            self._write_host_open_path_unavailable_error()
+            return
+
+        provider_payload = {
+            "path": str(resolved_path),
+            "target_kind": "directory" if resolved_path.is_dir() else "file",
+        }
+        try:
+            result = provider(provider_payload)
+        except ValueError as exc:
+            self._write_invalid_request_error(exc)
+            return
+        except RuntimeError as exc:
+            self._write_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {
+                    "error": "host.open_path_unavailable",
+                    "message": str(exc) or "host open path is unavailable",
+                },
+            )
+            return
+
+        if not isinstance(result, dict):
+            self._write_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {
+                    "error": "host.open_path_invalid_response",
+                    "message": "host open path provider must return a JSON object",
+                },
+            )
+            return
+        self._write_json(HTTPStatus.OK, result)
+
+    def _validate_host_open_path_payload(self, payload: dict) -> Path:
+        raw_path = payload.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ValueError("field must be a non-empty string: path")
+        resolved_path = Path(raw_path).expanduser().resolve()
+        if not resolved_path.exists():
+            exc = ValueError("path does not exist")
+            exc.error_code = "host.open_path_missing"
+            raise exc
+        return resolved_path
 
     def _handle_host_read_file(self) -> None:
         try:

@@ -31,10 +31,15 @@ class FakeWebView:
 class FakeWindow:
     def __init__(self) -> None:
         self.file_dialog_requests: list[dict] = []
+        self.evaluate_js_calls: list[str] = []
 
     def create_file_dialog(self, dialog_type, **kwargs):
         self.file_dialog_requests.append({"dialog_type": dialog_type, **kwargs})
         return ("I:\\picked\\graph.json",)
+
+    def evaluate_js(self, script: str):
+        self.evaluate_js_calls.append(script)
+        return None
 
 
 def test_launch_desktop_shell_starts_api_and_opens_window(tmp_path: Path) -> None:
@@ -51,6 +56,7 @@ def test_launch_desktop_shell_starts_api_and_opens_window(tmp_path: Path) -> Non
             host="127.0.0.1",
             port=0,
             workspace_state_path=tmp_path / "state" / "workspace-state.json",
+            preferences_path=tmp_path / "state" / "preferences.json",
             ui_dist_path=ui_dist_path,
             title="WeConduct",
             width=1280,
@@ -106,6 +112,7 @@ def test_launch_desktop_shell_exposes_host_file_dialog_provider(tmp_path: Path) 
             host="127.0.0.1",
             port=0,
             workspace_state_path=tmp_path / "state" / "workspace-state.json",
+            preferences_path=tmp_path / "state" / "preferences.json",
             ui_dist_path=ui_dist_path,
         ),
         webview_module=fake_webview,
@@ -126,11 +133,66 @@ def test_launch_desktop_shell_exposes_host_file_dialog_provider(tmp_path: Path) 
     ]
 
 
+def test_launch_desktop_shell_exposes_host_open_path_provider(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ui_dist_path = tmp_path / "ui-dist"
+    ui_dist_path.mkdir(parents=True)
+    (ui_dist_path / "index.html").write_text(
+        "<!doctype html><html></html>",
+        encoding="utf-8",
+    )
+    fake_webview = FakeWebView()
+    project_dir = tmp_path / "demo-project"
+    project_dir.mkdir()
+    opened_paths: list[str] = []
+
+    monkeypatch.setattr(
+        "weconduct.desktop_shell.launcher.os.startfile",
+        lambda path: opened_paths.append(path),
+    )
+
+    def post_open_path_during_window_lifetime() -> None:
+        fake_webview.started = True
+        base_url = fake_webview.created_windows[0]["url"]
+        request = urllib.request.Request(
+            f"{base_url}/api/host/open-path",
+            data=json.dumps({"path": str(project_dir)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            fake_webview.open_path_response = json.loads(response.read().decode("utf-8"))
+
+    fake_webview.start = post_open_path_during_window_lifetime
+
+    launch_desktop_shell(
+        DesktopShellOptions(
+            host="127.0.0.1",
+            port=0,
+            workspace_state_path=tmp_path / "state" / "workspace-state.json",
+            preferences_path=tmp_path / "state" / "preferences.json",
+            ui_dist_path=ui_dist_path,
+        ),
+        webview_module=fake_webview,
+    )
+
+    assert fake_webview.open_path_response == {
+        "status": "opened",
+        "path": str(project_dir.resolve()),
+        "target_kind": "directory",
+    }
+    assert opened_paths == [str(project_dir.resolve())]
+    assert fake_webview.window.evaluate_js_calls == []
+
+
 def test_launch_desktop_shell_reports_missing_pywebview(tmp_path: Path) -> None:
     with pytest.raises(DesktopShellDependencyError, match="pywebview"):
         launch_desktop_shell(
             DesktopShellOptions(
                 workspace_state_path=tmp_path / "state" / "workspace-state.json",
+                preferences_path=tmp_path / "state" / "preferences.json",
                 ui_dist_path=tmp_path / "ui-dist",
             ),
             webview_module=None,

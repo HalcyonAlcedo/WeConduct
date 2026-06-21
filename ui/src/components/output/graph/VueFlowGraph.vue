@@ -49,6 +49,7 @@ function copyNode() {
 }
 
 async function pasteNode() {
+  if (!workspace.isGraphEditable) return
   if (!copiedNode.value || !workspace.graphModel) return
   closeContextMenu()
   const newNodeId = await workspace.pasteNode(copiedNode.value)
@@ -71,6 +72,7 @@ function onEdgeContextMenu(event: any) {
 
 const EDGE_TYPE_CYCLE: Record<string, string> = { control: 'data', data: 'control' }
 function switchEdgeType() {
+  if (!workspace.isGraphEditable) return
   if (!edgeContextMenu.value) return
   const next = EDGE_TYPE_CYCLE[edgeContextMenu.value.relation] || 'control'
   workspace.updateEdgeRelation(edgeContextMenu.value.edgeId, next)
@@ -78,12 +80,14 @@ function switchEdgeType() {
   closeContextMenu()
 }
 function deleteEdge() {
+  if (!workspace.isGraphEditable) return
   if (!edgeContextMenu.value) return
   workspace.removeEdge(edgeContextMenu.value.edgeId)
   toast.info('边已删除')
   closeContextMenu()
 }
 function deleteNode() {
+  if (!workspace.isGraphEditable) return
   if (!contextMenu.value) return
   const nodeId = contextMenu.value.nodeId
   closeContextMenu()
@@ -120,6 +124,7 @@ function onDragOver(e: DragEvent) {
   }
 }
 async function onDrop(e: DragEvent) {
+  if (!workspace.isGraphEditable) return
   e.preventDefault()
   const raw = e.dataTransfer?.getData('application/json')
   if (!raw) return
@@ -184,6 +189,7 @@ function onConnect(connection: any) {
 
 // Edge click: cycle relation_layer (observe loop shows warning)
 function onEdgeClick(event: any) {
+  if (!workspace.isGraphEditable) return
   const edge = (event as any).edge
   if (!edge) return
   const gm = workspace.graphModel
@@ -196,6 +202,7 @@ function onEdgeClick(event: any) {
   toast.info('边类型已切换', newLayer)
 }
 function onEdgesChange(changes: any[]) {
+  if (!workspace.isGraphEditable) return
   for (const c of changes) {
     if (c.type === 'remove') {
       workspace.removeEdge((c as any).id)
@@ -226,9 +233,9 @@ function onViewportChange(vp: { x: number; y: number; zoom: number }) {
       v-bind="graphData"
       :node-types="nodeTypes"
       :default-viewport="{ x: 0, y: 0, zoom: 1 }"
-      :nodes-draggable="true"
-      :nodes-connectable="true"
-      :edges-updatable="true"
+      :nodes-draggable="workspace.isGraphEditable"
+      :nodes-connectable="workspace.isGraphEditable"
+      :edges-updatable="workspace.isGraphEditable"
       :elements-selectable="true"
       :zoom-on-scroll="true"
       :pan-on-scroll="true"
@@ -256,8 +263,8 @@ function onViewportChange(vp: { x: number; y: number; zoom: number }) {
     <div v-if="contextMenu" class="vf-ctxmenu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.self="closeContextMenu">
       <button @click="inspectNode">查看属性</button>
       <button @click="copyNode">复制节点</button>
-      <button v-if="copiedNode" @click="pasteNode">粘贴节点</button>
-      <button @click="deleteNode">删除节点</button>
+      <button v-if="copiedNode && workspace.isGraphEditable" @click="pasteNode">粘贴节点</button>
+      <button v-if="workspace.isGraphEditable" @click="deleteNode">删除节点</button>
       <hr><button @click="closeContextMenu">取消</button>
     </div>
     <div v-if="contextMenu || edgeContextMenu" class="vf-ctxmask" @click="closeContextMenu"></div>
@@ -265,8 +272,8 @@ function onViewportChange(vp: { x: number; y: number; zoom: number }) {
     <!-- Edge Context Menu -->
     <div v-if="edgeContextMenu" class="vf-ctxmenu" :style="{ left: edgeContextMenu.x + 'px', top: edgeContextMenu.y + 'px' }">
       <div class="vf-ctxmenu-label">边: {{ edgeContextMenu.relation }} <span v-if="edgeContextMenu.relation === 'observe'" class="vf-observe-warn">(不支持执行)</span></div>
-      <button @click="switchEdgeType">切换类型 ({{ EDGE_TYPE_CYCLE[edgeContextMenu.relation] || 'control' }})</button>
-      <button @click="deleteEdge">删除连线</button>
+      <button v-if="workspace.isGraphEditable" @click="switchEdgeType">切换类型 ({{ EDGE_TYPE_CYCLE[edgeContextMenu.relation] || 'control' }})</button>
+      <button v-if="workspace.isGraphEditable" @click="deleteEdge">删除连线</button>
       <hr><button @click="closeContextMenu">取消</button>
     </div>
   </div>

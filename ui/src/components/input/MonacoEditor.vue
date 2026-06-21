@@ -66,6 +66,13 @@ watch(() => props.modelValue, (val) => {
   }
 })
 
+watch(() => props.readOnly, (val) => {
+  const editor = editorRef.value
+  if (editor) {
+    editor.updateOptions({ readOnly: val ?? false })
+  }
+})
+
 // Sync theme changes
 function updateTheme() {
   if (!monacoRef) return

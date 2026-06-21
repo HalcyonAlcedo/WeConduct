@@ -133,7 +133,7 @@ async function handleCompile() {
       <span class="gcp-actions">
         <button class="gcp-btn" @click="handleValidate">校验</button>
         <button class="gcp-btn" @click="handleCompile">编译</button>
-        <button class="gcp-btn save" @click="handleSave">保存</button>
+        <button class="gcp-btn save" @click="handleSave" :disabled="!workspace.isGraphEditable" :title="workspace.isGraphEditable ? '保存' : '.wcrun 只读'">保存</button>
       </span>
     </div>
     <VueFlowGraph />

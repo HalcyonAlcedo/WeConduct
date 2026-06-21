@@ -1,11 +1,16 @@
 from datetime import datetime, timezone
 from copy import deepcopy
+import hashlib
 import json
+import os
 from pathlib import Path
+import platform
 import shutil
+import tempfile
 from time import perf_counter
 from threading import Lock, Thread
 import uuid
+import zipfile
 
 from pydantic import ValidationError
 
@@ -17,6 +22,10 @@ from weconduct.compiler.sources.legacy_webcontrol import (
 from weconduct.builtin_components import (
     build_builtin_resource_registry,
     get_graph_node_draft_definition,
+)
+from weconduct.runtime.captcha_ocr import (
+    CaptchaOcrRuntimeUnavailable,
+    create_captcha_ocr_recognizer,
 )
 from weconduct.runtime import RuntimeContext, RuntimeExecutorRegistry, execute_runtime_node
 from weconduct.runtime.engine import _safe_eval_expression
@@ -35,6 +44,8 @@ from weconduct.application.legacy_webcontrol_converter import (
     build_conversion_report,
     convert_legacy_webcontrol_project,
 )
+from weconduct.packaging.msgpack_codec import packb
+from weconduct.packaging.msgpack_codec import unpackb
 from weconduct.application.runtime_session_stream import RuntimeSessionStreamBroker
 from weconduct.application.workspace_state_store import (
     FileWorkspaceStateStore,
@@ -76,6 +87,7 @@ MAX_RECENT_PROJECTS = 10
 MAX_RECENT_PROJECTS_LIMIT = 100
 PROJECT_FILE_SCHEMA_VERSION = 2
 LEGACY_PROJECT_FILE_SCHEMA_VERSION = 1
+PROJECT_SETTINGS_SCHEMA_VERSION = 1
 RESOURCE_EXPORT_SCHEMA_VERSION = 1
 MAX_EDITOR_HISTORY_DEPTH = 100
 MAX_RUNTIME_SESSION_HISTORY = 20
@@ -156,6 +168,16 @@ class ProjectRequiresSaveAsError(ValueError):
         self.recovery_action = "save_as"
 
 
+class ProjectPackageReadOnlyError(ValueError):
+    def __init__(self, *, operation: str) -> None:
+        super().__init__(
+            "loaded .wcrun package is read-only; only runtime defaults can be updated "
+            f"during this session (blocked operation: {operation})"
+        )
+        self.error_code = "project_package_read_only"
+        self.recovery_action = "update_runtime_defaults_only"
+
+
 class CompilationWorkbenchService:
     def __init__(
         self,
@@ -187,6 +209,7 @@ class CompilationWorkbenchService:
         return {
             "workbench": self._build_workbench_metadata(),
             "project": self._build_project_metadata(),
+            "project_settings": self._build_project_settings_snapshot_summary(),
             "graph_workspace": self._build_graph_workspace_metadata(graph_model),
             "preferences": self._preferences_service.get_preferences_document(),
             "capabilities": self._build_capabilities_metadata(),
@@ -232,7 +255,580 @@ class CompilationWorkbenchService:
         graph_model = self._get_graph_document_model()
         return {
             "project": self._build_project_metadata(),
+            "project_settings": self.get_project_settings_document()["project_settings"],
             "graph_workspace": self._build_graph_workspace_metadata(graph_model),
+        }
+
+    def get_project_settings_document(self) -> dict:
+        self._refresh_state_from_store()
+        project_runtime = self._get_project_runtime()
+        project_file_path = project_runtime.get("project_file_path")
+        project_settings_path = None
+        project_settings_exists = False
+        if isinstance(project_file_path, str) and project_file_path.strip():
+            project_settings_path = self._resolve_project_storage_root(
+                Path(project_file_path)
+            ) / "project-settings.json"
+            project_settings_exists = project_settings_path.exists()
+        return {
+            "project_settings": deepcopy(self._extract_project_settings(self._state)),
+            "state": {
+                "loaded": True,
+                "source": "project_settings_file" if project_settings_exists else "workspace_state",
+                "project_file_path": project_file_path,
+                "session_dir": project_runtime.get("session_dir"),
+                "project_settings_path": (
+                    str(project_settings_path.resolve()) if project_settings_path is not None else None
+                ),
+                "is_dirty": project_runtime.get("is_dirty", False),
+            },
+        }
+
+    def update_project_settings(self, *, project_settings: dict) -> dict:
+        if not isinstance(project_settings, dict):
+            raise ValueError("field must be a JSON object: project_settings")
+        self._assert_project_package_allows_mutation("update_project_settings")
+        normalized_settings = self._normalize_project_settings_document(project_settings)
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            current_state["project_settings"] = normalized_settings
+            current_state["project"]["project_name"] = normalized_settings["project_identity"]["name"]
+            current_state["project_runtime"] = {
+                **self._extract_project_runtime(current_state),
+                "is_dirty": True,
+            }
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        return self.get_project_settings_document()
+
+    def update_project_runtime_defaults(self, *, runtime_defaults: dict) -> dict:
+        normalized_runtime_defaults = self._normalize_runtime_defaults_payload(runtime_defaults)
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            project_settings = self._extract_project_settings(current_state)
+            project_settings["runtime_defaults"] = normalized_runtime_defaults
+            current_state["project_settings"] = self._normalize_project_settings_document(project_settings)
+            current_state["project_runtime"] = {
+                **self._extract_project_runtime(current_state),
+                "is_dirty": True,
+            }
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        graph_projection_refresh = {
+            "node_id": "node-start",
+            "node_config": {
+                "initial_variables": deepcopy(normalized_runtime_defaults["initial_variables"]),
+                "browser_config": deepcopy(normalized_runtime_defaults["browser_config"]),
+                "execution_defaults": deepcopy(normalized_runtime_defaults["execution_defaults"]),
+            },
+        }
+        return {
+            "status": "updated",
+            "runtime_defaults": deepcopy(normalized_runtime_defaults),
+            "graph_projection_refresh": graph_projection_refresh,
+        }
+
+    def run_project_package_preflight(self) -> dict:
+        self._refresh_state_from_store()
+        package_project_view = self._load_saved_project_for_packaging()
+        graph_model = package_project_view["graph_model"]
+        graph_diagnostics = self._collect_graph_validation_diagnostics(graph_model)
+        entries = self._materialize_graph_validation_diagnostic_entries(
+            graph_model,
+            graph_diagnostics,
+            diagnostic_id_prefix="package-preflight",
+        )
+        result_entries: list[dict] = []
+        for entry in entries:
+            payload = entry.model_dump(mode="json")
+            payload.setdefault("setting_field", None)
+            payload.setdefault("node_id", None)
+            payload.setdefault("resource_id", None)
+            result_entries.append(payload)
+
+        project_settings = package_project_view["project_settings"]
+        runtime_defaults = (
+            project_settings.get("runtime_defaults")
+            if isinstance(project_settings.get("runtime_defaults"), dict)
+            else {}
+        )
+        initial_variables = (
+            runtime_defaults.get("initial_variables")
+            if isinstance(runtime_defaults.get("initial_variables"), dict)
+            else {}
+        )
+        if not isinstance(initial_variables.get("base_url"), str) or not initial_variables.get("base_url", "").strip():
+            result_entries.append(
+                {
+                    "diagnostic_id": f"package-preflight-{uuid.uuid4().hex[:12]}",
+                    "severity": "error",
+                    "stage": "package.preflight",
+                    "category": "project_settings.missing_required_field",
+                    "message": "project runtime default missing: base_url",
+                    "object_ref": "project_settings.runtime_defaults.initial_variables.base_url",
+                    "setting_field": "runtime_defaults.initial_variables.base_url",
+                    "node_id": None,
+                    "resource_id": None,
+                }
+            )
+
+        external_resources = project_settings.get("external_resources")
+        if isinstance(external_resources, list):
+            for item in external_resources:
+                if not isinstance(item, dict):
+                    continue
+                resource_id = item.get("resource_id")
+                required = item.get("required", False)
+                target = item.get("target")
+                if bool(required) and isinstance(resource_id, str) and resource_id.strip():
+                    target_name = (
+                        target.get("name")
+                        if isinstance(target, dict) and isinstance(target.get("name"), str)
+                        else None
+                    )
+                    if target_name and not isinstance(initial_variables.get(target_name), str):
+                        result_entries.append(
+                            {
+                                "diagnostic_id": f"package-preflight-{uuid.uuid4().hex[:12]}",
+                                "severity": "error",
+                                "stage": "package.preflight",
+                                "category": "project_settings.external_resource.required_binding_missing",
+                                "message": f"required external resource binding is missing: {resource_id}",
+                                "object_ref": resource_id,
+                                "setting_field": None,
+                                "node_id": None,
+                                "resource_id": resource_id,
+                            }
+                        )
+
+        error_count = len([entry for entry in result_entries if entry.get("severity") in {"error", "fatal"}])
+        warning_count = len([entry for entry in result_entries if entry.get("severity") == "warning"])
+        info_count = len([entry for entry in result_entries if entry.get("severity") == "info"])
+        status = "failed" if error_count > 0 else "ok"
+        return {
+            "status": status,
+            "summary": {
+                "error_count": error_count,
+                "warning_count": warning_count,
+                "info_count": info_count,
+                "blocking": error_count > 0,
+            },
+            "entries": result_entries,
+        }
+
+    def build_project_package(
+        self,
+        *,
+        mode: str,
+        source_of_truth: str,
+        output_path: str | Path | None = None,
+    ) -> dict:
+        self._refresh_state_from_store()
+        normalized_mode = mode.strip() if isinstance(mode, str) else ""
+        if normalized_mode != "wcrun":
+            raise ValueError("unsupported package mode: wcrun only")
+        normalized_source_of_truth = (
+            source_of_truth.strip() if isinstance(source_of_truth, str) else ""
+        )
+        if normalized_source_of_truth != "saved_project_only":
+            raise ValueError("unsupported source_of_truth: saved_project_only only")
+
+        preflight = self.run_project_package_preflight()
+        if preflight["status"] != "ok":
+            return {
+                "status": "failed",
+                "mode": normalized_mode,
+                "source_of_truth": normalized_source_of_truth,
+                "summary": deepcopy(preflight["summary"]),
+                "diagnostics": {
+                    "total_count": len(preflight["entries"]),
+                    "highest_severity": (
+                        max(
+                            (
+                                entry.get("severity")
+                                for entry in preflight["entries"]
+                                if entry.get("severity") in DIAGNOSTIC_SEVERITIES
+                            ),
+                            key=lambda severity: DIAGNOSTIC_SEVERITY_RANK[severity],
+                            default=None,
+                        )
+                    ),
+                    "entries": deepcopy(preflight["entries"]),
+                },
+            }
+
+        project_runtime = self._get_project_runtime()
+        project_file_path = project_runtime.get("project_file_path")
+        if not isinstance(project_file_path, str) or not project_file_path.strip():
+            raise ValueError("project must be saved before building package")
+
+        resolved_project_path = self._resolve_project_path(project_file_path)
+        resolved_output_path = self._resolve_package_output_path(
+            project_path=resolved_project_path,
+            output_path=output_path,
+        )
+        package_contents = self._build_wcrun_package_contents(
+            project_path=resolved_project_path,
+            output_path=resolved_output_path,
+        )
+        package_contents["meta/checksums.json"] = self._encode_json_bytes(
+            self._build_package_checksums_document(package_contents)
+        )
+        self._write_zip_archive(resolved_output_path, package_contents)
+        manifest_payload = unpackb(package_contents["manifest.msgpack"])
+        package_info_payload = json.loads(package_contents["meta/package-info.json"].decode("utf-8"))
+        summary = {
+            "embedded_resource_count": len(
+                manifest_payload.get("resources", {}).get("embedded", [])
+            )
+            if isinstance(manifest_payload.get("resources"), dict)
+            else 0,
+            "external_resource_count": len(
+                manifest_payload.get("resources", {}).get("external", [])
+            )
+            if isinstance(manifest_payload.get("resources"), dict)
+            else 0,
+            "graph_count": len(manifest_payload.get("graphs", []))
+            if isinstance(manifest_payload.get("graphs"), list)
+            else 0,
+        }
+        return {
+            "status": "built",
+            "mode": normalized_mode,
+            "source_of_truth": normalized_source_of_truth,
+            "package": {
+                "mode": normalized_mode,
+                "source_of_truth": normalized_source_of_truth,
+                "output_path": str(resolved_output_path.resolve()),
+                "project_file_path": str(resolved_project_path.resolve()),
+                "entry_count": len(package_contents),
+            },
+            "package_info": {
+                "package_id": manifest_payload.get("package_identity", {}).get("package_id")
+                if isinstance(manifest_payload.get("package_identity"), dict)
+                else None,
+                "package_name": manifest_payload.get("package_identity", {}).get("package_name")
+                if isinstance(manifest_payload.get("package_identity"), dict)
+                else None,
+                "package_version": manifest_payload.get("package_identity", {}).get("package_version")
+                if isinstance(manifest_payload.get("package_identity"), dict)
+                else None,
+                "built_at": package_info_payload.get("built_at"),
+            },
+            "summary": summary,
+            "diagnostics": {
+                "total_count": 0,
+                "highest_severity": None,
+                "entries": [],
+            },
+        }
+
+    def _load_saved_project_for_packaging(self) -> dict:
+        project_runtime = self._get_project_runtime()
+        project_file_path = project_runtime.get("project_file_path")
+        if not isinstance(project_file_path, str) or not project_file_path.strip():
+            raise ValueError("project must be saved before packaging")
+        project_document = self._read_project_file(self._resolve_project_path(project_file_path))
+        return {
+            "project": deepcopy(project_document["project"]),
+            "graph_model": GraphModel.model_validate(project_document["graph_document"]),
+            "project_settings": self._normalize_project_settings_document_for_state(
+                {
+                    "project": deepcopy(project_document["project"]),
+                    "project_runtime": {
+                        "project_file_path": str(self._resolve_project_path(project_file_path)),
+                        "is_dirty": False,
+                        "session_dir": None,
+                    },
+                },
+                deepcopy(project_document["project_settings"]),
+            ),
+        }
+
+    def inspect_project_package(self, *, package_path: str | Path) -> dict:
+        resolved_package_path = self._resolve_package_path(package_path)
+        package_document = self._read_wcrun_package_document(resolved_package_path)
+        return {
+            "status": "ok",
+            "package": package_document,
+            "package_summary": self._build_wcrun_package_summary(package_document),
+            "project_settings_summary": self._build_wcrun_project_settings_summary(package_document),
+            "resource_summary": self._build_wcrun_resource_summary(package_document),
+            "dependency_summary": self._build_wcrun_dependency_summary(package_document),
+            "graph_detail_summary": self._build_wcrun_graph_detail_summary(package_document),
+            "external_binding_summary": self._build_wcrun_external_binding_summary(package_document),
+            "runtime_requirement_summary": self._build_wcrun_runtime_requirement_summary(package_document),
+            "runtime_readiness_summary": self._build_wcrun_runtime_readiness_summary(package_document),
+        }
+
+    def load_project_package(self, *, package_path: str | Path) -> dict:
+        resolved_package_path = self._resolve_package_path(package_path)
+        package_document = self._read_wcrun_package_document(resolved_package_path)
+        session_dir = self._materialize_wcrun_session_dir(
+            package_path=resolved_package_path,
+            package_document=package_document,
+        )
+        package_document["session_dir"] = str(session_dir.resolve())
+        graph_payload = package_document["graph_document"]
+        project_settings = self._rewrite_loaded_package_embedded_resource_paths(
+            package_document["project_settings"],
+            package_document=package_document,
+            session_dir=session_dir,
+        )
+        manifest = package_document["manifest"]
+        project_summary = {}
+        if isinstance(manifest, dict):
+            source_project = manifest.get("source_project")
+            if isinstance(source_project, dict):
+                project_summary = source_project
+            elif isinstance(manifest.get("project"), dict):
+                project_summary = manifest.get("project", {})
+        project_name = (
+            project_summary.get("project_name")
+            if isinstance(project_summary.get("project_name"), str)
+            else "Loaded Package"
+        )
+        project_id = (
+            project_summary.get("project_id")
+            if isinstance(project_summary.get("project_id"), str)
+            else f"wcrun-{uuid.uuid4().hex[:8]}"
+        )
+
+        def mutation(state: dict | None) -> dict:
+            current_state = self._build_initial_workspace_state(
+                project_name=project_name,
+                project_id=project_id,
+                project_file_path=None,
+                mark_project_dirty=False,
+            )
+            current_state["project"]["project_status"] = "loaded_from_package"
+            current_state["project"]["source_of_truth"] = "wcrun_package"
+            current_state["project"]["workspace_root"] = str(session_dir.resolve())
+            current_state["project_runtime"] = {
+                "project_file_path": None,
+                "is_dirty": False,
+                "session_dir": str(session_dir.resolve()),
+            }
+            current_state["project_settings"] = self._normalize_project_settings_document(project_settings)
+            current_state["graph_document"] = deepcopy(graph_payload)
+            current_state["graph_document_meta"] = {
+                "save_revision": 0,
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+            }
+            current_state["resource_registry"] = self._build_loaded_package_resource_registry(package_document)
+            current_state["recent_projects"] = self._extract_recent_projects(state)
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        project_document = self.get_project_document()
+        return {
+            "status": "loaded",
+            "package": {
+                **package_document,
+                "session_dir": str(session_dir.resolve()),
+                "package_path": str(resolved_package_path.resolve()),
+            },
+            "package_summary": self._build_wcrun_package_summary(package_document),
+            "project_settings_summary": self._build_wcrun_project_settings_summary(package_document),
+            "resource_summary": self._build_wcrun_resource_summary(package_document),
+            "dependency_summary": self._build_wcrun_dependency_summary(package_document),
+            "graph_detail_summary": self._build_wcrun_graph_detail_summary(package_document),
+            "external_binding_summary": self._build_wcrun_external_binding_summary(package_document),
+            "runtime_requirement_summary": self._build_wcrun_runtime_requirement_summary(package_document),
+            "runtime_readiness_summary": self._build_wcrun_runtime_readiness_summary(package_document),
+            "session_restore_summary": self._build_loaded_package_session_restore_summary(
+                package_document=package_document,
+                package_path=resolved_package_path,
+                session_dir=session_dir,
+                project_document=project_document,
+            ),
+            "project": project_document["project"],
+            "project_settings": project_document["project_settings"],
+            "graph_workspace": project_document["graph_workspace"],
+        }
+
+    def _rewrite_loaded_package_embedded_resource_paths(
+        self,
+        project_settings: dict,
+        *,
+        package_document: dict,
+        session_dir: Path,
+    ) -> dict:
+        normalized_settings = deepcopy(project_settings) if isinstance(project_settings, dict) else {}
+        runtime_defaults = (
+            normalized_settings.get("runtime_defaults")
+            if isinstance(normalized_settings.get("runtime_defaults"), dict)
+            else None
+        )
+        if not isinstance(runtime_defaults, dict):
+            return normalized_settings
+        initial_variables = (
+            runtime_defaults.get("initial_variables")
+            if isinstance(runtime_defaults.get("initial_variables"), dict)
+            else None
+        )
+        if not isinstance(initial_variables, dict):
+            return normalized_settings
+
+        resource_policy = (
+            normalized_settings.get("resource_policy")
+            if isinstance(normalized_settings.get("resource_policy"), dict)
+            else {}
+        )
+        declared_sources = resource_policy.get("embedded_resources")
+        packaged_resources = (
+            package_document.get("resources")
+            if isinstance(package_document.get("resources"), dict)
+            else {}
+        )
+        embedded_entries = (
+            packaged_resources.get("embedded")
+            if isinstance(packaged_resources.get("embedded"), list)
+            else []
+        )
+        if not isinstance(declared_sources, list) or not embedded_entries:
+            return normalized_settings
+
+        rewrite_candidates: dict[str, str] = {}
+        for index, raw_source in enumerate(declared_sources):
+            if not isinstance(raw_source, str) or not raw_source.strip():
+                continue
+            if index >= len(embedded_entries):
+                continue
+            embedded_entry = embedded_entries[index]
+            if not isinstance(embedded_entry, dict):
+                continue
+            archive_path = embedded_entry.get("archive_path")
+            if not isinstance(archive_path, str) or not archive_path.strip():
+                continue
+            materialized_path = (session_dir / archive_path.replace("/", os.sep)).resolve()
+            rewrite_candidates[raw_source.strip()] = str(materialized_path)
+            rewrite_candidates[raw_source.strip().replace("\\", "/")] = str(materialized_path)
+            rewrite_candidates[raw_source.strip().replace("/", "\\")] = str(materialized_path)
+
+        for key, value in list(initial_variables.items()):
+            if not isinstance(value, str) or not value.strip():
+                continue
+            replacement = rewrite_candidates.get(value.strip())
+            if replacement is not None:
+                initial_variables[key] = replacement
+
+        return normalized_settings
+
+    def _build_runtime_embedded_resource_path_map(self) -> dict[str, str]:
+        project_runtime = self._get_project_runtime()
+        session_dir = project_runtime.get("session_dir")
+        if not isinstance(session_dir, str) or not session_dir.strip():
+            return {}
+        session_path = Path(session_dir).resolve()
+        project_settings = self._state.get("project_settings")
+        if not isinstance(project_settings, dict):
+            return {}
+        resource_policy = (
+            project_settings.get("resource_policy")
+            if isinstance(project_settings.get("resource_policy"), dict)
+            else {}
+        )
+        embedded_resources = resource_policy.get("embedded_resources")
+        if not isinstance(embedded_resources, list):
+            return {}
+        embedded_path_map: dict[str, str] = {}
+        for raw_source in embedded_resources:
+            if not isinstance(raw_source, str) or not raw_source.strip():
+                continue
+            source_literal = raw_source.strip()
+            materialized_path = session_path / "resources" / "embedded" / Path(source_literal).name
+            resolved_materialized_path = str(materialized_path.resolve())
+            embedded_path_map[source_literal] = resolved_materialized_path
+            embedded_path_map[source_literal.replace("\\", "/")] = resolved_materialized_path
+            embedded_path_map[source_literal.replace("/", "\\")] = resolved_materialized_path
+        return embedded_path_map
+
+    def unload_project_package(self) -> dict:
+        self._refresh_state_from_store()
+        project_runtime = self._get_project_runtime()
+        session_dir = project_runtime.get("session_dir")
+        removed_session_dir = None
+        if isinstance(session_dir, str) and session_dir.strip():
+            session_path = Path(session_dir)
+            if session_path.exists():
+                shutil.rmtree(session_path, ignore_errors=True)
+            removed_session_dir = str(session_path.resolve())
+
+        def mutation(state: dict | None) -> dict:
+            current_state = self._build_initial_workspace_state(
+                project_name="WeConduct Workspace",
+                project_id="weconduct-workspace",
+                project_file_path=None,
+                mark_project_dirty=False,
+            )
+            current_state["recent_projects"] = self._extract_recent_projects(state)
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        return {
+            "status": "unloaded",
+            "package": {
+                "session_dir": removed_session_dir,
+            },
+            "project": self._build_project_metadata(),
+        }
+
+    def bind_loaded_package_external_resource(self, *, resource_id: str, value: str) -> dict:
+        self._refresh_state_from_store()
+        normalized_resource_id = resource_id.strip()
+        if not normalized_resource_id:
+            raise ValueError("resource_id must not be empty")
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("value must be a non-empty string")
+        normalized_value = str(Path(value).resolve())
+        project_settings = self._extract_project_settings(self._state)
+        external_resources = (
+            project_settings.get("external_resources")
+            if isinstance(project_settings.get("external_resources"), list)
+            else []
+        )
+        matched_resource = None
+        for item in external_resources:
+            if isinstance(item, dict) and item.get("resource_id") == normalized_resource_id:
+                matched_resource = deepcopy(item)
+                break
+        if matched_resource is None:
+            raise ValueError(f"external resource not found: {normalized_resource_id}")
+        target = matched_resource.get("target")
+        if not isinstance(target, dict) or target.get("type") != "initial_variable":
+            raise ValueError(
+                f"external resource target is unsupported for binding: {normalized_resource_id}"
+            )
+        target_name = target.get("name")
+        if not isinstance(target_name, str) or not target_name.strip():
+            raise ValueError(f"external resource target name is missing: {normalized_resource_id}")
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            current_settings = self._extract_project_settings(current_state)
+            runtime_defaults = self._normalize_runtime_defaults_payload(
+                current_settings.get("runtime_defaults")
+            )
+            runtime_defaults["initial_variables"][target_name.strip()] = normalized_value
+            current_settings["runtime_defaults"] = runtime_defaults
+            current_state["project_settings"] = self._normalize_project_settings_document(current_settings)
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        updated_settings = self.get_project_settings_document()["project_settings"]
+        return {
+            "status": "bound",
+            "binding": {
+                "resource_id": normalized_resource_id,
+                "target_name": target_name.strip(),
+                "value": normalized_value,
+            },
+            "runtime_defaults": deepcopy(updated_settings["runtime_defaults"]),
         }
 
     def get_recent_projects_document(self) -> dict:
@@ -633,6 +1229,7 @@ class CompilationWorkbenchService:
 
     def save_project(self, *, graph_document_payload: dict | None = None) -> dict:
         self._refresh_state_from_store()
+        self._assert_project_package_allows_mutation("save_project")
         project_runtime = self._get_project_runtime()
         project_file_path = project_runtime["project_file_path"]
         if project_file_path is None:
@@ -648,6 +1245,7 @@ class CompilationWorkbenchService:
         graph_document_payload: dict | None = None,
     ) -> dict:
         self._refresh_state_from_store()
+        self._assert_project_package_allows_mutation("save_project_as")
         if graph_document_payload is not None:
             self.save_graph_document(graph_document_payload)
         resolved_path = self._resolve_project_path(project_path)
@@ -693,6 +1291,7 @@ class CompilationWorkbenchService:
             current_state["resource_registry"] = project_document["resource_registry"]
             current_state["editor_history"] = project_document["editor_history"]
             current_state["execution_history"] = project_document["execution_history"]
+            current_state["project_settings"] = project_document["project_settings"]
             current_state["recent_projects"] = self._upsert_recent_project_record(
                 recent_projects,
                 project_name=current_state["project"]["project_name"],
@@ -1446,6 +2045,12 @@ class CompilationWorkbenchService:
         }
 
     def start_runtime_session(self, graph_document_payload: dict | None) -> dict:
+        package_runtime_requirement_block = self._build_loaded_package_runtime_requirements_block()
+        if package_runtime_requirement_block is not None:
+            return package_runtime_requirement_block
+        package_binding_block = self._build_loaded_package_runtime_binding_block()
+        if package_binding_block is not None:
+            return package_binding_block
         graph_model, request_meta = self._resolve_graph_document_request(graph_document_payload)
         compile_result = self._compile_graph_document_transient(
             graph_model,
@@ -1616,6 +2221,7 @@ class CompilationWorkbenchService:
             runtime_context = RuntimeContext(
                 project_directory=self._resolve_runtime_project_directory(),
                 workspace_root=self._resolve_runtime_workspace_root(),
+                embedded_resource_paths=self._build_runtime_embedded_resource_path_map(),
             )
             runtime_context.flow_runtime["graph_root_metadata"] = deepcopy(
                 session["runtime_plan"].get("root_metadata", {})
@@ -3251,6 +3857,7 @@ class CompilationWorkbenchService:
         child_context = RuntimeContext(
             project_directory=parent_runtime_context.project_directory,
             workspace_root=parent_runtime_context.workspace_root,
+            embedded_resource_paths=dict(parent_runtime_context.embedded_resource_paths),
         )
         child_context.browser_runtime = parent_runtime_context.browser_runtime
         child_context.variables.update(inputs)
@@ -5722,6 +6329,7 @@ class CompilationWorkbenchService:
         expected_graph_document_save_revision: int | None = None,
     ) -> dict:
         self._refresh_state_from_store()
+        self._assert_project_package_allows_mutation("save_graph_document")
         try:
             graph_model = GraphModel.model_validate(graph_document_payload)
         except ValidationError as exc:
@@ -5777,6 +6385,7 @@ class CompilationWorkbenchService:
         if graph_document_payload is None:
             graph_model = self._get_graph_document_model()
         else:
+            self._assert_project_package_allows_mutation("compile_graph_document_with_payload")
             try:
                 graph_model = GraphModel.model_validate(graph_document_payload)
             except ValidationError as exc:
@@ -6379,7 +6988,7 @@ class CompilationWorkbenchService:
             "workspace_state_version": WORKSPACE_STATE_VERSION,
             "workbench": {
                 "host_mode": "python_core",
-                "api_version": "0.4.1",
+                "api_version": "0.5.0",
                 "workspace_session_id": f"ws-{uuid.uuid4().hex[:12]}",
                 "service_started_at": datetime.now(timezone.utc).isoformat(),
                 "compile_counter": 0,
@@ -6398,6 +7007,11 @@ class CompilationWorkbenchService:
                 "project_file_path": resolved_project_file_path,
                 "is_dirty": mark_project_dirty,
             },
+            "project_settings": self._build_initial_project_settings_document(
+                project_id=resolved_project_id,
+                project_name=project_name,
+                project_file_path=resolved_project_file_path,
+            ),
             "last_compile": None,
             "compile_history": [],
             "recent_projects": [],
@@ -6484,6 +7098,49 @@ class CompilationWorkbenchService:
             },
         }
 
+    def _build_project_settings_snapshot_summary(self) -> dict:
+        project_settings = self._extract_project_settings(self._state)
+        raw_project = self._state.get("project")
+        if not isinstance(raw_project, dict):
+            raw_project = self._build_initial_workspace_state()["project"]
+        project_runtime = self._extract_project_runtime(self._state)
+        project_file_path = project_runtime.get("project_file_path")
+        project_settings_path = None
+        if isinstance(project_file_path, str) and project_file_path.strip():
+            project_settings_path = self._resolve_project_storage_root(
+                Path(project_file_path)
+            ) / "project-settings.json"
+        resource_policy = (
+            project_settings.get("resource_policy")
+            if isinstance(project_settings.get("resource_policy"), dict)
+            else {}
+        )
+        packaging = (
+            project_settings.get("packaging")
+            if isinstance(project_settings.get("packaging"), dict)
+            else {}
+        )
+        external_resources = project_settings.get("external_resources")
+        embedded_resources = resource_policy.get("embedded_resources")
+        return {
+            "loaded": True,
+            "source_of_truth": raw_project.get("source_of_truth", "graph_document"),
+            "state_source": "project_settings_file" if project_settings_path is not None else "workspace_state",
+            "project_file_path": project_file_path if isinstance(project_file_path, str) and project_file_path.strip() else None,
+            "project_settings_path": (
+                str(project_settings_path.resolve()) if project_settings_path is not None else None
+            ),
+            "session_dir": project_runtime.get("session_dir"),
+            "is_dirty": project_runtime.get("is_dirty", False),
+            "project_settings_schema_version": project_settings.get(
+                "project_settings_schema_version", PROJECT_SETTINGS_SCHEMA_VERSION
+            ),
+            "has_external_resources": bool(external_resources) if isinstance(external_resources, list) else False,
+            "embedded_resource_count": len(embedded_resources) if isinstance(embedded_resources, list) else 0,
+            "external_resource_count": len(external_resources) if isinstance(external_resources, list) else 0,
+            "package_default_output_name": packaging.get("default_output_name"),
+        }
+
     def _build_capabilities_metadata(self) -> dict:
         return {
             "compiler_available": True,
@@ -6499,12 +7156,20 @@ class CompilationWorkbenchService:
             "graph_document": "/api/workbench/graph",
             "graph_source_projection": "/api/workbench/graph/source-projection",
             "project_document": "/api/workbench/project",
+            "project_settings": "/api/workbench/project/settings",
+            "project_runtime_defaults": "/api/workbench/project/runtime-defaults",
             "project_documents": "/api/workbench/project/documents",
             "recent_projects": "/api/workbench/recent-projects",
             "project_new_action": "/api/workbench/project/new",
             "project_open_action": "/api/workbench/project/open",
             "project_save_action": "/api/workbench/project/save",
             "project_save_as_action": "/api/workbench/project/save-as",
+            "project_package_preflight_action": "/api/workbench/project/package/preflight",
+            "project_package_build_action": "/api/workbench/project/package/build",
+            "project_package_inspect": "/api/workbench/project/package/inspect",
+            "project_package_load_action": "/api/workbench/project/package/load",
+            "project_package_unload_action": "/api/workbench/project/package/unload",
+            "project_package_external_resource_bind_action": "/api/workbench/project/package/external-resources/bind",
             "project_convert_webcontrol_action": "/api/workbench/project/convert-webcontrol",
             "recent_project_remove_action": "/api/workbench/recent-projects/remove",
             "resources_document": "/api/workbench/resources",
@@ -7062,10 +7727,36 @@ class CompilationWorkbenchService:
 
     def _build_graph_document_view(self, graph_model: GraphModel) -> dict:
         graph_workspace = self._build_graph_workspace_metadata(graph_model)
+        project = self._state.get("project")
+        is_package_read_only = (
+            isinstance(project, dict)
+            and project.get("source_of_truth") == "wcrun_package"
+        )
+        nodes_by_id: dict[str, dict] = {}
+        for node in graph_model.nodes:
+            projection = None
+            if graph_model.graph_model_id == "graph:workspace" and node.node_kind == "flow.start":
+                projection = {
+                    "kind": "project_runtime_defaults",
+                    "enabled": True,
+                    "source": "project_settings.runtime_defaults",
+                }
+            nodes_by_id[node.node_id] = {
+                "node_id": node.node_id,
+                "node_kind": node.node_kind,
+                "display_name": node.display_name,
+                "projection": projection,
+            }
         return {
             **graph_workspace,
-            "is_editable": True,
+            "is_editable": not is_package_read_only,
+            "nodes_by_id": nodes_by_id,
         }
+
+    def _assert_project_package_allows_mutation(self, operation: str) -> None:
+        project = self._state.get("project")
+        if isinstance(project, dict) and project.get("source_of_truth") == "wcrun_package":
+            raise ProjectPackageReadOnlyError(operation=operation)
 
     def _persist_graph_document(
         self,
@@ -8680,6 +9371,25 @@ class CompilationWorkbenchService:
             if normalized_runtime != state["project_runtime"]:
                 state["project_runtime"] = normalized_runtime
                 changed = True
+        normalized_project_settings = self._extract_project_settings(state)
+        if normalized_project_settings != state.get("project_settings"):
+            state["project_settings"] = normalized_project_settings
+            changed = True
+        graph_document_payload = state.get("graph_document")
+        if isinstance(graph_document_payload, dict):
+            try:
+                graph_model = GraphModel.model_validate(graph_document_payload)
+            except ValidationError:
+                graph_model = None
+            if graph_model is not None:
+                merged_project_settings = self._merge_runtime_defaults_with_graph_backfill(
+                    project_settings_payload=state.get("project_settings"),
+                    graph_model=graph_model,
+                    state=state,
+                )
+                if merged_project_settings != state.get("project_settings"):
+                    state["project_settings"] = merged_project_settings
+                    changed = True
         normalized_recent_projects = self._extract_recent_projects(state)
         if normalized_recent_projects != state.get("recent_projects"):
             state["recent_projects"] = normalized_recent_projects
@@ -8757,10 +9467,310 @@ class CompilationWorkbenchService:
         normalized_project_file_path = None
         if isinstance(project_file_path, str) and project_file_path.strip():
             normalized_project_file_path = str(Path(project_file_path).resolve())
+        session_dir = raw_runtime.get("session_dir")
+        normalized_session_dir = None
+        if isinstance(session_dir, str) and session_dir.strip():
+            normalized_session_dir = str(Path(session_dir).resolve())
         return {
             "project_file_path": normalized_project_file_path,
             "is_dirty": bool(raw_runtime.get("is_dirty", False)),
+            "session_dir": normalized_session_dir,
         }
+
+    def _build_initial_project_settings_document(
+        self,
+        *,
+        project_id: str,
+        project_name: str,
+        project_file_path: str | None,
+        runtime_defaults: dict | None = None,
+    ) -> dict:
+        if project_file_path:
+            default_output_name = self._build_default_package_output_name(Path(project_file_path))
+        else:
+            project_slug = project_name.strip().lower().replace(" ", "-")
+            default_output_name = f"{project_slug or 'weconduct-project'}.wcrun"
+        return {
+            "project_settings_schema_version": PROJECT_SETTINGS_SCHEMA_VERSION,
+            "project_identity": {
+                "project_id": project_id,
+                "name": project_name,
+                "description": "",
+                "version": "0.1.0",
+                "author": "",
+                "tags": [],
+            },
+            "runtime_defaults": self._normalize_runtime_defaults_payload(runtime_defaults),
+            "packaging": {
+                "default_output_name": default_output_name,
+                "include_embedded_resources": True,
+                "staged_execution": True,
+                "include_execution_history": False,
+                "include_editor_history": False,
+            },
+            "external_resources": [],
+            "resource_policy": {
+                "embedded_resources": [],
+                "external_resource_bindings": [],
+            },
+            "compile_profile": {
+                "source_of_truth": "saved_project_only",
+                "inject_project_runtime_defaults_into_main_flow_start": True,
+            },
+        }
+
+    def _extract_runtime_defaults_from_workspace_graph(self) -> dict:
+        graph_model = self._get_graph_document_model()
+        return self._extract_runtime_defaults_from_graph_model(graph_model)
+
+    def _extract_runtime_defaults_from_graph_model(self, graph_model: GraphModel) -> dict:
+        flow_start = next((node for node in graph_model.nodes if node.node_kind == "flow.start"), None)
+        node_config = flow_start.node_config if flow_start is not None else {}
+        initial_variables = node_config.get("initial_variables")
+        browser_config = node_config.get("browser_config")
+        execution_defaults = node_config.get("execution_defaults")
+        return self._normalize_runtime_defaults_payload(
+            {
+                "initial_variables": initial_variables,
+                "browser_config": browser_config,
+                "execution_defaults": execution_defaults,
+            }
+        )
+
+    def _merge_runtime_defaults_with_graph_backfill(
+        self,
+        *,
+        project_settings_payload: dict | None,
+        graph_model: GraphModel,
+        state: dict | None = None,
+    ) -> dict:
+        normalized_settings = self._normalize_project_settings_document_for_state(
+            state,
+            project_settings_payload,
+        )
+        current_runtime_defaults = (
+            normalized_settings.get("runtime_defaults")
+            if isinstance(normalized_settings.get("runtime_defaults"), dict)
+            else {}
+        )
+        graph_runtime_defaults = self._extract_runtime_defaults_from_graph_model(graph_model)
+
+        current_initial_variables = (
+            deepcopy(current_runtime_defaults.get("initial_variables"))
+            if isinstance(current_runtime_defaults.get("initial_variables"), dict)
+            else {}
+        )
+        graph_initial_variables = (
+            deepcopy(graph_runtime_defaults.get("initial_variables"))
+            if isinstance(graph_runtime_defaults.get("initial_variables"), dict)
+            else {}
+        )
+        merged_initial_variables = dict(graph_initial_variables)
+        merged_initial_variables.update(current_initial_variables)
+
+        current_browser_config = (
+            deepcopy(current_runtime_defaults.get("browser_config"))
+            if isinstance(current_runtime_defaults.get("browser_config"), dict)
+            else {}
+        )
+        graph_browser_config = (
+            deepcopy(graph_runtime_defaults.get("browser_config"))
+            if isinstance(graph_runtime_defaults.get("browser_config"), dict)
+            else {}
+        )
+        merged_browser_config = dict(graph_browser_config)
+        merged_browser_config.update(current_browser_config)
+
+        current_execution_defaults = (
+            deepcopy(current_runtime_defaults.get("execution_defaults"))
+            if isinstance(current_runtime_defaults.get("execution_defaults"), dict)
+            else {}
+        )
+        graph_execution_defaults = (
+            deepcopy(graph_runtime_defaults.get("execution_defaults"))
+            if isinstance(graph_runtime_defaults.get("execution_defaults"), dict)
+            else {}
+        )
+        merged_execution_defaults = dict(graph_execution_defaults)
+        merged_execution_defaults.update(current_execution_defaults)
+
+        normalized_settings["runtime_defaults"] = self._normalize_runtime_defaults_payload(
+            {
+                "initial_variables": merged_initial_variables,
+                "browser_config": merged_browser_config,
+                "execution_defaults": merged_execution_defaults,
+            }
+        )
+        return self._normalize_project_settings_document_for_state(state, normalized_settings)
+
+    def _normalize_runtime_defaults_payload(self, payload: dict | None) -> dict:
+        raw_payload = payload if isinstance(payload, dict) else {}
+        initial_variables = (
+            deepcopy(raw_payload.get("initial_variables"))
+            if isinstance(raw_payload.get("initial_variables"), dict)
+            else {}
+        )
+        browser_config = (
+            deepcopy(raw_payload.get("browser_config"))
+            if isinstance(raw_payload.get("browser_config"), dict)
+            else {}
+        )
+        raw_execution_defaults = raw_payload.get("execution_defaults")
+        return {
+            "initial_variables": initial_variables,
+            "browser_config": browser_config,
+            "execution_defaults": {
+                "default_timeout_ms": (
+                    raw_execution_defaults.get("default_timeout_ms", 30000)
+                    if isinstance(raw_execution_defaults, dict)
+                    else 30000
+                ),
+                "default_retry_count": (
+                    raw_execution_defaults.get("default_retry_count", 0)
+                    if isinstance(raw_execution_defaults, dict)
+                    else 0
+                ),
+            },
+        }
+
+    def _normalize_project_settings_document(self, payload: dict | None) -> dict:
+        return self._normalize_project_settings_document_for_state(self._state, payload)
+
+    def _normalize_project_settings_document_for_state(
+        self,
+        state: dict | None,
+        payload: dict | None,
+    ) -> dict:
+        raw_payload = payload if isinstance(payload, dict) else {}
+        raw_identity = raw_payload.get("project_identity")
+        raw_runtime_defaults = raw_payload.get("runtime_defaults")
+        raw_packaging = raw_payload.get("packaging")
+        raw_resource_policy = raw_payload.get("resource_policy")
+        raw_compile_profile = raw_payload.get("compile_profile")
+        raw_external_resources = raw_payload.get("external_resources")
+        if not isinstance(raw_identity, dict):
+            raw_identity = {}
+        if not isinstance(raw_runtime_defaults, dict):
+            raw_runtime_defaults = {}
+        if not isinstance(raw_packaging, dict):
+            raw_packaging = {}
+        if not isinstance(raw_resource_policy, dict):
+            raw_resource_policy = {}
+        if not isinstance(raw_compile_profile, dict):
+            raw_compile_profile = {}
+        if not isinstance(raw_external_resources, list):
+            raw_external_resources = []
+
+        project = state.get("project") if isinstance(state, dict) and isinstance(state.get("project"), dict) else {}
+        project_id = (
+            raw_identity.get("project_id")
+            if isinstance(raw_identity.get("project_id"), str) and raw_identity.get("project_id").strip()
+            else (project.get("project_id") if isinstance(project, dict) else "weconduct-workspace")
+        )
+        project_name = (
+            raw_identity.get("name")
+            if isinstance(raw_identity.get("name"), str) and raw_identity.get("name").strip()
+            else (project.get("project_name") if isinstance(project, dict) else "WeConduct Workspace")
+        )
+        runtime_defaults = self._normalize_runtime_defaults_payload(raw_runtime_defaults)
+        default_output_name = raw_packaging.get("default_output_name")
+        if not isinstance(default_output_name, str) or not default_output_name.strip():
+            runtime = (
+                state.get("project_runtime")
+                if isinstance(state, dict) and isinstance(state.get("project_runtime"), dict)
+                else {}
+            )
+            project_file_path = runtime.get("project_file_path")
+            if isinstance(project_file_path, str) and project_file_path.strip():
+                default_output_name = self._build_default_package_output_name(Path(project_file_path))
+            else:
+                project_slug = str(project_name).strip().lower().replace(" ", "-")
+                default_output_name = f"{project_slug or 'weconduct-project'}.wcrun"
+        embedded_resources = raw_resource_policy.get("embedded_resources")
+        external_bindings = raw_resource_policy.get("external_resource_bindings")
+        return {
+            "project_settings_schema_version": PROJECT_SETTINGS_SCHEMA_VERSION,
+            "project_identity": {
+                "project_id": project_id,
+                "name": project_name,
+                "description": raw_identity.get("description", "")
+                if isinstance(raw_identity.get("description"), str)
+                else "",
+                "version": raw_identity.get("version", "0.1.0")
+                if isinstance(raw_identity.get("version"), str)
+                else "0.1.0",
+                "author": raw_identity.get("author", "")
+                if isinstance(raw_identity.get("author"), str)
+                else "",
+                "tags": [
+                    item.strip()
+                    for item in raw_identity.get("tags", [])
+                    if isinstance(item, str) and item.strip()
+                ]
+                if isinstance(raw_identity.get("tags"), list)
+                else [],
+            },
+            "runtime_defaults": runtime_defaults,
+            "packaging": {
+                "default_output_name": default_output_name,
+                "include_embedded_resources": bool(raw_packaging.get("include_embedded_resources", True)),
+                "staged_execution": bool(raw_packaging.get("staged_execution", True)),
+                "include_execution_history": bool(raw_packaging.get("include_execution_history", False)),
+                "include_editor_history": bool(raw_packaging.get("include_editor_history", False)),
+            },
+            "external_resources": [
+                deepcopy(item) for item in raw_external_resources if isinstance(item, dict)
+            ],
+            "resource_policy": {
+                "embedded_resources": [
+                    item.strip()
+                    for item in embedded_resources
+                    if isinstance(embedded_resources, list) and isinstance(item, str) and item.strip()
+                ],
+                "external_resource_bindings": [
+                    item.strip()
+                    for item in external_bindings
+                    if isinstance(external_bindings, list) and isinstance(item, str) and item.strip()
+                ],
+            },
+            "compile_profile": {
+                "source_of_truth": (
+                    raw_compile_profile.get("source_of_truth")
+                    if isinstance(raw_compile_profile.get("source_of_truth"), str)
+                    and raw_compile_profile.get("source_of_truth").strip()
+                    else "saved_project_only"
+                ),
+                "inject_project_runtime_defaults_into_main_flow_start": bool(
+                    raw_compile_profile.get(
+                        "inject_project_runtime_defaults_into_main_flow_start", True
+                    )
+                ),
+            },
+        }
+
+    def _extract_project_settings(self, state: dict | None) -> dict:
+        raw_settings = state.get("project_settings") if isinstance(state, dict) else None
+        project = state.get("project") if isinstance(state, dict) and isinstance(state.get("project"), dict) else {}
+        runtime = (
+            state.get("project_runtime")
+            if isinstance(state, dict) and isinstance(state.get("project_runtime"), dict)
+            else {}
+        )
+        project_id = project.get("project_id") if isinstance(project.get("project_id"), str) else "weconduct-workspace"
+        project_name = project.get("project_name") if isinstance(project.get("project_name"), str) else "WeConduct Workspace"
+        project_file_path = (
+            runtime.get("project_file_path") if isinstance(runtime.get("project_file_path"), str) else None
+        )
+        base_document = self._build_initial_project_settings_document(
+            project_id=project_id,
+            project_name=project_name,
+            project_file_path=project_file_path,
+        )
+        if not isinstance(raw_settings, dict):
+            return base_document
+        merged_document = deepcopy(base_document)
+        merged_document.update(deepcopy(raw_settings))
+        return self._normalize_project_settings_document_for_state(state, merged_document)
 
     def _extract_pending_recovery(self, state: dict | None) -> dict | None:
         raw_pending = state.get("pending_recovery") if isinstance(state, dict) else None
@@ -8839,6 +9849,10 @@ class CompilationWorkbenchService:
             if normalized_runtime != state["project_runtime"]:
                 state["project_runtime"] = normalized_runtime
                 changed = True
+        normalized_project_settings = self._extract_project_settings(state)
+        if normalized_project_settings != state.get("project_settings"):
+            state["project_settings"] = normalized_project_settings
+            changed = True
         normalized_recent_projects = self._extract_recent_projects(state)
         if normalized_recent_projects != state.get("recent_projects"):
             state["recent_projects"] = normalized_recent_projects
@@ -9109,10 +10123,12 @@ class CompilationWorkbenchService:
     def _save_project_to_path(self, project_path: Path) -> dict:
         serialized_path = str(project_path.resolve())
         self._write_project_storage_layout(project_path)
+        current_project_settings = self._build_project_settings_storage_document(project_path)
 
         def mutation(state: dict | None) -> dict:
             current_state, _ = self._normalize_workspace_state(state)
             current_state["project"]["workspace_root"] = str(project_path.parent)
+            current_state["project_settings"] = current_project_settings
             current_state["project_runtime"] = {
                 "project_file_path": serialized_path,
                 "is_dirty": False,
@@ -9170,6 +10186,7 @@ class CompilationWorkbenchService:
                 project_path=project_path,
             ),
             "resource_overrides": self._build_resource_overrides_document(resources),
+            "project_settings": self._build_project_settings_storage_document(project_path),
         }
 
     def _write_project_storage_layout(self, project_path: Path) -> None:
@@ -9178,6 +10195,7 @@ class CompilationWorkbenchService:
         project_owned_resources_index = layout["project_owned_resources_index"]
         resource_overrides = layout["resource_overrides"]
         project_manifest = layout["project_manifest"]
+        project_settings = layout["project_settings"]
 
         project_path.parent.mkdir(parents=True, exist_ok=True)
         storage_root = self._resolve_project_storage_root(project_path)
@@ -9194,7 +10212,72 @@ class CompilationWorkbenchService:
         )
         self._write_json_file(resources_dir / "index.json", project_owned_resources_index)
         self._write_json_file(storage_root / "resource-overrides.json", resource_overrides)
+        self._write_json_file(storage_root / "project-settings.json", project_settings)
         self._write_json_file(project_path, project_manifest)
+
+    def _build_project_settings_storage_document(
+        self,
+        project_path: Path,
+        *,
+        project_settings_override: dict | None = None,
+        graph_model_override: GraphModel | None = None,
+    ) -> dict:
+        project_settings = (
+            deepcopy(project_settings_override)
+            if isinstance(project_settings_override, dict)
+            else deepcopy(self._extract_project_settings(self._state))
+        )
+        project_settings["project_identity"]["project_id"] = self._state["project"]["project_id"]
+        project_settings["project_identity"]["name"] = self._state["project"]["project_name"]
+        graph_runtime_defaults = (
+            self._extract_runtime_defaults_from_graph_model(graph_model_override)
+            if graph_model_override is not None
+            else self._extract_runtime_defaults_from_workspace_graph()
+        )
+        current_runtime_defaults = (
+            project_settings.get("runtime_defaults")
+            if isinstance(project_settings.get("runtime_defaults"), dict)
+            else {}
+        )
+        current_initial_variables = (
+            current_runtime_defaults.get("initial_variables")
+            if isinstance(current_runtime_defaults.get("initial_variables"), dict)
+            else {}
+        )
+        graph_initial_variables = (
+            graph_runtime_defaults.get("initial_variables")
+            if isinstance(graph_runtime_defaults.get("initial_variables"), dict)
+            else {}
+        )
+        if graph_initial_variables and not current_initial_variables:
+            project_settings["runtime_defaults"] = graph_runtime_defaults
+        project_settings["packaging"]["default_output_name"] = self._build_default_package_output_name(project_path)
+        return self._normalize_project_settings_document(project_settings)
+
+    def _build_default_package_output_name(self, project_path: Path) -> str:
+        filename = project_path.name
+        if filename.endswith(".weconduct.json"):
+            return f"{filename.removesuffix('.weconduct.json')}.wcrun"
+        return f"{project_path.stem}.wcrun"
+
+    def _resolve_package_output_path(
+        self,
+        *,
+        project_path: Path,
+        output_path: str | Path | None,
+    ) -> Path:
+        if output_path is not None:
+            return Path(output_path).expanduser().resolve()
+        project_settings = self._extract_project_settings(self._state)
+        packaging = (
+            project_settings.get("packaging")
+            if isinstance(project_settings.get("packaging"), dict)
+            else {}
+        )
+        default_output_name = packaging.get("default_output_name")
+        if not isinstance(default_output_name, str) or not default_output_name.strip():
+            default_output_name = self._build_default_package_output_name(project_path)
+        return (project_path.parent / default_output_name).resolve()
 
     def _build_project_manifest_document(
         self,
@@ -9435,6 +10518,1391 @@ class CompilationWorkbenchService:
             "resource_overrides_schema_version": 1,
             "resources": overrides,
         }
+
+    def _build_wcrun_package_contents(
+        self,
+        *,
+        project_path: Path,
+        output_path: Path,
+    ) -> dict[str, bytes]:
+        package_project_view = self._load_saved_project_for_packaging()
+        graph_model = package_project_view["graph_model"]
+        project_settings = self._build_project_settings_storage_document(
+            project_path,
+            project_settings_override=package_project_view["project_settings"],
+            graph_model_override=graph_model,
+        )
+        project_layout = self._build_project_storage_layout(project_path)
+        project_manifest = self._read_json_file(project_path)
+        packaged_resources = self._build_wcrun_packaged_resources(
+            project_path=project_path,
+            project_layout=project_layout,
+            project_settings=project_settings,
+            graph_model=graph_model,
+        )
+        manifest_payload = self._build_wcrun_manifest_document(
+            project_path=project_path,
+            output_path=output_path,
+            project_settings=project_settings,
+            project_manifest=project_manifest,
+            graph_model=graph_model,
+            packaged_resources=packaged_resources,
+        )
+        package_info_payload = self._build_wcrun_package_info_document(
+            project_path=project_path,
+            output_path=output_path,
+            project_manifest=project_manifest,
+            project_settings=project_settings,
+            graph_model=graph_model,
+            packaged_resources=packaged_resources,
+            manifest_payload=manifest_payload,
+        )
+        contents = {
+            "manifest.msgpack": self._encode_pseudo_msgpack_bytes(manifest_payload),
+            "project-settings.json": self._encode_json_bytes(project_settings),
+            "graphs/main.graph.msgpack": self._encode_pseudo_msgpack_bytes(graph_model.model_dump()),
+            "meta/package-info.json": self._encode_json_bytes(package_info_payload),
+        }
+        contents.update(packaged_resources["archive_entries"])
+        return contents
+
+    def _build_wcrun_manifest_document(
+        self,
+        *,
+        project_path: Path,
+        output_path: Path,
+        project_settings: dict,
+        project_manifest: dict,
+        graph_model: GraphModel,
+        packaged_resources: dict,
+    ) -> dict:
+        project_identity = (
+            project_settings.get("project_identity")
+            if isinstance(project_settings.get("project_identity"), dict)
+            else {}
+        )
+        package_name = output_path.stem or project_path.stem or "weconduct-package"
+        package_version = (
+            project_identity.get("version")
+            if isinstance(project_identity.get("version"), str) and project_identity.get("version").strip()
+            else "0.1.0"
+        )
+        source_project_payload = self._build_wcrun_source_project_payload(
+            project_manifest=project_manifest,
+            project_settings=project_settings,
+        )
+        runtime_requirements = self._build_wcrun_runtime_requirements(
+            graph_model=graph_model,
+            packaged_resources=packaged_resources,
+        )
+        graph_entries = self._build_wcrun_graph_index(
+            graph_model=graph_model,
+            packaged_resources=packaged_resources,
+        )
+        return {
+            "manifest_version": 1,
+            "package_schema_version": 1,
+            "package_kind": "wcrun",
+            "package_identity": {
+                "package_id": f"pkg-{uuid.uuid4().hex[:12]}",
+                "package_name": package_name,
+                "package_version": package_version,
+            },
+            "source_project": source_project_payload,
+            "runtime_requirements": runtime_requirements,
+            "entrypoint": {
+                "graph_id": graph_model.graph_model_id,
+                "graph_path": "graphs/main.graph.msgpack",
+                "entry_node_kind": "flow.start",
+            },
+            "graphs": graph_entries,
+            "project": {
+                "project_id": source_project_payload["project_id"],
+                "project_name": source_project_payload["project_name"],
+                "project_file_name": project_path.name,
+                "project_version": source_project_payload["project_version"],
+                "project_schema_version": source_project_payload["project_schema_version"],
+                "project_settings_version": source_project_payload["project_settings_schema_version"],
+                "graph_model_id": graph_model.graph_model_id,
+            },
+            "artifacts": {
+                "graph_entry": "graphs/main.graph.msgpack",
+                "project_settings_entry": "project-settings.json",
+            },
+            "dependencies": {
+                "builtin_components": deepcopy(packaged_resources["builtin_dependencies"]),
+                "custom_components": deepcopy(packaged_resources["custom_component_dependencies"]),
+            },
+            "resources": {
+                "embedded": deepcopy(packaged_resources["embedded_resources"]),
+                "external": deepcopy(packaged_resources["external_resources"]),
+            },
+            "integrity": {
+                "checksums_path": "meta/checksums.json",
+                "package_info_path": "meta/package-info.json",
+            },
+        }
+
+    def _build_wcrun_package_info_document(
+        self,
+        *,
+        project_path: Path,
+        output_path: Path,
+        project_manifest: dict,
+        project_settings: dict,
+        graph_model: GraphModel,
+        packaged_resources: dict,
+        manifest_payload: dict,
+    ) -> dict:
+        compile_profile = (
+            project_settings.get("compile_profile")
+            if isinstance(project_settings.get("compile_profile"), dict)
+            else {}
+        )
+        packaging = (
+            project_settings.get("packaging")
+            if isinstance(project_settings.get("packaging"), dict)
+            else {}
+        )
+        built_at = datetime.now(timezone.utc).isoformat()
+        source_project_payload = self._build_wcrun_source_project_payload(
+            project_manifest=project_manifest,
+            project_settings=project_settings,
+        )
+        return {
+            "built_at": built_at,
+            "builder_app_version": self._build_workbench_metadata()["api_version"],
+            "source_project_schema_version": source_project_payload["project_schema_version"],
+            "manifest_version": manifest_payload.get("manifest_version", 1),
+            "graph_stats": {
+                "graph_count": len(manifest_payload.get("graphs", []))
+                if isinstance(manifest_payload.get("graphs"), list)
+                else 0,
+                "entrypoint_graph_id": graph_model.graph_model_id,
+                "main_graph_node_count": len(graph_model.nodes),
+                "main_graph_edge_count": len(graph_model.edges),
+                "custom_component_graph_count": len(
+                    packaged_resources.get("custom_component_dependencies", [])
+                ),
+            },
+            "resource_stats": {
+                "builtin_component_dependency_count": len(
+                    packaged_resources.get("builtin_dependencies", [])
+                ),
+                "custom_component_count": len(
+                    packaged_resources.get("custom_component_dependencies", [])
+                ),
+                "embedded_resource_count": len(packaged_resources.get("embedded_resources", [])),
+                "external_resource_count": len(packaged_resources.get("external_resources", [])),
+            },
+            "build_diagnostics_summary": {
+                "error_count": 0,
+                "warning_count": 0,
+                "info_count": 0,
+                "blocking": False,
+            },
+            "packaging_profile": {
+                "mode": "wcrun",
+                "output_path": str(output_path.resolve()),
+                "default_output_name": packaging.get("default_output_name"),
+                "include_embedded_resources": bool(packaging.get("include_embedded_resources", True)),
+                "staged_execution": bool(packaging.get("staged_execution", True)),
+                "include_execution_history": bool(
+                    packaging.get("include_execution_history", False)
+                ),
+                "include_editor_history": bool(packaging.get("include_editor_history", False)),
+                "source_of_truth": compile_profile.get("source_of_truth", "saved_project_only"),
+            },
+            "package_schema_version": 1,
+            "package_kind": "wcrun",
+            "created_at": built_at,
+            "project_file_path": str(project_path.resolve()),
+            "msgpack_encoding": {
+                "status": "msgpack",
+                "reason": None,
+            },
+            "source_of_truth": compile_profile.get("source_of_truth", "saved_project_only"),
+        }
+
+    def _build_package_checksums_document(self, package_contents: dict[str, bytes]) -> dict:
+        return {
+            "checksum_schema_version": 1,
+            "algorithm": "sha256",
+            "entries": [
+                {
+                    "path": path,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "size": len(content),
+                }
+                for path, content in sorted(package_contents.items(), key=lambda item: item[0])
+            ],
+        }
+
+    def _build_wcrun_packaged_resources(
+        self,
+        *,
+        project_path: Path,
+        project_layout: dict,
+        project_settings: dict,
+        graph_model: GraphModel,
+    ) -> dict:
+        resources = self._get_resource_registry()
+        archive_entries: dict[str, bytes] = {}
+        builtin_dependencies: list[dict] = []
+        custom_component_dependencies: list[dict] = []
+        custom_component_graphs: list[dict] = []
+        embedded_resources: list[dict] = []
+        external_resources = [
+            deepcopy(item)
+            for item in project_settings.get("external_resources", [])
+            if isinstance(item, dict)
+        ]
+        requires_captcha_ocr = self._graph_document_uses_node_kind(
+            graph_model.model_dump(),
+            "browser.recognize_captcha",
+        )
+
+        for resource in resources:
+            resource_type = resource.get("resource_type")
+            if resource_type == "builtin_component":
+                builtin_dependencies.append(
+                    {
+                        "resource_id": resource["resource_id"],
+                        "resource_key": resource["resource_key"],
+                        "implementation_kind": resource.get("implementation_kind", "core_atomic"),
+                    }
+                )
+                continue
+            normalized_resource = self._normalize_project_storage_resource_record(resource)
+            if normalized_resource is None or normalized_resource.get("resource_type") != "custom_node_graph":
+                continue
+            resource_prefix = self._build_wcrun_custom_component_prefix(normalized_resource["resource_id"])
+            archive_entries[f"{resource_prefix}/manifest.json"] = self._encode_json_bytes(
+                self._build_project_resource_manifest(normalized_resource)
+            )
+            archive_entries[f"{resource_prefix}/graph.json"] = self._encode_json_bytes(
+                self._build_project_resource_graph_document(normalized_resource)
+            )
+            custom_component_graphs.append(
+                {
+                    "graph_id": normalized_resource.get("source_graph_document_id")
+                    or normalized_resource["resource_id"],
+                    "graph_path": f"{resource_prefix}/graph.json",
+                    "graph_role": "custom_component",
+                    "resource_id": normalized_resource["resource_id"],
+                    "resource_key": normalized_resource["resource_key"],
+                }
+            )
+            if self._graph_document_uses_node_kind(
+                normalized_resource.get("source_graph_document"),
+                "browser.recognize_captcha",
+            ):
+                requires_captcha_ocr = True
+            custom_component_dependencies.append(
+                {
+                    "resource_id": normalized_resource["resource_id"],
+                    "resource_key": normalized_resource["resource_key"],
+                    "resource_type": normalized_resource["resource_type"],
+                    "archive_prefix": resource_prefix,
+                }
+            )
+
+        packaging = (
+            project_settings.get("packaging")
+            if isinstance(project_settings.get("packaging"), dict)
+            else {}
+        )
+        if bool(packaging.get("include_embedded_resources", True)):
+            resource_policy = (
+                project_settings.get("resource_policy")
+                if isinstance(project_settings.get("resource_policy"), dict)
+                else {}
+            )
+            for source in resource_policy.get("embedded_resources", []):
+                if not isinstance(source, str) or not source.strip():
+                    continue
+                source_path = Path(source)
+                if not source_path.is_absolute():
+                    source_path = (project_path.parent / source_path).resolve()
+                if not source_path.exists() or not source_path.is_file():
+                    continue
+                archive_path = f"resources/embedded/{source_path.name}"
+                archive_entries[archive_path] = source_path.read_bytes()
+                embedded_resources.append(
+                    {
+                        "source_path": str(source_path.resolve()),
+                        "archive_path": archive_path,
+                        "size": source_path.stat().st_size,
+                    }
+                )
+
+        return {
+            "archive_entries": archive_entries,
+            "builtin_dependencies": builtin_dependencies,
+            "custom_component_dependencies": custom_component_dependencies,
+            "custom_component_graphs": custom_component_graphs,
+            "embedded_resources": embedded_resources,
+            "external_resources": external_resources,
+            "requires_captcha_ocr": requires_captcha_ocr,
+        }
+
+    def _build_wcrun_custom_component_prefix(self, resource_id: str) -> str:
+        normalized_id = resource_id.replace(":", "_").replace("/", "_").replace("\\", "_")
+        return f"resources/custom-components/{normalized_id}"
+
+    def _resolve_package_path(self, package_path: str | Path) -> Path:
+        resolved = Path(package_path).expanduser().resolve()
+        if not resolved.exists():
+            raise ValueError(f"package file not found: {resolved}")
+        if not resolved.is_file():
+            raise ValueError(f"package path must be a file: {resolved}")
+        return resolved
+
+    def _read_wcrun_package_document(self, package_path: Path) -> dict:
+        with zipfile.ZipFile(package_path, mode="r") as archive:
+            archive_names = set(archive.namelist())
+            required_entries = {
+                "manifest.msgpack",
+                "project-settings.json",
+                "graphs/main.graph.msgpack",
+                "meta/checksums.json",
+                "meta/package-info.json",
+            }
+            missing = sorted(required_entries - archive_names)
+            if missing:
+                raise ValueError(f"package missing required entries: {', '.join(missing)}")
+            checksums_payload = json.loads(archive.read("meta/checksums.json").decode("utf-8"))
+            self._verify_wcrun_checksums(archive, checksums_payload)
+            manifest_payload = unpackb(archive.read("manifest.msgpack"))
+            if not isinstance(manifest_payload, dict):
+                raise ValueError("package manifest must decode to JSON object equivalent")
+            project_settings_payload = json.loads(archive.read("project-settings.json").decode("utf-8"))
+            graph_payload = unpackb(archive.read("graphs/main.graph.msgpack"))
+            if not isinstance(graph_payload, dict):
+                raise ValueError("package graph payload must decode to JSON object equivalent")
+            package_info_payload = json.loads(archive.read("meta/package-info.json").decode("utf-8"))
+            return {
+                "package_kind": "wcrun",
+                "manifest": manifest_payload,
+                "project_settings": project_settings_payload,
+                "graph_document": graph_payload,
+                "package_info": package_info_payload,
+                "checksums": checksums_payload,
+                "resources": deepcopy(manifest_payload.get("resources", {})),
+                "dependencies": deepcopy(manifest_payload.get("dependencies", {})),
+                "archive_entries": sorted(archive_names),
+            }
+
+    def _build_wcrun_package_summary(self, package_document: dict) -> dict:
+        manifest_payload = (
+            package_document.get("manifest")
+            if isinstance(package_document.get("manifest"), dict)
+            else {}
+        )
+        graph_payload = (
+            package_document.get("graph_document")
+            if isinstance(package_document.get("graph_document"), dict)
+            else {}
+        )
+        graphs = manifest_payload.get("graphs") if isinstance(manifest_payload.get("graphs"), list) else []
+        resources = (
+            manifest_payload.get("resources")
+            if isinstance(manifest_payload.get("resources"), dict)
+            else {}
+        )
+        return {
+            "package_identity": deepcopy(
+                manifest_payload.get("package_identity", {})
+                if isinstance(manifest_payload.get("package_identity"), dict)
+                else {}
+            ),
+            "runtime_requirements": deepcopy(
+                manifest_payload.get("runtime_requirements", {})
+                if isinstance(manifest_payload.get("runtime_requirements"), dict)
+                else {}
+            ),
+            "entrypoint": deepcopy(
+                manifest_payload.get("entrypoint", {})
+                if isinstance(manifest_payload.get("entrypoint"), dict)
+                else {}
+            ),
+            "graph_summary": {
+                "graph_count": len(graphs),
+                "main_graph_id": (
+                    graph_payload.get("graph_model_id")
+                    if isinstance(graph_payload.get("graph_model_id"), str)
+                    else None
+                ),
+                "embedded_resource_count": len(
+                    resources.get("embedded", []) if isinstance(resources.get("embedded"), list) else []
+                ),
+                "external_resource_count": len(
+                    resources.get("external", []) if isinstance(resources.get("external"), list) else []
+                ),
+            },
+        }
+
+    def _build_wcrun_project_settings_summary(self, package_document: dict) -> dict:
+        project_settings = (
+            package_document.get("project_settings")
+            if isinstance(package_document.get("project_settings"), dict)
+            else {}
+        )
+        return {
+            "project_identity": deepcopy(
+                project_settings.get("project_identity", {})
+                if isinstance(project_settings.get("project_identity"), dict)
+                else {}
+            ),
+            "runtime_defaults": deepcopy(
+                project_settings.get("runtime_defaults", {})
+                if isinstance(project_settings.get("runtime_defaults"), dict)
+                else {}
+            ),
+            "packaging": deepcopy(
+                project_settings.get("packaging", {})
+                if isinstance(project_settings.get("packaging"), dict)
+                else {}
+            ),
+            "compile_profile": deepcopy(
+                project_settings.get("compile_profile", {})
+                if isinstance(project_settings.get("compile_profile"), dict)
+                else {}
+            ),
+        }
+
+    def _build_wcrun_resource_summary(self, package_document: dict) -> dict:
+        resources = (
+            package_document.get("resources")
+            if isinstance(package_document.get("resources"), dict)
+            else {}
+        )
+        dependencies = (
+            package_document.get("dependencies")
+            if isinstance(package_document.get("dependencies"), dict)
+            else {}
+        )
+        embedded_resources = (
+            deepcopy(resources.get("embedded"))
+            if isinstance(resources.get("embedded"), list)
+            else []
+        )
+        external_resources = (
+            deepcopy(resources.get("external"))
+            if isinstance(resources.get("external"), list)
+            else []
+        )
+        custom_components = (
+            deepcopy(dependencies.get("custom_components"))
+            if isinstance(dependencies.get("custom_components"), list)
+            else []
+        )
+        return {
+            "embedded_resource_count": len(embedded_resources),
+            "external_resource_count": len(external_resources),
+            "custom_component_count": len(custom_components),
+            "embedded_resources": embedded_resources,
+            "external_resources": external_resources,
+            "custom_components": custom_components,
+            "has_embedded_resources": len(embedded_resources) > 0,
+            "has_external_resources": len(external_resources) > 0,
+        }
+
+    def _build_wcrun_dependency_summary(self, package_document: dict) -> dict:
+        dependencies = (
+            package_document.get("dependencies")
+            if isinstance(package_document.get("dependencies"), dict)
+            else {}
+        )
+        builtin_components = (
+            deepcopy(dependencies.get("builtin_components"))
+            if isinstance(dependencies.get("builtin_components"), list)
+            else []
+        )
+        custom_components = (
+            deepcopy(dependencies.get("custom_components"))
+            if isinstance(dependencies.get("custom_components"), list)
+            else []
+        )
+        implementation_kinds = sorted(
+            {
+                item.get("implementation_kind")
+                for item in builtin_components
+                if isinstance(item, dict) and isinstance(item.get("implementation_kind"), str)
+            }
+        )
+        return {
+            "builtin_component_count": len(builtin_components),
+            "custom_component_count": len(custom_components),
+            "builtin_components": builtin_components,
+            "custom_components": custom_components,
+            "builtin_implementation_kinds": implementation_kinds,
+        }
+
+    def _build_wcrun_graph_detail_summary(self, package_document: dict) -> dict:
+        manifest_payload = (
+            package_document.get("manifest")
+            if isinstance(package_document.get("manifest"), dict)
+            else {}
+        )
+        graph_document = (
+            package_document.get("graph_document")
+            if isinstance(package_document.get("graph_document"), dict)
+            else {}
+        )
+        package_info = (
+            package_document.get("package_info")
+            if isinstance(package_document.get("package_info"), dict)
+            else {}
+        )
+        entrypoint = (
+            manifest_payload.get("entrypoint")
+            if isinstance(manifest_payload.get("entrypoint"), dict)
+            else {}
+        )
+        manifest_graphs = (
+            deepcopy(manifest_payload.get("graphs"))
+            if isinstance(manifest_payload.get("graphs"), list)
+            else []
+        )
+        package_graph_stats = (
+            package_info.get("graph_stats")
+            if isinstance(package_info.get("graph_stats"), dict)
+            else {}
+        )
+        main_graph_id = (
+            graph_document.get("graph_model_id")
+            if isinstance(graph_document.get("graph_model_id"), str)
+            else entrypoint.get("graph_id")
+        )
+        nodes = graph_document.get("nodes") if isinstance(graph_document.get("nodes"), list) else []
+        edges = graph_document.get("edges") if isinstance(graph_document.get("edges"), list) else []
+        custom_component_graphs = [
+            deepcopy(item)
+            for item in manifest_graphs
+            if isinstance(item, dict) and item.get("graph_role") == "custom_component"
+        ]
+        return {
+            "entrypoint_graph_id": (
+                entrypoint.get("graph_id") if isinstance(entrypoint.get("graph_id"), str) else main_graph_id
+            ),
+            "entrypoint_graph_path": (
+                entrypoint.get("graph_path") if isinstance(entrypoint.get("graph_path"), str) else None
+            ),
+            "graph_count": len(manifest_graphs),
+            "custom_component_graph_count": len(custom_component_graphs),
+            "graphs": manifest_graphs,
+            "main_graph": {
+                "graph_id": main_graph_id,
+                "node_count": len(nodes),
+                "edge_count": len(edges),
+                "graph_schema_version": (
+                    graph_document.get("graph_schema_version")
+                    if isinstance(graph_document.get("graph_schema_version"), str)
+                    else None
+                ),
+            },
+            "package_graph_stats": deepcopy(package_graph_stats),
+        }
+
+    def _build_loaded_package_session_restore_summary(
+        self,
+        *,
+        package_document: dict,
+        package_path: Path,
+        session_dir: Path,
+        project_document: dict,
+    ) -> dict:
+        project_payload = (
+            project_document.get("project")
+            if isinstance(project_document.get("project"), dict)
+            else {}
+        )
+        graph_workspace = (
+            project_document.get("graph_workspace")
+            if isinstance(project_document.get("graph_workspace"), dict)
+            else {}
+        )
+        project_settings = (
+            project_document.get("project_settings")
+            if isinstance(project_document.get("project_settings"), dict)
+            else {}
+        )
+        runtime_defaults = (
+            project_settings.get("runtime_defaults")
+            if isinstance(project_settings.get("runtime_defaults"), dict)
+            else {}
+        )
+        initial_variables = (
+            runtime_defaults.get("initial_variables")
+            if isinstance(runtime_defaults.get("initial_variables"), dict)
+            else {}
+        )
+        resource_registry = (
+            self._build_loaded_package_resource_registry(package_document)
+            if isinstance(package_document, dict)
+            else []
+        )
+        return {
+            "session_dir": str(session_dir.resolve()),
+            "package_path": str(package_path.resolve()),
+            "source_of_truth": project_payload.get("source_of_truth"),
+            "project_status": project_payload.get("project_status"),
+            "project_name": project_payload.get("name"),
+            "graph_workspace_graph_id": graph_workspace.get("graph_model_id"),
+            "graph_workspace_node_count": graph_workspace.get("node_count"),
+            "resource_registry_count": len(resource_registry),
+            "initial_variable_count": len(initial_variables),
+            "restored_from_package": True,
+        }
+
+    def _build_wcrun_external_binding_summary(self, package_document: dict) -> dict:
+        project_settings = (
+            package_document.get("project_settings")
+            if isinstance(package_document.get("project_settings"), dict)
+            else {}
+        )
+        external_resources = (
+            project_settings.get("external_resources")
+            if isinstance(project_settings.get("external_resources"), list)
+            else []
+        )
+        runtime_defaults = (
+            project_settings.get("runtime_defaults")
+            if isinstance(project_settings.get("runtime_defaults"), dict)
+            else {}
+        )
+        initial_variables = (
+            runtime_defaults.get("initial_variables")
+            if isinstance(runtime_defaults.get("initial_variables"), dict)
+            else {}
+        )
+        entries: list[dict] = []
+        for item in external_resources:
+            if not isinstance(item, dict):
+                continue
+            target = item.get("target") if isinstance(item.get("target"), dict) else {}
+            target_name = target.get("name") if isinstance(target.get("name"), str) else None
+            current_value = initial_variables.get(target_name.strip()) if isinstance(target_name, str) else None
+            is_bound = isinstance(current_value, str) and bool(current_value.strip())
+            required = bool(item.get("required", False))
+            entries.append(
+                {
+                    "resource_id": item.get("resource_id"),
+                    "bind_key": item.get("bind_key"),
+                    "kind": item.get("kind"),
+                    "required": required,
+                    "target_name": target_name.strip() if isinstance(target_name, str) else None,
+                    "bound": is_bound,
+                    "missing_required": required and not is_bound,
+                    "current_value": current_value if isinstance(current_value, str) else None,
+                }
+            )
+        return {
+            "declared_count": len(entries),
+            "required_count": len([entry for entry in entries if entry["required"]]),
+            "optional_count": len([entry for entry in entries if not entry["required"]]),
+            "bound_count": len([entry for entry in entries if entry["bound"]]),
+            "missing_required_count": len([entry for entry in entries if entry["missing_required"]]),
+            "entries": entries,
+        }
+
+    def _build_wcrun_runtime_requirement_summary(self, package_document: dict) -> dict:
+        manifest_payload = (
+            package_document.get("manifest")
+            if isinstance(package_document.get("manifest"), dict)
+            else {}
+        )
+        runtime_requirements = (
+            manifest_payload.get("runtime_requirements")
+            if isinstance(manifest_payload.get("runtime_requirements"), dict)
+            else {}
+        )
+        blocking_entries = self._evaluate_package_runtime_requirement_entries(runtime_requirements)
+        blocking_entries = blocking_entries if isinstance(blocking_entries, list) else []
+        return {
+            "declared": deepcopy(runtime_requirements),
+            "minimum_app_version": runtime_requirements.get("minimum_app_version"),
+            "required_platform": runtime_requirements.get("required_platform"),
+            "required_browser": runtime_requirements.get("required_browser"),
+            "requires_captcha_ocr": bool(runtime_requirements.get("requires_captcha_ocr", False)),
+            "blocking_count": len(blocking_entries),
+            "blocking_categories": [
+                entry.get("category")
+                for entry in blocking_entries
+                if isinstance(entry, dict) and isinstance(entry.get("category"), str)
+            ],
+        }
+
+    def _build_wcrun_runtime_readiness_summary(self, package_document: dict) -> dict:
+        manifest_payload = (
+            package_document.get("manifest")
+            if isinstance(package_document.get("manifest"), dict)
+            else {}
+        )
+        project_settings = (
+            package_document.get("project_settings")
+            if isinstance(package_document.get("project_settings"), dict)
+            else {}
+        )
+        requirement_entries = self._evaluate_package_runtime_requirement_entries(
+            manifest_payload.get("runtime_requirements")
+            if isinstance(manifest_payload.get("runtime_requirements"), dict)
+            else {}
+        )
+        binding_entries = self._evaluate_package_external_resource_binding_entries(project_settings)
+        requirement_entries = (
+            requirement_entries
+            if isinstance(requirement_entries, list)
+            else []
+        )
+        binding_entries = (
+            binding_entries
+            if isinstance(binding_entries, list)
+            else []
+        )
+        diagnostics = [
+            *[deepcopy(entry) for entry in requirement_entries if isinstance(entry, dict)],
+            *[deepcopy(entry) for entry in binding_entries if isinstance(entry, dict)],
+        ]
+        runtime_requirements = (
+            manifest_payload.get("runtime_requirements")
+            if isinstance(manifest_payload.get("runtime_requirements"), dict)
+            else {}
+        )
+        external_resources = (
+            project_settings.get("external_resources")
+            if isinstance(project_settings.get("external_resources"), list)
+            else []
+        )
+        missing_required_count = len(
+            [
+                entry
+                for entry in binding_entries
+                if isinstance(entry, dict)
+                and entry.get("category") == "project_settings.external_resource.required_binding_missing"
+            ]
+        )
+        return {
+            "ready": len(diagnostics) == 0,
+            "runtime_requirement_status": {
+                "declared": deepcopy(runtime_requirements),
+                "blocking_count": len(requirement_entries),
+            },
+            "external_resource_binding_status": {
+                "required_count": len([item for item in external_resources if isinstance(item, dict)]),
+                "missing_required_count": missing_required_count,
+            },
+            "diagnostics": diagnostics,
+        }
+
+    def _evaluate_package_external_resource_binding_entries(self, project_settings: dict) -> list[dict]:
+        external_resources = (
+            project_settings.get("external_resources")
+            if isinstance(project_settings.get("external_resources"), list)
+            else []
+        )
+        runtime_defaults = (
+            project_settings.get("runtime_defaults")
+            if isinstance(project_settings.get("runtime_defaults"), dict)
+            else {}
+        )
+        initial_variables = (
+            runtime_defaults.get("initial_variables")
+            if isinstance(runtime_defaults.get("initial_variables"), dict)
+            else {}
+        )
+        missing_entries: list[dict] = []
+        for item in external_resources:
+            if not isinstance(item, dict):
+                continue
+            if not bool(item.get("required", False)):
+                continue
+            target = item.get("target")
+            if not isinstance(target, dict) or target.get("type") != "initial_variable":
+                continue
+            target_name = target.get("name")
+            resource_id = item.get("resource_id")
+            if not isinstance(target_name, str) or not target_name.strip():
+                continue
+            current_value = initial_variables.get(target_name.strip())
+            if isinstance(current_value, str) and current_value.strip():
+                continue
+            missing_entries.append(
+                {
+                    "category": "project_settings.external_resource.required_binding_missing",
+                    "message": f"required external resource binding is missing: {resource_id}",
+                    "severity": "error",
+                    "stage": "runtime.prepare",
+                    "object_ref": resource_id,
+                    "resource_id": resource_id,
+                    "setting_field": f"runtime_defaults.initial_variables.{target_name.strip()}",
+                }
+            )
+        return missing_entries
+
+    def _evaluate_package_runtime_requirement_entries(self, runtime_requirements: dict) -> list[dict]:
+        entries: list[dict] = []
+        minimum_app_version = runtime_requirements.get("minimum_app_version")
+        current_app_version = self._build_workbench_metadata()["api_version"]
+        if (
+            isinstance(minimum_app_version, str)
+            and minimum_app_version.strip()
+            and self._compare_version_strings(current_app_version, minimum_app_version.strip()) < 0
+        ):
+            entries.append(
+                {
+                    "category": "package.runtime_requirement.minimum_app_version_unsupported",
+                    "message": (
+                        "loaded package requires newer app version before runtime start: "
+                        f"{minimum_app_version.strip()} > {current_app_version}"
+                    ),
+                    "severity": "error",
+                    "stage": "runtime.prepare",
+                    "object_ref": "manifest.runtime_requirements.minimum_app_version",
+                    "resource_id": None,
+                    "setting_field": None,
+                }
+            )
+        required_platform = runtime_requirements.get("required_platform")
+        current_platform = self._get_runtime_platform_name()
+        if (
+            isinstance(required_platform, str)
+            and required_platform.strip()
+            and required_platform.strip().lower() != current_platform
+        ):
+            entries.append(
+                {
+                    "category": "package.runtime_requirement.required_platform_unsupported",
+                    "message": (
+                        "loaded package requires unsupported runtime platform before runtime start: "
+                        f"{required_platform.strip().lower()} != {current_platform}"
+                    ),
+                    "severity": "error",
+                    "stage": "runtime.prepare",
+                    "object_ref": "manifest.runtime_requirements.required_platform",
+                    "resource_id": None,
+                    "setting_field": None,
+                }
+            )
+        required_browser = runtime_requirements.get("required_browser")
+        if isinstance(required_browser, str) and required_browser.strip():
+            browser_ok, browser_detail = self._probe_browser_runtime_requirement(required_browser.strip())
+            if not browser_ok:
+                entries.append(
+                    {
+                        "category": "package.runtime_requirement.required_browser_unsupported",
+                        "message": (
+                            "loaded package requires unavailable browser runtime before runtime start: "
+                            f"{required_browser.strip()} ({browser_detail})"
+                        ),
+                        "severity": "error",
+                        "stage": "runtime.prepare",
+                        "object_ref": "manifest.runtime_requirements.required_browser",
+                        "resource_id": None,
+                        "setting_field": None,
+                    }
+                )
+        if bool(runtime_requirements.get("requires_captcha_ocr", False)):
+            captcha_ok, captcha_detail = self._probe_captcha_ocr_runtime_requirement()
+            if not captcha_ok:
+                entries.append(
+                    {
+                        "category": "package.runtime_requirement.captcha_ocr_unavailable",
+                        "message": (
+                            "loaded package requires captcha_ocr runtime before runtime start: "
+                            f"{captcha_detail}"
+                        ),
+                        "severity": "error",
+                        "stage": "runtime.prepare",
+                        "object_ref": "manifest.runtime_requirements.requires_captcha_ocr",
+                        "resource_id": None,
+                        "setting_field": None,
+                    }
+                )
+        return entries
+
+    def _verify_wcrun_checksums(self, archive: zipfile.ZipFile, checksums_payload: dict) -> None:
+        entries = checksums_payload.get("entries")
+        if not isinstance(entries, list):
+            raise ValueError("package checksums file must contain array: entries")
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            archive_path = item.get("path")
+            expected_sha = item.get("sha256")
+            if not isinstance(archive_path, str) or not archive_path.strip():
+                raise ValueError("package checksum entry missing path")
+            if not isinstance(expected_sha, str) or not expected_sha.strip():
+                raise ValueError(f"package checksum entry missing sha256: {archive_path}")
+            if archive_path not in archive.namelist():
+                raise ValueError(f"package checksum target missing from archive: {archive_path}")
+            actual_sha = hashlib.sha256(archive.read(archive_path)).hexdigest()
+            if actual_sha != expected_sha:
+                raise ValueError(f"package checksum mismatch: {archive_path}")
+
+    def _materialize_wcrun_session_dir(self, *, package_path: Path, package_document: dict) -> Path:
+        package_stem = package_path.stem or "weconduct-package"
+        session_root = Path(
+            tempfile.mkdtemp(
+                prefix=f"weconduct-session-{package_stem}-",
+                dir=tempfile.gettempdir(),
+            )
+        )
+        with zipfile.ZipFile(package_path, mode="r") as archive:
+            archive.extractall(session_root)
+        return session_root
+
+    def _build_loaded_package_resource_registry(self, package_document: dict) -> list[dict]:
+        resources = deepcopy(self._build_initial_resource_registry())
+        custom_components = (
+            package_document.get("dependencies", {}).get("custom_components", [])
+            if isinstance(package_document.get("dependencies"), dict)
+            else []
+        )
+        for item in custom_components:
+            if not isinstance(item, dict):
+                continue
+            resource_id = item.get("resource_id")
+            resource_key = item.get("resource_key")
+            archive_prefix = item.get("archive_prefix")
+            if not all(
+                isinstance(value, str) and value.strip()
+                for value in (resource_id, resource_key, archive_prefix)
+            ):
+                continue
+            resource_record = self._build_loaded_package_custom_component_record(
+                package_document=package_document,
+                archive_prefix=archive_prefix,
+                resource_id=resource_id,
+                resource_key=resource_key,
+            )
+            resources.insert(0, self._normalize_resource_record(resource_record))
+        return self._extract_resource_registry({"resource_registry": resources})
+
+    def _build_loaded_package_custom_component_record(
+        self,
+        *,
+        package_document: dict,
+        archive_prefix: str,
+        resource_id: str,
+        resource_key: str,
+    ) -> dict:
+        session_dir = package_document.get("session_dir")
+        manifest_payload = None
+        graph_payload = None
+        if isinstance(session_dir, str) and session_dir.strip():
+            manifest_path = Path(session_dir) / f"{archive_prefix}/manifest.json"
+            graph_path = Path(session_dir) / f"{archive_prefix}/graph.json"
+            if manifest_path.exists():
+                manifest_payload = self._read_json_file(manifest_path)
+            if graph_path.exists():
+                graph_payload = self._read_json_file(graph_path)
+        display_name = (
+            manifest_payload.get("display_name")
+            if isinstance(manifest_payload, dict) and isinstance(manifest_payload.get("display_name"), str)
+            else resource_id
+        )
+        return {
+            "resource_id": (
+                manifest_payload.get("resource_id")
+                if isinstance(manifest_payload, dict) and isinstance(manifest_payload.get("resource_id"), str)
+                else resource_id
+            ),
+            "resource_key": (
+                manifest_payload.get("resource_key")
+                if isinstance(manifest_payload, dict) and isinstance(manifest_payload.get("resource_key"), str)
+                else resource_key
+            ),
+            "resource_type": "custom_node_graph",
+            "origin": "package",
+            "implementation_kind": (
+                manifest_payload.get("implementation_kind")
+                if isinstance(manifest_payload, dict)
+                else "project_component"
+            ),
+            "display_name": display_name,
+            "display_name_i18n": (
+                deepcopy(manifest_payload.get("display_name_i18n", {}))
+                if isinstance(manifest_payload, dict)
+                else {"en-US": display_name}
+            ),
+            "description": (
+                manifest_payload.get("description")
+                if isinstance(manifest_payload, dict)
+                else None
+            ),
+            "description_i18n": (
+                deepcopy(manifest_payload.get("description_i18n", {}))
+                if isinstance(manifest_payload, dict)
+                else {}
+            ),
+            "compatibility_aliases": (
+                list(manifest_payload.get("compatibility_aliases", []))
+                if isinstance(manifest_payload, dict)
+                else []
+            ),
+            "source_graph_document_id": (
+                manifest_payload.get("graph_document_id")
+                if isinstance(manifest_payload, dict)
+                else None
+            ),
+            "source_graph_document_save_revision": (
+                manifest_payload.get("graph_document_save_revision")
+                if isinstance(manifest_payload, dict)
+                else None
+            ),
+            "source_graph_document": (
+                graph_payload
+                if isinstance(graph_payload, dict)
+                else create_empty_graph_model("graph:workspace", None).model_dump()
+            ),
+            "input_schema": (
+                deepcopy(manifest_payload.get("input_schema", {}))
+                if isinstance(manifest_payload, dict)
+                else {}
+            ),
+            "output_schema": (
+                deepcopy(manifest_payload.get("output_schema", {}))
+                if isinstance(manifest_payload, dict)
+                else {}
+            ),
+            "tags": ["package:loaded"],
+        }
+
+    def _build_loaded_package_runtime_binding_block(self) -> dict | None:
+        project = self._state.get("project")
+        if not isinstance(project, dict) or project.get("source_of_truth") != "wcrun_package":
+            return None
+        project_settings = self._extract_project_settings(self._state)
+        external_resources = (
+            project_settings.get("external_resources")
+            if isinstance(project_settings.get("external_resources"), list)
+            else []
+        )
+        runtime_defaults = (
+            project_settings.get("runtime_defaults")
+            if isinstance(project_settings.get("runtime_defaults"), dict)
+            else {}
+        )
+        initial_variables = (
+            runtime_defaults.get("initial_variables")
+            if isinstance(runtime_defaults.get("initial_variables"), dict)
+            else {}
+        )
+        missing_entries: list[dict] = []
+        for item in external_resources:
+            if not isinstance(item, dict):
+                continue
+            target = item.get("target")
+            if not isinstance(target, dict) or target.get("type") != "initial_variable":
+                continue
+            target_name = target.get("name")
+            resource_id = item.get("resource_id")
+            if not isinstance(target_name, str) or not target_name.strip():
+                continue
+            current_value = initial_variables.get(target_name.strip())
+            if isinstance(current_value, str) and current_value.strip():
+                continue
+            missing_entries.append(
+                {
+                    "category": "package.external_resource.runtime_binding_required",
+                    "message": f"external resource binding is required before runtime start: {resource_id}",
+                    "severity": "error",
+                    "stage": "runtime.prepare",
+                    "object_ref": resource_id,
+                    "resource_id": resource_id,
+                    "setting_field": f"runtime_defaults.initial_variables.{target_name.strip()}",
+                }
+            )
+        if not missing_entries:
+            return None
+        return {
+            "status": "failed",
+            "request": {
+                "compilation_id": None,
+                "request_origin": "saved_graph_document",
+                "requested_graph_model_id": self._get_graph_document_model().graph_model_id,
+                "requested_graph_save_revision": self._get_graph_document_meta().get("save_revision"),
+                "requested_graph_saved_at": self._get_graph_document_meta().get("saved_at"),
+                "compile_status": "failed",
+            },
+            "runtime_session": {
+                "session_id": None,
+                "status": "diagnostic_blocked",
+                "execution_supported": False,
+            },
+            "runtime_plan": None,
+            "diagnostics": {
+                "total_count": len(missing_entries),
+                "highest_severity": "error",
+                "entries": missing_entries,
+            },
+        }
+
+    def _build_loaded_package_runtime_requirements_block(self) -> dict | None:
+        project = self._state.get("project")
+        if not isinstance(project, dict) or project.get("source_of_truth") != "wcrun_package":
+            return None
+        runtime_requirements = self._read_loaded_package_runtime_requirements()
+        if runtime_requirements is None:
+            return None
+        entries: list[dict] = []
+        minimum_app_version = runtime_requirements.get("minimum_app_version")
+        current_app_version = self._build_workbench_metadata()["api_version"]
+        if (
+            isinstance(minimum_app_version, str)
+            and minimum_app_version.strip()
+            and self._compare_version_strings(current_app_version, minimum_app_version.strip()) < 0
+        ):
+            entries.append(
+                {
+                    "category": "package.runtime_requirement.minimum_app_version_unsupported",
+                    "message": (
+                        "loaded package requires newer app version before runtime start: "
+                        f"{minimum_app_version.strip()} > {current_app_version}"
+                    ),
+                    "severity": "error",
+                    "stage": "runtime.prepare",
+                    "object_ref": "manifest.runtime_requirements.minimum_app_version",
+                    "resource_id": None,
+                    "setting_field": None,
+                }
+            )
+        required_platform = runtime_requirements.get("required_platform")
+        current_platform = self._get_runtime_platform_name()
+        if (
+            isinstance(required_platform, str)
+            and required_platform.strip()
+            and required_platform.strip().lower() != current_platform
+        ):
+            entries.append(
+                {
+                    "category": "package.runtime_requirement.required_platform_unsupported",
+                    "message": (
+                        "loaded package requires unsupported runtime platform before runtime start: "
+                        f"{required_platform.strip().lower()} != {current_platform}"
+                    ),
+                    "severity": "error",
+                    "stage": "runtime.prepare",
+                    "object_ref": "manifest.runtime_requirements.required_platform",
+                    "resource_id": None,
+                    "setting_field": None,
+                }
+            )
+        required_browser = runtime_requirements.get("required_browser")
+        if isinstance(required_browser, str) and required_browser.strip():
+            browser_ok, browser_detail = self._probe_browser_runtime_requirement(required_browser.strip())
+            if not browser_ok:
+                entries.append(
+                    {
+                        "category": "package.runtime_requirement.required_browser_unsupported",
+                        "message": (
+                            "loaded package requires unavailable browser runtime before runtime start: "
+                            f"{required_browser.strip()} ({browser_detail})"
+                        ),
+                        "severity": "error",
+                        "stage": "runtime.prepare",
+                        "object_ref": "manifest.runtime_requirements.required_browser",
+                        "resource_id": None,
+                        "setting_field": None,
+                    }
+                )
+        if bool(runtime_requirements.get("requires_captcha_ocr", False)):
+            captcha_ok, captcha_detail = self._probe_captcha_ocr_runtime_requirement()
+            if not captcha_ok:
+                entries.append(
+                    {
+                        "category": "package.runtime_requirement.captcha_ocr_unavailable",
+                        "message": (
+                            "loaded package requires captcha_ocr runtime before runtime start: "
+                            f"{captcha_detail}"
+                        ),
+                        "severity": "error",
+                        "stage": "runtime.prepare",
+                        "object_ref": "manifest.runtime_requirements.requires_captcha_ocr",
+                        "resource_id": None,
+                        "setting_field": None,
+                    }
+                )
+        if not entries:
+            return None
+        return {
+            "status": "failed",
+            "request": {
+                "compilation_id": None,
+                "request_origin": "saved_graph_document",
+                "requested_graph_model_id": self._get_graph_document_model().graph_model_id,
+                "requested_graph_save_revision": self._get_graph_document_meta().get("save_revision"),
+                "requested_graph_saved_at": self._get_graph_document_meta().get("saved_at"),
+                "compile_status": "failed",
+            },
+            "runtime_session": {
+                "session_id": None,
+                "status": "diagnostic_blocked",
+                "execution_supported": False,
+            },
+            "runtime_plan": None,
+            "diagnostics": {
+                "total_count": len(entries),
+                "highest_severity": "error",
+                "entries": entries,
+            },
+        }
+
+    def _read_loaded_package_runtime_requirements(self) -> dict | None:
+        project_runtime = self._get_project_runtime()
+        session_dir = project_runtime.get("session_dir")
+        if not isinstance(session_dir, str) or not session_dir.strip():
+            return None
+        manifest_path = Path(session_dir) / "manifest.msgpack"
+        if not manifest_path.exists():
+            return None
+        manifest_payload = unpackb(manifest_path.read_bytes())
+        if not isinstance(manifest_payload, dict):
+            return None
+        runtime_requirements = manifest_payload.get("runtime_requirements")
+        if not isinstance(runtime_requirements, dict):
+            return None
+        return runtime_requirements
+
+    def _get_runtime_platform_name(self) -> str:
+        system_name = platform.system().strip().lower()
+        if system_name.startswith("win"):
+            return "windows"
+        if system_name.startswith("linux"):
+            return "linux"
+        if system_name.startswith("darwin"):
+            return "macos"
+        return system_name or "unknown"
+
+    def _probe_browser_runtime_requirement(self, required_browser: str) -> tuple[bool, str]:
+        browser_name = required_browser.strip().lower()
+        if not browser_name:
+            return True, "no browser requirement"
+        if browser_name != "msedge":
+            return False, f"unsupported browser channel: {browser_name}"
+        if self._get_runtime_platform_name() != "windows":
+            return False, "msedge runtime is only supported on windows"
+        return True, "msedge runtime supported"
+
+    def _probe_captcha_ocr_runtime_requirement(self) -> tuple[bool, str]:
+        recognizer = None
+        try:
+            recognizer = create_captcha_ocr_recognizer()
+            return True, "captcha_ocr runtime available"
+        except (CaptchaOcrRuntimeUnavailable, RuntimeError) as exc:
+            return False, str(exc)
+        finally:
+            if recognizer is not None:
+                recognizer.close()
+
+    def _compare_version_strings(self, current_version: str, required_version: str) -> int:
+        current_parts = self._normalize_version_tuple(current_version)
+        required_parts = self._normalize_version_tuple(required_version)
+        if current_parts < required_parts:
+            return -1
+        if current_parts > required_parts:
+            return 1
+        return 0
+
+    def _normalize_version_tuple(self, raw_version: str) -> tuple[int, ...]:
+        parts: list[int] = []
+        for item in str(raw_version).split("."):
+            try:
+                parts.append(int(item))
+            except ValueError:
+                parts.append(0)
+        return tuple(parts)
+
+    def _encode_json_bytes(self, payload: dict) -> bytes:
+        return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+    def _build_wcrun_source_project_payload(
+        self,
+        *,
+        project_manifest: dict,
+        project_settings: dict,
+    ) -> dict:
+        project_section = (
+            project_manifest.get("project")
+            if isinstance(project_manifest.get("project"), dict)
+            else {}
+        )
+        project_identity = (
+            project_settings.get("project_identity")
+            if isinstance(project_settings.get("project_identity"), dict)
+            else {}
+        )
+        return {
+            "project_id": project_section.get("project_id")
+            if isinstance(project_section.get("project_id"), str)
+            else project_identity.get("project_id"),
+            "project_name": project_section.get("project_name")
+            if isinstance(project_section.get("project_name"), str)
+            else project_identity.get("name"),
+            "project_version": project_identity.get("version")
+            if isinstance(project_identity.get("version"), str)
+            else "0.1.0",
+            "project_schema_version": project_section.get("project_schema_version")
+            if isinstance(project_section.get("project_schema_version"), str)
+            else "project-v2",
+            "project_settings_schema_version": project_settings.get(
+                "project_settings_schema_version",
+                PROJECT_SETTINGS_SCHEMA_VERSION,
+            ),
+        }
+
+    def _build_wcrun_runtime_requirements(
+        self,
+        *,
+        graph_model: GraphModel,
+        packaged_resources: dict,
+    ) -> dict:
+        return {
+            "minimum_app_version": self._build_workbench_metadata()["api_version"],
+            "required_platform": "windows",
+            "required_browser": "msedge",
+            "requires_captcha_ocr": bool(packaged_resources.get("requires_captcha_ocr", False)),
+        }
+
+    def _build_wcrun_graph_index(
+        self,
+        *,
+        graph_model: GraphModel,
+        packaged_resources: dict,
+    ) -> list[dict]:
+        graphs = [
+            {
+                "graph_id": graph_model.graph_model_id,
+                "graph_path": "graphs/main.graph.msgpack",
+                "graph_role": "entrypoint",
+            }
+        ]
+        for item in packaged_resources.get("custom_component_graphs", []):
+            if isinstance(item, dict):
+                graphs.append(deepcopy(item))
+        return graphs
+
+    def _graph_document_uses_node_kind(self, graph_document: dict | None, node_kind: str) -> bool:
+        if not isinstance(graph_document, dict):
+            return False
+        nodes = graph_document.get("nodes")
+        if not isinstance(nodes, list):
+            return False
+        for node in nodes:
+            if isinstance(node, dict) and node.get("node_kind") == node_kind:
+                return True
+        return False
+
+    def _encode_pseudo_msgpack_bytes(self, payload: dict) -> bytes:
+        return packb(payload)
+
+    def _write_zip_archive(self, output_path: Path, package_contents: dict[str, bytes]) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(output_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for archive_path, content in sorted(package_contents.items(), key=lambda item: item[0]):
+                archive.writestr(archive_path, content)
 
     def _extract_resource_override_record(self, resource: dict) -> dict:
         source_graph_document = resource.get("source_graph_document")
@@ -9792,6 +12260,14 @@ class CompilationWorkbenchService:
             ),
             "graph_document": graph_model.model_dump(),
             "graph_document_meta": graph_document_meta,
+            "project_settings": self._merge_runtime_defaults_with_graph_backfill(
+                project_settings_payload=self._build_initial_project_settings_document(
+                    project_id=normalized_project.get("project_id", "weconduct-workspace"),
+                    project_name=normalized_project.get("project_name", "Opened Project"),
+                    project_file_path=str(project_path.resolve()),
+                ),
+                graph_model=graph_model,
+            ),
         }
 
     def _read_split_project_file(self, project_path: Path, payload: dict) -> dict:
@@ -9857,6 +12333,16 @@ class CompilationWorkbenchService:
                 f"project file missing required string: project.resource_overrides_path ({project_path})"
             )
         resource_overrides = self._load_resource_overrides(project_path, resource_overrides_path)
+        project_settings_path = self._resolve_project_storage_root(project_path) / "project-settings.json"
+        project_settings_payload = (
+            self._read_json_file(project_settings_path)
+            if project_settings_path.exists()
+            else self._build_initial_project_settings_document(
+                project_id=normalized_project.get("project_id", "weconduct-workspace"),
+                project_name=normalized_project.get("project_name", "Opened Project"),
+                project_file_path=str(project_path.resolve()),
+            )
+        )
         effective_registry = self._compose_effective_resource_registry(
             builtin_resource_refs=raw_builtin_resource_refs,
             project_resources=project_resources,
@@ -9887,6 +12373,10 @@ class CompilationWorkbenchService:
             ),
             "graph_document": graph_model.model_dump(),
             "graph_document_meta": graph_document_meta,
+            "project_settings": self._merge_runtime_defaults_with_graph_backfill(
+                project_settings_payload=project_settings_payload,
+                graph_model=graph_model,
+            ),
         }
 
     def _build_project_resource_audit_document(self, project_path: Path) -> dict:
@@ -10869,6 +13359,7 @@ class CompilationWorkbenchService:
                 "requested_graph_saved_at": graph_document_meta["saved_at"],
             }
 
+        self._assert_project_package_allows_mutation("graph_document_payload_request")
         try:
             graph_model = GraphModel.model_validate(graph_document_payload)
         except ValidationError as exc:

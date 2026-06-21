@@ -71,7 +71,10 @@ async function doNew() {
   finally { dialogLoading.value = false }
 }
 async function doOpen() { dialogLoading.value = true; try { await postProjectOpen({ project_path: dialogInput.value }); toast.success('已打开'); await applyOpenedProject() } catch(e:any){ toast.error('打开失败', e?.message) } finally { dialogLoading.value = false } }
+const isWcrunPackage = computed(() => (workspace.snapshot as any)?.project_settings?.source_of_truth === 'wcrun_package')
+
 async function doSave() {
+  if (isWcrunPackage.value) { toast.info('', '.wcrun 包只读 — 仅运行默认值可编辑'); return }
   dialogLoading.value = true
   try {
     const proj = await fetchProject()
@@ -86,6 +89,7 @@ async function doSave() {
   finally { dialogLoading.value = false }
 }
 async function doSaveAs() {
+  if (isWcrunPackage.value) { toast.info('', '.wcrun 包只读 — 仅运行默认值可编辑'); return }
   dialogLoading.value = true
   try {
     await postProjectSaveAs({ project_path: dialogInput.value, graph_document: graphWs.graphModel as Record<string, unknown> | undefined })
@@ -99,7 +103,8 @@ async function doRemoveRecent(fp: string) { try { await postRecentProjectRemove(
 
 const projectLabel = computed(() => {
   if (!workspace.isConnected) return '未连接'
-  return workspace.projectName ?? '未加载项目'
+  const name = workspace.projectName ?? '未加载项目'
+  return isWcrunPackage.value ? `📦 ${name} (只读)` : name
 })
 
 const connectionDotClass = computed(() => {
@@ -203,6 +208,8 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
           <button @click="openDialog('importGraph')">导入节点图 JSON</button>
           <button @click="closeMenu(); showConverter = true">转换 WebControl</button>
           <hr>
+          <button @click="dock.restorePanel('projectSettings'); closeMenu()">项目设置</button>
+          <button @click="dock.restorePanel('packageManager'); closeMenu()">.wcrun 打包</button>
           <button @click="openDialog('save')">保存</button>
           <button @click="openDialog('saveas')">另存为</button>
           <hr>
@@ -219,7 +226,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
       <div class="cmd-menu-item" @mouseenter="activeMenu !== null ? activeMenu = 'view' : null">
         <button class="cmd-item" @click="toggleMenu('view')">视图</button>
         <div v-if="activeMenu === 'view'" class="cmd-dropdown" @mouseleave="closeMenu">
-          <button v-for="p in dock.allPanels.filter(p => p.id !== 'preferences')" :key="p.id" @click="dock.isPanelVisible(p.id) ? dock.closePanel(p.id) : dock.restorePanel(p.id); closeMenu()">
+          <button v-for="p in dock.allPanels.filter(p => p.id !== 'preferences' && p.id !== 'projectSettings' && p.id !== 'packageManager')" :key="p.id" @click="dock.isPanelVisible(p.id) ? dock.closePanel(p.id) : dock.restorePanel(p.id); closeMenu()">
             {{ dock.isPanelVisible(p.id) ? '✓' : '○' }} {{ p.title }}
           </button>
           <hr>
@@ -336,8 +343,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
             <!-- About -->
             <template v-else-if="activeDialog === 'about'">
               <p><strong>WeConduct</strong></p>
-              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.4.0' }}</p>
-              <p class="dlg-meta">当前为 Preview 版本</p>
+              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.5.0' }}</p>
               <p class="dlg-meta">运行模式: {{ workspace.health?.host_mode ?? '—' }}</p>
               <p class="dlg-meta">工作区会话: {{ workspace.health?.workspace_session_id ?? '—' }}</p>
               <template v-if="workspace.projectName">

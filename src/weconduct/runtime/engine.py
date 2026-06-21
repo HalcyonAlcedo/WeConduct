@@ -35,6 +35,7 @@ class RuntimeContext:
     flow_runtime: dict[str, Any] = field(default_factory=dict)
     project_directory: Path | None = None
     workspace_root: Path | None = None
+    embedded_resource_paths: dict[str, str] = field(default_factory=dict)
 
     def close(self) -> None:
         browser_context = self.browser_runtime.get("browser_context")
@@ -3128,6 +3129,15 @@ def _store_optional_variable_name(variable_name: Any, context: RuntimeContext, v
 
 
 def _resolve_runtime_path(path_value: str, context: RuntimeContext) -> Path:
+    normalized_literal = path_value.strip()
+    if normalized_literal:
+        embedded_match = context.embedded_resource_paths.get(normalized_literal)
+        if embedded_match is None:
+            embedded_match = context.embedded_resource_paths.get(normalized_literal.replace("\\", "/"))
+        if embedded_match is None:
+            embedded_match = context.embedded_resource_paths.get(normalized_literal.replace("/", "\\"))
+        if embedded_match is not None:
+            return Path(embedded_match).expanduser().resolve()
     path = Path(path_value).expanduser()
     if path.is_absolute():
         return path

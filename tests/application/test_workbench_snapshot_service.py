@@ -1,7 +1,11 @@
+import hashlib
 import json
 from pathlib import Path
 import threading
 import base64
+from copy import deepcopy
+from typing import Callable
+import zipfile
 from http.server import BaseHTTPRequestHandler
 from socketserver import TCPServer
 import urllib.parse
@@ -13,6 +17,7 @@ from weconduct.application.workspace_state_store import InMemoryWorkspaceStateSt
 from weconduct.application.workspace_state_store import FileWorkspaceStateStore
 from weconduct.builtin_components.registry import BUILTIN_COMPONENT_DEFINITIONS
 from weconduct.contracts import GraphEdge, GraphModel, GraphNode, GraphPort, GraphPosition
+from weconduct.packaging.msgpack_codec import packb, unpackb
 from weconduct.runtime.engine import (
     RuntimeContext,
     RuntimeExecutorRegistry,
@@ -241,6 +246,82 @@ class _BrowserMockSiteServer(TCPServer):
     allow_reuse_address = True
 
 
+def _rewrite_wcrun_manifest(
+    package_path: Path,
+    mutate_manifest: Callable[[dict], None],
+) -> None:
+    with zipfile.ZipFile(package_path, mode="r") as archive:
+        package_contents = {
+            name: archive.read(name)
+            for name in archive.namelist()
+            if name != "meta/checksums.json"
+        }
+    manifest_payload = unpackb(package_contents["manifest.msgpack"])
+    mutate_manifest(manifest_payload)
+    package_contents["manifest.msgpack"] = packb(manifest_payload)
+    checksums_payload = {
+        "checksum_schema_version": 1,
+        "algorithm": "sha256",
+        "entries": [
+            {
+                "path": path,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size": len(content),
+            }
+            for path, content in sorted(package_contents.items(), key=lambda item: item[0])
+        ],
+    }
+    temp_path = package_path.with_suffix(f"{package_path.suffix}.tmp")
+    with zipfile.ZipFile(temp_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path, content in sorted(package_contents.items(), key=lambda item: item[0]):
+            archive.writestr(path, content)
+        archive.writestr(
+            "meta/checksums.json",
+            json.dumps(checksums_payload, ensure_ascii=False, indent=2),
+        )
+    temp_path.replace(package_path)
+
+
+def _rewrite_wcrun_project_settings(
+    package_path: Path,
+    mutate_project_settings: Callable[[dict], None],
+) -> None:
+    with zipfile.ZipFile(package_path, mode="r") as archive:
+        package_contents = {
+            name: archive.read(name)
+            for name in archive.namelist()
+            if name != "meta/checksums.json"
+        }
+    project_settings_payload = json.loads(package_contents["project-settings.json"].decode("utf-8"))
+    mutate_project_settings(project_settings_payload)
+    package_contents["project-settings.json"] = json.dumps(
+        project_settings_payload,
+        ensure_ascii=False,
+        indent=2,
+    ).encode("utf-8")
+    checksums_payload = {
+        "checksum_schema_version": 1,
+        "algorithm": "sha256",
+        "entries": [
+            {
+                "path": path,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size": len(content),
+            }
+            for path, content in sorted(package_contents.items(), key=lambda item: item[0])
+        ],
+    }
+    temp_path = package_path.with_suffix(f"{package_path.suffix}.tmp")
+    with zipfile.ZipFile(temp_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path, content in sorted(package_contents.items(), key=lambda item: item[0]):
+            archive.writestr(path, content)
+        archive.writestr(
+            "meta/checksums.json",
+            json.dumps(checksums_payload, ensure_ascii=False, indent=2),
+        )
+    temp_path.replace(package_path)
+
+
 def _start_browser_mock_site() -> tuple[_BrowserMockSiteServer, threading.Thread]:
     _BrowserMockSiteHandler.clicked = False
     _BrowserMockSiteHandler.last_form_value = ""
@@ -277,7 +358,7 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert snapshot["entrypoints"]["graph_source_projection"] == "/api/workbench/graph/source-projection"
     assert snapshot["workbench"]["host_mode"] == "python_core"
-    assert snapshot["workbench"]["api_version"] == "0.4.1"
+    assert snapshot["workbench"]["api_version"] == "0.5.0"
     assert snapshot["compiler"]["available_source_kinds"] == [
         "graph_workspace",
         "native_flow",
@@ -15167,7 +15248,7 @@ def test_runtime_health_exposes_host_session_capabilities_and_entrypoints() -> N
     assert health["status"] == "ok"
     assert health["service"] == "weconduct-api"
     assert health["host_mode"] == "python_core"
-    assert health["api_version"] == "0.4.1"
+    assert health["api_version"] == "0.5.0"
     assert health["workspace_state_version"] == 1
     assert health["workspace_session_id"].startswith("ws-")
     assert health["service_started_at"]
@@ -15178,6 +15259,17 @@ def test_runtime_health_exposes_host_session_capabilities_and_entrypoints() -> N
     assert health["entrypoints"]["snapshot"] == "/api/workbench/snapshot"
     assert health["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert health["entrypoints"]["graph_document"] == "/api/workbench/graph"
+    assert health["entrypoints"]["project_settings"] == "/api/workbench/project/settings"
+    assert health["entrypoints"]["project_runtime_defaults"] == "/api/workbench/project/runtime-defaults"
+    assert health["entrypoints"]["project_package_preflight_action"] == "/api/workbench/project/package/preflight"
+    assert health["entrypoints"]["project_package_build_action"] == "/api/workbench/project/package/build"
+    assert health["entrypoints"]["project_package_inspect"] == "/api/workbench/project/package/inspect"
+    assert health["entrypoints"]["project_package_load_action"] == "/api/workbench/project/package/load"
+    assert health["entrypoints"]["project_package_unload_action"] == "/api/workbench/project/package/unload"
+    assert (
+        health["entrypoints"]["project_package_external_resource_bind_action"]
+        == "/api/workbench/project/package/external-resources/bind"
+    )
     assert health["entrypoints"]["runtime_prepare_action"] == "/api/workbench/runtime/prepare"
     assert health["entrypoints"]["debug_prepare_action"] == "/api/workbench/debug/prepare"
     assert health["entrypoints"]["host_info"] == "/api/host/info"
@@ -15192,6 +15284,17 @@ def test_workbench_snapshot_exposes_graph_workspace_entrypoint() -> None:
     assert snapshot["entrypoints"]["graph_document"] == "/api/workbench/graph"
     assert snapshot["entrypoints"]["graph_validate_action"] == "/api/workbench/graph/validate"
     assert snapshot["entrypoints"]["graph_compile_action"] == "/api/workbench/graph/compile"
+    assert snapshot["entrypoints"]["project_settings"] == "/api/workbench/project/settings"
+    assert snapshot["entrypoints"]["project_runtime_defaults"] == "/api/workbench/project/runtime-defaults"
+    assert snapshot["entrypoints"]["project_package_preflight_action"] == "/api/workbench/project/package/preflight"
+    assert snapshot["entrypoints"]["project_package_build_action"] == "/api/workbench/project/package/build"
+    assert snapshot["entrypoints"]["project_package_inspect"] == "/api/workbench/project/package/inspect"
+    assert snapshot["entrypoints"]["project_package_load_action"] == "/api/workbench/project/package/load"
+    assert snapshot["entrypoints"]["project_package_unload_action"] == "/api/workbench/project/package/unload"
+    assert (
+        snapshot["entrypoints"]["project_package_external_resource_bind_action"]
+        == "/api/workbench/project/package/external-resources/bind"
+    )
 
 
 def test_service_exposes_editable_graph_workspace_document() -> None:
@@ -19027,6 +19130,1928 @@ def test_save_project_extracts_enabled_and_tags_into_resource_overrides(tmp_path
     assert sorted(item["tags"]) == ["auth", "favorite", "project"]
 
 
+def test_save_project_writes_project_settings_document_and_snapshot_summary(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "demo.weconduct.json"
+
+    service.create_project(project_name="Settings Demo")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://example.test", "username": "demo"},
+                        "browser_config": {"headless": False, "slow_mo_ms": 120},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    service.save_project_as(project_path=str(project_path))
+
+    storage_root = project_path.parent / f"{project_path.stem}.data"
+    settings_path = storage_root / "project-settings.json"
+    settings_payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    snapshot = service.get_workbench_snapshot()
+    project_document = service.get_project_document()
+
+    assert settings_path.exists()
+    assert settings_payload["project_settings_schema_version"] == 1
+    assert settings_payload["project_identity"]["name"] == "Settings Demo"
+    assert settings_payload["runtime_defaults"]["initial_variables"]["base_url"] == "http://example.test"
+    assert settings_payload["runtime_defaults"]["browser_config"]["slow_mo_ms"] == 120
+    assert snapshot["project_settings"]["loaded"] is True
+    assert snapshot["project_settings"]["state_source"] == "project_settings_file"
+    assert snapshot["project_settings"]["project_file_path"] == str(project_path.resolve())
+    assert snapshot["project_settings"]["project_settings_path"] == str(settings_path.resolve())
+    assert snapshot["project_settings"]["session_dir"] is None
+    assert snapshot["project_settings"]["is_dirty"] is False
+    assert snapshot["project_settings"]["project_settings_schema_version"] == 1
+    assert snapshot["project_settings"]["package_default_output_name"] == "demo.wcrun"
+    assert project_document["project_settings"]["runtime_defaults"]["initial_variables"]["username"] == "demo"
+
+
+def test_open_project_restores_project_settings_document(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "settings-open.weconduct.json"
+    service.create_project(project_name="Open Settings")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://restored.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    service.save_project_as(project_path=str(project_path))
+
+    reopened = CompilationWorkbenchService()
+    reopened.open_project(project_path=str(project_path))
+    settings_document = reopened.get_project_settings_document()
+
+    assert settings_document["state"]["loaded"] is True
+    assert settings_document["project_settings"]["project_identity"]["name"] == "Open Settings"
+    assert (
+        settings_document["project_settings"]["runtime_defaults"]["initial_variables"]["base_url"]
+        == "http://restored.test"
+    )
+
+
+def test_open_project_backfills_runtime_defaults_from_flow_start_when_project_settings_missing_values(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "settings-backfill.weconduct.json"
+    service.create_project(project_name="Backfill Settings")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {
+                            "base_url": "http://backfill.test",
+                            "username": "graph-user",
+                        },
+                        "browser_config": {"headless": False, "slow_mo_ms": 150},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    service.save_project_as(project_path=str(project_path))
+    settings_path = service._resolve_project_storage_root(project_path) / "project-settings.json"
+    settings_payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    settings_payload["runtime_defaults"] = {
+        "initial_variables": {},
+        "browser_config": {},
+        "execution_defaults": {},
+    }
+    settings_path.write_text(json.dumps(settings_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    reopened.open_project(project_path=str(project_path))
+    settings_document = reopened.get_project_settings_document()
+
+    assert (
+        settings_document["project_settings"]["runtime_defaults"]["initial_variables"]["base_url"]
+        == "http://backfill.test"
+    )
+    assert (
+        settings_document["project_settings"]["runtime_defaults"]["initial_variables"]["username"]
+        == "graph-user"
+    )
+    assert (
+        settings_document["project_settings"]["runtime_defaults"]["browser_config"]["slow_mo_ms"] == 150
+    )
+
+
+def test_file_workspace_state_backfills_runtime_defaults_from_graph_when_state_settings_are_stale(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "stale-workspace.weconduct.json"
+    workspace_state_path = tmp_path / "workspace-state.json"
+    output_path = tmp_path / "dist" / "stale-workspace.wcrun"
+    builder.create_project(project_name="Stale Workspace")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {
+                            "base_url": "http://stale-workspace.test",
+                            "username": "workspace-user",
+                        },
+                        "browser_config": {"headless": True, "slow_mo_ms": 120},
+                    },
+                    "ports": [
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        }
+                    ],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    stale_workspace_state = deepcopy(builder._state)
+    stale_workspace_state["project_settings"]["runtime_defaults"] = {
+        "initial_variables": {},
+        "browser_config": {},
+        "execution_defaults": {},
+    }
+    workspace_state_path.write_text(
+        json.dumps(stale_workspace_state, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    reopened = CompilationWorkbenchService(
+        state_store=FileWorkspaceStateStore(workspace_state_path)
+    )
+    preflight = reopened.run_project_package_preflight()
+    build_result = reopened.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=output_path,
+    )
+
+    settings_document = reopened.get_project_settings_document()
+    assert (
+        settings_document["project_settings"]["runtime_defaults"]["initial_variables"]["base_url"]
+        == "http://stale-workspace.test"
+    )
+    assert (
+        settings_document["project_settings"]["runtime_defaults"]["initial_variables"]["username"]
+        == "workspace-user"
+    )
+    assert (
+        settings_document["project_settings"]["runtime_defaults"]["browser_config"]["slow_mo_ms"]
+        == 120
+    )
+    assert preflight["status"] == "ok"
+    assert build_result["status"] == "built"
+    assert output_path.exists()
+
+
+def test_get_project_settings_document_uses_workspace_state_source_when_settings_file_missing(
+    tmp_path: Path,
+) -> None:
+    legacy_project_path = tmp_path / "legacy-source.weconduct.json"
+    workspace_state_path = tmp_path / "workspace-state.json"
+    legacy_payload = {
+        "project_file_schema_version": 1,
+        "saved_at": "2026-06-21T00:00:00Z",
+        "project": {
+            "project_id": "legacy-source-project",
+            "project_name": "Legacy Source Project",
+            "project_schema_version": "project-v1",
+            "project_status": "ready",
+            "workspace_root": str(tmp_path),
+            "source_of_truth": "graph_document",
+            "main_graph_document_id": "graph:workspace",
+            "resource_registry_revision": 0,
+        },
+        "resource_registry": [],
+        "editor_history": {"undo_stack": [], "redo_stack": []},
+        "execution_history": {"runtime_runs": [], "debug_sessions": []},
+        "graph_document": {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://legacy-source.test"},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        },
+        "graph_document_meta": {"save_revision": 0, "saved_at": None},
+    }
+    legacy_project_path.write_text(
+        json.dumps(legacy_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    opener = CompilationWorkbenchService(
+        state_store=FileWorkspaceStateStore(workspace_state_path)
+    )
+    opener.open_project(project_path=str(legacy_project_path))
+
+    reopened = CompilationWorkbenchService(
+        state_store=FileWorkspaceStateStore(workspace_state_path)
+    )
+    settings_document = reopened.get_project_settings_document()
+
+    assert settings_document["state"]["source"] == "workspace_state"
+
+
+def test_file_workspace_state_package_build_uses_saved_project_even_when_active_graph_is_recovery_stub(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "recovery-stub.weconduct.json"
+    workspace_state_path = tmp_path / "workspace-state.json"
+    output_path = tmp_path / "dist" / "recovery-stub.wcrun"
+    builder.create_project(project_name="Recovery Stub Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {
+                            "base_url": "http://recovery-stub.test",
+                            "username": "stub-user",
+                        },
+                        "browser_config": {"headless": True, "slow_mo_ms": 50},
+                    },
+                    "ports": [
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        }
+                    ],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    dirty_state = deepcopy(builder._state)
+    dirty_state["project_runtime"]["is_dirty"] = True
+    dirty_state["project_settings"]["runtime_defaults"] = {
+        "initial_variables": {},
+        "browser_config": {},
+        "execution_defaults": {},
+    }
+    recovering = CompilationWorkbenchService(
+        state_store=FileWorkspaceStateStore(workspace_state_path)
+    )
+    normalized_state, _ = recovering._normalize_workspace_state(dirty_state)
+    workspace_state_path.write_text(
+        json.dumps(normalized_state, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    reopened = CompilationWorkbenchService(
+        state_store=FileWorkspaceStateStore(workspace_state_path)
+    )
+    project_document = reopened.get_project_document()
+    settings_document = reopened.get_project_settings_document()
+    preflight = reopened.run_project_package_preflight()
+    build_result = reopened.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=output_path,
+    )
+
+    assert project_document["project"]["pending_recovery"]["status"] == "pending"
+    assert project_document["graph_workspace"]["node_count"] == 0
+    assert preflight["status"] == "ok"
+    assert build_result["status"] == "built"
+    assert output_path.exists()
+
+
+def test_graph_document_view_marks_workspace_flow_start_as_project_runtime_projection() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"username": "demo"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    graph_document = service.get_graph_document()
+    flow_start_view = graph_document["view"]["nodes_by_id"]["node-start"]
+
+    assert flow_start_view["projection"]["kind"] == "project_runtime_defaults"
+    assert flow_start_view["projection"]["enabled"] is True
+    assert flow_start_view["projection"]["source"] == "project_settings.runtime_defaults"
+
+
+def test_update_project_runtime_defaults_updates_project_settings_document(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "runtime-defaults.weconduct.json"
+    service.create_project(project_name="Runtime Defaults")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"username": "before"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    service.save_project_as(project_path=str(project_path))
+
+    result = service.update_project_runtime_defaults(
+        runtime_defaults={
+            "initial_variables": {"username": "after", "base_url": "http://runtime.test"},
+            "browser_config": {"headless": False, "slow_mo_ms": 200},
+            "execution_defaults": {"default_timeout_ms": 45000, "default_retry_count": 2},
+        }
+    )
+
+    settings_document = service.get_project_settings_document()
+    assert result["runtime_defaults"]["initial_variables"]["username"] == "after"
+    assert settings_document["project_settings"]["runtime_defaults"]["browser_config"]["slow_mo_ms"] == 200
+    assert result["graph_projection_refresh"]["node_id"] == "node-start"
+    assert result["graph_projection_refresh"]["node_config"]["initial_variables"]["base_url"] == "http://runtime.test"
+
+
+def test_update_project_settings_keeps_project_name_and_snapshot_in_sync() -> None:
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Before Rename")
+
+    updated = service.update_project_settings(
+        project_settings={
+            **service.get_project_settings_document()["project_settings"],
+            "project_identity": {
+                **service.get_project_settings_document()["project_settings"]["project_identity"],
+                "name": "After Rename",
+            },
+        }
+    )
+    project_document = service.get_project_document()
+    snapshot = service.get_workbench_snapshot()
+
+    assert updated["project_settings"]["project_identity"]["name"] == "After Rename"
+    assert project_document["project"]["project_name"] == "After Rename"
+    assert project_document["project_settings"]["project_identity"]["name"] == "After Rename"
+    assert snapshot["project"]["project_name"] == "After Rename"
+
+
+def test_package_preflight_reports_setting_and_resource_blockers(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "preflight.weconduct.json"
+    service.create_project(project_name="Preflight Project")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-request",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-node-request",
+                    "expansion_role": "action:request",
+                    "display_name": "请求",
+                    "node_kind": "http.request",
+                    "node_config": {"method": "GET"},
+                    "ports": [],
+                },
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved_resource = service.save_custom_node_graph_resource(resource_name="登录流程")
+    service.set_resource_enabled(resource_id=saved_resource["resource"]["resource_id"], enabled=False)
+    service.update_project_settings(
+        project_settings={
+            **service.get_project_settings_document()["project_settings"],
+            "external_resources": [
+                {
+                    "resource_id": "ext_missing_file",
+                    "bind_key": "upload_path",
+                    "kind": "file",
+                    "required": True,
+                    "picker": "file",
+                    "description": "上传文件",
+                    "example_value": "C:\\data\\upload.txt",
+                    "target": {"type": "initial_variable", "name": "upload_path"},
+                    "validation": {"must_exist": True},
+                }
+            ],
+        }
+    )
+    service.save_project_as(project_path=str(project_path))
+
+    result = service.run_project_package_preflight()
+
+    assert result["status"] == "failed"
+    assert result["summary"]["blocking"] is True
+    assert result["summary"]["error_count"] >= 2
+    assert any(
+        entry["setting_field"] == "runtime_defaults.initial_variables.base_url"
+        for entry in result["entries"]
+    )
+    assert any(
+        entry["resource_id"] == "ext_missing_file"
+        for entry in result["entries"]
+    )
+    assert all("stage" in entry and "severity" in entry and "category" in entry for entry in result["entries"])
+
+
+def test_build_project_wcrun_package_writes_expected_archive_layout(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "package-build.weconduct.json"
+    output_path = tmp_path / "artifacts" / "package-build.wcrun"
+
+    service.create_project(project_name="Package Build Project")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://package.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    service.save_project_as(project_path=str(project_path))
+
+    result = service.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    assert result["status"] == "built"
+    assert result["package"]["mode"] == "wcrun"
+    assert result["package"]["output_path"] == str(output_path.resolve())
+    assert result["package_info"]["package_name"] == "package-build"
+    assert result["package_info"]["package_version"] == "0.1.0"
+    assert result["summary"]["embedded_resource_count"] == 0
+    assert result["summary"]["external_resource_count"] == 0
+    assert result["summary"]["graph_count"] == 1
+    assert result["diagnostics"]["total_count"] == 0
+    assert result["diagnostics"]["highest_severity"] is None
+    assert result["diagnostics"]["entries"] == []
+    assert output_path.exists()
+
+    with zipfile.ZipFile(output_path) as archive:
+        names = set(archive.namelist())
+        manifest_payload = unpackb(archive.read("manifest.msgpack"))
+        package_info_payload = json.loads(archive.read("meta/package-info.json").decode("utf-8"))
+        assert "manifest.msgpack" in names
+        assert "project-settings.json" in names
+        assert "graphs/main.graph.msgpack" in names
+        assert "meta/checksums.json" in names
+        assert "meta/package-info.json" in names
+        assert manifest_payload["manifest_version"] == 1
+        assert manifest_payload["package_identity"]["package_name"] == "package-build"
+        assert manifest_payload["source_project"]["project_name"] == "Package Build Project"
+        assert manifest_payload["runtime_requirements"]["required_platform"] == "windows"
+        assert manifest_payload["runtime_requirements"]["required_browser"] == "msedge"
+        assert manifest_payload["entrypoint"]["graph_path"] == "graphs/main.graph.msgpack"
+        assert manifest_payload["entrypoint"]["entry_node_kind"] == "flow.start"
+        assert manifest_payload["graphs"][0]["graph_role"] == "entrypoint"
+        assert manifest_payload["integrity"]["checksums_path"] == "meta/checksums.json"
+        assert manifest_payload["integrity"]["package_info_path"] == "meta/package-info.json"
+        assert package_info_payload["manifest_version"] == 1
+        assert package_info_payload["builder_app_version"] == "0.5.0"
+        assert package_info_payload["source_project_schema_version"] == "project-v2"
+        assert package_info_payload["graph_stats"]["graph_count"] == 1
+        assert package_info_payload["resource_stats"]["embedded_resource_count"] == 0
+        assert package_info_payload["packaging_profile"]["default_output_name"] == "package-build.wcrun"
+
+
+def test_build_project_wcrun_package_returns_diagnostics_when_preflight_blocks(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "package-build-failed.weconduct.json"
+
+    service.create_project(project_name="Package Build Failed Project")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    service.save_project_as(project_path=str(project_path))
+
+    result = service.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+    )
+
+    assert result["status"] == "failed"
+    assert result["summary"]["blocking"] is True
+    assert result["diagnostics"]["total_count"] >= 1
+    assert result["diagnostics"]["highest_severity"] == "error"
+    assert any(
+        entry["setting_field"] == "runtime_defaults.initial_variables.base_url"
+        for entry in result["diagnostics"]["entries"]
+    )
+
+
+def test_build_project_wcrun_package_embeds_project_resources_and_manifest_indexes(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "package-resources.weconduct.json"
+    output_path = tmp_path / "dist" / "package-resources.wcrun"
+    embedded_file = tmp_path / "fixtures" / "upload.txt"
+    embedded_file.parent.mkdir(parents=True, exist_ok=True)
+    embedded_file.write_text("embedded-content", encoding="utf-8")
+
+    service.create_project(project_name="Package Resource Project")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:resource-source",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved_resource = service.save_custom_node_graph_resource(resource_name="Shared Login")
+    service.update_project_settings(
+        project_settings={
+            **service.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://package.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+            "resource_policy": {
+                "embedded_resources": [str(embedded_file)],
+                "external_resource_bindings": [],
+            },
+            "packaging": {
+                **service.get_project_settings_document()["project_settings"]["packaging"],
+                "include_embedded_resources": True,
+            },
+        }
+    )
+    service.save_project_as(project_path=str(project_path))
+
+    result = service.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    assert result["status"] == "built"
+    with zipfile.ZipFile(output_path) as archive:
+        names = set(archive.namelist())
+        manifest_payload = unpackb(archive.read("manifest.msgpack"))
+        package_info_payload = json.loads(archive.read("meta/package-info.json").decode("utf-8"))
+        custom_component_entry = manifest_payload["dependencies"]["custom_components"][0]
+        custom_resource_prefix = f"{custom_component_entry['archive_prefix']}/"
+        assert f"{custom_resource_prefix}manifest.json" in names
+        assert f"{custom_resource_prefix}graph.json" in names
+        assert "resources/embedded/upload.txt" in names
+        assert manifest_payload["resources"]["embedded"][0]["archive_path"] == "resources/embedded/upload.txt"
+        assert custom_component_entry["resource_id"] == saved_resource["resource"]["resource_id"]
+        assert package_info_payload["msgpack_encoding"]["status"] == "msgpack"
+
+
+def test_inspect_and_load_wcrun_package_restores_runtime_package_document(tmp_path: Path) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "inspect-load.weconduct.json"
+    output_path = tmp_path / "dist" / "inspect-load.wcrun"
+    embedded_file = tmp_path / "fixtures" / "inspect.txt"
+    embedded_file.parent.mkdir(parents=True, exist_ok=True)
+    embedded_file.write_text("inspect-content", encoding="utf-8")
+
+    builder.create_project(project_name="Inspect Load Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:inspect-load",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.save_custom_node_graph_resource(resource_name="Inspect Resource")
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://inspect.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+            "resource_policy": {
+                "embedded_resources": [str(embedded_file)],
+                "external_resource_bindings": [],
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    build_result = builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+    assert build_result["status"] == "built"
+
+    loader = CompilationWorkbenchService()
+
+    inspected = loader.inspect_project_package(package_path=str(output_path))
+    loaded = loader.load_project_package(package_path=str(output_path))
+
+    assert inspected["status"] == "ok"
+    assert inspected["package"]["package_kind"] == "wcrun"
+    assert inspected["package"]["manifest"]["source_project"]["project_name"] == "Inspect Load Project"
+    assert inspected["package"]["manifest"]["entrypoint"]["graph_path"] == "graphs/main.graph.msgpack"
+    assert inspected["package"]["resources"]["embedded"][0]["archive_path"] == "resources/embedded/inspect.txt"
+    assert inspected["package_summary"]["package_identity"]["package_name"] == "inspect-load"
+    assert inspected["package_summary"]["runtime_requirements"]["required_browser"] == "msedge"
+    assert inspected["package_summary"]["entrypoint"]["graph_path"] == "graphs/main.graph.msgpack"
+    assert inspected["package_summary"]["graph_summary"]["graph_count"] == 2
+    assert inspected["project_settings_summary"]["project_identity"]["name"] == "Inspect Load Project"
+    assert (
+        inspected["project_settings_summary"]["runtime_defaults"]["initial_variables"]["base_url"]
+        == "http://inspect.test"
+    )
+    assert inspected["project_settings_summary"]["packaging"]["default_output_name"] == "inspect-load.wcrun"
+    assert (
+        inspected["project_settings_summary"]["compile_profile"]["source_of_truth"]
+        == "saved_project_only"
+    )
+    assert inspected["resource_summary"]["embedded_resource_count"] == 1
+    assert inspected["resource_summary"]["external_resource_count"] == 0
+    assert inspected["resource_summary"]["custom_component_count"] == 1
+    assert inspected["resource_summary"]["embedded_resources"][0]["archive_path"] == "resources/embedded/inspect.txt"
+    assert (
+        inspected["dependency_summary"]["builtin_component_count"]
+        == len(inspected["package"]["dependencies"]["builtin_components"])
+    )
+    assert inspected["dependency_summary"]["custom_component_count"] == 1
+    assert (
+        inspected["dependency_summary"]["custom_components"][0]["resource_id"].startswith(
+            "custom_node_graph:"
+        )
+    )
+    assert inspected["graph_detail_summary"]["entrypoint_graph_id"] == "graph:inspect-load"
+    assert inspected["graph_detail_summary"]["main_graph"]["graph_id"] == "graph:inspect-load"
+    assert inspected["graph_detail_summary"]["main_graph"]["node_count"] == 0
+    assert inspected["graph_detail_summary"]["main_graph"]["edge_count"] == 0
+    assert inspected["graph_detail_summary"]["graph_count"] == 2
+    assert inspected["graph_detail_summary"]["custom_component_graph_count"] == 1
+    assert inspected["external_binding_summary"]["declared_count"] == 0
+    assert inspected["external_binding_summary"]["required_count"] == 0
+    assert inspected["external_binding_summary"]["missing_required_count"] == 0
+    assert inspected["runtime_requirement_summary"]["required_browser"] == "msedge"
+    assert inspected["runtime_requirement_summary"]["required_platform"] == "windows"
+    assert inspected["runtime_requirement_summary"]["blocking_count"] == 0
+    assert inspected["runtime_readiness_summary"]["ready"] is True
+    assert inspected["runtime_readiness_summary"]["runtime_requirement_status"]["blocking_count"] == 0
+    assert inspected["runtime_readiness_summary"]["external_resource_binding_status"]["required_count"] == 0
+    assert loaded["status"] == "loaded"
+    assert loaded["package"]["session_dir"] is not None
+    assert Path(loaded["package"]["session_dir"]).exists() is True
+    assert Path(loaded["package"]["session_dir"], "resources", "embedded", "inspect.txt").read_text(
+        encoding="utf-8"
+    ) == "inspect-content"
+    assert loaded["project"]["source_of_truth"] == "wcrun_package"
+    assert loaded["package_summary"]["package_identity"]["package_name"] == "inspect-load"
+    assert loaded["package_summary"]["runtime_requirements"]["required_platform"] == "windows"
+    assert loaded["package_summary"]["graph_summary"]["main_graph_id"] == "graph:inspect-load"
+    assert loaded["package_summary"]["graph_summary"]["graph_count"] == 2
+    assert loaded["project_settings_summary"]["project_identity"]["name"] == "Inspect Load Project"
+    assert (
+        loaded["project_settings_summary"]["runtime_defaults"]["browser_config"]["headless"] is True
+    )
+    assert loaded["project_settings_summary"]["compile_profile"]["source_of_truth"] == "saved_project_only"
+    assert loaded["resource_summary"]["embedded_resource_count"] == 1
+    assert loaded["resource_summary"]["custom_component_count"] == 1
+    assert (
+        loaded["resource_summary"]["custom_components"][0]["resource_id"].startswith("custom_node_graph:")
+    )
+
+
+def test_load_wcrun_package_rewrites_runtime_default_paths_to_embedded_session_files(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "embedded-path-rewrite.weconduct.json"
+    output_path = tmp_path / "dist" / "embedded-path-rewrite.wcrun"
+    embedded_file = tmp_path / "input" / "upload-sample.txt"
+    embedded_file.parent.mkdir(parents=True, exist_ok=True)
+    embedded_file.write_text("upload-sample-content", encoding="utf-8")
+
+    builder.create_project(project_name="Embedded Path Rewrite Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:embedded-path-rewrite",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {
+                    "base_url": "http://embedded-path.test",
+                    "upload_file_path": "input/upload-sample.txt",
+                },
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+            "resource_policy": {
+                "embedded_resources": ["input/upload-sample.txt"],
+                "external_resource_bindings": [],
+            },
+            "packaging": {
+                **builder.get_project_settings_document()["project_settings"]["packaging"],
+                "include_embedded_resources": True,
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    build_result = builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+    assert build_result["status"] == "built"
+
+    loader = CompilationWorkbenchService()
+    loaded = loader.load_project_package(package_path=str(output_path))
+
+    session_dir = Path(loaded["package"]["session_dir"])
+    expected_runtime_path = session_dir / "resources" / "embedded" / "upload-sample.txt"
+    actual_runtime_path = (
+        loaded["project_settings"]["runtime_defaults"]["initial_variables"]["upload_file_path"]
+    )
+
+    assert expected_runtime_path.exists() is True
+    assert actual_runtime_path == str(expected_runtime_path.resolve())
+    assert loaded["runtime_readiness_summary"]["ready"] is True
+    assert loaded["runtime_readiness_summary"]["runtime_requirement_status"]["blocking_count"] == 0
+    assert loaded["runtime_readiness_summary"]["external_resource_binding_status"]["required_count"] == 0
+
+
+def test_load_wcrun_package_runtime_can_read_embedded_resource_from_literal_relative_path(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "embedded-runtime-read.weconduct.json"
+    output_path = tmp_path / "dist" / "embedded-runtime-read.wcrun"
+    embedded_file = tmp_path / "input" / "upload-sample.txt"
+    embedded_file.parent.mkdir(parents=True, exist_ok=True)
+    embedded_file.write_text("embedded-runtime-content", encoding="utf-8")
+
+    builder.create_project(project_name="Embedded Runtime Read Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:embedded-runtime-read",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-read",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-node-read",
+                    "expansion_role": "action:read_text_file",
+                    "display_name": "Read Embedded Text",
+                    "node_kind": "file.read_text_file",
+                    "node_config": {
+                        "path": "input/upload-sample.txt",
+                        "encoding": "utf-8",
+                        "variable_name": "embedded_text",
+                    },
+                    "ports": [],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-read",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-read",
+                }
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {
+                    "base_url": "http://embedded-runtime-read.test",
+                },
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+            "resource_policy": {
+                "embedded_resources": ["input/upload-sample.txt"],
+                "external_resource_bindings": [],
+            },
+            "packaging": {
+                **builder.get_project_settings_document()["project_settings"]["packaging"],
+                "include_embedded_resources": True,
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    build_result = builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+    assert build_result["status"] == "built"
+
+    loader = CompilationWorkbenchService()
+    loader.load_project_package(package_path=str(output_path))
+    started = loader.start_runtime_session(None)
+    session = loader.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert session["result"]["status"] == "succeeded"
+    assert session["result"]["outputs"]["node-read"]["content"] == "embedded-runtime-content"
+    assert session["result"]["variables"]["embedded_text"] == "embedded-runtime-content"
+
+
+def test_inspect_wcrun_package_reports_runtime_readiness_blockers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "inspect-readiness.weconduct.json"
+    output_path = tmp_path / "dist" / "inspect-readiness.wcrun"
+
+    builder.create_project(project_name="Inspect Readiness Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:inspect-readiness",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://inspect-readiness.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "resource_policy": {
+                "embedded_resources": [],
+                "external_resource_bindings": [],
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    build_result = builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+    assert build_result["status"] == "built"
+    _rewrite_wcrun_manifest(
+        output_path,
+        lambda manifest_payload: manifest_payload["runtime_requirements"].update(
+            {
+                "minimum_app_version": "9.9.9",
+                "required_browser": "chrome",
+            }
+        ),
+    )
+    _rewrite_wcrun_project_settings(
+        output_path,
+        lambda project_settings_payload: project_settings_payload.__setitem__(
+            "external_resources",
+            [
+                {
+                    "resource_id": "ext-required-file",
+                    "resource_key": "external.required_file",
+                    "display_name": "Required File",
+                    "description": "外部文件",
+                    "target": {"type": "initial_variable", "name": "upload_path"},
+                    "required": True,
+                }
+            ],
+        ),
+    )
+
+    loader = CompilationWorkbenchService()
+    monkeypatch.setattr(
+        loader,
+        "_probe_captcha_ocr_runtime_requirement",
+        lambda: (True, "captcha_ocr runtime available"),
+        raising=False,
+    )
+    inspected = loader.inspect_project_package(package_path=str(output_path))
+
+    assert inspected["runtime_readiness_summary"]["ready"] is False
+    assert inspected["runtime_readiness_summary"]["runtime_requirement_status"]["blocking_count"] == 2
+    assert (
+        inspected["runtime_readiness_summary"]["external_resource_binding_status"]["missing_required_count"]
+        == 1
+    )
+    assert inspected["runtime_requirement_summary"]["blocking_count"] == 2
+    assert "package.runtime_requirement.minimum_app_version_unsupported" in (
+        inspected["runtime_requirement_summary"]["blocking_categories"]
+    )
+    assert inspected["external_binding_summary"]["declared_count"] == 1
+    assert inspected["external_binding_summary"]["required_count"] == 1
+    assert inspected["external_binding_summary"]["missing_required_count"] == 1
+    assert inspected["external_binding_summary"]["entries"][0]["missing_required"] is True
+    assert any(
+        entry["category"] == "package.runtime_requirement.minimum_app_version_unsupported"
+        for entry in inspected["runtime_readiness_summary"]["diagnostics"]
+    )
+    assert any(
+        entry["category"] == "project_settings.external_resource.required_binding_missing"
+        for entry in inspected["runtime_readiness_summary"]["diagnostics"]
+    )
+
+
+def test_load_wcrun_package_restores_full_custom_component_resource_record(tmp_path: Path) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "load-resource.weconduct.json"
+    output_path = tmp_path / "dist" / "load-resource.wcrun"
+
+    text_input = builder.build_graph_node_draft(resource_key="component.input")
+    text_input["node"]["node_id"] = "node-component-input-text"
+    text_input["node"]["source_anchor_ref"] = "n-node-component-input-text"
+    text_input["node"]["node_config"] = {
+        "name": "username",
+        "value_type": "string",
+        "required": True,
+        "default_value": "demo-user",
+        "description": "用户名",
+    }
+    builder.create_project(project_name="Load Resource Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:load-resource",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [text_input["node"]],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = builder.save_custom_node_graph_resource(resource_name="Restored Resource")
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://restore.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    loader = CompilationWorkbenchService()
+    loader.load_project_package(package_path=str(output_path))
+    registry = loader.get_resource_registry_document()["resources"]
+    restored = next(item for item in registry if item["resource_id"] == saved["resource"]["resource_id"])
+
+    assert restored["display_name"] == "Restored Resource"
+    assert restored["origin"] == "package"
+    assert restored["source_graph_document"]["nodes"][0]["node_id"] == "node-component-input-text"
+    assert restored["input_schema"]["username"]["type"] == "string"
+
+
+def test_loaded_wcrun_package_can_start_runtime_session_using_loaded_workspace_graph(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "runtime-from-package.weconduct.json"
+    output_path = tmp_path / "dist" / "runtime-from-package.wcrun"
+
+    builder.create_project(project_name="Runtime From Package Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:runtime-from-package",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-request",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-node-request",
+                    "expansion_role": "action:request",
+                    "display_name": "请求",
+                    "node_kind": "http.request",
+                    "node_config": {"url": "http://example.test", "method": "GET"},
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://runtime-from-package.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    loader = CompilationWorkbenchService()
+    loader.load_project_package(package_path=str(output_path))
+    started = loader.start_runtime_session(None)
+
+    assert started["status"] == "started"
+    assert started["request"]["request_origin"] == "saved_graph_document"
+    assert started["runtime_plan"]["graph_model_id"] == "graph:runtime-from-package"
+
+
+def test_unload_wcrun_package_cleans_session_dir_and_resets_workspace(tmp_path: Path) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "unload-package.weconduct.json"
+    output_path = tmp_path / "dist" / "unload-package.wcrun"
+
+    builder.create_project(project_name="Unload Package Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:unload-package",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://unload.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    loader = CompilationWorkbenchService()
+    loaded = loader.load_project_package(package_path=str(output_path))
+    session_dir = Path(loaded["package"]["session_dir"])
+
+    unloaded = loader.unload_project_package()
+    snapshot = loader.get_workbench_snapshot()
+
+    assert unloaded["status"] == "unloaded"
+    assert unloaded["package"]["session_dir"] == str(session_dir.resolve())
+    assert session_dir.exists() is False
+    assert snapshot["project"]["source_of_truth"] == "graph_document"
+    assert snapshot["project_settings"]["source_of_truth"] == "graph_document"
+    assert snapshot["project"]["project_file_path"] is None
+    assert snapshot["graph_workspace"]["graph_model_id"] == "graph:workspace"
+
+
+def test_loaded_wcrun_package_snapshot_project_settings_exposes_wcrun_state(tmp_path: Path) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "snapshot-loaded.weconduct.json"
+    output_path = tmp_path / "dist" / "snapshot-loaded.wcrun"
+
+    builder.create_project(project_name="Snapshot Loaded Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:snapshot-loaded",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://snapshot-loaded.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+            "packaging": {
+                **builder.get_project_settings_document()["project_settings"]["packaging"],
+                "default_output_name": "snapshot-loaded.wcrun",
+            },
+            "external_resources": [
+                {
+                    "resource_id": "ext-upload-file",
+                    "bind_key": "upload_path",
+                    "kind": "file",
+                    "required": False,
+                    "picker": "file",
+                    "description": "上传文件",
+                    "example_value": "C:\\data\\upload.txt",
+                    "target": {"type": "initial_variable", "name": "upload_path"},
+                    "validation": {"must_exist": False},
+                }
+            ],
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    loader = CompilationWorkbenchService()
+    loader.load_project_package(package_path=str(output_path))
+    snapshot = loader.get_workbench_snapshot()
+
+    assert snapshot["project"]["source_of_truth"] == "wcrun_package"
+    assert snapshot["project_settings"]["loaded"] is True
+    assert snapshot["project_settings"]["source_of_truth"] == "wcrun_package"
+    assert snapshot["project_settings"]["state_source"] == "workspace_state"
+    assert snapshot["project_settings"]["project_file_path"] is None
+    assert snapshot["project_settings"]["project_settings_path"] is None
+    assert snapshot["project_settings"]["session_dir"] == loader.get_project_settings_document()["state"]["session_dir"]
+    assert snapshot["project_settings"]["is_dirty"] is False
+    assert snapshot["project_settings"]["has_external_resources"] is True
+    assert snapshot["project_settings"]["external_resource_count"] == 1
+    assert snapshot["project_settings"]["package_default_output_name"] == "snapshot-loaded.wcrun"
+
+
+def test_loaded_wcrun_package_blocks_runtime_start_when_required_external_resource_missing(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "external-required.weconduct.json"
+    output_path = tmp_path / "dist" / "external-required.wcrun"
+
+    builder.create_project(project_name="External Required Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:external-required",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://external-required.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+            "external_resources": [
+                {
+                    "resource_id": "ext-upload-file",
+                    "bind_key": "upload_path",
+                    "kind": "file",
+                    "required": False,
+                    "picker": "file",
+                    "description": "上传文件",
+                    "example_value": "C:\\data\\upload.txt",
+                    "target": {"type": "initial_variable", "name": "upload_path"},
+                    "validation": {"must_exist": False},
+                }
+            ],
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    loader = CompilationWorkbenchService()
+    loader.load_project_package(package_path=str(output_path))
+    started = loader.start_runtime_session(None)
+
+    assert started["status"] == "failed"
+    assert started["runtime_session"]["status"] == "diagnostic_blocked"
+    assert any(
+        entry["category"] == "package.external_resource.runtime_binding_required"
+        for entry in started["diagnostics"]["entries"]
+    )
+
+
+def test_loaded_wcrun_package_can_bind_external_resource_into_runtime_defaults(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "external-bind.weconduct.json"
+    output_path = tmp_path / "dist" / "external-bind.wcrun"
+    provided_file = tmp_path / "provided" / "upload.txt"
+    provided_file.parent.mkdir(parents=True, exist_ok=True)
+    provided_file.write_text("payload", encoding="utf-8")
+
+    builder.create_project(project_name="External Bind Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:external-bind",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-request",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-node-request",
+                    "expansion_role": "action:request",
+                    "display_name": "请求",
+                    "node_kind": "http.request",
+                    "node_config": {"url": "http://example.test", "method": "GET"},
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://external-bind.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+            "external_resources": [
+                {
+                    "resource_id": "ext-upload-file",
+                    "bind_key": "upload_path",
+                    "kind": "file",
+                    "required": False,
+                    "picker": "file",
+                    "description": "上传文件",
+                    "example_value": "C:\\data\\upload.txt",
+                    "target": {"type": "initial_variable", "name": "upload_path"},
+                    "validation": {"must_exist": False},
+                }
+            ],
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    loader = CompilationWorkbenchService()
+    loader.load_project_package(package_path=str(output_path))
+    bound = loader.bind_loaded_package_external_resource(
+        resource_id="ext-upload-file",
+        value=str(provided_file),
+    )
+    started = loader.start_runtime_session(None)
+
+    assert bound["status"] == "bound"
+    assert bound["binding"]["target_name"] == "upload_path"
+    assert bound["runtime_defaults"]["initial_variables"]["upload_path"] == str(provided_file.resolve())
+    assert started["status"] == "started"
+
+
+def test_loaded_wcrun_package_blocks_project_settings_mutation_but_allows_runtime_defaults(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "readonly-settings.weconduct.json"
+    output_path = tmp_path / "dist" / "readonly-settings.wcrun"
+
+    builder.create_project(project_name="Readonly Settings Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:readonly-settings",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://readonly-settings-source.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    build_result = builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+    assert build_result["status"] == "built"
+
+    loader = CompilationWorkbenchService()
+    loader.load_project_package(package_path=str(output_path))
+
+    with pytest.raises(ValueError, match="runtime defaults"):
+        loader.update_project_settings(
+            project_settings={
+                **loader.get_project_settings_document()["project_settings"],
+                "project_identity": {
+                    **loader.get_project_settings_document()["project_settings"]["project_identity"],
+                    "description": "should be blocked",
+                },
+            }
+        )
+
+    updated = loader.update_project_runtime_defaults(
+        runtime_defaults={
+            "initial_variables": {"base_url": "http://readonly-settings.test"},
+            "browser_config": {"headless": False, "slow_mo_ms": 0},
+            "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+        }
+    )
+
+    assert updated["status"] == "updated"
+    assert updated["runtime_defaults"]["browser_config"]["headless"] is False
+
+
+def test_loaded_wcrun_package_blocks_graph_and_project_save_operations(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "readonly-save.weconduct.json"
+    output_path = tmp_path / "dist" / "readonly-save.wcrun"
+
+    builder.create_project(project_name="Readonly Save Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:readonly-save",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://readonly-save-source.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    build_result = builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+    assert build_result["status"] == "built"
+
+    loader = CompilationWorkbenchService()
+    loaded = loader.load_project_package(package_path=str(output_path))
+
+    with pytest.raises(ValueError, match="read-only"):
+        loader.save_graph_document(
+            {
+                "graph_model_id": "graph:readonly-save",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [
+                    {
+                        "node_id": "node-1",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-node-1",
+                        "expansion_role": "action:request",
+                        "display_name": "请求",
+                        "node_kind": "http.request",
+                        "node_config": {"url": "http://example.test", "method": "GET"},
+                        "ports": [],
+                    }
+                ],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+
+    with pytest.raises(ValueError, match="read-only"):
+        loader.save_project()
+
+    with pytest.raises(ValueError, match="read-only"):
+        loader.save_project_as(project_path=tmp_path / "copy.weconduct.json")
+
+    assert loaded["project"]["source_of_truth"] == "wcrun_package"
+
+
+def test_loaded_wcrun_package_blocks_runtime_start_with_graph_document_payload(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "readonly-runtime-payload.weconduct.json"
+    output_path = tmp_path / "dist" / "readonly-runtime-payload.wcrun"
+
+    builder.create_project(project_name="Readonly Runtime Payload Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:readonly-runtime-payload",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://readonly-runtime-payload-source.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    build_result = builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+    assert build_result["status"] == "built"
+
+    loader = CompilationWorkbenchService()
+    loader.load_project_package(package_path=str(output_path))
+
+    with pytest.raises(ValueError, match="read-only"):
+        loader.start_runtime_session(
+            {
+                "graph_model_id": "graph:readonly-runtime-payload",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+
+    graph_document = loader.get_graph_document()
+    assert graph_document["view"]["is_editable"] is False
+
+
+def test_loaded_wcrun_package_blocks_runtime_start_when_runtime_requirements_mismatch(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "runtime-requirements.weconduct.json"
+    output_path = tmp_path / "dist" / "runtime-requirements.wcrun"
+
+    builder.create_project(project_name="Runtime Requirements Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:runtime-requirements",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-request",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-node-request",
+                    "expansion_role": "action:request",
+                    "display_name": "请求",
+                    "node_kind": "http.request",
+                    "node_config": {"url": "http://example.test", "method": "GET"},
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://runtime-requirements.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    _rewrite_wcrun_manifest(
+        output_path,
+        lambda manifest_payload: manifest_payload["runtime_requirements"].__setitem__(
+            "minimum_app_version",
+            "9.9.9",
+        ),
+    )
+
+    loader = CompilationWorkbenchService()
+    loader.load_project_package(package_path=str(output_path))
+    started = loader.start_runtime_session(None)
+
+    assert started["status"] == "failed"
+    assert started["runtime_session"]["status"] == "diagnostic_blocked"
+    assert any(
+        entry["category"] == "package.runtime_requirement.minimum_app_version_unsupported"
+        for entry in started["diagnostics"]["entries"]
+    )
+
+
+def test_loaded_wcrun_package_blocks_runtime_start_when_required_platform_is_unsupported(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "required-platform.weconduct.json"
+    output_path = tmp_path / "dist" / "required-platform.wcrun"
+
+    builder.create_project(project_name="Required Platform Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://required-platform.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+    _rewrite_wcrun_manifest(
+        output_path,
+        lambda manifest_payload: manifest_payload["runtime_requirements"].__setitem__(
+            "required_platform",
+            "linux",
+        ),
+    )
+
+    loader = CompilationWorkbenchService()
+    loader.load_project_package(package_path=str(output_path))
+    started = loader.start_runtime_session(None)
+
+    assert started["status"] == "failed"
+    assert started["runtime_session"]["status"] == "diagnostic_blocked"
+    assert any(
+        entry["category"] == "package.runtime_requirement.required_platform_unsupported"
+        for entry in started["diagnostics"]["entries"]
+    )
+
+
+def test_loaded_wcrun_package_blocks_runtime_start_when_required_browser_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "required-browser.weconduct.json"
+    output_path = tmp_path / "dist" / "required-browser.wcrun"
+
+    builder.create_project(project_name="Required Browser Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://required-browser.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+    _rewrite_wcrun_manifest(
+        output_path,
+        lambda manifest_payload: manifest_payload["runtime_requirements"].__setitem__(
+            "required_browser",
+            "chrome",
+        ),
+    )
+
+    loader = CompilationWorkbenchService()
+    loader.load_project_package(package_path=str(output_path))
+    started = loader.start_runtime_session(None)
+
+    assert started["status"] == "failed"
+    assert started["runtime_session"]["status"] == "diagnostic_blocked"
+    assert any(
+        entry["category"] == "package.runtime_requirement.required_browser_unsupported"
+        for entry in started["diagnostics"]["entries"]
+    )
+
+
+def test_loaded_wcrun_package_blocks_runtime_start_when_captcha_ocr_is_required_but_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "required-captcha.weconduct.json"
+    output_path = tmp_path / "dist" / "required-captcha.wcrun"
+
+    builder.create_project(project_name="Required Captcha Project")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://required-captcha.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+    _rewrite_wcrun_manifest(
+        output_path,
+        lambda manifest_payload: manifest_payload["runtime_requirements"].__setitem__(
+            "requires_captcha_ocr",
+            True,
+        ),
+    )
+
+    loader = CompilationWorkbenchService()
+    loader.load_project_package(package_path=str(output_path))
+    monkeypatch.setattr(
+        loader,
+        "_probe_captcha_ocr_runtime_requirement",
+        lambda: (False, "captcha_ocr runtime not found"),
+        raising=False,
+    )
+    started = loader.start_runtime_session(None)
+
+    assert started["status"] == "failed"
+    assert started["runtime_session"]["status"] == "diagnostic_blocked"
+    assert any(
+        entry["category"] == "package.runtime_requirement.captcha_ocr_unavailable"
+        for entry in started["diagnostics"]["entries"]
+    )
+
+
 def test_open_legacy_v1_project_file_migrates_into_split_project_state(tmp_path: Path) -> None:
     legacy_project_path = tmp_path / "legacy.weconduct.json"
     legacy_payload = {
@@ -19067,6 +21092,146 @@ def test_open_legacy_v1_project_file_migrates_into_split_project_state(tmp_path:
     assert opened["project"]["project_file_path"] == str(legacy_project_path)
     assert opened["project"]["project_schema_version"] in {"project-v1", "project-v2"}
     assert opened["graph_document"].graph_model_id == "graph:workspace"
+
+
+def test_open_legacy_v1_project_file_backfills_runtime_defaults_from_flow_start(tmp_path: Path) -> None:
+    legacy_project_path = tmp_path / "legacy-flow-start.weconduct.json"
+    legacy_payload = {
+        "project_file_schema_version": 1,
+        "saved_at": "2026-06-18T00:00:00Z",
+        "project": {
+            "project_id": "legacy-flow-start",
+            "project_name": "Legacy Flow Start",
+            "project_schema_version": "project-v1",
+            "project_status": "ready",
+            "workspace_root": str(tmp_path),
+            "source_of_truth": "graph_document",
+            "main_graph_document_id": "graph:workspace",
+            "resource_registry_revision": 0,
+        },
+        "resource_registry": [],
+        "editor_history": {"undo_stack": [], "redo_stack": []},
+        "execution_history": {"runtime_runs": [], "debug_sessions": []},
+        "graph_document": {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {
+                            "base_url": "http://legacy-backfill.test",
+                            "username": "legacy-user",
+                        },
+                        "browser_config": {"headless": True, "slow_mo_ms": 80},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        },
+        "graph_document_meta": {"save_revision": 0, "saved_at": None},
+    }
+    legacy_project_path.write_text(
+        json.dumps(legacy_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    service = CompilationWorkbenchService()
+    service.open_project(project_path=str(legacy_project_path))
+    settings_document = service.get_project_settings_document()
+
+    assert (
+        settings_document["project_settings"]["runtime_defaults"]["initial_variables"]["base_url"]
+        == "http://legacy-backfill.test"
+    )
+    assert (
+        settings_document["project_settings"]["runtime_defaults"]["initial_variables"]["username"]
+        == "legacy-user"
+    )
+    assert (
+        settings_document["project_settings"]["runtime_defaults"]["browser_config"]["slow_mo_ms"] == 80
+    )
+
+
+def test_open_legacy_v1_project_file_can_build_wcrun_using_flow_start_backfilled_runtime_defaults(
+    tmp_path: Path,
+) -> None:
+    legacy_project_path = tmp_path / "legacy-package.weconduct.json"
+    output_path = tmp_path / "dist" / "legacy-package.wcrun"
+    legacy_payload = {
+        "project_file_schema_version": 1,
+        "saved_at": "2026-06-18T00:00:00Z",
+        "project": {
+            "project_id": "legacy-package-project",
+            "project_name": "Legacy Package Project",
+            "project_schema_version": "project-v1",
+            "project_status": "ready",
+            "workspace_root": str(tmp_path),
+            "source_of_truth": "graph_document",
+            "main_graph_document_id": "graph:workspace",
+            "resource_registry_revision": 0,
+        },
+        "resource_registry": [],
+        "editor_history": {"undo_stack": [], "redo_stack": []},
+        "execution_history": {"runtime_runs": [], "debug_sessions": []},
+        "graph_document": {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://legacy-package.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        }
+                    ],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        },
+        "graph_document_meta": {"save_revision": 0, "saved_at": None},
+    }
+    legacy_project_path.write_text(
+        json.dumps(legacy_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    service = CompilationWorkbenchService()
+    service.open_project(project_path=str(legacy_project_path))
+
+    preflight = service.run_project_package_preflight()
+    built = service.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=output_path,
+    )
+
+    assert preflight["status"] == "ok"
+    assert preflight["summary"]["blocking"] is False
+    assert built["status"] == "built"
+    assert built["package"]["output_path"] == str(output_path.resolve())
 
 
 def test_open_split_project_file_restores_graph_and_project_resources(tmp_path: Path) -> None:

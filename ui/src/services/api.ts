@@ -31,6 +31,15 @@ import type {
   NodeDraftResponse,
   WebControlConvertRequest,
   WebControlConvertResponse,
+  ProjectSettingsResponse,
+  RuntimeDefaults,
+  RuntimeDefaultsResponse,
+  RuntimeDefaultsUpdateResponse,
+  PackagePreflightResponse,
+  PackageBuildRequest,
+  PackageBuildResponse,
+  PackageInspectResponse,
+  PackageLoadResponse,
 } from '@/types/domains/api'
 
 const API_BASE = '/api'
@@ -233,6 +242,11 @@ export function postFileDialog(body: { mode: string; title?: string; file_types?
   return request('/host/file-dialog', { method: 'POST', body: JSON.stringify(body) })
 }
 
+// ===== P8.1: Host Open Path =====
+export function postOpenPath(body: { path: string }): Promise<{ status: string; path: string; target_kind: string }> {
+  return request('/host/open-path', { method: 'POST', body: JSON.stringify(body) })
+}
+
 // ===== P8.1: Host Read File =====
 export function postReadFile(body: { path: string; encoding?: string; max_bytes?: number }): Promise<{ status: string; path: string; encoding: string; content: string; bytes_read: number }> {
   return request('/host/read-file', { method: 'POST', body: JSON.stringify(body) })
@@ -253,5 +267,22 @@ export function postPreferencesReset(): Promise<PreferencesResponse> { return re
 export function postConvertWebcontrol(body: WebControlConvertRequest): Promise<WebControlConvertResponse> {
   return request<WebControlConvertResponse>('/workbench/project/convert-webcontrol', { method: 'POST', body: JSON.stringify(body) })
 }
+
+// ===== P16: Project Settings & .wcrun Package =====
+export function fetchProjectSettings(): Promise<ProjectSettingsResponse> { return request('/workbench/project/settings') }
+export function postProjectSettings(body: { project_settings: Record<string, unknown> }): Promise<ProjectSettingsResponse> { return request('/workbench/project/settings', { method: 'POST', body: JSON.stringify(body) }) }
+export function fetchRuntimeDefaults(): Promise<RuntimeDefaultsResponse> { return request('/workbench/project/runtime-defaults') }
+export function postRuntimeDefaults(body: { runtime_defaults: RuntimeDefaults }): Promise<RuntimeDefaultsUpdateResponse> { return request('/workbench/project/runtime-defaults', { method: 'POST', body: JSON.stringify(body) }) }
+export function postPackagePreflight(body?: { mode?: string; source_of_truth?: string }): Promise<PackagePreflightResponse> {
+  return request('/workbench/project/package/preflight', {
+    method: 'POST',
+    body: JSON.stringify(body || {}),
+  })
+}
+export function postPackageBuild(body?: PackageBuildRequest): Promise<PackageBuildResponse> { return request('/workbench/project/package/build', { method: 'POST', body: JSON.stringify(body || {}) }) }
+export function fetchPackageInspect(packagePath: string): Promise<PackageInspectResponse> { return request(`/workbench/project/package/inspect?package_path=${encodeURIComponent(packagePath)}`) }
+export function postPackageLoad(packagePath: string): Promise<PackageLoadResponse> { return request('/workbench/project/package/load', { method: 'POST', body: JSON.stringify({ package_path: packagePath }) }) }
+export function postPackageUnload(): Promise<{ status: string }> { return request('/workbench/project/package/unload', { method: 'POST', body: '{}' }) }
+export function postPackageBindExternal(body: { resource_id: string; value: string }): Promise<{ status: string }> { return request('/workbench/project/package/external-resources/bind', { method: 'POST', body: JSON.stringify(body) }) }
 
 export { ApiError }

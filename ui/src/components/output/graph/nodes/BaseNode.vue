@@ -82,6 +82,7 @@ function getFieldTemplate(fieldKey: string): FieldTemplate | undefined {
 }
 
 function isEditable(v: unknown, fieldKey?: string): boolean {
+  if (!workspace.isGraphEditable) return false
   if (fieldKey) {
     const t = getFieldTemplate(fieldKey)
     if (t && (t.type === 'object-map' || t.type === 'branch-list' || t.type === 'code' || t.type === 'typed-value')) return false
@@ -202,7 +203,7 @@ async function applyBranches() {
 </script>
 
 <template>
-  <div :class="['vf-node', kindClass, { selected, 'node-disabled': isDisabled }]">
+  <div :class="['vf-node', kindClass, { selected, 'node-disabled': isDisabled, 'node-ro': !workspace.isGraphEditable }]">
     <!-- Header: full width -->
     <div class="vf-node-header">
       <span class="vf-node-kind">{{ kindLabel }}</span>
@@ -228,17 +229,17 @@ async function applyBranches() {
               <div v-if="sec.section" class="vf-cfg-section">{{ sec.section }}</div>
               <div v-for="e in sec.rows" :key="e.path" class="vf-cfg-row">
                 <span class="vf-cfg-key">{{ e.key }}</span>
-                <input v-if="e.editable && typeof e.value === 'boolean'" type="checkbox" :checked="!!e.value" @change="updateConfigField(e.path, String(($event.target as HTMLInputElement).checked))" @mousedown.stop @click.stop />
-                <select v-else-if="e.editable && getFieldTemplate(e.key)?.options" class="vf-cfg-input" :value="String(e.value ?? '')" @change="updateConfigField(e.path, ($event.target as HTMLSelectElement).value)" @mousedown.stop @click.stop style="flex:1">
+                <input v-if="e.editable && typeof e.value === 'boolean'" :disabled="!workspace.isGraphEditable" type="checkbox" :checked="!!e.value" @change="updateConfigField(e.path, String(($event.target as HTMLInputElement).checked))" @mousedown.stop @click.stop />
+                <select v-else-if="e.editable && getFieldTemplate(e.key)?.options" class="vf-cfg-input" :disabled="!workspace.isGraphEditable" :value="String(e.value ?? '')" @change="updateConfigField(e.path, ($event.target as HTMLSelectElement).value)" @mousedown.stop @click.stop style="flex:1">
                   <option v-for="o in getFieldTemplate(e.key)!.options" :key="o" :value="o">{{ o }}</option>
                 </select>
-                <input v-else-if="e.editable && typeof e.value === 'number'" class="vf-cfg-input" type="number" :value="e.value as number" @change="updateConfigField(e.path, ($event.target as HTMLInputElement).value)" @mousedown.stop @click.stop />
+                <input v-else-if="e.editable && typeof e.value === 'number'" class="vf-cfg-input" :disabled="!workspace.isGraphEditable" type="number" :value="e.value as number" @change="updateConfigField(e.path, ($event.target as HTMLInputElement).value)" @mousedown.stop @click.stop />
                 <span v-else-if="e.editable" style="display:flex;gap:1px;align-items:center">
-                  <input class="vf-cfg-input" :value="String(e.value ?? '')" @change="updateConfigField(e.path, ($event.target as HTMLInputElement).value)" @mousedown.stop @click.stop />
-                  <button v-if="isPathField(e.key)" class="vf-path-btn" @mousedown.stop @click.stop @click="pickPathForInline(e.path)" title="选择路径">…</button>
+                  <input class="vf-cfg-input" :disabled="!workspace.isGraphEditable" :value="String(e.value ?? '')" @change="updateConfigField(e.path, ($event.target as HTMLInputElement).value)" @mousedown.stop @click.stop />
+                  <button v-if="isPathField(e.key)" class="vf-path-btn" :disabled="!workspace.isGraphEditable" @mousedown.stop @click.stop @click="pickPathForInline(e.path)" title="选择路径">…</button>
                 </span>
                 <span v-else class="vf-cfg-ro" :class="{ 'vf-bound': e.display.startsWith('⇠') }">{{ e.display }}</span>
-                <button v-if="Array.isArray(e.value)" class="vf-branch-edit" @mousedown.stop @click.stop @click="openBranchEditor(e.path)" title="编辑分支">⚙</button>
+                <button v-if="Array.isArray(e.value)" class="vf-branch-edit" :disabled="!workspace.isGraphEditable" @mousedown.stop @click.stop @click="openBranchEditor(e.path)" title="编辑分支">⚙</button>
               </div>
             </template>
           </div>
@@ -269,14 +270,14 @@ async function applyBranches() {
           </div>
           <div class="br-body">
             <div v-for="(b, bi) in branchEditorItems" :key="bi" class="br-row">
-              <input class="br-key" :value="b.key" @change="branchEditorItems[bi].key = ($event.target as HTMLInputElement).value" placeholder="key" />
-              <input class="br-label" :value="b.label" @change="branchEditorItems[bi].label = ($event.target as HTMLInputElement).value" placeholder="label" />
-              <button class="br-del" @click="deleteBranchItem(bi)">✕</button>
+              <input class="br-key" :disabled="!workspace.isGraphEditable" :value="b.key" @change="branchEditorItems[bi].key = ($event.target as HTMLInputElement).value" placeholder="key" />
+              <input class="br-label" :disabled="!workspace.isGraphEditable" :value="b.label" @change="branchEditorItems[bi].label = ($event.target as HTMLInputElement).value" placeholder="label" />
+              <button class="br-del" :disabled="!workspace.isGraphEditable" @click="deleteBranchItem(bi)">✕</button>
             </div>
-            <button class="br-add" @click="addBranchItem">+ 新增分支</button>
+            <button class="br-add" :disabled="!workspace.isGraphEditable" @click="addBranchItem">+ 新增分支</button>
           </div>
           <div class="br-ft">
-            <button class="br-apply" @click="applyBranches">应用并同步端口</button>
+            <button class="br-apply" :disabled="!workspace.isGraphEditable" @click="applyBranches">应用并同步端口</button>
           </div>
         </div>
       </div>

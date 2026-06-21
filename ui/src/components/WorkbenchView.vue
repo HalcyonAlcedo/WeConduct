@@ -11,6 +11,8 @@ import ResourceManagerPanel from '@/components/shells/ResourceManagerPanel.vue'
 import TaskExecutionPanel from '@/components/shells/TaskExecutionPanel.vue'
 import GraphCanvasPanel from '@/components/output/graph/GraphCanvasPanel.vue'
 import PreferencesPanel from '@/components/shells/PreferencesPanel.vue'
+import ProjectSettingsPanel from '@/components/shells/ProjectSettingsPanel.vue'
+import PackagePanel from '@/components/shells/PackagePanel.vue'
 
 const dock = useDockStore()
 const resource = useResourceStore()
@@ -25,6 +27,8 @@ onMounted(() => {
   dock.register({ id: 'resources', title: '资源管理' })
   dock.register({ id: 'tasks', title: '任务执行' })
   dock.register({ id: 'preferences', title: '首选项' })
+  dock.register({ id: 'projectSettings', title: '项目设置' })
+  dock.register({ id: 'packageManager', title: '.wcrun 打包' })
 
   // Default layout
   if (dock.zones.center.panels.length === 0) {
@@ -46,5 +50,7 @@ onMounted(() => {
     <template #resources><ResourceManagerPanel /></template>
     <template #tasks><TaskExecutionPanel /></template>
     <template #preferences><PreferencesPanel /></template>
+    <template #projectSettings><ProjectSettingsPanel /></template>
+    <template #packageManager><PackagePanel /></template>
   </DockLayout>
 </template>

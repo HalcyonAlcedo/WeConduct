@@ -1,14 +1,18 @@
+import hashlib
 import json
 import threading
 import time
 import urllib.error
 import urllib.request
+from typing import Callable
+import zipfile
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import TCPServer
 from openpyxl import Workbook
 
 from weconduct.api.server import WeConductApiHandler
+from weconduct.packaging.msgpack_codec import packb, unpackb
 
 
 class ApiTestServer(TCPServer):
@@ -150,6 +154,82 @@ class BrowserMockSiteHandler(BaseHTTPRequestHandler):
 
 class BrowserMockSiteServer(TCPServer):
     allow_reuse_address = True
+
+
+def _rewrite_wcrun_manifest(
+    package_path: Path,
+    mutate_manifest: Callable[[dict], None],
+) -> None:
+    with zipfile.ZipFile(package_path, mode="r") as archive:
+        package_contents = {
+            name: archive.read(name)
+            for name in archive.namelist()
+            if name != "meta/checksums.json"
+        }
+    manifest_payload = unpackb(package_contents["manifest.msgpack"])
+    mutate_manifest(manifest_payload)
+    package_contents["manifest.msgpack"] = packb(manifest_payload)
+    checksums_payload = {
+        "checksum_schema_version": 1,
+        "algorithm": "sha256",
+        "entries": [
+            {
+                "path": path,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size": len(content),
+            }
+            for path, content in sorted(package_contents.items(), key=lambda item: item[0])
+        ],
+    }
+    temp_path = package_path.with_suffix(f"{package_path.suffix}.tmp")
+    with zipfile.ZipFile(temp_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path, content in sorted(package_contents.items(), key=lambda item: item[0]):
+            archive.writestr(path, content)
+        archive.writestr(
+            "meta/checksums.json",
+            json.dumps(checksums_payload, ensure_ascii=False, indent=2),
+        )
+    temp_path.replace(package_path)
+
+
+def _rewrite_wcrun_project_settings(
+    package_path: Path,
+    mutate_project_settings: Callable[[dict], None],
+) -> None:
+    with zipfile.ZipFile(package_path, mode="r") as archive:
+        package_contents = {
+            name: archive.read(name)
+            for name in archive.namelist()
+            if name != "meta/checksums.json"
+        }
+    project_settings_payload = json.loads(package_contents["project-settings.json"].decode("utf-8"))
+    mutate_project_settings(project_settings_payload)
+    package_contents["project-settings.json"] = json.dumps(
+        project_settings_payload,
+        ensure_ascii=False,
+        indent=2,
+    ).encode("utf-8")
+    checksums_payload = {
+        "checksum_schema_version": 1,
+        "algorithm": "sha256",
+        "entries": [
+            {
+                "path": path,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size": len(content),
+            }
+            for path, content in sorted(package_contents.items(), key=lambda item: item[0])
+        ],
+    }
+    temp_path = package_path.with_suffix(f"{package_path.suffix}.tmp")
+    with zipfile.ZipFile(temp_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path, content in sorted(package_contents.items(), key=lambda item: item[0]):
+            archive.writestr(path, content)
+        archive.writestr(
+            "meta/checksums.json",
+            json.dumps(checksums_payload, ensure_ascii=False, indent=2),
+        )
+    temp_path.replace(package_path)
 
 
 def _start_test_server(
@@ -343,6 +423,17 @@ def test_http_api_exposes_snapshot_and_compile(tmp_path: Path) -> None:
         assert snapshot["entrypoints"]["graph_document"] == "/api/workbench/graph"
         assert snapshot["entrypoints"]["graph_validate_action"] == "/api/workbench/graph/validate"
         assert snapshot["entrypoints"]["graph_compile_action"] == "/api/workbench/graph/compile"
+        assert snapshot["entrypoints"]["project_settings"] == "/api/workbench/project/settings"
+        assert snapshot["entrypoints"]["project_runtime_defaults"] == "/api/workbench/project/runtime-defaults"
+        assert snapshot["entrypoints"]["project_package_preflight_action"] == "/api/workbench/project/package/preflight"
+        assert snapshot["entrypoints"]["project_package_build_action"] == "/api/workbench/project/package/build"
+        assert snapshot["entrypoints"]["project_package_inspect"] == "/api/workbench/project/package/inspect"
+        assert snapshot["entrypoints"]["project_package_load_action"] == "/api/workbench/project/package/load"
+        assert snapshot["entrypoints"]["project_package_unload_action"] == "/api/workbench/project/package/unload"
+        assert (
+            snapshot["entrypoints"]["project_package_external_resource_bind_action"]
+            == "/api/workbench/project/package/external-resources/bind"
+        )
         assert snapshot["entrypoints"]["runtime_prepare_action"] == "/api/workbench/runtime/prepare"
         assert snapshot["entrypoints"]["debug_prepare_action"] == "/api/workbench/debug/prepare"
         assert snapshot["entrypoints"]["host_info"] == "/api/host/info"
@@ -548,6 +639,78 @@ def test_http_api_snapshot_exposes_preferences_document(tmp_path: Path) -> None:
         assert payload["preferences"]["program_settings"]["language"] == "en-US"
         assert payload["preferences"]["program_settings"]["default_project_directory"] == str((tmp_path / "default-project-home").resolve())
         assert payload["preferences"]["graph_settings"]["show_node_id_on_node"] is True
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_exposes_and_updates_project_settings_document(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+        create_payload = json.dumps({"project_name": "HTTP Settings Project"}).encode("utf-8")
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=create_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/settings") as response:
+            initial_payload = json.loads(response.read().decode("utf-8"))
+
+        assert initial_payload["project_settings"]["project_identity"]["name"] == "HTTP Settings Project"
+        assert initial_payload["project_settings"]["packaging"]["default_output_name"] == "http-settings-project.wcrun"
+
+        update_payload = json.dumps(
+            {
+                "project_settings": {
+                    **initial_payload["project_settings"],
+                    "project_identity": {
+                        **initial_payload["project_settings"]["project_identity"],
+                        "name": "HTTP Settings Project Renamed",
+                    },
+                    "runtime_defaults": {
+                        "initial_variables": {"base_url": "http://api.test"},
+                        "browser_config": {"headless": False, "slow_mo_ms": 200},
+                        "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                    },
+                }
+            }
+        ).encode("utf-8")
+        update_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/settings",
+            data=update_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(update_request) as response:
+            updated_payload = json.loads(response.read().decode("utf-8"))
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/settings") as response:
+            persisted_payload = json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project") as response:
+            project_payload = json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(f"{base_url}/api/workbench/snapshot") as response:
+            snapshot_payload = json.loads(response.read().decode("utf-8"))
+
+        assert updated_payload["project_settings"]["runtime_defaults"]["initial_variables"]["base_url"] == "http://api.test"
+        assert updated_payload["project_settings"]["project_identity"]["name"] == "HTTP Settings Project Renamed"
+        assert persisted_payload["project_settings"]["runtime_defaults"]["browser_config"]["slow_mo_ms"] == 200
+        assert project_payload["project"]["project_name"] == "HTTP Settings Project Renamed"
+        assert snapshot_payload["project_settings"]["loaded"] is True
+        assert snapshot_payload["project_settings"]["state_source"] == "workspace_state"
+        assert snapshot_payload["project_settings"]["project_file_path"] is None
+        assert snapshot_payload["project_settings"]["project_settings_path"] is None
+        assert snapshot_payload["project_settings"]["session_dir"] is None
+        assert snapshot_payload["project_settings"]["is_dirty"] is True
+        assert snapshot_payload["project_settings"]["package_default_output_name"] == "http-settings-project.wcrun"
+        assert snapshot_payload["project"]["project_name"] == "HTTP Settings Project Renamed"
     finally:
         server.shutdown()
         server.server_close()
@@ -2640,6 +2803,2557 @@ def test_http_api_exposes_graph_node_draft_endpoint(tmp_path: Path) -> None:
         server.server_close()
 
 
+def test_http_api_updates_project_runtime_defaults_and_returns_projection_refresh(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+        create_payload = json.dumps({"project_name": "Projection Project"}).encode("utf-8")
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=create_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        runtime_defaults_payload = json.dumps(
+            {
+                "runtime_defaults": {
+                    "initial_variables": {"username": "api-user", "base_url": "http://projection.test"},
+                    "browser_config": {"headless": False, "slow_mo_ms": 220},
+                    "execution_defaults": {"default_timeout_ms": 50000, "default_retry_count": 1},
+                }
+            }
+        ).encode("utf-8")
+        update_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/runtime-defaults",
+            data=runtime_defaults_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(update_request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        assert payload["status"] == "updated"
+        assert payload["runtime_defaults"]["initial_variables"]["username"] == "api-user"
+        assert payload["graph_projection_refresh"]["node_id"] == "node-start"
+        assert payload["graph_projection_refresh"]["node_config"]["browser_config"]["slow_mo_ms"] == 220
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_project_package_preflight_returns_blocking_diagnostics(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "preflight-api.weconduct.json"
+
+        create_payload = json.dumps({"project_name": "Preflight API Project"}).encode("utf-8")
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=create_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/settings") as response:
+            current_settings_payload = json.loads(response.read().decode("utf-8"))
+
+        project_settings_payload = json.dumps(
+            {
+                "project_settings": {
+                    **current_settings_payload["project_settings"],
+                    "external_resources": [
+                        {
+                            "resource_id": "ext_required_file",
+                            "bind_key": "upload_path",
+                            "kind": "file",
+                            "required": True,
+                            "picker": "file",
+                            "description": "上传文件",
+                            "example_value": "C:\\data\\upload.txt",
+                            "target": {"type": "initial_variable", "name": "upload_path"},
+                            "validation": {"must_exist": True},
+                        }
+                    ],
+                }
+            }
+        ).encode("utf-8")
+        update_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/settings",
+            data=project_settings_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(update_request):
+            pass
+
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+
+        preflight_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/package/preflight",
+            data=json.dumps({"mode": "wcrun", "source_of_truth": "saved_project_only"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(preflight_request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert payload["status"] == "failed"
+            assert payload["summary"]["blocking"] is True
+            assert any(entry["resource_id"] == "ext_required_file" for entry in payload["entries"])
+        else:
+            raise AssertionError("expected HTTPError for blocking package preflight diagnostics")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_project_package_build_returns_archive_document(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "package-api.weconduct.json"
+        output_path = tmp_path / "dist" / "package-api.wcrun"
+
+        create_payload = json.dumps({"project_name": "Package API Project"}).encode("utf-8")
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=create_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        runtime_defaults_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/runtime-defaults",
+            data=json.dumps(
+                {
+                    "runtime_defaults": {
+                        "initial_variables": {"base_url": "http://api-package.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                        "execution_defaults": {},
+                    }
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(runtime_defaults_request):
+            pass
+
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+
+        build_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/package/build",
+            data=json.dumps(
+                {
+                    "mode": "wcrun",
+                    "source_of_truth": "saved_project_only",
+                    "output_path": str(output_path),
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(build_request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        assert payload["status"] == "built"
+        assert payload["package"]["mode"] == "wcrun"
+        assert payload["package"]["output_path"] == str(output_path.resolve())
+        assert payload["package_info"]["package_name"] == "package-api"
+        assert payload["package_info"]["package_version"] == "0.1.0"
+        assert payload["summary"]["embedded_resource_count"] == 0
+        assert payload["summary"]["external_resource_count"] == 0
+        assert payload["summary"]["graph_count"] == 1
+        assert payload["diagnostics"]["total_count"] == 0
+        assert payload["diagnostics"]["highest_severity"] is None
+        assert payload["diagnostics"]["entries"] == []
+        with zipfile.ZipFile(output_path) as archive:
+            manifest_payload = unpackb(archive.read("manifest.msgpack"))
+            package_info_payload = json.loads(archive.read("meta/package-info.json").decode("utf-8"))
+        assert manifest_payload["manifest_version"] == 1
+        assert manifest_payload["package_identity"]["package_name"] == "package-api"
+        assert manifest_payload["source_project"]["project_name"] == "Package API Project"
+        assert manifest_payload["entrypoint"]["graph_path"] == "graphs/main.graph.msgpack"
+        assert manifest_payload["runtime_requirements"]["required_browser"] == "msedge"
+        assert package_info_payload["manifest_version"] == 1
+        assert package_info_payload["builder_app_version"] == "0.5.0"
+        assert package_info_payload["source_project_schema_version"] == "project-v2"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_project_package_build_returns_blocking_diagnostics(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "package-api-failed.weconduct.json"
+
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=json.dumps({"project_name": "Package API Failed Project"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+
+        build_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/package/build",
+            data=json.dumps({"mode": "wcrun", "source_of_truth": "saved_project_only"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(build_request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert payload["status"] == "failed"
+            assert payload["summary"]["blocking"] is True
+            assert payload["diagnostics"]["total_count"] >= 1
+            assert payload["diagnostics"]["highest_severity"] == "error"
+            assert any(
+                entry["setting_field"] == "runtime_defaults.initial_variables.base_url"
+                for entry in payload["diagnostics"]["entries"]
+            )
+        else:
+            raise AssertionError("expected HTTPError for blocking package build diagnostics")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_open_legacy_v1_project_allows_package_preflight_and_build_with_flow_start_backfill(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        legacy_project_path = tmp_path / "legacy-http-package.weconduct.json"
+        output_path = tmp_path / "dist" / "legacy-http-package.wcrun"
+        legacy_payload = {
+            "project_file_schema_version": 1,
+            "saved_at": "2026-06-18T00:00:00Z",
+            "project": {
+                "project_id": "legacy-http-package",
+                "project_name": "Legacy HTTP Package",
+                "project_schema_version": "project-v1",
+                "project_status": "ready",
+                "workspace_root": str(tmp_path),
+                "source_of_truth": "graph_document",
+                "main_graph_document_id": "graph:workspace",
+                "resource_registry_revision": 0,
+            },
+            "resource_registry": [],
+            "editor_history": {"undo_stack": [], "redo_stack": []},
+            "execution_history": {"runtime_runs": [], "debug_sessions": []},
+            "graph_document": {
+                "graph_model_id": "graph:workspace",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [
+                    {
+                        "node_id": "node-start",
+                        "lowered_kind": "control",
+                        "source_anchor_ref": "n-node-start",
+                        "expansion_role": "flow.start",
+                        "display_name": "流程入口",
+                        "node_kind": "flow.start",
+                        "node_config": {
+                            "initial_variables": {"base_url": "http://legacy-http-package.test"},
+                            "browser_config": {"headless": True, "slow_mo_ms": 0},
+                        },
+                        "ports": [
+                            {
+                                "port_id": "control-out",
+                                "direction": "output",
+                                "relation_layer": "control",
+                                "semantic_slot": "control.next",
+                            }
+                        ],
+                    }
+                ],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            },
+            "graph_document_meta": {"save_revision": 0, "saved_at": None},
+        }
+        legacy_project_path.write_text(
+            json.dumps(legacy_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        open_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/open",
+            data=json.dumps({"project_path": str(legacy_project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(open_request):
+            pass
+
+        preflight_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/package/preflight",
+            data=json.dumps({"mode": "wcrun", "source_of_truth": "saved_project_only"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(preflight_request) as response:
+            preflight_payload = json.loads(response.read().decode("utf-8"))
+
+        build_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/package/build",
+            data=json.dumps(
+                {
+                    "mode": "wcrun",
+                    "source_of_truth": "saved_project_only",
+                    "output_path": str(output_path),
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(build_request) as response:
+            build_payload = json.loads(response.read().decode("utf-8"))
+
+        assert preflight_payload["status"] == "ok"
+        assert preflight_payload["summary"]["blocking"] is False
+        assert build_payload["status"] == "built"
+        assert build_payload["package"]["output_path"] == str(output_path.resolve())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_package_preflight_and_build_backfill_stale_workspace_runtime_defaults(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "stale-http-workspace.weconduct.json"
+        output_path = tmp_path / "dist" / "stale-http-workspace.wcrun"
+
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=json.dumps({"project_name": "Stale HTTP Workspace"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        graph_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:workspace",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [
+                        {
+                            "node_id": "node-start",
+                            "lowered_kind": "control",
+                            "source_anchor_ref": "n-node-start",
+                            "expansion_role": "flow.start",
+                            "display_name": "流程入口",
+                            "node_kind": "flow.start",
+                            "node_config": {
+                                "initial_variables": {
+                                    "base_url": "http://stale-http-workspace.test",
+                                    "username": "http-user",
+                                },
+                                "browser_config": {"headless": True, "slow_mo_ms": 90},
+                            },
+                            "ports": [
+                                {
+                                    "port_id": "control-out",
+                                    "direction": "output",
+                                    "relation_layer": "control",
+                                    "semantic_slot": "control.next",
+                                }
+                            ],
+                        }
+                    ],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(graph_request):
+            pass
+
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    stale_workspace_state = json.loads(workspace_state_path.read_text(encoding="utf-8"))
+    stale_workspace_state["project_settings"]["runtime_defaults"] = {
+        "initial_variables": {},
+        "browser_config": {},
+        "execution_defaults": {},
+    }
+    workspace_state_path.write_text(
+        json.dumps(stale_workspace_state, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    restored_server, restored_thread = _start_test_server(workspace_state_path=workspace_state_path)
+    try:
+        restored_base_url = f"http://127.0.0.1:{restored_server.server_address[1]}"
+
+        with urllib.request.urlopen(
+            f"{restored_base_url}/api/workbench/project/settings"
+        ) as response:
+            settings_payload = json.loads(response.read().decode("utf-8"))
+
+        preflight_request = urllib.request.Request(
+            f"{restored_base_url}/api/workbench/project/package/preflight",
+            data=json.dumps({"mode": "wcrun", "source_of_truth": "saved_project_only"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(preflight_request) as response:
+            preflight_payload = json.loads(response.read().decode("utf-8"))
+
+        build_request = urllib.request.Request(
+            f"{restored_base_url}/api/workbench/project/package/build",
+            data=json.dumps(
+                {
+                    "mode": "wcrun",
+                    "source_of_truth": "saved_project_only",
+                    "output_path": str(output_path),
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(build_request) as response:
+            build_payload = json.loads(response.read().decode("utf-8"))
+
+        assert settings_payload["project_settings"]["runtime_defaults"]["initial_variables"]["base_url"] == (
+            "http://stale-http-workspace.test"
+        )
+        assert settings_payload["state"]["source"] == "project_settings_file"
+        assert preflight_payload["status"] == "ok"
+        assert preflight_payload["summary"]["blocking"] is False
+        assert build_payload["status"] == "built"
+        assert build_payload["package"]["output_path"] == str(output_path.resolve())
+    finally:
+        restored_server.shutdown()
+        restored_server.server_close()
+
+
+def test_http_api_project_package_build_persists_resource_archive_and_manifest_summary(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    embedded_file = tmp_path / "fixtures" / "api-upload.txt"
+    embedded_file.parent.mkdir(parents=True, exist_ok=True)
+    embedded_file.write_text("api-embedded-content", encoding="utf-8")
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "package-api-resource.weconduct.json"
+        output_path = tmp_path / "dist" / "package-api-resource.wcrun"
+
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=json.dumps({"project_name": "Package API Resource Project"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        graph_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:api-resource-source",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(graph_request):
+            pass
+
+        save_custom_resource_request = urllib.request.Request(
+            f"{base_url}/api/workbench/resources/custom-node-graphs",
+            data=json.dumps({"resource_name": "API Shared Login"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_custom_resource_request) as response:
+            resource_payload = json.loads(response.read().decode("utf-8"))
+
+        settings_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/settings",
+            data=json.dumps(
+                {
+                    "project_settings": {
+                        "project_identity": {"name": "Package API Resource Project"},
+                        "runtime_defaults": {
+                            "initial_variables": {"base_url": "http://api-package.test"},
+                            "browser_config": {"headless": True, "slow_mo_ms": 0},
+                            "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                        },
+                        "packaging": {
+                            "default_output_name": "package-api-resource.wcrun",
+                            "include_embedded_resources": True,
+                            "staged_execution": True,
+                            "include_execution_history": False,
+                            "include_editor_history": False,
+                        },
+                        "external_resources": [],
+                        "resource_policy": {
+                            "embedded_resources": [str(embedded_file)],
+                            "external_resource_bindings": [],
+                        },
+                        "compile_profile": {
+                            "source_of_truth": "saved_project_only",
+                            "inject_project_runtime_defaults_into_main_flow_start": True,
+                        },
+                    }
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(settings_request):
+            pass
+
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+
+        build_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/package/build",
+            data=json.dumps(
+                {
+                    "mode": "wcrun",
+                    "source_of_truth": "saved_project_only",
+                    "output_path": str(output_path),
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(build_request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        assert payload["status"] == "built"
+        with zipfile.ZipFile(output_path) as archive:
+            manifest_payload = unpackb(archive.read("manifest.msgpack"))
+            package_info_payload = json.loads(archive.read("meta/package-info.json").decode("utf-8"))
+            assert any(
+                item["resource_id"] == resource_payload["resource"]["resource_id"]
+                for item in manifest_payload["dependencies"]["custom_components"]
+            )
+            assert manifest_payload["resources"]["embedded"][0]["archive_path"] == "resources/embedded/api-upload.txt"
+            assert package_info_payload["msgpack_encoding"]["status"] == "msgpack"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_project_package_inspect_and_load_returns_session_document(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    embedded_file = tmp_path / "fixtures" / "inspect-api.txt"
+    embedded_file.parent.mkdir(parents=True, exist_ok=True)
+    embedded_file.write_text("inspect-api-content", encoding="utf-8")
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "inspect-api.weconduct.json"
+        output_path = tmp_path / "dist" / "inspect-api.wcrun"
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/new",
+                data=json.dumps({"project_name": "Inspect API Project"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/graph",
+                data=json.dumps(
+                    {
+                        "graph_model_id": "graph:inspect-api",
+                        "compilation_id": None,
+                        "graph_schema_version": "graph-v1",
+                        "nodes": [],
+                        "edges": [],
+                        "graph_effective_diagnostic_anchor_refs": [],
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/resources/custom-node-graphs",
+                data=json.dumps({"resource_name": "Inspect API Resource"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/settings",
+                data=json.dumps(
+                    {
+                        "project_settings": {
+                            "project_identity": {"name": "Inspect API Project"},
+                            "runtime_defaults": {
+                                "initial_variables": {"base_url": "http://inspect-api.test"},
+                                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                            },
+                            "packaging": {
+                                "default_output_name": "inspect-api.wcrun",
+                                "include_embedded_resources": True,
+                                "staged_execution": True,
+                                "include_execution_history": False,
+                                "include_editor_history": False,
+                            },
+                            "external_resources": [],
+                            "resource_policy": {
+                                "embedded_resources": [str(embedded_file)],
+                                "external_resource_bindings": [],
+                            },
+                            "compile_profile": {
+                                "source_of_truth": "saved_project_only",
+                                "inject_project_runtime_defaults_into_main_flow_start": True,
+                            },
+                        }
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/save-as",
+                data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/build",
+                data=json.dumps(
+                    {
+                        "mode": "wcrun",
+                        "source_of_truth": "saved_project_only",
+                        "output_path": str(output_path),
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            f"{base_url}/api/workbench/project/package/inspect?package_path={urllib.parse.quote(str(output_path))}"
+        ) as response:
+            inspect_payload = json.loads(response.read().decode("utf-8"))
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ) as response:
+            load_payload = json.loads(response.read().decode("utf-8"))
+
+        assert inspect_payload["status"] == "ok"
+        assert inspect_payload["package"]["manifest"]["source_project"]["project_name"] == "Inspect API Project"
+        assert inspect_payload["package"]["manifest"]["entrypoint"]["graph_path"] == "graphs/main.graph.msgpack"
+        assert inspect_payload["package_summary"]["package_identity"]["package_name"] == "inspect-api"
+        assert inspect_payload["package_summary"]["runtime_requirements"]["required_browser"] == "msedge"
+        assert inspect_payload["package_summary"]["graph_summary"]["graph_count"] == 2
+        assert inspect_payload["project_settings_summary"]["project_identity"]["name"] == "Inspect API Project"
+        assert (
+            inspect_payload["project_settings_summary"]["runtime_defaults"]["initial_variables"]["base_url"]
+            == "http://inspect-api.test"
+        )
+        assert inspect_payload["project_settings_summary"]["packaging"]["default_output_name"] == "inspect-api.wcrun"
+        assert inspect_payload["resource_summary"]["embedded_resource_count"] == 1
+        assert inspect_payload["resource_summary"]["custom_component_count"] == 1
+        assert (
+            inspect_payload["dependency_summary"]["builtin_component_count"]
+            == len(inspect_payload["package"]["dependencies"]["builtin_components"])
+        )
+        assert inspect_payload["dependency_summary"]["custom_component_count"] == 1
+        assert inspect_payload["graph_detail_summary"]["entrypoint_graph_id"] == "graph:inspect-api"
+        assert inspect_payload["graph_detail_summary"]["main_graph"]["graph_id"] == "graph:inspect-api"
+        assert inspect_payload["graph_detail_summary"]["graph_count"] == 2
+        assert inspect_payload["external_binding_summary"]["declared_count"] == 0
+        assert inspect_payload["external_binding_summary"]["required_count"] == 0
+        assert inspect_payload["runtime_requirement_summary"]["required_browser"] == "msedge"
+        assert inspect_payload["runtime_requirement_summary"]["blocking_count"] == 0
+        assert inspect_payload["runtime_readiness_summary"]["ready"] is True
+        assert inspect_payload["runtime_readiness_summary"]["runtime_requirement_status"]["blocking_count"] == 0
+        assert load_payload["status"] == "loaded"
+        assert load_payload["package"]["session_dir"] is not None
+        assert load_payload["project"]["source_of_truth"] == "wcrun_package"
+        assert load_payload["package_summary"]["package_identity"]["package_name"] == "inspect-api"
+        assert load_payload["package_summary"]["entrypoint"]["graph_path"] == "graphs/main.graph.msgpack"
+        assert load_payload["package_summary"]["graph_summary"]["main_graph_id"] == "graph:inspect-api"
+        assert load_payload["package_summary"]["graph_summary"]["graph_count"] == 2
+        assert load_payload["project_settings_summary"]["project_identity"]["name"] == "Inspect API Project"
+        assert load_payload["project_settings_summary"]["compile_profile"]["source_of_truth"] == "saved_project_only"
+        assert load_payload["resource_summary"]["embedded_resource_count"] == 1
+        assert load_payload["resource_summary"]["custom_component_count"] == 1
+        assert (
+            load_payload["dependency_summary"]["builtin_component_count"]
+            == len(load_payload["package"]["dependencies"]["builtin_components"])
+        )
+        assert load_payload["dependency_summary"]["custom_component_count"] == 1
+        assert load_payload["graph_detail_summary"]["entrypoint_graph_path"] == "graphs/main.graph.msgpack"
+        assert load_payload["graph_detail_summary"]["custom_component_graph_count"] == 1
+        assert load_payload["session_restore_summary"]["source_of_truth"] == "wcrun_package"
+        assert load_payload["session_restore_summary"]["project_status"] == "loaded_from_package"
+        assert load_payload["session_restore_summary"]["session_dir"] == load_payload["package"]["session_dir"]
+        assert load_payload["session_restore_summary"]["graph_workspace_graph_id"] == "graph:inspect-api"
+        assert load_payload["external_binding_summary"]["declared_count"] == 0
+        assert load_payload["external_binding_summary"]["bound_count"] == 0
+        assert load_payload["runtime_requirement_summary"]["required_platform"] == "windows"
+        assert load_payload["runtime_requirement_summary"]["requires_captcha_ocr"] is False
+        assert load_payload["runtime_readiness_summary"]["ready"] is True
+        assert load_payload["runtime_readiness_summary"]["external_resource_binding_status"]["required_count"] == 0
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_package_load_rewrites_embedded_runtime_default_paths(
+    tmp_path: Path,
+) -> None:
+    from weconduct.application import CompilationWorkbenchService
+
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        builder = CompilationWorkbenchService()
+        project_path = tmp_path / "embedded-api-rewrite.weconduct.json"
+        output_path = tmp_path / "dist" / "embedded-api-rewrite.wcrun"
+        embedded_file = tmp_path / "input" / "upload-sample.txt"
+        embedded_file.parent.mkdir(parents=True, exist_ok=True)
+        embedded_file.write_text("embedded-api-content", encoding="utf-8")
+
+        builder.create_project(project_name="Embedded API Rewrite Project")
+        builder.save_graph_document(
+            {
+                "graph_model_id": "graph:embedded-api-rewrite",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+        builder.update_project_settings(
+            project_settings={
+                **builder.get_project_settings_document()["project_settings"],
+                "runtime_defaults": {
+                    "initial_variables": {
+                        "base_url": "http://embedded-api.test",
+                        "upload_file_path": "input/upload-sample.txt",
+                    },
+                    "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                },
+                "resource_policy": {
+                    "embedded_resources": ["input/upload-sample.txt"],
+                    "external_resource_bindings": [],
+                },
+                "packaging": {
+                    **builder.get_project_settings_document()["project_settings"]["packaging"],
+                    "include_embedded_resources": True,
+                },
+            }
+        )
+        builder.save_project_as(project_path=str(project_path))
+        build_result = builder.build_project_package(
+            mode="wcrun",
+            source_of_truth="saved_project_only",
+            output_path=str(output_path),
+        )
+        assert build_result["status"] == "built"
+
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ) as response:
+            load_payload = json.loads(response.read().decode("utf-8"))
+
+        session_dir = Path(load_payload["package"]["session_dir"])
+        expected_runtime_path = session_dir / "resources" / "embedded" / "upload-sample.txt"
+        actual_runtime_path = (
+            load_payload["project_settings"]["runtime_defaults"]["initial_variables"]["upload_file_path"]
+        )
+
+        assert load_payload["status"] == "loaded"
+        assert expected_runtime_path.exists() is True
+        assert actual_runtime_path == str(expected_runtime_path.resolve())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_loaded_wcrun_package_rejects_graph_save_and_project_save_as(
+    tmp_path: Path,
+) -> None:
+    from weconduct.application import CompilationWorkbenchService
+
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        builder = CompilationWorkbenchService()
+        project_path = tmp_path / "readonly-api.weconduct.json"
+        output_path = tmp_path / "dist" / "readonly-api.wcrun"
+
+        builder.create_project(project_name="Readonly API Project")
+        builder.save_graph_document(
+            {
+                "graph_model_id": "graph:readonly-api",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+        builder.update_project_settings(
+            project_settings={
+                **builder.get_project_settings_document()["project_settings"],
+                "runtime_defaults": {
+                    "initial_variables": {"base_url": "http://readonly-api-source.test"},
+                    "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                },
+            }
+        )
+        builder.save_project_as(project_path=str(project_path))
+        build_result = builder.build_project_package(
+            mode="wcrun",
+            source_of_truth="saved_project_only",
+            output_path=str(output_path),
+        )
+        assert build_result["status"] == "built"
+
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        graph_save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:readonly-api",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        try:
+            urllib.request.urlopen(graph_save_request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert payload["error"] == "project_package_read_only"
+        else:
+            raise AssertionError("expected graph save to be rejected for loaded wcrun package")
+
+        save_as_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(tmp_path / 'copy.weconduct.json')}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(save_as_request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert payload["error"] == "project_package_read_only"
+        else:
+            raise AssertionError("expected project save-as to be rejected for loaded wcrun package")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_loaded_wcrun_package_allows_runtime_defaults_but_rejects_project_settings(
+    tmp_path: Path,
+) -> None:
+    from weconduct.application import CompilationWorkbenchService
+
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        builder = CompilationWorkbenchService()
+        project_path = tmp_path / "readonly-settings-api.weconduct.json"
+        output_path = tmp_path / "dist" / "readonly-settings-api.wcrun"
+
+        builder.create_project(project_name="Readonly Settings API Project")
+        builder.save_graph_document(
+            {
+                "graph_model_id": "graph:readonly-settings-api",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+        builder.update_project_settings(
+            project_settings={
+                **builder.get_project_settings_document()["project_settings"],
+                "runtime_defaults": {
+                    "initial_variables": {"base_url": "http://readonly-settings-api-source.test"},
+                    "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                },
+            }
+        )
+        builder.save_project_as(project_path=str(project_path))
+        build_result = builder.build_project_package(
+            mode="wcrun",
+            source_of_truth="saved_project_only",
+            output_path=str(output_path),
+        )
+        assert build_result["status"] == "built"
+
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/settings") as response:
+            settings_payload = json.loads(response.read().decode("utf-8"))
+
+        project_settings_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/settings",
+            data=json.dumps(
+                {
+                    "project_settings": {
+                        **settings_payload["project_settings"],
+                        "project_identity": {
+                            **settings_payload["project_settings"]["project_identity"],
+                            "description": "blocked",
+                        },
+                    }
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(project_settings_request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert payload["error"] == "project_package_read_only"
+        else:
+            raise AssertionError("expected project settings update to be rejected for loaded wcrun package")
+
+        runtime_defaults_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/runtime-defaults",
+            data=json.dumps(
+                {
+                    "runtime_defaults": {
+                        "initial_variables": {"base_url": "http://readonly-settings-api.test"},
+                        "browser_config": {"headless": False, "slow_mo_ms": 0},
+                        "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                    }
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(runtime_defaults_request) as response:
+            runtime_defaults_payload = json.loads(response.read().decode("utf-8"))
+
+        assert runtime_defaults_payload["status"] == "updated"
+        assert runtime_defaults_payload["runtime_defaults"]["browser_config"]["headless"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_loaded_wcrun_package_rejects_runtime_start_with_graph_document_payload(
+    tmp_path: Path,
+) -> None:
+    from weconduct.application import CompilationWorkbenchService
+
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        builder = CompilationWorkbenchService()
+        project_path = tmp_path / "readonly-runtime-payload-api.weconduct.json"
+        output_path = tmp_path / "dist" / "readonly-runtime-payload-api.wcrun"
+
+        builder.create_project(project_name="Readonly Runtime Payload API Project")
+        builder.save_graph_document(
+            {
+                "graph_model_id": "graph:readonly-runtime-payload-api",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+        builder.update_project_settings(
+            project_settings={
+                **builder.get_project_settings_document()["project_settings"],
+                "runtime_defaults": {
+                    "initial_variables": {"base_url": "http://readonly-runtime-payload-api-source.test"},
+                    "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                },
+            }
+        )
+        builder.save_project_as(project_path=str(project_path))
+        build_result = builder.build_project_package(
+            mode="wcrun",
+            source_of_truth="saved_project_only",
+            output_path=str(output_path),
+        )
+        assert build_result["status"] == "built"
+
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/graph") as response:
+            graph_payload = json.loads(response.read().decode("utf-8"))
+
+        assert graph_payload["view"]["is_editable"] is False
+
+        runtime_start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=json.dumps(
+                {
+                    "graph_document": {
+                        "graph_model_id": "graph:readonly-runtime-payload-api",
+                        "compilation_id": None,
+                        "graph_schema_version": "graph-v1",
+                        "nodes": [],
+                        "edges": [],
+                        "graph_effective_diagnostic_anchor_refs": [],
+                    }
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(runtime_start_request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert payload["error"] == "project_package_read_only"
+        else:
+            raise AssertionError("expected runtime start with graph payload to be rejected for loaded wcrun package")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_project_package_inspect_reports_runtime_readiness_blockers(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from weconduct.application import CompilationWorkbenchService
+
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "inspect-readiness-api.weconduct.json"
+        output_path = tmp_path / "dist" / "inspect-readiness-api.wcrun"
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/new",
+                data=json.dumps({"project_name": "Inspect Readiness API Project"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/graph",
+                data=json.dumps(
+                    {
+                        "graph_model_id": "graph:inspect-readiness-api",
+                        "compilation_id": None,
+                        "graph_schema_version": "graph-v1",
+                        "nodes": [
+                            {
+                                "node_id": "node-start",
+                                "lowered_kind": "control",
+                                "source_anchor_ref": "n-node-start",
+                                "expansion_role": "flow.start",
+                                "display_name": "流程入口",
+                                "node_kind": "flow.start",
+                                "node_config": {
+                                    "initial_variables": {"base_url": "http://inspect-readiness-api.test"},
+                                    "browser_config": {"headless": True, "slow_mo_ms": 0},
+                                },
+                                "ports": [],
+                            }
+                        ],
+                        "edges": [],
+                        "graph_effective_diagnostic_anchor_refs": [],
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/settings",
+                data=json.dumps(
+                    {
+                        "project_settings": {
+                            "project_identity": {"name": "Inspect Readiness API Project"},
+                            "runtime_defaults": {
+                                "initial_variables": {"base_url": "http://inspect-readiness-api.test"},
+                                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                            },
+                            "packaging": {
+                                "default_output_name": "inspect-readiness-api.wcrun",
+                                "include_embedded_resources": True,
+                                "staged_execution": True,
+                                "include_execution_history": False,
+                                "include_editor_history": False,
+                            },
+                            "resource_policy": {
+                                "embedded_resources": [],
+                                "external_resource_bindings": [],
+                            },
+                            "compile_profile": {
+                                "source_of_truth": "saved_project_only",
+                                "inject_project_runtime_defaults_into_main_flow_start": True,
+                            },
+                        }
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/save-as",
+                data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/build",
+                data=json.dumps(
+                    {
+                        "mode": "wcrun",
+                        "source_of_truth": "saved_project_only",
+                        "output_path": str(output_path),
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        _rewrite_wcrun_manifest(
+            output_path,
+            lambda manifest_payload: manifest_payload["runtime_requirements"].update(
+                {
+                    "minimum_app_version": "9.9.9",
+                    "required_browser": "chrome",
+                }
+            ),
+        )
+        _rewrite_wcrun_project_settings(
+            output_path,
+            lambda project_settings_payload: project_settings_payload.__setitem__(
+                "external_resources",
+                [
+                    {
+                        "resource_id": "ext-required-file",
+                        "resource_key": "external.required_file",
+                        "display_name": "Required File",
+                        "description": "外部文件",
+                        "target": {"type": "initial_variable", "name": "upload_path"},
+                        "required": True,
+                    }
+                ],
+            ),
+        )
+        monkeypatch.setattr(
+            CompilationWorkbenchService,
+            "_probe_captcha_ocr_runtime_requirement",
+            lambda self: (True, "captcha_ocr runtime available"),
+            raising=False,
+        )
+
+        with urllib.request.urlopen(
+            f"{base_url}/api/workbench/project/package/inspect?package_path={urllib.parse.quote(str(output_path))}"
+        ) as response:
+            inspect_payload = json.loads(response.read().decode("utf-8"))
+
+        assert inspect_payload["runtime_readiness_summary"]["ready"] is False
+        assert inspect_payload["runtime_readiness_summary"]["runtime_requirement_status"]["blocking_count"] == 2
+        assert (
+            inspect_payload["runtime_readiness_summary"]["external_resource_binding_status"]["missing_required_count"]
+            == 1
+        )
+        assert inspect_payload["runtime_requirement_summary"]["blocking_count"] == 2
+        assert "package.runtime_requirement.minimum_app_version_unsupported" in (
+            inspect_payload["runtime_requirement_summary"]["blocking_categories"]
+        )
+        assert inspect_payload["external_binding_summary"]["declared_count"] == 1
+        assert inspect_payload["external_binding_summary"]["missing_required_count"] == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_project_package_load_restores_full_custom_component_resource_record(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "load-resource-api.weconduct.json"
+        output_path = tmp_path / "dist" / "load-resource-api.wcrun"
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/new",
+                data=json.dumps({"project_name": "Load Resource API Project"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        input_graph_payload = {
+            "graph_model_id": "graph:load-resource-api",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-component-input-text",
+                    "lowered_kind": "bridge",
+                    "source_anchor_ref": "n-node-component-input-text",
+                    "expansion_role": "component.input",
+                    "display_name": "输入参数",
+                    "node_kind": "component.input",
+                    "node_config": {
+                        "name": "username",
+                        "value_type": "string",
+                        "required": True,
+                        "default_value": "demo-user",
+                        "description": "用户名",
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/graph",
+                data=json.dumps(input_graph_payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/resources/custom-node-graphs",
+                data=json.dumps({"resource_name": "Restored Resource API"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ) as response:
+            resource_payload = json.loads(response.read().decode("utf-8"))
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/settings",
+                data=json.dumps(
+                    {
+                        "project_settings": {
+                            "project_identity": {"name": "Load Resource API Project"},
+                            "runtime_defaults": {
+                                "initial_variables": {"base_url": "http://restore-api.test"},
+                                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                            },
+                            "packaging": {
+                                "default_output_name": "load-resource-api.wcrun",
+                                "include_embedded_resources": True,
+                                "staged_execution": True,
+                                "include_execution_history": False,
+                                "include_editor_history": False,
+                            },
+                            "external_resources": [],
+                            "resource_policy": {
+                                "embedded_resources": [],
+                                "external_resource_bindings": [],
+                            },
+                            "compile_profile": {
+                                "source_of_truth": "saved_project_only",
+                                "inject_project_runtime_defaults_into_main_flow_start": True,
+                            },
+                        }
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/save-as",
+                data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/build",
+                data=json.dumps(
+                    {
+                        "mode": "wcrun",
+                        "source_of_truth": "saved_project_only",
+                        "output_path": str(output_path),
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/resources") as response:
+            resources_payload = json.loads(response.read().decode("utf-8"))
+
+        restored = next(
+            item
+            for item in resources_payload["resources"]
+            if item["resource_id"] == resource_payload["resource"]["resource_id"]
+        )
+        assert restored["display_name"] == "Restored Resource API"
+        assert restored["origin"] == "package"
+        assert restored["source_graph_document"]["nodes"][0]["node_id"] == "node-component-input-text"
+        assert restored["input_schema"]["username"]["type"] == "string"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_project_package_unload_cleans_session_dir_and_resets_workspace(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "unload-api.weconduct.json"
+        output_path = tmp_path / "dist" / "unload-api.wcrun"
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/new",
+                data=json.dumps({"project_name": "Unload API Project"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/settings",
+                data=json.dumps(
+                    {
+                        "project_settings": {
+                            "project_identity": {"name": "Unload API Project"},
+                            "runtime_defaults": {
+                                "initial_variables": {"base_url": "http://unload-api.test"},
+                                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                            },
+                            "packaging": {
+                                "default_output_name": "unload-api.wcrun",
+                                "include_embedded_resources": True,
+                                "staged_execution": True,
+                                "include_execution_history": False,
+                                "include_editor_history": False,
+                            },
+                            "external_resources": [],
+                            "resource_policy": {
+                                "embedded_resources": [],
+                                "external_resource_bindings": [],
+                            },
+                            "compile_profile": {
+                                "source_of_truth": "saved_project_only",
+                                "inject_project_runtime_defaults_into_main_flow_start": True,
+                            },
+                        }
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/save-as",
+                data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/build",
+                data=json.dumps(
+                    {
+                        "mode": "wcrun",
+                        "source_of_truth": "saved_project_only",
+                        "output_path": str(output_path),
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ) as response:
+            load_payload = json.loads(response.read().decode("utf-8"))
+
+        session_dir = Path(load_payload["package"]["session_dir"])
+        assert session_dir.exists() is True
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/unload",
+                data=json.dumps({}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ) as response:
+            unload_payload = json.loads(response.read().decode("utf-8"))
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/snapshot") as response:
+            snapshot_payload = json.loads(response.read().decode("utf-8"))
+
+        assert unload_payload["status"] == "unloaded"
+        assert session_dir.exists() is False
+        assert snapshot_payload["project"]["source_of_truth"] == "graph_document"
+        assert snapshot_payload["project_settings"]["source_of_truth"] == "graph_document"
+        assert snapshot_payload["project"]["project_file_path"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_loaded_package_requires_external_resource_binding_before_runtime_start(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "external-required-api.weconduct.json"
+        output_path = tmp_path / "dist" / "external-required-api.wcrun"
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/new",
+                data=json.dumps({"project_name": "External Required API Project"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/settings",
+                data=json.dumps(
+                    {
+                        "project_settings": {
+                            "project_identity": {"name": "External Required API Project"},
+                            "runtime_defaults": {
+                                "initial_variables": {"base_url": "http://external-required-api.test"},
+                                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                            },
+                            "packaging": {
+                                "default_output_name": "external-required-api.wcrun",
+                                "include_embedded_resources": True,
+                                "staged_execution": True,
+                                "include_execution_history": False,
+                                "include_editor_history": False,
+                            },
+                            "external_resources": [
+                                    {
+                                        "resource_id": "ext-upload-file",
+                                        "bind_key": "upload_path",
+                                        "kind": "file",
+                                        "required": False,
+                                        "picker": "file",
+                                        "description": "上传文件",
+                                        "example_value": "C:\\data\\upload.txt",
+                                        "target": {"type": "initial_variable", "name": "upload_path"},
+                                        "validation": {"must_exist": False},
+                                }
+                            ],
+                            "resource_policy": {
+                                "embedded_resources": [],
+                                "external_resource_bindings": [],
+                            },
+                            "compile_profile": {
+                                "source_of_truth": "saved_project_only",
+                                "inject_project_runtime_defaults_into_main_flow_start": True,
+                            },
+                        }
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/save-as",
+                data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/build",
+                data=json.dumps(
+                    {
+                        "mode": "wcrun",
+                        "source_of_truth": "saved_project_only",
+                        "output_path": str(output_path),
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        runtime_start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=json.dumps({}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(runtime_start_request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert payload["error"] == "runtime_start_failed"
+            assert any(
+                entry["category"] == "package.external_resource.runtime_binding_required"
+                for entry in payload["diagnostics"]["entries"]
+            )
+        else:
+            raise AssertionError("expected runtime start failure for missing external resource binding")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_loaded_package_can_bind_external_resource_and_start_runtime(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    provided_file = tmp_path / "provided" / "upload.txt"
+    provided_file.parent.mkdir(parents=True, exist_ok=True)
+    provided_file.write_text("payload", encoding="utf-8")
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "external-bind-api.weconduct.json"
+        output_path = tmp_path / "dist" / "external-bind-api.wcrun"
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/new",
+                data=json.dumps({"project_name": "External Bind API Project"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/graph",
+                data=json.dumps(
+                    {
+                        "graph_model_id": "graph:external-bind-api",
+                        "compilation_id": None,
+                        "graph_schema_version": "graph-v1",
+                        "nodes": [
+                            {
+                                "node_id": "node-request",
+                                "lowered_kind": "execution",
+                                "source_anchor_ref": "n-node-request",
+                                "expansion_role": "action:request",
+                                "display_name": "请求",
+                                "node_kind": "http.request",
+                                "node_config": {"url": "http://example.test", "method": "GET"},
+                                "ports": [],
+                            }
+                        ],
+                        "edges": [],
+                        "graph_effective_diagnostic_anchor_refs": [],
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/settings",
+                data=json.dumps(
+                    {
+                        "project_settings": {
+                            "project_identity": {"name": "External Bind API Project"},
+                            "runtime_defaults": {
+                                "initial_variables": {"base_url": "http://external-bind-api.test"},
+                                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                            },
+                            "packaging": {
+                                "default_output_name": "external-bind-api.wcrun",
+                                "include_embedded_resources": True,
+                                "staged_execution": True,
+                                "include_execution_history": False,
+                                "include_editor_history": False,
+                            },
+                            "external_resources": [
+                                    {
+                                        "resource_id": "ext-upload-file",
+                                        "bind_key": "upload_path",
+                                        "kind": "file",
+                                        "required": False,
+                                        "picker": "file",
+                                        "description": "上传文件",
+                                        "example_value": "C:\\data\\upload.txt",
+                                        "target": {"type": "initial_variable", "name": "upload_path"},
+                                        "validation": {"must_exist": False},
+                                }
+                            ],
+                            "resource_policy": {
+                                "embedded_resources": [],
+                                "external_resource_bindings": [],
+                            },
+                            "compile_profile": {
+                                "source_of_truth": "saved_project_only",
+                                "inject_project_runtime_defaults_into_main_flow_start": True,
+                            },
+                        }
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/save-as",
+                data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/build",
+                data=json.dumps(
+                    {
+                        "mode": "wcrun",
+                        "source_of_truth": "saved_project_only",
+                        "output_path": str(output_path),
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/external-resources/bind",
+                data=json.dumps(
+                    {
+                        "resource_id": "ext-upload-file",
+                        "value": str(provided_file),
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ) as response:
+            bind_payload = json.loads(response.read().decode("utf-8"))
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/runtime/start",
+                data=json.dumps({}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ) as response:
+            runtime_payload = json.loads(response.read().decode("utf-8"))
+
+        assert bind_payload["status"] == "bound"
+        assert bind_payload["runtime_defaults"]["initial_variables"]["upload_path"] == str(provided_file.resolve())
+        assert runtime_payload["status"] == "started"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_loaded_package_snapshot_project_settings_exposes_wcrun_state(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "snapshot-loaded-api.weconduct.json"
+        output_path = tmp_path / "dist" / "snapshot-loaded-api.wcrun"
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/new",
+                data=json.dumps({"project_name": "Snapshot Loaded API Project"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/settings",
+                data=json.dumps(
+                    {
+                        "project_settings": {
+                            "project_identity": {"name": "Snapshot Loaded API Project"},
+                            "runtime_defaults": {
+                                "initial_variables": {"base_url": "http://snapshot-loaded-api.test"},
+                                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                            },
+                            "packaging": {
+                                "default_output_name": "snapshot-loaded-api.wcrun",
+                                "include_embedded_resources": True,
+                                "staged_execution": True,
+                                "include_execution_history": False,
+                                "include_editor_history": False,
+                            },
+                            "external_resources": [
+                                {
+                                    "resource_id": "ext-upload-file",
+                                    "bind_key": "upload_path",
+                                    "kind": "file",
+                                    "required": False,
+                                    "picker": "file",
+                                    "description": "上传文件",
+                                    "example_value": "C:\\data\\upload.txt",
+                                    "target": {"type": "initial_variable", "name": "upload_path"},
+                                    "validation": {"must_exist": False},
+                                }
+                            ],
+                            "resource_policy": {
+                                "embedded_resources": [],
+                                "external_resource_bindings": [],
+                            },
+                            "compile_profile": {
+                                "source_of_truth": "saved_project_only",
+                                "inject_project_runtime_defaults_into_main_flow_start": True,
+                            },
+                        }
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/save-as",
+                data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/build",
+                data=json.dumps(
+                    {
+                        "mode": "wcrun",
+                        "source_of_truth": "saved_project_only",
+                        "output_path": str(output_path),
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/snapshot") as response:
+            snapshot_payload = json.loads(response.read().decode("utf-8"))
+
+        assert snapshot_payload["project"]["source_of_truth"] == "wcrun_package"
+        assert snapshot_payload["project_settings"]["loaded"] is True
+        assert snapshot_payload["project_settings"]["source_of_truth"] == "wcrun_package"
+        assert snapshot_payload["project_settings"]["state_source"] == "workspace_state"
+        assert snapshot_payload["project_settings"]["project_file_path"] is None
+        assert snapshot_payload["project_settings"]["project_settings_path"] is None
+        assert isinstance(snapshot_payload["project_settings"]["session_dir"], str)
+        assert snapshot_payload["project_settings"]["is_dirty"] is False
+        assert snapshot_payload["project_settings"]["has_external_resources"] is True
+        assert snapshot_payload["project_settings"]["external_resource_count"] == 1
+        assert snapshot_payload["project_settings"]["package_default_output_name"] == "snapshot-loaded-api.wcrun"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_loaded_package_blocks_runtime_start_when_runtime_requirements_mismatch(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "runtime-requirements-api.weconduct.json"
+        output_path = tmp_path / "dist" / "runtime-requirements-api.wcrun"
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/new",
+                data=json.dumps({"project_name": "Runtime Requirements API Project"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/graph",
+                data=json.dumps(
+                    {
+                        "graph_model_id": "graph:runtime-requirements-api",
+                        "compilation_id": None,
+                        "graph_schema_version": "graph-v1",
+                        "nodes": [
+                            {
+                                "node_id": "node-request",
+                                "lowered_kind": "execution",
+                                "source_anchor_ref": "n-node-request",
+                                "expansion_role": "action:request",
+                                "display_name": "请求",
+                                "node_kind": "http.request",
+                                "node_config": {"url": "http://example.test", "method": "GET"},
+                                "ports": [],
+                            }
+                        ],
+                        "edges": [],
+                        "graph_effective_diagnostic_anchor_refs": [],
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/runtime-defaults",
+                data=json.dumps(
+                    {
+                        "runtime_defaults": {
+                            "initial_variables": {"base_url": "http://runtime-requirements-api.test"},
+                            "browser_config": {"headless": True, "slow_mo_ms": 0},
+                            "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+                        }
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/save-as",
+                data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/build",
+                data=json.dumps(
+                    {
+                        "mode": "wcrun",
+                        "source_of_truth": "saved_project_only",
+                        "output_path": str(output_path),
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        _rewrite_wcrun_manifest(
+            output_path,
+            lambda manifest_payload: manifest_payload["runtime_requirements"].__setitem__(
+                "minimum_app_version",
+                "9.9.9",
+            ),
+        )
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        runtime_start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=json.dumps({}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(runtime_start_request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert payload["error"] == "runtime_start_failed"
+            assert any(
+                entry["category"] == "package.runtime_requirement.minimum_app_version_unsupported"
+                for entry in payload["diagnostics"]["entries"]
+            )
+        else:
+            raise AssertionError("expected runtime start failure for incompatible package runtime requirements")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_loaded_package_blocks_runtime_start_when_required_platform_is_unsupported(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "required-platform-api.weconduct.json"
+        output_path = tmp_path / "dist" / "required-platform-api.wcrun"
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/new",
+                data=json.dumps({"project_name": "Required Platform API Project"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/graph",
+                data=json.dumps(
+                    {
+                        "graph_model_id": "graph:workspace",
+                        "compilation_id": None,
+                        "graph_schema_version": "graph-v1",
+                        "nodes": [
+                            {
+                                "node_id": "node-start",
+                                "lowered_kind": "control",
+                                "source_anchor_ref": "n-node-start",
+                                "expansion_role": "flow.start",
+                                "display_name": "流程入口",
+                                "node_kind": "flow.start",
+                                "node_config": {
+                                    "initial_variables": {"base_url": "http://required-platform-api.test"},
+                                    "browser_config": {"headless": True, "slow_mo_ms": 0},
+                                },
+                                "ports": [],
+                            }
+                        ],
+                        "edges": [],
+                        "graph_effective_diagnostic_anchor_refs": [],
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            )
+        ):
+            pass
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/save-as",
+                data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/build",
+                data=json.dumps(
+                    {
+                        "mode": "wcrun",
+                        "source_of_truth": "saved_project_only",
+                        "output_path": str(output_path),
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+        _rewrite_wcrun_manifest(
+            output_path,
+            lambda manifest_payload: manifest_payload["runtime_requirements"].__setitem__(
+                "required_platform",
+                "linux",
+            ),
+        )
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        runtime_start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=json.dumps({}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(runtime_start_request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert payload["error"] == "runtime_start_failed"
+            assert any(
+                entry["category"] == "package.runtime_requirement.required_platform_unsupported"
+                for entry in payload["diagnostics"]["entries"]
+            )
+        else:
+            raise AssertionError("expected runtime start failure for unsupported package platform requirement")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_loaded_package_blocks_runtime_start_when_required_browser_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "required-browser-api.weconduct.json"
+        output_path = tmp_path / "dist" / "required-browser-api.wcrun"
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/new",
+                data=json.dumps({"project_name": "Required Browser API Project"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/graph",
+                data=json.dumps(
+                    {
+                        "graph_model_id": "graph:workspace",
+                        "compilation_id": None,
+                        "graph_schema_version": "graph-v1",
+                        "nodes": [
+                            {
+                                "node_id": "node-start",
+                                "lowered_kind": "control",
+                                "source_anchor_ref": "n-node-start",
+                                "expansion_role": "flow.start",
+                                "display_name": "流程入口",
+                                "node_kind": "flow.start",
+                                "node_config": {
+                                    "initial_variables": {"base_url": "http://required-browser-api.test"},
+                                    "browser_config": {"headless": True, "slow_mo_ms": 0},
+                                },
+                                "ports": [],
+                            }
+                        ],
+                        "edges": [],
+                        "graph_effective_diagnostic_anchor_refs": [],
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            )
+        ):
+            pass
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/save-as",
+                data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/build",
+                data=json.dumps(
+                    {
+                        "mode": "wcrun",
+                        "source_of_truth": "saved_project_only",
+                        "output_path": str(output_path),
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+        _rewrite_wcrun_manifest(
+            output_path,
+            lambda manifest_payload: manifest_payload["runtime_requirements"].__setitem__(
+                "required_browser",
+                "chrome",
+            ),
+        )
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        runtime_start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=json.dumps({}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(runtime_start_request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert payload["error"] == "runtime_start_failed"
+            assert any(
+                entry["category"] == "package.runtime_requirement.required_browser_unsupported"
+                for entry in payload["diagnostics"]["entries"]
+            )
+        else:
+            raise AssertionError("expected runtime start failure for unsupported package browser requirement")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_loaded_package_blocks_runtime_start_when_captcha_ocr_is_required_but_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from weconduct.application import CompilationWorkbenchService
+
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "required-captcha-api.weconduct.json"
+        output_path = tmp_path / "dist" / "required-captcha-api.wcrun"
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/new",
+                data=json.dumps({"project_name": "Required Captcha API Project"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/graph",
+                data=json.dumps(
+                    {
+                        "graph_model_id": "graph:workspace",
+                        "compilation_id": None,
+                        "graph_schema_version": "graph-v1",
+                        "nodes": [
+                            {
+                                "node_id": "node-start",
+                                "lowered_kind": "control",
+                                "source_anchor_ref": "n-node-start",
+                                "expansion_role": "flow.start",
+                                "display_name": "流程入口",
+                                "node_kind": "flow.start",
+                                "node_config": {
+                                    "initial_variables": {"base_url": "http://required-captcha-api.test"},
+                                    "browser_config": {"headless": True, "slow_mo_ms": 0},
+                                },
+                                "ports": [],
+                            }
+                        ],
+                        "edges": [],
+                        "graph_effective_diagnostic_anchor_refs": [],
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            )
+        ):
+            pass
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/save-as",
+                data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/build",
+                data=json.dumps(
+                    {
+                        "mode": "wcrun",
+                        "source_of_truth": "saved_project_only",
+                        "output_path": str(output_path),
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+        _rewrite_wcrun_manifest(
+            output_path,
+            lambda manifest_payload: manifest_payload["runtime_requirements"].__setitem__(
+                "requires_captcha_ocr",
+                True,
+            ),
+        )
+        monkeypatch.setattr(
+            CompilationWorkbenchService,
+            "_probe_captcha_ocr_runtime_requirement",
+            lambda self: (False, "captcha_ocr runtime not found"),
+            raising=False,
+        )
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(output_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        runtime_start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=json.dumps({}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(runtime_start_request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert payload["error"] == "runtime_start_failed"
+            assert any(
+                entry["category"] == "package.runtime_requirement.captcha_ocr_unavailable"
+                for entry in payload["diagnostics"]["entries"]
+            )
+        else:
+            raise AssertionError("expected runtime start failure when captcha_ocr runtime is unavailable")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_http_api_rejects_unknown_graph_node_draft_resource_key(tmp_path: Path) -> None:
     workspace_state_path = tmp_path / "workspace-state.json"
     server, thread = _start_test_server(workspace_state_path=workspace_state_path)
@@ -3795,7 +6509,7 @@ def test_http_api_exposes_runtime_health(tmp_path: Path) -> None:
         assert payload["status"] == "ok"
         assert payload["service"] == "weconduct-api"
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.4.1"
+        assert payload["api_version"] == "0.5.0"
         assert payload["workspace_state_version"] == 1
         assert payload["workspace_session_id"].startswith("ws-")
         assert payload["service_started_at"]
@@ -5538,7 +8252,7 @@ def test_http_host_info_exposes_release_manifest_and_runtime_binding(tmp_path: P
             payload = json.loads(response.read().decode("utf-8"))
 
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.4.1"
+        assert payload["api_version"] == "0.5.0"
         assert payload["server_bind"]["host"] == "127.0.0.1"
         assert payload["server_bind"]["port"] == server.server_address[1]
         assert payload["server_bind"]["base_url"] == base_url
@@ -5616,6 +8330,71 @@ def test_http_host_file_dialog_reports_unavailable_without_provider(tmp_path: Pa
             assert payload["message"] == "host file dialog is unavailable"
         else:
             raise AssertionError("expected host file dialog to be unavailable without provider")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_host_open_path_uses_server_provider(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    project_dir = tmp_path / "demo-project"
+    project_dir.mkdir()
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    def fake_open_path_provider(payload: dict) -> dict:
+        assert payload["path"] == str(project_dir)
+        return {
+            "status": "opened",
+            "path": str(project_dir.resolve()),
+            "target_kind": "directory",
+        }
+
+    server.open_path_provider = fake_open_path_provider
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        request = urllib.request.Request(
+            f"{base_url}/api/host/open-path",
+            data=json.dumps({"path": str(project_dir)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        assert payload == {
+            "status": "opened",
+            "path": str(project_dir.resolve()),
+            "target_kind": "directory",
+        }
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_host_open_path_reports_unavailable_without_provider(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    project_dir = tmp_path / "demo-project"
+    project_dir.mkdir()
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        request = urllib.request.Request(
+            f"{base_url}/api/host/open-path",
+            data=json.dumps({"path": str(project_dir)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 503
+            assert payload["error"] == "host.open_path_unavailable"
+            assert payload["message"] == "host open path is unavailable"
+        else:
+            raise AssertionError("expected host open path to be unavailable without provider")
     finally:
         server.shutdown()
         server.server_close()

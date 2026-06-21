@@ -133,6 +133,8 @@ export interface SnapshotResponse {
     /** 嵌套分组对象: { program_settings: { default_project_directory: "active" }, ... } */
     preferences_state?: Record<string, Record<string, string>>
   }
+  /** P16: lightweight project settings state */
+  project_settings?: Record<string, unknown>
 }
 
 // ===== POST /api/workbench/compile =====
@@ -171,6 +173,8 @@ export interface GraphDocumentView {
   graph_document_save_revision: number
   graph_document_saved_at: string | null
   last_compile_matches_saved_graph: boolean
+  /** P16: false when wcrun loaded (graph is read-only) */
+  is_editable?: boolean
 }
 
 export interface GraphDocumentResponse {
@@ -492,6 +496,68 @@ export interface WebControlConvertResponse {
     warnings?: unknown[]
     errors?: unknown[]
   }
+}
+
+// ===== P16: Project Settings & .wcrun Package =====
+
+export interface ProjectSettings {
+  project_settings_schema_version: number
+  project_identity: { name: string; description?: string; version?: string; tags?: string[] }
+  runtime_defaults: { initial_variables: Record<string, unknown>; browser_config: Record<string, unknown>; execution_defaults: Record<string, unknown> }
+  packaging: { default_output_name?: string }
+  external_resources: Record<string, unknown>[]
+  resource_policy: { embedded_resources: string[]; external_resource_bindings: Record<string, unknown>[] }
+  compile_profile: { source_of_truth: string; inject_project_runtime_defaults_into_main_flow_start: boolean }
+}
+
+export interface ProjectSettingsState {
+  loaded: boolean; source: string; project_file_path: string | null
+  session_dir: string | null; project_settings_path: string | null; is_dirty: boolean
+}
+
+export interface ProjectSettingsResponse { project_settings: ProjectSettings; state: ProjectSettingsState }
+
+export interface RuntimeDefaults {
+  initial_variables: Record<string, unknown>; browser_config: Record<string, unknown>; execution_defaults: Record<string, unknown>
+}
+
+export interface RuntimeDefaultsResponse { runtime_defaults: RuntimeDefaults; state: ProjectSettingsState }
+
+export interface RuntimeDefaultsUpdateResponse {
+  status: string; runtime_defaults: RuntimeDefaults
+  graph_projection_refresh?: { node_id: string; node_config: Record<string, unknown> }
+}
+
+export interface PackagePreflightEntry {
+  diagnostic_id: string; severity: string; stage: string; category: string; message: string
+  object_ref?: string; setting_field?: string; node_id?: string; resource_id?: string
+}
+
+export interface PackagePreflightResponse {
+  status: string
+  summary: { error_count: number; warning_count: number; info_count: number; blocking: boolean }
+  entries: PackagePreflightEntry[]
+}
+
+export interface PackageBuildRequest { output_path?: string; mode?: string; source_of_truth?: string }
+export interface PackageBuildResponse {
+  status: string; output_path?: string
+  package_info?: { package_id: string; package_version: string; built_at: string }
+  summary?: Record<string, unknown>; diagnostics?: { total_count: number; entries: unknown[] }
+}
+
+export interface PackageInspectResponse {
+  status: string
+  package_summary: Record<string, unknown>; project_settings_summary: Record<string, unknown>
+  resource_summary: Record<string, unknown>; dependency_summary: Record<string, unknown>
+  graph_detail_summary: Record<string, unknown>; external_binding_summary: Record<string, unknown>
+  runtime_requirement_summary: Record<string, unknown>; runtime_readiness_summary: Record<string, unknown>
+  package: Record<string, unknown>
+}
+
+export interface PackageLoadResponse extends PackageInspectResponse {
+  session_restore_summary: Record<string, unknown>
+  project: Record<string, unknown>; project_settings: ProjectSettings; graph_workspace: Record<string, unknown>
 }
 
 // ===== P12: Node Draft =====

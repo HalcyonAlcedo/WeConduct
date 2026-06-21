@@ -214,6 +214,7 @@ function getCfgVal(key: string): unknown {
 }
 
 function setCfgVal(key: string, val: unknown) {
+  if (!workspace.isGraphEditable) return
   if (!selectedNode.value) return
   const cfg = JSON.parse(JSON.stringify(selectedNode.value.node_config || {}))
   if (key.includes('.')) { const [p, s] = key.split('.'); if (!cfg[p] || typeof cfg[p] !== 'object') cfg[p] = {}; cfg[p][s] = val }
@@ -222,6 +223,7 @@ function setCfgVal(key: string, val: unknown) {
 }
 
 function setJsonVal(key: string, raw: string) {
+  if (!workspace.isGraphEditable) return
   if (!selectedNode.value) return
   try {
     const val = JSON.parse(raw)
@@ -376,7 +378,7 @@ async function pickPathForField(fieldKey: string) {
 }
 </script>
 <template>
-  <div class="mep">
+  <div class="mep" :class="{ 'mep-ro': !workspace.isGraphEditable }">
     <div class="mep-search-row">
       <input v-model="nodeSearch" class="mep-search" placeholder="搜索节点…" @focus="showNodeSearch = true" @blur="showNodeSearch = false" />
       <div v-if="showNodeSearch && matchingNodes.length" class="mep-search-drop">
@@ -399,7 +401,7 @@ async function pickPathForField(fieldKey: string) {
         <div class="mep-row"><label>节点 ID</label><code>{{ selectedNode.node_id }}</code><span class="mep-hint">只读</span></div>
         <div class="mep-row"><label>类型</label><span>{{ kindLabel(selectedNode.lowered_kind) }}</span></div>
         <div class="mep-row"><label>显示名</label>
-          <input class="mep-input" :value="selectedNode.display_name ?? ''" @change="workspace.updateNode(selectedNode.node_id, { display_name: ($event.target as HTMLInputElement).value })" placeholder="输入显示名" />
+          <input class="mep-input" :value="selectedNode.display_name ?? ''" :disabled="!workspace.isGraphEditable" @change="workspace.updateNode(selectedNode.node_id, { display_name: ($event.target as HTMLInputElement).value })" placeholder="输入显示名" />
         </div>
         <div class="mep-row"><label>来源锚点</label><code>{{ selectedNode.source_anchor_ref }}</code></div>
         <div class="mep-row"><label>扩展角色</label><span>{{ selectedNode.expansion_role }}</span></div>
@@ -441,16 +443,16 @@ async function pickPathForField(fieldKey: string) {
             <label :title="f.key">{{ f.key }}</label>
             <span v-if="isFieldBound(f.key)" class="mep-bound">{{ getCfgVal(f.key) }} <em>⇠ {{ isFieldBound(f.key)!.nodeName }}:{{ isFieldBound(f.key)!.portId }}</em></span>
             <template v-else>
-              <select v-if="f.options" class="mep-cfg-input" :value="String(getCfgVal(f.key) ?? f.options[0])" @change="setCfgVal(f.key, ($event.target as HTMLSelectElement).value)">
+              <select v-if="f.options" class="mep-cfg-input" :disabled="!workspace.isGraphEditable" :value="String(getCfgVal(f.key) ?? f.options[0])" @change="setCfgVal(f.key, ($event.target as HTMLSelectElement).value)">
                 <option v-for="o in f.options" :key="o" :value="o">{{ o }}</option>
               </select>
               <span v-else-if="f.type === 'string'" style="display:flex;gap:2px;flex:1">
-                <input class="mep-cfg-input" :value="String(getCfgVal(f.key) ?? '')" @change="setCfgVal(f.key, ($event.target as HTMLInputElement).value)" />
-                <button v-if="getParamSchema(f.key)?.editor_kind === 'path'" class="mep-path-btn" @click="pickPathForField(f.key)" title="选择路径">…</button>
+                <input class="mep-cfg-input" :disabled="!workspace.isGraphEditable" :value="String(getCfgVal(f.key) ?? '')" @change="setCfgVal(f.key, ($event.target as HTMLInputElement).value)" />
+                <button v-if="getParamSchema(f.key)?.editor_kind === 'path'" class="mep-path-btn" :disabled="!workspace.isGraphEditable" @click="pickPathForField(f.key)" title="选择路径">…</button>
               </span>
-              <input v-else-if="f.type === 'number'" class="mep-cfg-input" type="number" :value="Number(getCfgVal(f.key)) || 0" @change="setCfgVal(f.key, Number(($event.target as HTMLInputElement).value) || 0)" />
-              <input v-else-if="f.type === 'boolean'" type="checkbox" :checked="!!getCfgVal(f.key)" @change="setCfgVal(f.key, ($event.target as HTMLInputElement).checked)" />
-              <textarea v-else class="mep-cfg-textarea" :value="typeof getCfgVal(f.key) === 'object' ? JSON.stringify(getCfgVal(f.key), null, 2) : String(getCfgVal(f.key) ?? '')" @change="setJsonVal(f.key, ($event.target as HTMLTextAreaElement).value)" rows="3" />
+              <input v-else-if="f.type === 'number'" class="mep-cfg-input" :disabled="!workspace.isGraphEditable" type="number" :value="Number(getCfgVal(f.key)) || 0" @change="setCfgVal(f.key, Number(($event.target as HTMLInputElement).value) || 0)" />
+              <input v-else-if="f.type === 'boolean'" :disabled="!workspace.isGraphEditable" type="checkbox" :checked="!!getCfgVal(f.key)" @change="setCfgVal(f.key, ($event.target as HTMLInputElement).checked)" />
+              <textarea v-else class="mep-cfg-textarea" :disabled="!workspace.isGraphEditable" :value="typeof getCfgVal(f.key) === 'object' ? JSON.stringify(getCfgVal(f.key), null, 2) : String(getCfgVal(f.key) ?? '')" @change="setJsonVal(f.key, ($event.target as HTMLTextAreaElement).value)" rows="3" />
             </template>
           </div>
 
@@ -461,19 +463,19 @@ async function pickPathForField(fieldKey: string) {
               <span class="mep-bound">{{ typeof getCfgVal(f.key) === 'object' ? JSON.stringify(getCfgVal(f.key)) : getCfgVal(f.key) }} <em>⇠ {{ isFieldBound(f.key)!.nodeName }}:{{ isFieldBound(f.key)!.portId }}</em></span>
             </template>
             <template v-else>
-              <select class="mep-type-sel" :value="getSelectedType(f.key)" @change="changeValueType(f.key, ($event.target as HTMLSelectElement).value as ValueType)">
+              <select class="mep-type-sel" :disabled="!workspace.isGraphEditable" :value="getSelectedType(f.key)" @change="changeValueType(f.key, ($event.target as HTMLSelectElement).value as ValueType)">
                 <option v-for="t in VALUE_TYPES" :key="t" :value="t">{{ t }}</option>
               </select>
               <!-- string / number -->
-              <input v-if="getSelectedType(f.key) === 'string'" class="mep-cfg-input" :value="String(getCfgVal(f.key) ?? '')" @change="setTypedVal(f.key, ($event.target as HTMLInputElement).value)" />
-              <input v-else-if="getSelectedType(f.key) === 'number'" class="mep-cfg-input" type="number" :value="Number(getCfgVal(f.key)) || 0" @change="setTypedVal(f.key, Number(($event.target as HTMLInputElement).value) || 0)" />
+              <input v-if="getSelectedType(f.key) === 'string'" class="mep-cfg-input" :disabled="!workspace.isGraphEditable" :value="String(getCfgVal(f.key) ?? '')" @change="setTypedVal(f.key, ($event.target as HTMLInputElement).value)" />
+              <input v-else-if="getSelectedType(f.key) === 'number'" class="mep-cfg-input" :disabled="!workspace.isGraphEditable" type="number" :value="Number(getCfgVal(f.key)) || 0" @change="setTypedVal(f.key, Number(($event.target as HTMLInputElement).value) || 0)" />
               <!-- boolean -->
               <label v-else-if="getSelectedType(f.key) === 'boolean'" class="mep-check-label">
-                <input type="checkbox" :checked="!!getCfgVal(f.key)" @change="setTypedVal(f.key, ($event.target as HTMLInputElement).checked)" />
+                <input :disabled="!workspace.isGraphEditable" type="checkbox" :checked="!!getCfgVal(f.key)" @change="setTypedVal(f.key, ($event.target as HTMLInputElement).checked)" />
                 {{ getCfgVal(f.key) ? 'true' : 'false' }}
               </label>
               <!-- object / array → JSON textarea -->
-              <textarea v-else-if="getSelectedType(f.key) === 'object' || getSelectedType(f.key) === 'array'" class="mep-cfg-textarea" :value="JSON.stringify(getCfgVal(f.key), null, 2)" @change="setTypedJsonVal(f.key, ($event.target as HTMLTextAreaElement).value)" rows="3" />
+              <textarea v-else-if="getSelectedType(f.key) === 'object' || getSelectedType(f.key) === 'array'" class="mep-cfg-textarea" :disabled="!workspace.isGraphEditable" :value="JSON.stringify(getCfgVal(f.key), null, 2)" @change="setTypedJsonVal(f.key, ($event.target as HTMLTextAreaElement).value)" rows="3" />
               <!-- null -->
               <span v-else class="mep-null">null</span>
             </template>
@@ -486,6 +488,7 @@ async function pickPathForField(fieldKey: string) {
               <MonacoEditor
                 :model-value="String(getCfgVal(f.key) ?? '')"
                 :language="'javascript'"
+                :read-only="!workspace.isGraphEditable"
                 @update:model-value="setCfgVal(f.key, $event)"
               />
             </div>
@@ -495,12 +498,12 @@ async function pickPathForField(fieldKey: string) {
           <template v-for="f in paramFields.filter(p => p.type === 'branch-list')" :key="f.key">
             <div class="mep-cfg-section">{{ f.key }}</div>
             <div v-for="(b, bi) in getBranches(f.key)" :key="bi" class="mep-br-row">
-              <input class="mep-br-key" :value="b.key" @change="updateBranchKey(f.key, bi, ($event.target as HTMLInputElement).value)" placeholder="key" />
-              <input class="mep-br-label" :value="b.label" @change="updateBranchLabel(f.key, bi, ($event.target as HTMLInputElement).value)" placeholder="label" />
-              <button class="mep-om-del" @click="deleteBranch(f.key, bi)" :title="getBranches(f.key).length <= 2 ? '至少保留 2 个分支' : '删除分支'">✕</button>
+              <input class="mep-br-key" :disabled="!workspace.isGraphEditable" :value="b.key" @change="updateBranchKey(f.key, bi, ($event.target as HTMLInputElement).value)" placeholder="key" />
+              <input class="mep-br-label" :disabled="!workspace.isGraphEditable" :value="b.label" @change="updateBranchLabel(f.key, bi, ($event.target as HTMLInputElement).value)" placeholder="label" />
+              <button class="mep-om-del" :disabled="!workspace.isGraphEditable" @click="deleteBranch(f.key, bi)" :title="getBranches(f.key).length <= 2 ? '至少保留 2 个分支' : '删除分支'">✕</button>
             </div>
-            <button class="mep-om-add" @click="addBranch(f.key)">+ 新增分支</button>
-            <button class="mep-br-norm" :disabled="normalizing" @click="normalizeGraph()">{{ normalizing ? '同步中…' : '🔄 同步端口' }}</button>
+            <button class="mep-om-add" :disabled="!workspace.isGraphEditable" @click="addBranch(f.key)">+ 新增分支</button>
+            <button class="mep-br-norm" :disabled="normalizing || !workspace.isGraphEditable" @click="normalizeGraph()">{{ normalizing ? '同步中…' : '🔄 同步端口' }}</button>
           </template>
 
           <!-- Object-map fields -->
@@ -508,22 +511,22 @@ async function pickPathForField(fieldKey: string) {
             <div class="mep-cfg-section">{{ omf.key }}</div>
             <div v-for="entry in objectMapEntries(omf.key)" :key="entry.key" class="mep-om-row">
               <template v-if="renamingEntry?.fieldKey === omf.key && renamingEntry?.subKey === entry.key">
-                <input class="mep-om-key-input" :value="renamingEntry.tempName" @input="renamingEntry!.tempName = ($event.target as HTMLInputElement).value" @keyup.enter="finishRename()" @keyup.escape="cancelRename()" @blur="finishRename()" />
+                <input class="mep-om-key-input" :disabled="!workspace.isGraphEditable" :value="renamingEntry.tempName" @input="renamingEntry!.tempName = ($event.target as HTMLInputElement).value" @keyup.enter="finishRename()" @keyup.escape="cancelRename()" @blur="finishRename()" />
               </template>
-              <span v-else class="mep-om-key" @dblclick="startRename(omf.key, entry.key)" :title="'双击重命名'">{{ entry.key }}</span>
+              <span v-else class="mep-om-key" @dblclick="workspace.isGraphEditable && startRename(omf.key, entry.key)" :title="workspace.isGraphEditable ? '双击重命名' : '只读'">{{ entry.key }}</span>
               <template v-if="isFieldBound(`${omf.key}.${entry.key}`)">
                 <span class="mep-bound">{{ typeof entry.value === 'object' ? JSON.stringify(entry.value) : entry.value }} <em>⇠ {{ isFieldBound(`${omf.key}.${entry.key}`)!.nodeName }}</em></span>
               </template>
               <template v-else>
-                <input v-if="entry.type === 'string'" class="mep-cfg-input" :value="String(entry.value ?? '')" @change="setObjectMapValue(omf.key, entry.key, ($event.target as HTMLInputElement).value)" />
-                <input v-else-if="entry.type === 'number'" class="mep-cfg-input" type="number" :value="Number(entry.value) || 0" @change="setObjectMapValue(omf.key, entry.key, Number(($event.target as HTMLInputElement).value) || 0)" />
-                <input v-else-if="entry.type === 'boolean'" type="checkbox" :checked="!!entry.value" @change="setObjectMapValue(omf.key, entry.key, ($event.target as HTMLInputElement).checked)" />
-                <textarea v-else class="mep-cfg-textarea" :value="typeof entry.value === 'object' ? JSON.stringify(entry.value, null, 2) : String(entry.value ?? '')" @change="setJsonVal(`${omf.key}.${entry.key}`, ($event.target as HTMLTextAreaElement).value)" rows="2" />
+                <input v-if="entry.type === 'string'" class="mep-cfg-input" :disabled="!workspace.isGraphEditable" :value="String(entry.value ?? '')" @change="setObjectMapValue(omf.key, entry.key, ($event.target as HTMLInputElement).value)" />
+                <input v-else-if="entry.type === 'number'" class="mep-cfg-input" :disabled="!workspace.isGraphEditable" type="number" :value="Number(entry.value) || 0" @change="setObjectMapValue(omf.key, entry.key, Number(($event.target as HTMLInputElement).value) || 0)" />
+                <input v-else-if="entry.type === 'boolean'" :disabled="!workspace.isGraphEditable" type="checkbox" :checked="!!entry.value" @change="setObjectMapValue(omf.key, entry.key, ($event.target as HTMLInputElement).checked)" />
+                <textarea v-else class="mep-cfg-textarea" :disabled="!workspace.isGraphEditable" :value="typeof entry.value === 'object' ? JSON.stringify(entry.value, null, 2) : String(entry.value ?? '')" @change="setJsonVal(`${omf.key}.${entry.key}`, ($event.target as HTMLTextAreaElement).value)" rows="2" />
               </template>
-              <button class="mep-om-del" @click="deleteObjectMapKey(omf.key, entry.key)" title="删除此键">✕</button>
+              <button class="mep-om-del" :disabled="!workspace.isGraphEditable" @click="deleteObjectMapKey(omf.key, entry.key)" title="删除此键">✕</button>
             </div>
             <div class="mep-om-empty" v-if="!objectMapEntries(omf.key).length">当前为空</div>
-            <button class="mep-om-add" @click="addObjectMapKey(omf.key)">+ 新增条目</button>
+            <button class="mep-om-add" :disabled="!workspace.isGraphEditable" @click="addObjectMapKey(omf.key)">+ 新增条目</button>
           </template>
 
           <!-- Extra config sections (non-template, non-object-map) -->
@@ -534,12 +537,12 @@ async function pickPathForField(fieldKey: string) {
               <span v-if="isFieldBound(f.path)" class="mep-bound">{{ f.value }} <em>⇠ {{ isFieldBound(f.path)!.nodeName }}:{{ isFieldBound(f.path)!.portId }}</em></span>
               <template v-else>
                 <span v-if="f.type === 'string'" style="display:flex;gap:2px;flex:1">
-                  <input class="mep-cfg-input" :value="String(f.value ?? '')" @change="setCfgVal(f.path, ($event.target as HTMLInputElement).value)" />
-                  <button v-if="getParamSchema(f.key)?.editor_kind === 'path'" class="mep-path-btn" @click="pickPathForField(f.path)" title="选择路径">…</button>
+                  <input class="mep-cfg-input" :disabled="!workspace.isGraphEditable" :value="String(f.value ?? '')" @change="setCfgVal(f.path, ($event.target as HTMLInputElement).value)" />
+                  <button v-if="getParamSchema(f.key)?.editor_kind === 'path'" class="mep-path-btn" :disabled="!workspace.isGraphEditable" @click="pickPathForField(f.path)" title="选择路径">…</button>
                 </span>
-                <input v-else-if="f.type === 'number'" class="mep-cfg-input" type="number" :value="String(f.value ?? '')" @change="setCfgVal(f.path, Number(($event.target as HTMLInputElement).value) || 0)" />
-                <input v-else-if="f.type === 'boolean'" type="checkbox" :checked="!!f.value" @change="setCfgVal(f.path, ($event.target as HTMLInputElement).checked)" />
-                <textarea v-else class="mep-cfg-textarea" :value="typeof f.value === 'object' ? JSON.stringify(f.value, null, 2) : String(f.value ?? '')" @change="setJsonVal(f.path, ($event.target as HTMLTextAreaElement).value)" rows="3" />
+                <input v-else-if="f.type === 'number'" class="mep-cfg-input" :disabled="!workspace.isGraphEditable" type="number" :value="String(f.value ?? '')" @change="setCfgVal(f.path, Number(($event.target as HTMLInputElement).value) || 0)" />
+                <input v-else-if="f.type === 'boolean'" :disabled="!workspace.isGraphEditable" type="checkbox" :checked="!!f.value" @change="setCfgVal(f.path, ($event.target as HTMLInputElement).checked)" />
+                <textarea v-else class="mep-cfg-textarea" :disabled="!workspace.isGraphEditable" :value="typeof f.value === 'object' ? JSON.stringify(f.value, null, 2) : String(f.value ?? '')" @change="setJsonVal(f.path, ($event.target as HTMLTextAreaElement).value)" rows="3" />
               </template>
             </div>
           </template>
@@ -551,6 +554,7 @@ async function pickPathForField(fieldKey: string) {
 </template>
 <style scoped>
 .mep { padding: var(--space-sm); font-size: var(--text-small); height: 100%; overflow-y: auto; }
+.mep-ro input:not([disabled]), .mep-ro textarea:not([disabled]), .mep-ro select:not([disabled]), .mep-ro button:not(.mep-search-item):not(.mep-close), .mep-ro .mep-om-add, .mep-ro .mep-om-del, .mep-ro .mep-br-norm { pointer-events: none; opacity: 0.5; }
 .mep-search-row { position: relative; margin-bottom: var(--space-sm); }
 .mep-search { width: 100%; padding: 2px 8px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text-primary); font-family: var(--font-ui); font-size: var(--text-small); }
 .mep-search-drop { position: absolute; top: 100%; left: 0; right: 0; z-index: 50; background: var(--bg-panel); border: 1px solid var(--border-default); border-radius: var(--radius-md); box-shadow: var(--shadow-menu); max-height: 180px; overflow-y: auto; }
