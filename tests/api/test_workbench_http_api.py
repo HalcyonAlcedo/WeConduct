@@ -583,6 +583,154 @@ def test_http_api_exposes_project_document_and_can_create_new_project(tmp_path: 
         server.server_close()
 
 
+def test_http_api_project_documents_and_graph_endpoint_support_custom_node_graph_documents(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        seed_graph_payload = json.dumps(
+            {
+                "graph_model_id": "graph:workspace",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [
+                    {
+                        "node_id": "node-input",
+                        "lowered_kind": "bridge",
+                        "source_anchor_ref": "n-input",
+                        "expansion_role": "component.input",
+                        "display_name": "输入",
+                        "node_kind": "component.input",
+                        "position": {"x": 40, "y": 40},
+                        "ports": [],
+                        "node_config": {
+                            "name": "username",
+                            "value_type": "string",
+                            "required": True,
+                        },
+                    }
+                ],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        ).encode("utf-8")
+        seed_graph_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=seed_graph_payload,
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(seed_graph_request):
+            pass
+
+        create_resource_payload = json.dumps({"resource_name": "登录流程组件"}).encode("utf-8")
+        create_resource_request = urllib.request.Request(
+            f"{base_url}/api/workbench/resources/custom-node-graphs",
+            data=create_resource_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_resource_request) as response:
+            resource_payload = json.loads(response.read().decode("utf-8"))
+
+        resource_id = resource_payload["resource"]["resource_id"]
+        document_id = f"custom_node_graph:{resource_id}"
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/documents") as response:
+            documents_payload = json.loads(response.read().decode("utf-8"))
+
+        with urllib.request.urlopen(
+            f"{base_url}/api/workbench/graph?document_id={urllib.parse.quote(document_id, safe='')}"
+        ) as response:
+            graph_payload = json.loads(response.read().decode("utf-8"))
+
+        custom_document = next(
+            item
+            for item in documents_payload["documents"]
+            if item["document_id"] == document_id
+        )
+        assert custom_document["document_role"] == "custom_node_graph"
+        assert custom_document["resource_id"] == resource_id
+        assert graph_payload["graph_model"]["graph_model_id"] == document_id
+        assert graph_payload["graph_model"]["nodes"][0]["node_kind"] == "component.input"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_can_create_empty_custom_node_graph_resource_and_save_its_document(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        create_payload = json.dumps({"resource_name": "空白用户组件"}).encode("utf-8")
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/resources/custom-node-graphs/create-empty",
+            data=create_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request) as response:
+            created_payload = json.loads(response.read().decode("utf-8"))
+
+        resource_id = created_payload["resource"]["resource_id"]
+        document_id = f"custom_node_graph:{resource_id}"
+        updated_document_payload = json.dumps(
+            {
+                "document_id": document_id,
+                "graph_model_id": document_id,
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [
+                    {
+                        "node_id": "node-output",
+                        "lowered_kind": "bridge",
+                        "source_anchor_ref": "n-output",
+                        "expansion_role": "component.output",
+                        "display_name": "输出",
+                        "node_kind": "component.output",
+                        "position": {"x": 100, "y": 80},
+                        "ports": [],
+                        "node_config": {
+                            "name": "done",
+                            "value_type": "boolean",
+                            "required": True,
+                        },
+                    }
+                ],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        ).encode("utf-8")
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=updated_document_payload,
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(save_request) as response:
+            saved_payload = json.loads(response.read().decode("utf-8"))
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/resources") as response:
+            registry_payload = json.loads(response.read().decode("utf-8"))
+
+        resource = next(
+            item for item in registry_payload["resources"] if item["resource_id"] == resource_id
+        )
+        assert created_payload["status"] == "created"
+        assert saved_payload["graph_model"]["graph_model_id"] == document_id
+        assert resource["output_schema"]["done"]["type"] == "boolean"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_http_api_snapshot_exposes_preferences_document(tmp_path: Path) -> None:
     workspace_state_path = tmp_path / "workspace-state.json"
     preferences_path = tmp_path / "preferences.json"
@@ -2283,6 +2431,80 @@ def test_http_api_exposes_project_resource_audit_document(tmp_path: Path) -> Non
         server.server_close()
 
 
+def test_http_api_can_update_custom_node_graph_resource_metadata(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+        graph_update_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:workspace",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(graph_update_request):
+            pass
+
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/resources/custom-node-graphs/create-empty",
+            data=json.dumps({"resource_name": "待更新组件"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request) as response:
+            created_payload = json.loads(response.read().decode("utf-8"))
+
+        resource_id = created_payload["resource"]["resource_id"]
+        update_request = urllib.request.Request(
+            f"{base_url}/api/workbench/resources/metadata",
+            data=json.dumps(
+                {
+                    "resource_id": resource_id,
+                    "display_name": "登录组件",
+                    "description": "用于登录流程的用户组件。",
+                    "display_name_i18n": {
+                        "zh-CN": "登录组件",
+                        "en-US": "Login Component",
+                    },
+                    "description_i18n": {
+                        "zh-CN": "用于登录流程的用户组件。",
+                        "en-US": "Reusable component for login flow.",
+                    },
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(update_request) as response:
+            updated_payload = json.loads(response.read().decode("utf-8"))
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/resources") as response:
+            registry_payload = json.loads(response.read().decode("utf-8"))
+
+        updated_resource = next(
+            item for item in registry_payload["resources"] if item["resource_id"] == resource_id
+        )
+        assert updated_payload["status"] == "updated"
+        assert updated_payload["resource"]["display_name"] == "登录组件"
+        assert updated_payload["resource"]["display_name_i18n"]["en-US"] == "Login Component"
+        assert updated_payload["resource"]["description_i18n"]["zh-CN"] == "用于登录流程的用户组件。"
+        assert updated_resource["description"] == "用于登录流程的用户组件。"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_http_api_project_documents_returns_split_project_layout_payload(tmp_path: Path) -> None:
     workspace_state_path = tmp_path / "workspace-state.json"
     server, thread = _start_test_server(workspace_state_path=workspace_state_path)
@@ -3039,6 +3261,47 @@ def test_http_api_project_package_build_returns_archive_document(tmp_path: Path)
         with urllib.request.urlopen(runtime_defaults_request):
             pass
 
+        graph_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:workspace",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [
+                        {
+                            "node_id": "node-start",
+                            "lowered_kind": "control",
+                            "source_anchor_ref": "n-node-start",
+                            "expansion_role": "flow.start",
+                            "display_name": "流程入口",
+                            "node_kind": "flow.start",
+                            "node_config": {
+                                "initial_variables": {
+                                    "base_url": "http://api-package.test",
+                                },
+                                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                            },
+                            "ports": [
+                                {
+                                    "port_id": "control-out",
+                                    "direction": "output",
+                                    "relation_layer": "control",
+                                    "semantic_slot": "control.next",
+                                }
+                            ],
+                        }
+                    ],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(graph_request):
+            pass
+
         save_request = urllib.request.Request(
             f"{base_url}/api/workbench/project/save-as",
             data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
@@ -3083,7 +3346,7 @@ def test_http_api_project_package_build_returns_archive_document(tmp_path: Path)
         assert manifest_payload["entrypoint"]["graph_path"] == "graphs/main.graph.msgpack"
         assert manifest_payload["runtime_requirements"]["required_browser"] == "msedge"
         assert package_info_payload["manifest_version"] == 1
-        assert package_info_payload["builder_app_version"] == "0.5.2"
+        assert package_info_payload["builder_app_version"] == "0.6.0"
         assert package_info_payload["source_project_schema_version"] == "project-v2"
     finally:
         server.shutdown()
@@ -6590,7 +6853,7 @@ def test_http_api_exposes_runtime_health(tmp_path: Path) -> None:
         assert payload["status"] == "ok"
         assert payload["service"] == "weconduct-api"
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.5.2"
+        assert payload["api_version"] == "0.6.0"
         assert payload["workspace_state_version"] == 1
         assert payload["workspace_session_id"].startswith("ws-")
         assert payload["service_started_at"]
@@ -8454,7 +8717,7 @@ def test_http_host_info_exposes_release_manifest_and_runtime_binding(tmp_path: P
             payload = json.loads(response.read().decode("utf-8"))
 
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.5.2"
+        assert payload["api_version"] == "0.6.0"
         assert payload["server_bind"]["host"] == "127.0.0.1"
         assert payload["server_bind"]["port"] == server.server_address[1]
         assert payload["server_bind"]["base_url"] == base_url

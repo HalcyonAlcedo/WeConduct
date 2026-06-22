@@ -81,8 +81,14 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.OK, payload)
             return
 
-        if self.path == "/api/workbench/graph":
-            result = service.get_graph_document()
+        if request_path == "/api/workbench/graph":
+            try:
+                result = service.get_graph_document(
+                    document_id=self._get_optional_query_param(query_params, "document_id")
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
             self._write_json(
                 HTTPStatus.OK,
                 {
@@ -1143,6 +1149,28 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if self.path == "/api/workbench/resources/custom-node-graphs/create-empty":
+            try:
+                payload = self._read_json_request_body()
+                resource_name = payload.get("resource_name")
+                if not isinstance(resource_name, str):
+                    raise ValueError("field must be a string: resource_name")
+                result = service.create_empty_custom_node_graph_resource(
+                    resource_name=resource_name,
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "status": result["status"],
+                    "registry_revision": result["registry_revision"],
+                    "resource": result["resource"],
+                },
+            )
+            return
+
         if self.path == "/api/workbench/resources/delete":
             try:
                 payload = self._read_json_request_body()
@@ -1150,6 +1178,44 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 if not isinstance(resource_id, str) or not resource_id.strip():
                     raise ValueError("field must be a non-empty string: resource_id")
                 result = service.delete_resource(resource_id=resource_id.strip())
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "status": result["status"],
+                    "registry_revision": result["registry_revision"],
+                    "resource": result["resource"],
+                },
+            )
+            return
+
+        if self.path == "/api/workbench/resources/metadata":
+            try:
+                payload = self._read_json_request_body()
+                resource_id = payload.get("resource_id")
+                if not isinstance(resource_id, str) or not resource_id.strip():
+                    raise ValueError("field must be a non-empty string: resource_id")
+                display_name = payload.get("display_name")
+                if not isinstance(display_name, str) or not display_name.strip():
+                    raise ValueError("field must be a non-empty string: display_name")
+                description = payload.get("description")
+                if description is not None and not isinstance(description, str):
+                    raise ValueError("field must be a string when provided: description")
+                display_name_i18n = payload.get("display_name_i18n")
+                if display_name_i18n is not None and not isinstance(display_name_i18n, dict):
+                    raise ValueError("field must be an object when provided: display_name_i18n")
+                description_i18n = payload.get("description_i18n")
+                if description_i18n is not None and not isinstance(description_i18n, dict):
+                    raise ValueError("field must be an object when provided: description_i18n")
+                result = service.update_resource_metadata(
+                    resource_id=resource_id.strip(),
+                    display_name=display_name.strip(),
+                    description=description,
+                    display_name_i18n=display_name_i18n,
+                    description_i18n=description_i18n,
+                )
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
                 return

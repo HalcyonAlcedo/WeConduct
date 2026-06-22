@@ -10,7 +10,7 @@ import { useResourceStore } from '@/stores/resourceStore'
 import { useToastStore } from '@/stores/toastStore'
 import {
   postProjectNew, postProjectOpen, postProjectSave, postProjectSaveAs,
-  fetchProject, fetchRecentProjects, postRecentProjectRemove,
+  fetchProject, fetchGraphDocument, fetchRecentProjects, postRecentProjectRemove,
   postFileDialog, postReadFile,
 } from '@/services/api'
 import type { RecentProject } from '@/types/domains/api'
@@ -29,11 +29,13 @@ const toast = useToastStore()
 async function applyOpenedProject() {
   await workspace.refreshSnapshot()
   compilation.clearSource() // prevent stale source from previous project
-  await graphWs.loadGraph()
+          graphWs.clearAllDrafts() // prevent old project drafts from leaking
+          await graphWs.loadGraph(undefined, { forceRefresh: true })
   // Explicit sync (not just 800ms watcher delay)
   if (graphWs.graphModel) await graphWs.syncSource()
   runtime.refreshAll()
   resource.refreshAll()
+  await graphWs.refreshGraphDocuments()
   closeDialog()
 }
 
@@ -66,6 +68,7 @@ async function doNew() {
     graphWs.reset()
     runtime.refreshAll()
     resource.refreshAll()
+    await graphWs.refreshGraphDocuments()
     closeDialog()
   } catch(e:any){ toast.error('创建失败', e?.message) }
   finally { dialogLoading.value = false }
@@ -73,14 +76,25 @@ async function doNew() {
 async function doOpen() { dialogLoading.value = true; try { await postProjectOpen({ project_path: dialogInput.value }); toast.success('已打开'); await applyOpenedProject() } catch(e:any){ toast.error('打开失败', e?.message) } finally { dialogLoading.value = false } }
 const isWcrunPackage = computed(() => (workspace.snapshot as any)?.project_settings?.source_of_truth === 'wcrun_package')
 
+/** Get the main graph model for project save, loading it if currently on a custom graph */
+async function getMainGraphModel(): Promise<Record<string, unknown> | undefined> {
+  if (!graphWs.isCustomComponentGraph) return graphWs.graphModel as Record<string, unknown> | undefined
+  // Currently on a custom graph — fetch the main graph explicitly
+  try {
+    const doc = await fetchGraphDocument() // no document_id → main graph
+    return doc.graph_model as unknown as Record<string, unknown> | undefined
+  } catch { return undefined }
+}
+
 async function doSave() {
   if (isWcrunPackage.value) { toast.info('', '.wcrun 包只读 — 仅运行默认值可编辑'); return }
   dialogLoading.value = true
   try {
     const proj = await fetchProject()
     if (!proj.project.project_file_path) { closeDialog(); openDialog('saveas'); dialogLoading.value = false; return }
-    await postProjectSave(graphWs.graphModel as Record<string, unknown> | undefined)
-    await graphWs.loadGraph() // refresh view/saveRevision after project save
+    const mainModel = await getMainGraphModel()
+    await postProjectSave(mainModel)
+    await graphWs.loadGraph(undefined, { forceRefresh: true }) // refresh view/saveRevision after project save
     toast.success('已保存'); closeDialog()
   } catch(e: any) {
     if (e?.body?.error === 'project.needs_save_as') { closeDialog(); openDialog('saveas') }
@@ -92,8 +106,9 @@ async function doSaveAs() {
   if (isWcrunPackage.value) { toast.info('', '.wcrun 包只读 — 仅运行默认值可编辑'); return }
   dialogLoading.value = true
   try {
-    await postProjectSaveAs({ project_path: dialogInput.value, graph_document: graphWs.graphModel as Record<string, unknown> | undefined })
-    await graphWs.loadGraph() // refresh view/saveRevision after project save
+    const mainModel = await getMainGraphModel()
+    await postProjectSaveAs({ project_path: dialogInput.value, graph_document: mainModel })
+    await graphWs.loadGraph(undefined, { forceRefresh: true }) // refresh view/saveRevision after project save
     toast.success('已另存'); closeDialog()
   } catch(e:any){ toast.error('另存失败', e?.message) }
   finally { dialogLoading.value = false }
@@ -343,7 +358,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
             <!-- About -->
             <template v-else-if="activeDialog === 'about'">
               <p><strong>WeConduct</strong></p>
-              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.5.2' }}</p>
+              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.6.0' }}</p>
               <p class="dlg-meta">运行模式: {{ workspace.health?.host_mode ?? '—' }}</p>
               <p class="dlg-meta">工作区会话: {{ workspace.health?.workspace_session_id ?? '—' }}</p>
               <template v-if="workspace.projectName">

@@ -50,46 +50,25 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             {
                 "port_id": "out",
                 "direction": "output",
-                "relation_layer": "data",
-                "semantic_slot": "component.input.value",
+                "relation_layer": "control",
+                "semantic_slot": "out.control",
             },
         ],
         "node_config": {
-            "name": "",
-            "required": False,
-            "value_type": "string",
-            "default_value": None,
-            "description": "",
+            "inputs": {},
+            "share_parent_variables": False,
         },
         "parameter_schema": {
-            "name": {
-                "type": "string",
-                "required": True,
-                "editor_kind": "text",
+            "inputs": {
+                "type": "object",
+                "required": False,
+                "editor_kind": "component_inputs",
                 "path_kind": None,
             },
-            "required": {
+            "share_parent_variables": {
                 "type": "boolean",
                 "required": False,
                 "editor_kind": "boolean",
-                "path_kind": None,
-            },
-            "value_type": {
-                "type": "string",
-                "required": True,
-                "editor_kind": "select",
-                "path_kind": None,
-            },
-            "default_value": {
-                "type": "object",
-                "required": False,
-                "editor_kind": "json",
-                "path_kind": None,
-            },
-            "description": {
-                "type": "string",
-                "required": False,
-                "editor_kind": "textarea",
                 "path_kind": None,
             },
         },
@@ -101,32 +80,18 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             {
                 "port_id": "in",
                 "direction": "input",
-                "relation_layer": "data",
-                "semantic_slot": "component.output.value",
+                "relation_layer": "control",
+                "semantic_slot": "in.control",
             },
         ],
         "node_config": {
-            "name": "",
-            "value_type": "string",
-            "description": "",
+            "outputs": {},
         },
         "parameter_schema": {
-            "name": {
-                "type": "string",
-                "required": True,
-                "editor_kind": "text",
-                "path_kind": None,
-            },
-            "value_type": {
-                "type": "string",
-                "required": True,
-                "editor_kind": "select",
-                "path_kind": None,
-            },
-            "description": {
-                "type": "string",
+            "outputs": {
+                "type": "object",
                 "required": False,
-                "editor_kind": "textarea",
+                "editor_kind": "component_outputs",
                 "path_kind": None,
             },
         },

@@ -22,6 +22,74 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   const document = ref<GraphDocumentResponse | null>(null)
   const graphModel = ref<GraphModel | null>(null)
   const view = ref<GraphDocumentView | null>(null)
+  /** P18: current active document_id. null/undefined = main graph. "custom_node_graph:<id>" = custom component. */
+  const currentDocumentId = ref<string | undefined>(undefined)
+  const isCustomComponentGraph = computed(() => !!currentDocumentId.value)
+  /** P18: graph document list (main + custom components) */
+  const graphDocuments = ref<{ document_id: string; document_role: string; display_name?: string; resource_id?: string }[]>([])
+
+  /** P18: Per-document draft cache. Keyed by document_id (undefined = main graph). */
+  const draftsByDocumentId = ref<Map<string | undefined, {
+    document: GraphDocumentResponse | null
+    graphModel: GraphModel | null
+    view: GraphDocumentView | null
+    isDirty: boolean
+    changeRevision: number
+    undoStack: string[]
+    redoStack: string[]
+  }>>(new Map())
+
+  function saveCurrentDraft() {
+    const key = currentDocumentId.value
+    draftsByDocumentId.value.set(key, {
+      document: JSON.parse(JSON.stringify(document.value)),
+      graphModel: JSON.parse(JSON.stringify(graphModel.value)),
+      view: JSON.parse(JSON.stringify(view.value)),
+      isDirty: isDirty.value,
+      changeRevision: changeRevision.value,
+      undoStack: [...undoStack.value],
+      redoStack: [...redoStack.value],
+    })
+  }
+
+  function restoreDraft(docId: string | undefined): boolean {
+    const draft = draftsByDocumentId.value.get(docId)
+    if (!draft) return false
+    document.value = draft.document
+    graphModel.value = draft.graphModel
+    view.value = draft.view
+    isDirty.value = draft.isDirty
+    changeRevision.value = draft.changeRevision
+    undoStack.value = draft.undoStack
+    redoStack.value = draft.redoStack
+    currentDocumentId.value = docId
+    loadState.value = 'loaded'
+    return true
+  }
+
+  function clearAllDrafts() {
+    draftsByDocumentId.value.clear()
+    staleDrafts.value.clear()
+  }
+
+  /** P18: Drafts known to be stale (e.g. main graph after subgraph schema changed) */
+  const staleDrafts = ref<Set<string | undefined>>(new Set())
+
+  function invalidateMainGraphDrafts() {
+    // Invalidate main graph draft + any graph that might reference changed resources
+    staleDrafts.value.add(undefined) // main graph
+    for (const key of draftsByDocumentId.value.keys()) {
+      if (typeof key === 'string' && key.startsWith('custom_node_graph:')) continue
+      staleDrafts.value.add(key)
+    }
+  }
+  async function refreshGraphDocuments() {
+    try {
+      const { fetchProjectDocuments } = await import('@/services/api')
+      const r = await fetchProjectDocuments()
+      graphDocuments.value = r.documents || []
+    } catch { graphDocuments.value = [] }
+  }
 
   // Getters
   const saveRevision = computed(() => view.value?.graph_document_save_revision ?? 0)
@@ -32,18 +100,33 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   const isGraphEditable = computed(() => view.value?.is_editable !== false)
 
   // Actions
-  async function loadGraph() {
+  async function loadGraph(documentId?: string, options?: { forceRefresh?: boolean }) {
+    const isSwitching = currentDocumentId.value !== documentId
+    // Save current graph state to draft cache before switching documents
+    if (loadState.value === 'loaded' && isSwitching) {
+      saveCurrentDraft()
+    }
+    // Skip stale drafts (e.g. main graph after subgraph schema changed)
+    const isStale = staleDrafts.value.has(documentId)
+    if (isStale) staleDrafts.value.delete(documentId)
+    // Try restoring from local draft only when switching documents (not force-refreshing) and not stale
+    if (!options?.forceRefresh && !isStale && restoreDraft(documentId)) {
+      changeRevision.value++ // trigger source-projection
+      hydrateSchemasFromGraph()
+      return
+    }
+    // Fetch from API
     loadState.value = 'loading'
     loadError.value = null
     try {
-      const doc = await fetchGraphDocument()
+      const doc = await fetchGraphDocument(documentId)
       document.value = doc
       graphModel.value = doc.graph_model
       view.value = doc.view
+      currentDocumentId.value = documentId || undefined
       loadState.value = 'loaded'
       clearDirty()
       changeRevision.value++ // trigger source-projection auto-sync after load
-      // Hydrate parameter schemas for existing nodes
       hydrateSchemasFromGraph()
     } catch (err) {
       loadState.value = 'error'
@@ -57,7 +140,7 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     saveError.value = null
     const toast = useToastStore()
     try {
-      const result = await putGraphDocument(model, saveRevision.value)
+      const result = await putGraphDocument(model, saveRevision.value, currentDocumentId.value)
       // Full state sync: graph model + document + view + changeRevision for source projection
       document.value = { graph_model: result.graph_model, view: result.view }
       graphModel.value = result.graph_model
@@ -65,6 +148,8 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
       changeRevision.value++ // triggers source-projection auto-sync
       saveState.value = 'saved'
       clearDirty()
+      // Saving subgraph invalidates main graph drafts (schema may have changed)
+      if (currentDocumentId.value) invalidateMainGraphDrafts()
       toast.success('图稿已保存', `修订号: ${result.view.graph_document_save_revision}`)
     } catch (err: any) {
       if (err?.status === 409 && err?.body?.error === 'graph_revision_conflict') {
@@ -108,10 +193,33 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     markChanged()
   }
 
+  /** P18: Check boundary/singleton placement rules. Returns error message or null if allowed. */
+  function canPlaceNode(resourceKey: string): string | null {
+    const isMainGraph = !currentDocumentId.value
+    const nodes = graphModel.value?.nodes || []
+    const hasFlowStart = nodes.some(n => n.node_kind === 'flow.start')
+    const hasCompInput = nodes.some(n => n.node_kind === 'component.input')
+    const hasCompOutput = nodes.some(n => n.node_kind === 'component.output')
+    // Subgraph boundary rules
+    if (!isMainGraph) {
+      if (resourceKey === 'flow.start') return '子图中不能放置 flow.start'
+      if (resourceKey === 'component.input' && hasCompInput) return '子图中已有 component.input'
+      if (resourceKey === 'component.output' && hasCompOutput) return '子图中已有 component.output'
+      return null
+    }
+    // Main graph boundary rules
+    if (resourceKey === 'component.input') return 'component.input 只能在子图中使用'
+    if (resourceKey === 'component.output') return 'component.output 只能在子图中使用'
+    if (resourceKey === 'flow.start' && hasFlowStart) return '主图中已有 flow.start'
+    return null
+  }
+
   /** Add a node via Core node-draft API. Returns new nodeId, or null on failure.
    *  If no position given, places node at current viewport center. */
   async function addNode(item: { resource_key: string; display_name: string; resource_type?: string }, position?: { x: number; y: number }): Promise<string | null> {
     if (!isGraphEditable.value) return null
+    const blockReason = canPlaceNode(item.resource_key)
+    if (blockReason) { useToastStore().info('无法放置', blockReason); return null }
     const toast = useToastStore()
     try {
       // Use viewport center when no explicit position (click, not drag)
@@ -163,12 +271,17 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
       useToastStore().error('无法粘贴', '复制缓存缺少 node_kind')
       return null
     }
+    const blockReason = canPlaceNode(source.node_kind)
+    if (blockReason) { useToastStore().info('无法放置', blockReason); return null }
     const toast = useToastStore()
     try {
+      // Paste at current viewport center (not source offset)
+      const px = viewport.value.x + (pasteCounter++ * 30) % 300
+      const py = viewport.value.y + (pasteCounter * 20) % 200
       const draft = await fetchNodeDraft({
         resource_key: source.node_kind,
-        x: (source.position?.x || 100) + 40,
-        y: (source.position?.y || 80) + 40,
+        x: Math.round(px),
+        y: Math.round(py),
       })
       // Inherit user-editable fields
       if (source.display_name) draft.node.display_name = source.display_name
@@ -236,7 +349,9 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
 
   function reset() {
     loadState.value = 'idle'; saveState.value = 'idle'; loadError.value = null; saveError.value = null
-    document.value = null; graphModel.value = null; view.value = null
+    document.value = null; graphModel.value = null; view.value = null; currentDocumentId.value = undefined
+    graphDocuments.value = []
+    clearAllDrafts()
     syncStatus.value = 'idle'; syncError.value = null
     clearDirty()
   }
@@ -246,6 +361,7 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
 
   // ---- Current viewport (for placing new nodes at view center) ----
   const viewport = ref<{ x: number; y: number; zoom: number }>({ x: 0, y: 0, zoom: 1 })
+  let pasteCounter = 0
   function updateViewport(v: { x: number; y: number; zoom: number }) { viewport.value = v }
 
   function cacheParameterSchema(resourceKey: string, schema?: Record<string, ParameterFieldSchema>) {
@@ -313,6 +429,8 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     loadState, saveState, loadError, saveError,
     document, graphModel, view, isDirty, changeRevision,
     saveRevision, hasGraph, isLoaded, lastCompileMatches, isGraphEditable,
+    currentDocumentId, isCustomComponentGraph, graphDocuments, refreshGraphDocuments,
+    draftsByDocumentId, saveCurrentDraft, restoreDraft, clearAllDrafts, invalidateMainGraphDrafts,
     loadGraph, saveGraph, addNode, pasteNode, removeNode, updateNode,
     updateNodePosition, addEdge, removeEdge, updateEdgeRelation, pushUndo, undo, redo, reset,
     syncStatus, syncError, syncSource, scheduleAutoSync,

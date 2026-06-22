@@ -1,11 +1,12 @@
 <script setup lang="ts">
 /** Thin wrapper: VueFlowGraph with workspace header, used inside PanelContainer */
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useGraphStore } from '@/stores/graphStore'
 import { useCompilationStore } from '@/stores/compilationStore'
 import { useToastStore } from '@/stores/toastStore'
-import { postGraphValidate, postGraphCompile } from '@/services/api'
+import { postGraphValidate, postGraphCompile, postCreateEmptyCustomComponent } from '@/services/api'
+import { useResourceStore } from '@/stores/resourceStore'
 import VueFlowGraph from './VueFlowGraph.vue'
 import type { CompilationRequest } from '@/types/domains/compilation'
 
@@ -13,8 +14,36 @@ const workspace = useGraphWorkspaceStore()
 const graphStore = useGraphStore()
 const compilation = useCompilationStore()
 const toast = useToastStore()
+const resource = useResourceStore()
 
-onMounted(() => { workspace.loadGraph() })
+const showNewCompDlg = ref(false)
+const newCompName = ref('')
+
+onMounted(() => { if (!workspace.isLoaded) workspace.loadGraph(); workspace.refreshGraphDocuments() })
+
+async function switchGraph(docId: string) {
+  if (docId === (workspace.currentDocumentId || '')) return
+  await workspace.loadGraph(docId || undefined)
+  await workspace.syncSource()
+  graphStore.selectNode(null)
+  compilation.resetCompilation()
+}
+
+async function createCustomComponent() {
+  const name = newCompName.value.trim()
+  if (!name) return
+  try {
+    const r = await postCreateEmptyCustomComponent(name)
+    toast.success('已创建', r.resource.display_name)
+    await resource.refreshAll()
+    const docId = `custom_node_graph:${r.resource.resource_id}`
+    await workspace.loadGraph(docId)
+    await workspace.syncSource()
+    await workspace.refreshGraphDocuments()
+    showNewCompDlg.value = false; newCompName.value = ''
+  } catch (e: any) { toast.error('创建失败', e?.message) }
+}
+
 
 const selected = computed(() => graphStore.selectGraphModel({
   workspaceModel: workspace.graphModel,
@@ -127,6 +156,11 @@ async function handleCompile() {
 <template>
   <div class="gcp">
     <div class="gcp-bar">
+      <select class="gcp-graph-sel" :value="workspace.currentDocumentId || ''" @change="switchGraph(($event.target as HTMLSelectElement).value)">
+        <option value="">📄 主图</option>
+        <option v-for="d in workspace.graphDocuments.filter(x => x.document_role === 'custom_node_graph')" :key="d.document_id" :value="d.document_id">🔧 {{ d.display_name || d.document_id }}</option>
+      </select>
+      <button class="gcp-btn" @click="showNewCompDlg = true" title="新建用户组件">+</button>
       <span class="gcp-info">节点: {{ nodeCount }} · 边: {{ edgeCount }}</span>
       <span v-if="workspace.isLoaded" class="gcp-rev">rev: {{ workspace.saveRevision }}</span>
       <span v-if="!workspace.lastCompileMatches" class="gcp-warn">⚠ 未同步</span>
@@ -137,11 +171,21 @@ async function handleCompile() {
       </span>
     </div>
     <VueFlowGraph />
+    <Teleport to="body">
+      <div v-if="showNewCompDlg" class="gcp-dlg-overlay" @click.self="showNewCompDlg = false">
+        <div class="gcp-dlg-box">
+          <div class="gcp-dlg-hd">新建用户组件<span class="gcp-dlg-close" @click="showNewCompDlg = false">✕</span></div>
+          <div class="gcp-dlg-body"><input v-model="newCompName" class="gcp-dlg-input" placeholder="组件名称" @keyup.enter="createCustomComponent" /></div>
+          <div class="gcp-dlg-ft"><button class="gcp-dlg-btn" @click="createCustomComponent" :disabled="!newCompName.trim()">创建</button></div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
 .gcp { display: flex; flex-direction: column; height: 100%; }
+.gcp-graph-sel { padding: 1px 6px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text-primary); font-size: var(--text-small); font-family: var(--font-ui); max-width: 180px; }
 .gcp-bar {
   display: flex; align-items: center; gap: var(--space-sm);
   padding: 2px var(--space-sm); border-bottom: 1px solid var(--border-subtle);
@@ -159,4 +203,13 @@ async function handleCompile() {
 .gcp-btn:hover { background: var(--bg-hover); }
 .gcp-btn.save { background: var(--accent); color: #fff; border-color: var(--accent); }
 .gcp-btn.save:hover { background: var(--accent-hover); }
+.gcp-dlg-overlay { position: fixed; inset: 0; z-index: 3000; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; }
+.gcp-dlg-box { background: var(--bg-panel); border: 1px solid var(--border-default); border-radius: var(--radius-md); min-width: 300px; box-shadow: var(--shadow-menu); }
+.gcp-dlg-hd { display: flex; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--border-subtle); font-weight: 600; font-size: var(--text-body); }
+.gcp-dlg-close { cursor: pointer; color: var(--text-disabled); }
+.gcp-dlg-body { padding: 12px; }
+.gcp-dlg-input { width: 100%; padding: 4px 8px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text-primary); font-size: var(--text-body); }
+.gcp-dlg-ft { padding: 8px 12px; border-top: 1px solid var(--border-subtle); display: flex; justify-content: flex-end; }
+.gcp-dlg-btn { padding: 4px 14px; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--accent); color: #fff; cursor: pointer; font-size: var(--text-small); }
+.gcp-dlg-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

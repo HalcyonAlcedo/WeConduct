@@ -60,7 +60,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
-CURRENT_API_VERSION = "0.5.2"
+CURRENT_API_VERSION = "0.6.0"
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
@@ -243,9 +243,10 @@ class CompilationWorkbenchService:
             "entrypoints": self._build_entrypoints_metadata(),
         }
 
-    def get_graph_document(self) -> dict:
+    def get_graph_document(self, *, document_id: str | None = None) -> dict:
         self._refresh_state_from_store()
-        graph_model = self._get_graph_document_model()
+        graph_model = self._resolve_graph_document_by_document_id(document_id)
+        graph_model, _ = self._normalize_graph_model(graph_model)
         return {
             "graph_model": graph_model,
             "view": self._build_graph_document_view(graph_model),
@@ -878,6 +879,7 @@ class CompilationWorkbenchService:
         self._refresh_state_from_store()
         graph_model = self._get_graph_document_model()
         graph_document_meta = self._get_graph_document_meta()
+        custom_graph_documents = self._build_custom_node_graph_documents()
         project_runtime = self._get_project_runtime()
         project_file_path = project_runtime.get("project_file_path")
         project_layout = None
@@ -895,7 +897,8 @@ class CompilationWorkbenchService:
                     "edge_count": len(graph_model.edges),
                     "save_revision": graph_document_meta["save_revision"],
                     "saved_at": graph_document_meta["saved_at"],
-                }
+                },
+                *custom_graph_documents,
             ],
             "project_file": (
                 project_layout["project_manifest"]
@@ -1474,6 +1477,59 @@ class CompilationWorkbenchService:
             description="Reusable custom node graph captured from current graph document.",
         )
 
+    def create_empty_custom_node_graph_resource(self, *, resource_name: str) -> dict:
+        self._refresh_state_from_store()
+        normalized_name = resource_name.strip()
+        if not normalized_name:
+            raise ValueError("resource_name must not be empty")
+        created_resource_holder: dict[str, dict] = {}
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            resources = self._extract_resource_registry(current_state)
+            resource_id = f"{CUSTOM_NODE_GRAPH_RESOURCE_PREFIX}{uuid.uuid4().hex[:12]}"
+            document_id = self._build_custom_node_graph_document_id(resource_id)
+            graph_model = create_empty_graph_model(document_id, None)
+            resource_record = {
+                "resource_id": resource_id,
+                "resource_type": "custom_node_graph",
+                "display_name": normalized_name,
+                "display_name_i18n": {"en-US": normalized_name},
+                "resource_key": resource_id,
+                "enabled": True,
+                "origin": "project",
+                "description": "Reusable custom node graph created from empty graph template.",
+                "description_i18n": {
+                    "en-US": "Reusable custom node graph created from empty graph template."
+                },
+                "source_graph_document_id": document_id,
+                "source_graph_document_save_revision": 1,
+                "source_graph_document": graph_model.model_dump(mode="json"),
+                "input_schema": {},
+                "output_schema": {},
+                "tags": [],
+            }
+            normalized_resource = self._normalize_resource_record(resource_record)
+            if normalized_resource is None:
+                raise ValueError("custom_node_graph resource payload is invalid")
+            resources.insert(0, normalized_resource)
+            current_state["resource_registry"] = resources
+            current_state["project"]["resource_registry_revision"] += 1
+            current_state["project_runtime"] = {
+                **self._extract_project_runtime(current_state),
+                "is_dirty": True,
+            }
+            created_resource_holder["value"] = dict(normalized_resource)
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        self._refresh_workspace_graph_validation_snapshot()
+        return {
+            "status": "created",
+            "resource": created_resource_holder["value"],
+            "registry_revision": self._get_resource_registry_revision(),
+        }
+
     def update_resource_tags(
         self,
         *,
@@ -1536,8 +1592,9 @@ class CompilationWorkbenchService:
         derived_input_schema: dict = {}
         derived_output_schema: dict = {}
         has_boundary_nodes = False
+        share_parent_variables = False
         if resource_type == "custom_node_graph":
-            has_boundary_nodes, derived_input_schema, derived_output_schema = (
+            has_boundary_nodes, derived_input_schema, derived_output_schema, share_parent_variables = (
                 self._extract_custom_node_graph_boundary_schemas(graph_model.model_dump())
             )
 
@@ -1587,6 +1644,9 @@ class CompilationWorkbenchService:
                     graph_model.root_metadata.get("resource_tags")
                     if isinstance(graph_model.root_metadata, dict)
                     else None
+                ),
+                "share_parent_variables": (
+                    share_parent_variables if resource_type == "custom_node_graph" else False
                 ),
             }
             normalized_resource_record = self._normalize_resource_record(resource_record)
@@ -2002,6 +2062,73 @@ class CompilationWorkbenchService:
         return {
             "status": "renamed",
             "resource": renamed_resource_holder["value"],
+            "registry_revision": self._get_resource_registry_revision(),
+        }
+
+    def update_resource_metadata(
+        self,
+        *,
+        resource_id: str,
+        display_name: str,
+        description: str | None = None,
+        display_name_i18n: dict[str, str] | None = None,
+        description_i18n: dict[str, str] | None = None,
+    ) -> dict:
+        self._refresh_state_from_store()
+        normalized_display_name = display_name.strip()
+        if not normalized_display_name:
+            raise ValueError("display_name must not be empty")
+        normalized_description = description.strip() if isinstance(description, str) else None
+        normalized_display_name_i18n = self._normalize_i18n_field(display_name_i18n)
+        normalized_description_i18n = self._normalize_i18n_field(description_i18n)
+        updated_resource_holder: dict[str, dict] = {}
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            resources = self._extract_resource_registry(current_state)
+            matched = False
+            next_resources: list[dict] = []
+            for item in resources:
+                if item["resource_id"] != resource_id:
+                    next_resources.append(item)
+                    continue
+                matched = True
+                if item.get("resource_type") == "builtin_component":
+                    raise ValueError(f"builtin resource metadata cannot be updated: {resource_id}")
+                updated_item = dict(item)
+                updated_item["display_name"] = normalized_display_name
+                updated_item["description"] = normalized_description
+                next_display_name_i18n = dict(updated_item.get("display_name_i18n", {}))
+                next_display_name_i18n.update(normalized_display_name_i18n)
+                next_display_name_i18n["en-US"] = next_display_name_i18n.get(
+                    "en-US",
+                    normalized_display_name,
+                )
+                updated_item["display_name_i18n"] = next_display_name_i18n
+                next_description_i18n = dict(updated_item.get("description_i18n", {}))
+                next_description_i18n.update(normalized_description_i18n)
+                if normalized_description is not None:
+                    next_description_i18n.setdefault("en-US", normalized_description)
+                updated_item["description_i18n"] = next_description_i18n
+                normalized_item = self._normalize_resource_record(updated_item)
+                if normalized_item is None:
+                    raise ValueError(f"resource payload is invalid after metadata update: {resource_id}")
+                updated_resource_holder["value"] = normalized_item
+                next_resources.append(normalized_item)
+            if not matched:
+                raise ValueError(f"resource not found: {resource_id}")
+            current_state["resource_registry"] = next_resources
+            current_state["project"]["resource_registry_revision"] += 1
+            current_state["project_runtime"] = {
+                **self._extract_project_runtime(current_state),
+                "is_dirty": True,
+            }
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        return {
+            "status": "updated",
+            "resource": updated_resource_holder["value"],
             "registry_revision": self._get_resource_registry_revision(),
         }
 
@@ -3763,12 +3890,19 @@ class CompilationWorkbenchService:
             return result
 
         next_call_stack = [*call_stack, resource_id_text]
+        node_config = executable_node.get("node_config")
+        if not isinstance(node_config, dict):
+            node_config = {}
+        share_parent_variables = node_config.get("share_parent_variables")
+        if not isinstance(share_parent_variables, bool):
+            share_parent_variables = bool(node_config.get("variable_scope") == "shared")
         component_result = self._execute_component_graph_runtime(
             graph_model=component_graph,
             inputs=self._resolve_component_inputs(inputs, runtime_context),
             parent_runtime_context=runtime_context,
             executor_registry=executor_registry,
             component_call_stack=next_call_stack,
+            share_parent_variables=share_parent_variables,
         )
         if component_result.get("status") != "succeeded":
             result = {
@@ -3820,6 +3954,7 @@ class CompilationWorkbenchService:
         parent_runtime_context: RuntimeContext,
         executor_registry: RuntimeExecutorRegistry,
         component_call_stack: list[str],
+        share_parent_variables: bool = False,
     ) -> dict:
         try:
             graph = GraphModel.model_validate(graph_model)
@@ -3830,6 +3965,16 @@ class CompilationWorkbenchService:
                 "message": f"component graph is invalid: {exc.errors()[0]['loc']}",
             }
         runtime_plan = self._build_runtime_plan(graph)
+        component_output_node = next(
+            (node for node in graph.nodes if node.node_kind == "component.output"),
+            None,
+        )
+        component_output_node_id = component_output_node.node_id if component_output_node is not None else None
+        component_output_schema = (
+            self._extract_component_output_schema_fields(component_output_node.node_config)
+            if component_output_node is not None
+            else {}
+        )
         executable_nodes = [dict(item) for item in runtime_plan["executable_nodes"]]
         node_states = [
             {
@@ -3856,13 +4001,16 @@ class CompilationWorkbenchService:
                 if isinstance(source_id, str):
                     control_edges_by_source.setdefault(source_id, []).append(dict(edge))
 
-        child_context = RuntimeContext(
-            project_directory=parent_runtime_context.project_directory,
-            workspace_root=parent_runtime_context.workspace_root,
-            embedded_resource_paths=dict(parent_runtime_context.embedded_resource_paths),
-            allowed_path_roots=tuple(parent_runtime_context.allowed_path_roots),
-        )
-        child_context.browser_runtime = parent_runtime_context.browser_runtime
+        if share_parent_variables:
+            child_context = parent_runtime_context
+        else:
+            child_context = RuntimeContext(
+                project_directory=parent_runtime_context.project_directory,
+                workspace_root=parent_runtime_context.workspace_root,
+                embedded_resource_paths=dict(parent_runtime_context.embedded_resource_paths),
+                allowed_path_roots=tuple(parent_runtime_context.allowed_path_roots),
+            )
+            child_context.browser_runtime = parent_runtime_context.browser_runtime
         child_context.variables.update(inputs)
         child_context.flow_runtime["component_call_stack"] = list(component_call_stack)
         completed_node_ids: list[str] = []
@@ -4521,6 +4669,34 @@ class CompilationWorkbenchService:
                 if component_scheduler_mode == "flow_graph"
                 else []
             )
+            if isinstance(component_output_node_id, str) and component_output_node_id.strip():
+                if component_output_node_id not in completed_node_ids:
+                    return {
+                        "status": "failed",
+                        "error_code": "component.output_unreached",
+                        "message": "component output boundary node was not reached",
+                        "executed_node_ids": completed_node_ids,
+                        "failed_node_ids": failed_node_ids,
+                        "skipped_node_ids": skipped_node_ids,
+                        "unreachable_node_ids": unreachable_node_ids,
+                        "outputs": dict(child_context.node_outputs),
+                        "variables": dict(child_context.variables),
+                        "component_call_stack": component_call_stack,
+                        "event_log": event_log,
+                    }
+                if component_output_schema:
+                    exposed_variables: dict[str, object] = {}
+                    for output_name in component_output_schema:
+                        if (
+                            isinstance(output_name, str)
+                            and output_name.strip()
+                            and output_name.strip() in child_context.variables
+                        ):
+                            exposed_variables[output_name.strip()] = child_context.variables[output_name.strip()]
+                else:
+                    exposed_variables = {}
+            else:
+                exposed_variables = dict(child_context.variables)
             return {
                 "status": "succeeded",
                 "executed_node_ids": completed_node_ids,
@@ -4528,7 +4704,7 @@ class CompilationWorkbenchService:
                 "skipped_node_ids": skipped_node_ids,
                 "unreachable_node_ids": unreachable_node_ids,
                 "outputs": dict(child_context.node_outputs),
-                "variables": dict(child_context.variables),
+                "variables": exposed_variables,
                 "component_call_stack": component_call_stack,
                 "event_log": event_log,
             }
@@ -6333,16 +6509,31 @@ class CompilationWorkbenchService:
     ) -> dict:
         self._refresh_state_from_store()
         self._assert_project_package_allows_mutation("save_graph_document")
+        payload_document_id = graph_document_payload.get("document_id")
+        if payload_document_id is not None:
+            graph_document_payload = dict(graph_document_payload)
+            graph_document_payload.pop("document_id", None)
         try:
             graph_model = GraphModel.model_validate(graph_document_payload)
         except ValidationError as exc:
             raise ValueError(f"graph document payload is invalid: {exc.errors()[0]['loc']}") from exc
         graph_model, _ = self._normalize_graph_model(graph_model)
-        self._persist_graph_document(
-            graph_model,
-            expected_graph_document_save_revision=expected_graph_document_save_revision,
+        target_document_id = (
+            payload_document_id.strip()
+            if isinstance(payload_document_id, str) and payload_document_id.strip()
+            else None
         )
-        self._refresh_workspace_graph_validation_snapshot()
+        if target_document_id is None or target_document_id == "graph:workspace":
+            self._persist_graph_document(
+                graph_model,
+                expected_graph_document_save_revision=expected_graph_document_save_revision,
+            )
+            self._refresh_workspace_graph_validation_snapshot()
+        else:
+            self._save_custom_node_graph_document(
+                document_id=target_document_id,
+                graph_model=graph_model,
+            )
         project_runtime = self._get_project_runtime()
         project_file_path = project_runtime.get("project_file_path")
         if isinstance(project_file_path, str) and project_file_path.strip():
@@ -7238,6 +7429,7 @@ class CompilationWorkbenchService:
             input_schema = {}
         if not isinstance(output_schema, dict):
             output_schema = {}
+        share_parent_variables = bool(resource.get("share_parent_variables"))
 
         input_defaults: dict[str, object] = {}
         output_defaults: dict[str, str] = {}
@@ -7266,13 +7458,49 @@ class CompilationWorkbenchService:
             normalized_output_properties[normalized_name] = deepcopy(output_meta)
             output_defaults[normalized_name] = normalized_name
 
+        ports = [
+            {
+                "port_id": "in",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.control",
+            }
+        ]
+        for input_name in normalized_input_properties:
+            ports.append(
+                {
+                    "port_id": f"in:{input_name}",
+                    "direction": "input",
+                    "relation_layer": "data",
+                    "semantic_slot": f"in.{input_name}",
+                }
+            )
+        ports.append(
+            {
+                "port_id": "out",
+                "direction": "output",
+                "relation_layer": "control",
+                "semantic_slot": "out.control",
+            }
+        )
+        for output_name in normalized_output_properties:
+            ports.append(
+                {
+                    "port_id": f"out:{output_name}",
+                    "direction": "output",
+                    "relation_layer": "data",
+                    "semantic_slot": f"out.{output_name}",
+                }
+            )
+
         return {
             "lowered_kind": "execution",
             "expansion_role": "action:custom_node_graph",
-            "ports": [],
+            "ports": ports,
             "node_config": {
                 "inputs": input_defaults,
                 "outputs": output_defaults,
+                "share_parent_variables": share_parent_variables,
             },
             "parameter_schema": {
                 "inputs": {
@@ -7282,6 +7510,13 @@ class CompilationWorkbenchService:
                 "outputs": {
                     "type": "object",
                     "properties": normalized_output_properties,
+                },
+                "share_parent_variables": {
+                    "type": "boolean",
+                    "required": False,
+                    "editor_kind": "boolean",
+                    "path_kind": None,
+                    "read_only": True,
                 },
             },
         }
@@ -7361,8 +7596,29 @@ class CompilationWorkbenchService:
             if ports_changed:
                 changed = True
 
+            boundary_ports, boundary_ports_changed = self._normalize_component_boundary_ports(
+                node_kind=normalized_node.get("node_kind"),
+                node_config=normalized_node_config,
+                existing_ports=normalized_node.get("ports", []),
+            )
+            if boundary_ports_changed:
+                changed = True
+
+            normalized_node, custom_instance_changed = self._normalize_custom_node_graph_instance_node(
+                normalized_node=normalized_node,
+                normalized_node_config=normalized_node_config,
+            )
+            if custom_instance_changed:
+                normalized_node_config = deepcopy(normalized_node.get("node_config", {}))
+                changed = True
+
             normalized_node["node_config"] = normalized_node_config
-            normalized_node["ports"] = normalized_ports
+            if normalized_node.get("node_kind") in {"control.parallel_fork", "control.join"}:
+                normalized_node["ports"] = normalized_ports
+            elif normalized_node.get("node_kind") in {"component.input", "component.output"}:
+                normalized_node["ports"] = boundary_ports
+            elif not isinstance(normalized_node.get("ports"), list):
+                normalized_node["ports"] = normalized_ports
             normalized_nodes.append(normalized_node)
 
         if not changed:
@@ -7408,6 +7664,73 @@ class CompilationWorkbenchService:
         replacement_node["expansion_role"] = "action:custom_node_graph"
         replacement_node["node_config"] = normalized_replacement_config
         return replacement_node, True
+
+    def _normalize_custom_node_graph_instance_node(
+        self,
+        *,
+        normalized_node: dict,
+        normalized_node_config: dict,
+    ) -> tuple[dict, bool]:
+        node_kind = normalized_node.get("node_kind")
+        if not isinstance(node_kind, str) or not node_kind.strip():
+            return normalized_node, False
+        resource = self._find_graph_node_draft_resource(node_kind.strip())
+        if not isinstance(resource, dict) or resource.get("resource_type") != "custom_node_graph":
+            return normalized_node, False
+
+        draft_definition = self._build_custom_node_graph_instance_draft_definition(resource)
+        changed = False
+        replacement_node = dict(normalized_node)
+
+        current_ports = normalized_node.get("ports", [])
+        expected_ports = deepcopy(draft_definition["ports"])
+        if current_ports != expected_ports:
+            replacement_node["ports"] = expected_ports
+            changed = True
+
+        expected_inputs = deepcopy(draft_definition["node_config"].get("inputs", {}))
+        current_inputs = (
+            deepcopy(normalized_node_config.get("inputs"))
+            if isinstance(normalized_node_config.get("inputs"), dict)
+            else {}
+        )
+        next_inputs = dict(expected_inputs)
+        for key, value in current_inputs.items():
+            if isinstance(key, str) and key.strip():
+                next_inputs[key.strip()] = value
+        if normalized_node_config.get("inputs") != next_inputs:
+            normalized_node_config["inputs"] = next_inputs
+            changed = True
+
+        expected_outputs = deepcopy(draft_definition["node_config"].get("outputs", {}))
+        current_outputs = (
+            deepcopy(normalized_node_config.get("outputs"))
+            if isinstance(normalized_node_config.get("outputs"), dict)
+            else {}
+        )
+        next_outputs = dict(expected_outputs)
+        for key, value in current_outputs.items():
+            if (
+                isinstance(key, str)
+                and key.strip()
+                and isinstance(value, str)
+                and value.strip()
+            ):
+                next_outputs[key.strip()] = value.strip()
+        if normalized_node_config.get("outputs") != next_outputs:
+            normalized_node_config["outputs"] = next_outputs
+            changed = True
+
+        share_parent_variables = normalized_node_config.get("share_parent_variables")
+        if not isinstance(share_parent_variables, bool):
+            normalized_node_config["share_parent_variables"] = bool(
+                normalized_node_config.get("variable_scope") == "shared"
+            )
+            changed = True
+        normalized_node_config.pop("variable_scope", None)
+
+        replacement_node["node_config"] = normalized_node_config
+        return replacement_node, changed
 
     def _normalize_control_branch_entries(
         self,
@@ -7623,6 +7946,100 @@ class CompilationWorkbenchService:
         if not isinstance(existing_ports, list):
             return [], False
         return deepcopy(existing_ports), False
+
+    def _normalize_component_boundary_ports(
+        self,
+        *,
+        node_kind: str | None,
+        node_config: dict,
+        existing_ports: list | None,
+    ) -> tuple[list[dict], bool]:
+        if node_kind not in {"component.input", "component.output"}:
+            if not isinstance(existing_ports, list):
+                return [], False
+            return deepcopy(existing_ports), False
+
+        def existing_port_id_for_slot(slot: str, direction: str, fallback: str) -> str:
+            if isinstance(existing_ports, list):
+                for port in existing_ports:
+                    if not isinstance(port, dict):
+                        continue
+                    if port.get("direction") != direction:
+                        continue
+                    semantic_slot = port.get("semantic_slot")
+                    port_id = port.get("port_id")
+                    if semantic_slot == slot and isinstance(port_id, str) and port_id.strip():
+                        return port_id.strip()
+            return fallback
+
+        normalized_ports: list[dict] = []
+        if node_kind == "component.input":
+            normalized_ports.append(
+                {
+                    "port_id": existing_port_id_for_slot("out.control", "output", "out"),
+                    "direction": "output",
+                    "relation_layer": "control",
+                    "semantic_slot": "out.control",
+                    "display_name": None,
+                    "max_connections": None,
+                }
+            )
+            raw_inputs = node_config.get("inputs")
+            if isinstance(raw_inputs, dict):
+                for raw_name, raw_meta in raw_inputs.items():
+                    if not isinstance(raw_name, str) or not raw_name.strip() or not isinstance(raw_meta, dict):
+                        continue
+                    field_name = raw_name.strip()
+                    normalized_ports.append(
+                        {
+                            "port_id": existing_port_id_for_slot(
+                                f"out.{field_name}",
+                                "output",
+                                f"out:{field_name}",
+                            ),
+                            "direction": "output",
+                            "relation_layer": "data",
+                            "semantic_slot": f"out.{field_name}",
+                            "display_name": None,
+                            "max_connections": None,
+                        }
+                    )
+                return normalized_ports, self._ports_changed(existing_ports, normalized_ports)
+
+        if node_kind == "component.output":
+            normalized_ports.append(
+                {
+                    "port_id": existing_port_id_for_slot("in.control", "input", "in"),
+                    "direction": "input",
+                    "relation_layer": "control",
+                    "semantic_slot": "in.control",
+                    "display_name": None,
+                    "max_connections": None,
+                }
+            )
+            raw_outputs = node_config.get("outputs")
+            if isinstance(raw_outputs, dict):
+                for raw_name, raw_meta in raw_outputs.items():
+                    if not isinstance(raw_name, str) or not raw_name.strip() or not isinstance(raw_meta, dict):
+                        continue
+                    field_name = raw_name.strip()
+                    normalized_ports.append(
+                        {
+                            "port_id": existing_port_id_for_slot(
+                                f"in.{field_name}",
+                                "input",
+                                f"in:{field_name}",
+                            ),
+                            "direction": "input",
+                            "relation_layer": "data",
+                            "semantic_slot": f"in.{field_name}",
+                            "display_name": None,
+                            "max_connections": None,
+                        }
+                    )
+                return normalized_ports, self._ports_changed(existing_ports, normalized_ports)
+
+        return normalized_ports, self._ports_changed(existing_ports, normalized_ports)
 
     def _ports_changed(self, existing_ports: list | None, normalized_ports: list[dict]) -> bool:
         if not isinstance(existing_ports, list):
@@ -7970,6 +8387,11 @@ class CompilationWorkbenchService:
             self._collect_flow_start_validation_diagnostics(
                 graph_model=graph_model,
                 entry_node_ids=entry_node_ids,
+            )
+        )
+        diagnostics.extend(
+            self._collect_component_boundary_validation_diagnostics(
+                graph_model=graph_model,
             )
         )
 
@@ -8362,7 +8784,31 @@ class CompilationWorkbenchService:
         entry_node_ids: list[str],
     ) -> list[dict]:
         diagnostics: list[dict] = []
-        if len(entry_node_ids) > 1:
+        graph_model_id = graph_model.graph_model_id or ""
+        is_main_graph_document = graph_model_id == "graph:workspace"
+        is_custom_node_graph_document = graph_model_id.startswith("custom_node_graph:")
+
+        if is_main_graph_document and len(entry_node_ids) != 1:
+            subject_ref = entry_node_ids[0] if entry_node_ids else graph_model.graph_model_id
+            diagnostics.append(
+                {
+                    "category": "graph.flow_start.invalid_entry_count",
+                    "message": "main graph must contain exactly one flow.start node",
+                    "object_ref": subject_ref,
+                    "stage_extension": self._build_graph_validation_stage_extension(
+                        graph_model,
+                        subject_ref=subject_ref,
+                        rule="graph.flow_start.single_entry_node",
+                        result="failed",
+                        graph_ref={
+                            "graph_model_id": graph_model.graph_model_id,
+                            "entry_node_ids": entry_node_ids,
+                            "entry_count": len(entry_node_ids),
+                        },
+                    ),
+                }
+            )
+        elif len(entry_node_ids) > 1:
             diagnostics.append(
                 {
                     "category": "graph.flow_start.invalid_entry_count",
@@ -8381,6 +8827,26 @@ class CompilationWorkbenchService:
                     ),
                 }
             )
+
+        if is_custom_node_graph_document:
+            for node_id in entry_node_ids:
+                diagnostics.append(
+                    {
+                        "category": "graph.flow_start.custom_graph_forbidden",
+                        "message": "flow.start can only be used inside the main graph document",
+                        "object_ref": node_id,
+                        "stage_extension": self._build_graph_validation_stage_extension(
+                            graph_model,
+                            subject_ref=node_id,
+                            rule="graph.flow_start.main_graph_only",
+                            result="failed",
+                            graph_ref={
+                                "graph_model_id": graph_model.graph_model_id,
+                                "node_id": node_id,
+                            },
+                        ),
+                    }
+                )
 
         entry_node_id_set = set(entry_node_ids)
         for edge in graph_model.edges:
@@ -8406,6 +8872,281 @@ class CompilationWorkbenchService:
                                 "entry_node_id": edge.to_node_id,
                                 "from_node_id": edge.from_node_id,
                                 "to_port_id": edge.to_port_id,
+                            },
+                        ),
+                    }
+                )
+        return diagnostics
+
+    def _collect_component_boundary_validation_diagnostics(
+        self,
+        *,
+        graph_model: GraphModel,
+    ) -> list[dict]:
+        graph_model_id = graph_model.graph_model_id or ""
+        is_custom_node_graph_document = graph_model_id.startswith("custom_node_graph:")
+
+        component_input_node_ids = [
+            node.node_id for node in graph_model.nodes if node.node_kind == "component.input"
+        ]
+        component_output_node_ids = [
+            node.node_id for node in graph_model.nodes if node.node_kind == "component.output"
+        ]
+        diagnostics: list[dict] = []
+
+        if not is_custom_node_graph_document:
+            for node_id in component_input_node_ids:
+                diagnostics.append(
+                    {
+                        "category": "graph.component_input.main_graph_forbidden",
+                        "message": "component.input can only be used inside custom node graph documents",
+                        "object_ref": node_id,
+                        "stage_extension": self._build_graph_validation_stage_extension(
+                            graph_model,
+                            subject_ref=node_id,
+                            rule="graph.component_input.custom_graph_only",
+                            result="failed",
+                            graph_ref={
+                                "graph_model_id": graph_model.graph_model_id,
+                                "node_id": node_id,
+                            },
+                        ),
+                    }
+                )
+            for node_id in component_output_node_ids:
+                diagnostics.append(
+                    {
+                        "category": "graph.component_output.main_graph_forbidden",
+                        "message": "component.output can only be used inside custom node graph documents",
+                        "object_ref": node_id,
+                        "stage_extension": self._build_graph_validation_stage_extension(
+                            graph_model,
+                            subject_ref=node_id,
+                            rule="graph.component_output.custom_graph_only",
+                            result="failed",
+                            graph_ref={
+                                "graph_model_id": graph_model.graph_model_id,
+                                "node_id": node_id,
+                            },
+                        ),
+                    }
+                )
+            return diagnostics
+
+        if len(component_input_node_ids) != 1:
+            subject_ref = component_input_node_ids[0] if component_input_node_ids else graph_model.graph_model_id
+            diagnostics.append(
+                {
+                    "category": "graph.component_input.invalid_entry_count",
+                    "message": "custom node graph must contain exactly one component.input node",
+                    "object_ref": subject_ref,
+                    "stage_extension": self._build_graph_validation_stage_extension(
+                        graph_model,
+                        subject_ref=subject_ref,
+                        rule="graph.component_input.single_entry_node",
+                        result="failed",
+                        graph_ref={
+                            "graph_model_id": graph_model.graph_model_id,
+                            "entry_node_ids": component_input_node_ids,
+                            "entry_count": len(component_input_node_ids),
+                        },
+                    ),
+                }
+            )
+        if len(component_output_node_ids) != 1:
+            subject_ref = (
+                component_output_node_ids[0]
+                if component_output_node_ids
+                else graph_model.graph_model_id
+            )
+            diagnostics.append(
+                {
+                    "category": "graph.component_output.invalid_entry_count",
+                    "message": "custom node graph must contain exactly one component.output node",
+                    "object_ref": subject_ref,
+                    "stage_extension": self._build_graph_validation_stage_extension(
+                        graph_model,
+                        subject_ref=subject_ref,
+                        rule="graph.component_output.single_exit_node",
+                        result="failed",
+                        graph_ref={
+                            "graph_model_id": graph_model.graph_model_id,
+                            "entry_node_ids": component_output_node_ids,
+                            "entry_count": len(component_output_node_ids),
+                        },
+                    ),
+                }
+            )
+
+        for node in graph_model.nodes:
+            if node.node_kind == "component.input":
+                diagnostics.extend(
+                    self._collect_component_input_schema_definition_diagnostics(
+                        graph_model=graph_model,
+                        node=node,
+                    )
+                )
+            elif node.node_kind == "component.output":
+                diagnostics.extend(
+                    self._collect_component_output_schema_definition_diagnostics(
+                        graph_model=graph_model,
+                        node=node,
+                    )
+                )
+        return diagnostics
+
+    def _collect_component_input_schema_definition_diagnostics(
+        self,
+        *,
+        graph_model: GraphModel,
+        node,
+    ) -> list[dict]:
+        node_config = getattr(node, "node_config", {})
+        if not isinstance(node_config, dict):
+            node_config = {}
+        raw_inputs = node_config.get("inputs")
+        if raw_inputs is None:
+            return []
+        if not isinstance(raw_inputs, dict):
+            return [
+                {
+                    "category": "graph.component_input.schema_mapping_invalid",
+                    "message": "component.input node_config.inputs must be an object mapping",
+                    "object_ref": node.node_id,
+                    "stage_extension": self._build_graph_validation_stage_extension(
+                        graph_model,
+                        subject_ref=node.node_id,
+                        rule="graph.component_input.schema_mapping_shape",
+                        result="failed",
+                        graph_ref={
+                            "graph_model_id": graph_model.graph_model_id,
+                            "node_id": node.node_id,
+                            "field": "inputs",
+                        },
+                    ),
+                }
+            ]
+        diagnostics: list[dict] = []
+        for field_name, field_meta in raw_inputs.items():
+            if not isinstance(field_name, str) or not field_name.strip():
+                diagnostics.append(
+                    {
+                        "category": "graph.component_input.schema_field_invalid",
+                        "message": "component.input schema field name must be a non-empty string",
+                        "object_ref": node.node_id,
+                        "stage_extension": self._build_graph_validation_stage_extension(
+                            graph_model,
+                            subject_ref=node.node_id,
+                            rule="graph.component_input.schema_field_name_valid",
+                            result="failed",
+                            graph_ref={
+                                "graph_model_id": graph_model.graph_model_id,
+                                "node_id": node.node_id,
+                                "field": "inputs",
+                                "schema_field": field_name,
+                            },
+                        ),
+                    }
+                )
+                continue
+            if not isinstance(field_meta, dict):
+                diagnostics.append(
+                    {
+                        "category": "graph.component_input.schema_field_invalid",
+                        "message": (
+                            "component.input schema field definition must be an object: "
+                            f"{field_name.strip()}"
+                        ),
+                        "object_ref": node.node_id,
+                        "stage_extension": self._build_graph_validation_stage_extension(
+                            graph_model,
+                            subject_ref=node.node_id,
+                            rule="graph.component_input.schema_field_object",
+                            result="failed",
+                            graph_ref={
+                                "graph_model_id": graph_model.graph_model_id,
+                                "node_id": node.node_id,
+                                "field": "inputs",
+                                "schema_field": field_name.strip(),
+                            },
+                        ),
+                    }
+                )
+        return diagnostics
+
+    def _collect_component_output_schema_definition_diagnostics(
+        self,
+        *,
+        graph_model: GraphModel,
+        node,
+    ) -> list[dict]:
+        node_config = getattr(node, "node_config", {})
+        if not isinstance(node_config, dict):
+            node_config = {}
+        raw_outputs = node_config.get("outputs")
+        if raw_outputs is None:
+            return []
+        if not isinstance(raw_outputs, dict):
+            return [
+                {
+                    "category": "graph.component_output.schema_mapping_invalid",
+                    "message": "component.output node_config.outputs must be an object mapping",
+                    "object_ref": node.node_id,
+                    "stage_extension": self._build_graph_validation_stage_extension(
+                        graph_model,
+                        subject_ref=node.node_id,
+                        rule="graph.component_output.schema_mapping_shape",
+                        result="failed",
+                        graph_ref={
+                            "graph_model_id": graph_model.graph_model_id,
+                            "node_id": node.node_id,
+                            "field": "outputs",
+                        },
+                    ),
+                }
+            ]
+        diagnostics: list[dict] = []
+        for field_name, field_meta in raw_outputs.items():
+            if not isinstance(field_name, str) or not field_name.strip():
+                diagnostics.append(
+                    {
+                        "category": "graph.component_output.schema_field_invalid",
+                        "message": "component.output schema field name must be a non-empty string",
+                        "object_ref": node.node_id,
+                        "stage_extension": self._build_graph_validation_stage_extension(
+                            graph_model,
+                            subject_ref=node.node_id,
+                            rule="graph.component_output.schema_field_name_valid",
+                            result="failed",
+                            graph_ref={
+                                "graph_model_id": graph_model.graph_model_id,
+                                "node_id": node.node_id,
+                                "field": "outputs",
+                                "schema_field": field_name,
+                            },
+                        ),
+                    }
+                )
+                continue
+            if not isinstance(field_meta, dict):
+                diagnostics.append(
+                    {
+                        "category": "graph.component_output.schema_field_invalid",
+                        "message": (
+                            "component.output schema field definition must be an object: "
+                            f"{field_name.strip()}"
+                        ),
+                        "object_ref": node.node_id,
+                        "stage_extension": self._build_graph_validation_stage_extension(
+                            graph_model,
+                            subject_ref=node.node_id,
+                            rule="graph.component_output.schema_field_object",
+                            result="failed",
+                            graph_ref={
+                                "graph_model_id": graph_model.graph_model_id,
+                                "node_id": node.node_id,
+                                "field": "outputs",
+                                "schema_field": field_name.strip(),
                             },
                         ),
                     }
@@ -10528,6 +11269,116 @@ class CompilationWorkbenchService:
             return create_empty_graph_model("graph:workspace", None).model_dump()
         return deepcopy(source_graph_document)
 
+    def _build_custom_node_graph_document_id(self, resource_id: str) -> str:
+        return f"custom_node_graph:{resource_id}"
+
+    def _parse_custom_node_graph_document_id(self, document_id: str) -> str | None:
+        if not isinstance(document_id, str) or not document_id.startswith("custom_node_graph:"):
+            return None
+        resource_id = document_id.removeprefix("custom_node_graph:")
+        if resource_id.startswith(CUSTOM_NODE_GRAPH_RESOURCE_PREFIX):
+            return resource_id
+        return None
+
+    def _resolve_graph_document_by_document_id(self, document_id: str | None) -> GraphModel:
+        if document_id is None or document_id == "graph:workspace":
+            return self._get_graph_document_model()
+        resource_id = self._parse_custom_node_graph_document_id(document_id)
+        if resource_id is None:
+            raise ValueError(f"graph document not found: {document_id}")
+        resource = self._require_resource(resource_id)
+        if resource.get("resource_type") != "custom_node_graph":
+            raise ValueError(f"custom node graph resource not found: {resource_id}")
+        source_graph_document = resource.get("source_graph_document")
+        if not isinstance(source_graph_document, dict):
+            return create_empty_graph_model(document_id, None)
+        graph_document_payload = deepcopy(source_graph_document)
+        graph_document_payload["graph_model_id"] = document_id
+        return GraphModel.model_validate(graph_document_payload)
+
+    def _build_custom_node_graph_documents(self) -> list[dict]:
+        documents: list[dict] = []
+        for resource in self._get_resource_registry():
+            if resource.get("resource_type") != "custom_node_graph":
+                continue
+            source_graph_document = resource.get("source_graph_document")
+            graph_schema_version = "graph-v1"
+            node_count = 0
+            edge_count = 0
+            if isinstance(source_graph_document, dict):
+                graph_schema_version = source_graph_document.get(
+                    "graph_schema_version", graph_schema_version
+                )
+                raw_nodes = source_graph_document.get("nodes")
+                raw_edges = source_graph_document.get("edges")
+                if isinstance(raw_nodes, list):
+                    node_count = len(raw_nodes)
+                if isinstance(raw_edges, list):
+                    edge_count = len(raw_edges)
+            documents.append(
+                {
+                    "document_id": self._build_custom_node_graph_document_id(
+                        resource["resource_id"]
+                    ),
+                    "document_role": "custom_node_graph",
+                    "document_type": "graph_document",
+                    "resource_id": resource["resource_id"],
+                    "resource_key": resource["resource_key"],
+                    "display_name": resource["display_name"],
+                    "graph_schema_version": graph_schema_version,
+                    "node_count": node_count,
+                    "edge_count": edge_count,
+                    "save_revision": resource.get("source_graph_document_save_revision"),
+                    "saved_at": None,
+                }
+            )
+        return documents
+
+    def _save_custom_node_graph_document(self, *, document_id: str, graph_model: GraphModel) -> None:
+        resource_id = self._parse_custom_node_graph_document_id(document_id)
+        if resource_id is None:
+            raise ValueError(f"graph document not found: {document_id}")
+        has_boundary_nodes, derived_input_schema, derived_output_schema, share_parent_variables = (
+            self._extract_custom_node_graph_boundary_schemas(graph_model.model_dump(mode="json"))
+        )
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            resources = self._extract_resource_registry(current_state)
+            matched = False
+            next_resources: list[dict] = []
+            for item in resources:
+                if item["resource_id"] != resource_id:
+                    next_resources.append(item)
+                    continue
+                matched = True
+                updated_item = dict(item)
+                updated_item["source_graph_document_id"] = document_id
+                updated_item["source_graph_document_save_revision"] = (
+                    int(updated_item.get("source_graph_document_save_revision") or 0) + 1
+                )
+                updated_item["source_graph_document"] = graph_model.model_dump(mode="json")
+                if has_boundary_nodes:
+                    updated_item["input_schema"] = deepcopy(derived_input_schema)
+                    updated_item["output_schema"] = deepcopy(derived_output_schema)
+                    updated_item["share_parent_variables"] = share_parent_variables
+                normalized_item = self._normalize_resource_record(updated_item)
+                if normalized_item is None:
+                    raise ValueError(f"custom node graph resource payload is invalid: {resource_id}")
+                next_resources.append(normalized_item)
+            if not matched:
+                raise ValueError(f"resource not found: {resource_id}")
+            current_state["resource_registry"] = next_resources
+            current_state["project"]["resource_registry_revision"] += 1
+            current_state["project_runtime"] = {
+                **self._extract_project_runtime(current_state),
+                "is_dirty": True,
+            }
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        self._refresh_workspace_graph_validation_snapshot()
+
     def _normalize_project_storage_resource_record(self, resource: dict | None) -> dict | None:
         normalized = self._normalize_resource_record(resource)
         if normalized is None:
@@ -12098,6 +12949,9 @@ class CompilationWorkbenchService:
                     "source_graph_document": graph_payload,
                     "input_schema": manifest_payload.get("input_schema", {}),
                     "output_schema": manifest_payload.get("output_schema", {}),
+                    "share_parent_variables": bool(
+                        manifest_payload.get("share_parent_variables", False)
+                    ),
                     "tags": manifest_payload.get("tags", []),
                 },
                 issues,
@@ -12143,6 +12997,7 @@ class CompilationWorkbenchService:
                 ),
                 "input_schema": {},
                 "output_schema": {},
+                "share_parent_variables": False,
                 "tags": ["project:broken-resource"],
             },
             issues,
@@ -12715,6 +13570,7 @@ class CompilationWorkbenchService:
                     {"output_schema": output_schema},
                     schema_key="output_schema",
                 )
+            normalized["share_parent_variables"] = bool(item.get("share_parent_variables", False))
         normalized["tags"] = self._build_resource_tags(normalized=normalized, raw_item=item)
         normalized["search_tokens"] = self._build_resource_search_tokens(
             normalized=normalized,
@@ -12752,14 +13608,17 @@ class CompilationWorkbenchService:
     def _extract_custom_node_graph_boundary_schemas(
         self,
         graph_document: object,
-    ) -> tuple[bool, dict, dict]:
+    ) -> tuple[bool, dict, dict, bool]:
         if not isinstance(graph_document, dict):
-            return False, {}, {}
+            return False, {}, {}, False
         raw_nodes = graph_document.get("nodes")
         if not isinstance(raw_nodes, list):
-            return False, {}, {}
+            return False, {}, {}, False
         input_schema: dict[str, dict] = {}
         output_schema: dict[str, dict] = {}
+        share_parent_variables = False
+        has_component_input_node = False
+        has_component_output_node = False
         for raw_node in raw_nodes:
             if not isinstance(raw_node, dict):
                 continue
@@ -12767,15 +13626,19 @@ class CompilationWorkbenchService:
             if node_kind not in {"component.input", "component.output"}:
                 continue
             node_config = raw_node.get("node_config")
-            field_name, field_meta = self._extract_boundary_schema_field(node_config)
-            if field_name is None or field_meta is None:
-                continue
             if node_kind == "component.input":
-                input_schema[field_name] = field_meta
+                has_component_input_node = True
+                fields, input_share_parent_variables = self._extract_component_input_schema_fields(node_config)
+                if fields:
+                    input_schema.update(fields)
+                share_parent_variables = share_parent_variables or input_share_parent_variables
             else:
-                output_schema[field_name] = field_meta
-        has_boundary_nodes = bool(input_schema or output_schema)
-        return has_boundary_nodes, input_schema, output_schema
+                has_component_output_node = True
+                fields = self._extract_component_output_schema_fields(node_config)
+                if fields:
+                    output_schema.update(fields)
+        has_boundary_nodes = has_component_input_node or has_component_output_node
+        return has_boundary_nodes, input_schema, output_schema, share_parent_variables
 
     def _extract_boundary_schema_field(self, node_config: object) -> tuple[str | None, dict | None]:
         if not isinstance(node_config, dict):
@@ -12796,6 +13659,39 @@ class CompilationWorkbenchService:
         if isinstance(raw_description, str):
             field_meta["description"] = raw_description
         return field_name, field_meta
+
+    def _extract_component_input_schema_fields(
+        self,
+        node_config: object,
+    ) -> tuple[dict[str, dict], bool]:
+        if not isinstance(node_config, dict):
+            return {}, False
+        raw_inputs = node_config.get("inputs")
+        if not isinstance(raw_inputs, dict):
+            return {}, bool(node_config.get("share_parent_variables"))
+        fields: dict[str, dict] = {}
+        for raw_name, raw_meta in raw_inputs.items():
+            if not isinstance(raw_name, str) or not raw_name.strip() or not isinstance(raw_meta, dict):
+                continue
+            field_name = raw_name.strip()
+            field_meta = deepcopy(raw_meta)
+            fields[field_name] = field_meta
+        return fields, bool(node_config.get("share_parent_variables"))
+
+    def _extract_component_output_schema_fields(self, node_config: object) -> dict[str, dict]:
+        if not isinstance(node_config, dict):
+            return {}
+        raw_outputs = node_config.get("outputs")
+        if not isinstance(raw_outputs, dict):
+            return {}
+        fields: dict[str, dict] = {}
+        for raw_name, raw_meta in raw_outputs.items():
+            if not isinstance(raw_name, str) or not raw_name.strip() or not isinstance(raw_meta, dict):
+                continue
+            field_name = raw_name.strip()
+            field_meta = deepcopy(raw_meta)
+            fields[field_name] = field_meta
+        return fields
 
     def _schema_value_matches_type(self, value: object, schema_type: object) -> bool:
         if not isinstance(schema_type, str) or not schema_type.strip():
@@ -13451,6 +14347,7 @@ class CompilationWorkbenchService:
             graph_model = GraphModel.model_validate(graph_document_payload)
         except ValidationError as exc:
             raise ValueError(f"graph document payload is invalid: {exc.errors()[0]['loc']}") from exc
+        graph_model, _ = self._normalize_graph_model(graph_model)
         return graph_model, {
             "request_origin": "graph_document_payload",
             "requested_graph_model_id": graph_model.graph_model_id,
@@ -13610,11 +14507,22 @@ class CompilationWorkbenchService:
             for index, node in enumerate(graph_model.nodes)
         ]
 
-        entry_node_ids = [
-            node.node_id
+        is_custom_node_graph_document = any(
+            node.node_kind in {"component.input", "component.output"}
             for node in graph_model.nodes
-            if node.node_kind == "flow.start"
-        ]
+        )
+        if is_custom_node_graph_document:
+            entry_node_ids = [
+                node.node_id
+                for node in graph_model.nodes
+                if node.node_kind == "component.input"
+            ]
+        else:
+            entry_node_ids = [
+                node.node_id
+                for node in graph_model.nodes
+                if node.node_kind == "flow.start"
+            ]
         scheduler_mode = "flow_graph" if entry_node_ids else "legacy_sequence"
         scheduler_hints = self._build_runtime_scheduler_hints(graph_model)
 

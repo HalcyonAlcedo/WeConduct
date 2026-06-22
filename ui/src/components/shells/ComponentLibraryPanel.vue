@@ -70,15 +70,27 @@ const items = computed(() => searchQuery.value.trim() ? searchResults.value : re
 
 const visible = computed(() => items.value.filter(i => i.component_library_visible !== false && !i.compatibility_only))
 
-// Group by coarse category_group_label, fallback to category_group_path first 2 segments
-const groups = computed(() => {
+// P18: Top-level "内置组件 / 用户组件" + secondary category grouping
+const builtinItems = computed(() => visible.value.filter(i => i.resource_type === 'builtin_component' || i.category_path?.[0] === 'builtin'))
+const userItems = computed(() => visible.value.filter(i => i.resource_type === 'custom_node_graph' || i.category_path?.[0] === 'project'))
+const otherItems = computed(() => visible.value.filter(i => !builtinItems.value.includes(i) && !userItems.value.includes(i)))
+
+function makeGroups(list: ComponentLibraryItem[]): [string, ComponentLibraryItem[]][] {
   const map: Record<string, ComponentLibraryItem[]> = {}
-  for (const i of visible.value) {
+  for (const i of list) {
     const key = i.category_group_label || i.category_group_path?.slice(0, 2).join(' / ') || i.category_path?.slice(0, 2).join(' / ') || 'other'
     if (!map[key]) map[key] = []
     map[key].push(i)
   }
   return Object.entries(map)
+}
+
+const topGroups = computed(() => {
+  const result: { label: string; icon: string; groups: [string, ComponentLibraryItem[]][] }[] = []
+  if (builtinItems.value.length) result.push({ label: '内置组件', icon: '📦', groups: makeGroups(builtinItems.value) })
+  if (userItems.value.length) result.push({ label: '用户组件', icon: '🔧', groups: makeGroups(userItems.value) })
+  if (otherItems.value.length) result.push({ label: '其他', icon: '📋', groups: makeGroups(otherItems.value) })
+  return result
 })
 
 function taxonomyLabel(t: string | undefined) {
@@ -105,8 +117,10 @@ function itemTooltip(c: ComponentLibraryItem) {
         </div>
       </div>
     </div>
-    <template v-if="groups.length">
-      <div class="clp-section" v-for="[group, items] in groups" :key="group">
+    <template v-if="topGroups.length">
+      <template v-for="tg in topGroups" :key="tg.label">
+        <h4 class="clp-top-hd">{{ tg.icon }} {{ tg.label }}</h4>
+        <div class="clp-section" v-for="[group, items] in tg.groups" :key="group">
         <h4 class="clp-group-hd" @click="toggleGroup(group)">
           <span class="clp-arrow">{{ collapsedGroups.has(group) ? '▸' : '▾' }}</span>
           {{ group }} ({{ items.length }})
@@ -120,6 +134,7 @@ function itemTooltip(c: ComponentLibraryItem) {
           </div>
         </template>
       </div>
+      </template>
     </template>
     <div v-else class="clp-empty">{{ searchQuery ? '无搜索结果' : '暂无组件' }}</div>
   </div>
@@ -134,6 +149,7 @@ function itemTooltip(c: ComponentLibraryItem) {
 .clp-sug-item:hover { background: var(--bg-hover); }
 .clp-sug-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .clp-sug-key { font-family: var(--font-mono); font-size: var(--text-caption); color: var(--text-disabled); }
+.clp-top-hd { font-size: var(--text-small); font-weight: 700; color: var(--text-primary); padding: 4px 4px 2px; border-bottom: 2px solid var(--accent); margin-bottom: 4px; margin-top: 6px; }
 .clp-section { margin-bottom: var(--space-sm); }
 .clp-section h4 { font-size: var(--text-small); font-weight: 600; color: var(--text-secondary); margin-bottom: 2px; padding: 1px 4px; }
 .clp-group-hd { cursor: pointer; user-select: none; }

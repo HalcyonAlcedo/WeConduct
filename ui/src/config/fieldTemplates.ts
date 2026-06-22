@@ -2,7 +2,7 @@
 
 export interface FieldTemplate {
   key: string
-  type: 'string' | 'number' | 'boolean' | 'json' | 'object-map' | 'typed-value' | 'branch-list' | 'code'
+  type: 'string' | 'number' | 'boolean' | 'json' | 'object-map' | 'typed-value' | 'branch-list' | 'code' | 'component-schema'
   options?: string[]
 }
 
@@ -30,6 +30,8 @@ export const PARAM_TEMPLATES: Record<string, FieldTemplate[]> = {
   'flow.start':                [{ key: 'initial_variables', type: 'object-map' }],
   'control.parallel_fork':     [{ key: 'branches', type: 'branch-list' }],
   'control.join':              [{ key: 'branches', type: 'branch-list' }],
+  'component.input':           [{ key: 'inputs', type: 'component-schema' }, { key: 'share_parent_variables', type: 'boolean' }],
+  'component.output':          [{ key: 'outputs', type: 'component-schema' }],
 }
 
 /** Known object-map field keys for detection */

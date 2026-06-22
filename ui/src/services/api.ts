@@ -103,14 +103,18 @@ export function postCompile(body: CompileRequestBody): Promise<CompileResponse> 
 
 // ===== P3: Graph Workspace =====
 
-export function fetchGraphDocument(): Promise<GraphDocumentResponse> {
-  return request<GraphDocumentResponse>('/workbench/graph')
+export function fetchGraphDocument(documentId?: string): Promise<GraphDocumentResponse> {
+  const qs = documentId ? `?document_id=${encodeURIComponent(documentId)}` : ''
+  return request<GraphDocumentResponse>('/workbench/graph' + qs)
 }
 
-export function putGraphDocument(graphModel: Record<string, unknown>, expectedRevision?: number): Promise<GraphSaveResponse> {
+export function putGraphDocument(graphModel: Record<string, unknown>, expectedRevision?: number, documentId?: string): Promise<GraphSaveResponse> {
   const body: Record<string, unknown> = { ...graphModel }
   if (expectedRevision !== undefined) {
     body.expected_graph_document_save_revision = expectedRevision
+  }
+  if (documentId) {
+    body.document_id = documentId
   }
   return request<GraphSaveResponse>('/workbench/graph', {
     method: 'PUT',
@@ -169,6 +173,9 @@ export function fetchHostInfo(): Promise<HostInfoResponse> {
 
 // ===== P6: Project =====
 export function fetchProject(): Promise<ProjectDocumentResponse> { return request('/workbench/project') }
+export function postCreateEmptyCustomComponent(resourceName: string): Promise<{ status: string; registry_revision: number; resource: { resource_id: string; resource_key: string; display_name: string } }> {
+  return request('/workbench/resources/custom-node-graphs/create-empty', { method: 'POST', body: JSON.stringify({ resource_name: resourceName }) })
+}
 export function fetchProjectDocuments(): Promise<ProjectDocumentsResponse> { return request('/workbench/project/documents') }
 export function postProjectNew(body: ProjectNewRequest): Promise<ProjectPostResponse> { return request('/workbench/project/new', { method: 'POST', body: JSON.stringify(body) }) }
 export function postProjectOpen(body: ProjectOpenRequest): Promise<ProjectPostResponse> { return request('/workbench/project/open', { method: 'POST', body: JSON.stringify(body) }) }
@@ -190,6 +197,8 @@ export function postResourceEnabled(resourceId: string, enabled: boolean): Promi
 export function postResourceExport(body: ResourceExportRequest): Promise<Record<string, unknown>> { return request('/workbench/resources/export', { method: 'POST', body: JSON.stringify(body) }) }
 export function postResourceImport(body: ResourceImportRequest): Promise<ResourceImportResponse> { return request('/workbench/resources/import', { method: 'POST', body: JSON.stringify(body) }) }
 export function postResourceTags(resourceId: string, tags: string[]): Promise<ResourceTagsResponse> { return request(`/workbench/resources/${resourceId}/tags`, { method: 'POST', body: JSON.stringify({ tags }) }) }
+export function postResourceMetadata(resourceId: string, metadata: { display_name?: string; description?: string; display_name_i18n?: Record<string, string>; description_i18n?: Record<string, string> }): Promise<ResourceTagsResponse> { return request('/workbench/resources/metadata', { method: 'POST', body: JSON.stringify({ resource_id: resourceId, ...metadata }) }) }
+export function postResourceDelete(resourceId: string): Promise<{ status: string }> { return request('/workbench/resources/delete', { method: 'POST', body: JSON.stringify({ resource_id: resourceId }) }) }
 
 // ===== P6: Component Library =====
 export function fetchComponentLibrary(params?: { query?: string; tags?: string; enabled?: boolean; origin?: string; resource_type?: string }): Promise<ComponentLibraryResponse> {
