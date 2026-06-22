@@ -33,6 +33,7 @@ def main() -> int:
     serve_api_parser.add_argument("--workspace-state-path", default=None)
     serve_api_parser.add_argument("--preferences-path", default=None)
     serve_api_parser.add_argument("--ui-dist-path", default=None)
+    serve_api_parser.add_argument("--api-token", default=None)
     preview_smoke_parser = subparsers.add_parser("preview-smoke")
     preview_smoke_parser.add_argument("--host", default="127.0.0.1")
     preview_smoke_parser.add_argument("--port", type=int, default=0)
@@ -250,6 +251,7 @@ def main() -> int:
             workspace_state_path=workspace_state_path,
             preferences_path=preferences_path,
             ui_dist_path=ui_dist_path,
+            api_token=args.api_token,
         )
         runtime_host, runtime_port = server.server_address
         print(

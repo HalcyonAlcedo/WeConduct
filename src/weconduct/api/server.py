@@ -3,6 +3,7 @@ import mimetypes
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import secrets
 from urllib.parse import parse_qs, unquote, urlparse
 
 from weconduct.application import (
@@ -20,11 +21,45 @@ DEFAULT_PREFERENCES_PATH = Path(__file__).resolve().parents[3] / ".weconduct" / 
 DEFAULT_UI_DIST_PATH = Path(__file__).resolve().parents[3] / "ui" / "dist"
 
 
+def _sanitize_path_for_error(path: str) -> str:
+    sanitized = "".join(char for char in path if char.isprintable() or char in " \t")
+    if len(sanitized) > 200:
+        sanitized = sanitized[:200] + "...(truncated)"
+    return sanitized
+
+
+def _is_path_under_root(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 class WeConductApiServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
 class WeConductApiHandler(BaseHTTPRequestHandler):
+    def _verify_api_token(self) -> bool:
+        expected_token = getattr(self.server, "api_token", None)
+        if expected_token is None:
+            return True
+        provided_token = self.headers.get("X-WeConduct-Token", "")
+        return secrets.compare_digest(provided_token, expected_token)
+
+    def _require_api_token(self) -> bool:
+        if self._verify_api_token():
+            return True
+        self._write_json(
+            HTTPStatus.UNAUTHORIZED,
+            {
+                "error": "unauthorized",
+                "message": "invalid or missing API token",
+            },
+        )
+        return False
+
     def do_GET(self) -> None:  # noqa: N802
         try:
             service = self._get_service()
@@ -301,14 +336,20 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/api/host/file-dialog":
+            if not self._require_api_token():
+                return
             self._handle_host_file_dialog()
             return
 
         if self.path == "/api/host/open-path":
+            if not self._require_api_token():
+                return
             self._handle_host_open_path()
             return
 
         if self.path == "/api/host/read-file":
+            if not self._require_api_token():
+                return
             self._handle_host_read_file()
             return
 
@@ -1151,6 +1192,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         self._write_not_found_error()
 
     def do_PUT(self) -> None:  # noqa: N802
+        if not self._require_api_token():
+            return
         try:
             service = self._get_service()
         except ValueError as exc:
@@ -1198,12 +1241,13 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _write_not_found_error(self) -> None:
+        sanitized_path = _sanitize_path_for_error(self.path)
         self._write_json(
             HTTPStatus.NOT_FOUND,
             {
                 "error": "not_found",
-                "path": self.path,
-                "message": f"resource not found: {self.path}",
+                "path": sanitized_path,
+                "message": f"resource not found: {sanitized_path}",
             },
         )
 
@@ -1506,6 +1550,18 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             payload = self._read_json_request_body()
             path, encoding, max_bytes = self._validate_host_read_file_payload(payload)
             resolved_path = path.expanduser().resolve()
+            allowed_roots = self._collect_host_read_roots()
+            if not any(_is_path_under_root(resolved_path, root) for root in allowed_roots):
+                self._write_json(
+                    HTTPStatus.FORBIDDEN,
+                    {
+                        "error": "forbidden",
+                        "message": (
+                            f"file path is not within any allowed directory: {resolved_path}"
+                        ),
+                    },
+                )
+                return
             if not resolved_path.is_file():
                 exc = ValueError("path must point to a regular file")
                 exc.error_code = "host.read_file_not_file"
@@ -1557,6 +1613,26 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         if not isinstance(max_bytes_value, int) or max_bytes_value <= 0:
             raise ValueError("field must be a positive integer when provided: max_bytes")
         return Path(raw_path), encoding.strip(), max_bytes_value
+
+    def _collect_host_read_roots(self) -> tuple[Path, ...]:
+        roots: list[Path] = []
+        workspace_state_path = self._resolve_workspace_state_path().resolve()
+        workspace_root = workspace_state_path.parent
+        roots.append(workspace_root)
+        ui_root = self._resolve_ui_dist_path().resolve()
+        roots.append(ui_root)
+        try:
+            service = self._get_service()
+        except ValueError:
+            service = None
+        if service is not None:
+            project_document = service.get_project_document()
+            project_file_path = project_document.get("project", {}).get("project_file_path")
+            if isinstance(project_file_path, str) and project_file_path.strip():
+                project_root = Path(project_file_path).resolve().parent
+                if project_root not in roots:
+                    roots.append(project_root)
+        return tuple(dict.fromkeys(roots))
 
     def _try_serve_ui_asset(self) -> bool:
         request_path = unquote(urlparse(self.path).path)
@@ -1779,13 +1855,13 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 "python -m weconduct.cli.main serve-api "
                 f"--host {self.server.server_address[0]} "
                 f"--port {self.server.server_address[1]} "
-                f"--workspace-state-path \"{self._resolve_workspace_state_path().resolve()}\" "
-                f"--preferences-path \"{self._resolve_preferences_path().resolve()}\" "
-                f"--ui-dist-path \"{self._resolve_ui_dist_path().resolve()}\""
+                "--workspace-state-path <...> "
+                "--preferences-path <...> "
+                "--ui-dist-path <...>"
             ),
-            "workspace_state_path": str(self._resolve_workspace_state_path().resolve()),
-            "preferences_path": str(self._resolve_preferences_path().resolve()),
-            "ui_dist_path": str(self._resolve_ui_dist_path().resolve()),
+            "workspace_state_path": "<redacted>",
+            "preferences_path": "<redacted>",
+            "ui_dist_path": "<redacted>",
         }
 
 
@@ -1796,6 +1872,7 @@ def build_api_server(
     workspace_state_path: str | Path | None = None,
     preferences_path: str | Path | None = None,
     ui_dist_path: str | Path | None = None,
+    api_token: str | None = None,
 ) -> WeConductApiServer:
     server = WeConductApiServer((host, port), WeConductApiHandler)
     server.workspace_state_path = (
@@ -1811,4 +1888,5 @@ def build_api_server(
         if ui_dist_path is not None
         else DEFAULT_UI_DIST_PATH
     )
+    server.api_token = api_token
     return server

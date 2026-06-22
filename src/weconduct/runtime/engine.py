@@ -7,10 +7,12 @@ from contextlib import redirect_stderr, redirect_stdout
 import csv
 from datetime import datetime, timezone
 import io
+import ipaddress
 import json
 from pathlib import Path
 import re
 import ast
+import socket
 from time import monotonic
 import urllib.error
 import urllib.parse
@@ -36,6 +38,7 @@ class RuntimeContext:
     project_directory: Path | None = None
     workspace_root: Path | None = None
     embedded_resource_paths: dict[str, str] = field(default_factory=dict)
+    allowed_path_roots: tuple[Path, ...] = field(default_factory=tuple)
 
     def close(self) -> None:
         browser_context = self.browser_runtime.get("browser_context")
@@ -215,6 +218,10 @@ class RuntimeExecutorRegistry:
         url = _resolve_value(node_config.get("url"), context)
         if not isinstance(url, str) or not url.strip():
             return _failed_result(node, "http.url_required", "http.request requires node_config.url")
+        try:
+            normalized_url = _validate_http_request_url(url.strip())
+        except ValueError as exc:
+            return _failed_result(node, "http.url_blocked", str(exc))
 
         headers = _resolve_value(node_config.get("headers", {}), context)
         if not isinstance(headers, dict):
@@ -240,7 +247,7 @@ class RuntimeExecutorRegistry:
 
         try:
             request = urllib.request.Request(
-                url,
+                normalized_url,
                 data=request_body,
                 headers=request_headers,
                 method=method,
@@ -255,7 +262,7 @@ class RuntimeExecutorRegistry:
                     "status": "succeeded",
                     "node_id": node["node_id"],
                     "method": method,
-                    "url": url,
+                    "url": normalized_url,
                     "status_code": response.status,
                     "headers": response_headers,
                     "body": response_body,
@@ -269,7 +276,7 @@ class RuntimeExecutorRegistry:
                 "error_code": "http.status_error",
                 "message": f"http request failed with status {exc.code}",
                 "method": method,
-                "url": url,
+                "url": normalized_url,
                 "status_code": exc.code,
                 "headers": {key.lower(): value for key, value in exc.headers.items()},
                 "body": _decode_http_body(raw_body, dict(exc.headers.items())),
@@ -282,7 +289,7 @@ class RuntimeExecutorRegistry:
                 "error_code": "http.request_failed",
                 "message": str(exc),
                 "method": method,
-                "url": url,
+                "url": normalized_url,
             }
         context.variables["last_http_response"] = result
         return result
@@ -2184,11 +2191,22 @@ class RuntimeExecutorRegistry:
         stdout_buffer = io.StringIO()
         stderr_buffer = io.StringIO()
         try:
+            _validate_python_run_code(code)
             compiled = compile(code, "<weconduct-python.run>", "exec")
             stdout_target = stdout_buffer if capture_stdout_stderr else io.StringIO()
             stderr_target = stderr_buffer if capture_stdout_stderr else io.StringIO()
             with redirect_stdout(stdout_target), redirect_stderr(stderr_target):
                 exec(compiled, {"__builtins__": _PYTHON_SAFE_BUILTINS}, scope)
+        except PythonCodeRejected as exc:
+            return {
+                "status": "failed",
+                "node_id": node["node_id"],
+                "error_code": "python.code_rejected",
+                "message": str(exc),
+                "exception_type": type(exc).__name__,
+                "stdout": stdout_buffer.getvalue(),
+                "stderr": stderr_buffer.getvalue(),
+            }
         except PythonImportNotAllowed as exc:
             return {
                 "status": "failed",
@@ -2775,6 +2793,10 @@ class PythonImportNotAllowed(ImportError):
     pass
 
 
+class PythonCodeRejected(ValueError):
+    pass
+
+
 def _python_safe_import(
     name: str,
     globals: dict | None = None,  # noqa: A002
@@ -2787,6 +2809,23 @@ def _python_safe_import(
         raise PythonImportNotAllowed(f"python.run import is not allowed: {name}")
     return __import__(name, globals, locals, fromlist, level)
 
+
+_PYTHON_DANGEROUS_ATTRIBUTES = frozenset(
+    {
+        "__bases__",
+        "__builtins__",
+        "__class__",
+        "__closure__",
+        "__code__",
+        "__dict__",
+        "__func__",
+        "__globals__",
+        "__import__",
+        "__mro__",
+        "__self__",
+        "__subclasses__",
+    }
+)
 
 _PYTHON_SAFE_BUILTINS = {
     "abs": abs,
@@ -2811,6 +2850,72 @@ _PYTHON_SAFE_BUILTINS = {
     "tuple": tuple,
     "__import__": _python_safe_import,
 }
+
+
+_HTTP_BLOCKED_SCHEMES = frozenset({"file", "ftp", "gopher", "dict", "ldap"})
+_HTTP_METADATA_BLOCKED_IPS = frozenset(
+    {
+        ipaddress.ip_address("169.254.169.254"),
+        ipaddress.ip_address("fd00:ec2::254"),
+    }
+)
+
+
+def _validate_python_run_code(code: str) -> None:
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError as exc:
+        raise PythonCodeRejected(f"syntax error: {exc.msg}") from exc
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if isinstance(node, ast.Attribute) and node.attr in _PYTHON_DANGEROUS_ATTRIBUTES:
+            raise PythonCodeRejected(f"access to attribute is not allowed: {node.attr}")
+        if isinstance(node, ast.Name) and node.id in _PYTHON_DANGEROUS_ATTRIBUTES:
+            raise PythonCodeRejected(f"access to name is not allowed: {node.id}")
+
+
+def _validate_http_request_url(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError as exc:
+        raise ValueError(f"http.request url is invalid: {url}") from exc
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError(f"http.request blocked unsupported url scheme: {scheme or '<empty>'}")
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("http.request blocked url without hostname")
+    _validate_http_request_host(hostname)
+    return url
+
+
+def _validate_http_request_host(hostname: str) -> None:
+    try:
+        ip = ipaddress.ip_address(hostname)
+        _validate_http_request_ip(ip)
+        return
+    except ValueError:
+        pass
+    try:
+        records = socket.getaddrinfo(hostname, None, 0, socket.SOCK_STREAM)
+    except OSError as exc:
+        raise ValueError(f"http.request hostname resolution failed: {hostname}") from exc
+    for record in records:
+        sockaddr = record[4]
+        if not sockaddr:
+            continue
+        address_text = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(address_text)
+        except ValueError:
+            continue
+        _validate_http_request_ip(ip)
+
+
+def _validate_http_request_ip(ip: ipaddress._BaseAddress) -> None:
+    if ip in _HTTP_METADATA_BLOCKED_IPS:
+        raise ValueError(f"http.request blocked metadata address: {ip}")
 
 
 def _resolve_value(value: Any, context: RuntimeContext) -> Any:
@@ -3106,7 +3211,9 @@ def _normalize_excel_table_payload(data: Any, *, has_header: bool) -> tuple[list
 
 
 def _evaluate_excel_batch_condition(condition: str, row: dict[str, Any]) -> bool:
-    result = eval(condition, {"__builtins__": {}}, {"row": row})
+    if not condition or not condition.strip():
+        return True
+    result = _safe_eval_expression(condition, {"row": row})
     return bool(result)
 
 
@@ -3140,11 +3247,54 @@ def _resolve_runtime_path(path_value: str, context: RuntimeContext) -> Path:
             return Path(embedded_match).expanduser().resolve()
     path = Path(path_value).expanduser()
     if path.is_absolute():
-        return path
+        resolved = path.resolve()
+        _validate_path_within_allowed_roots(resolved, context)
+        return resolved
     base_directory = context.project_directory or context.workspace_root
     if base_directory is None:
-        return path.resolve()
-    return (base_directory / path).resolve()
+        resolved = path.resolve()
+        _validate_path_within_allowed_roots(resolved, context)
+        return resolved
+    resolved = (base_directory / path).resolve()
+    _validate_path_within_allowed_roots(resolved, context)
+    return resolved
+
+
+def _resolve_allowed_path_roots(context: RuntimeContext) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for configured_root in context.allowed_path_roots:
+        resolved_root = Path(configured_root).resolve()
+        if resolved_root not in roots:
+            roots.append(resolved_root)
+    if context.project_directory is not None:
+        resolved_project_directory = Path(context.project_directory).resolve()
+        if resolved_project_directory not in roots:
+            roots.append(resolved_project_directory)
+    if context.workspace_root is not None:
+        workspace_root = Path(context.workspace_root).resolve()
+        if workspace_root not in roots:
+            roots.append(workspace_root)
+    downloads = Path.home() / "Downloads"
+    if downloads.exists():
+        resolved_downloads = downloads.resolve()
+        if resolved_downloads not in roots:
+            roots.append(resolved_downloads)
+    return tuple(roots)
+
+
+def _validate_path_within_allowed_roots(path: Path, context: RuntimeContext) -> None:
+    resolved_path = path.resolve()
+    allowed_roots = _resolve_allowed_path_roots(context)
+    for root in allowed_roots:
+        try:
+            resolved_path.relative_to(root)
+            return
+        except ValueError:
+            continue
+    raise ValueError(
+        "file path is outside allowed directories: "
+        f"{resolved_path}; allowed roots: {[str(root) for root in allowed_roots]}"
+    )
 
 
 def _require_selector(node: dict, context: RuntimeContext) -> str | dict:
@@ -3701,11 +3851,28 @@ def _eval_ast_node(node: ast.AST, variables: dict[str, Any]) -> Any:
             return +operand
         raise ValueError("unsupported unary operator")
     if isinstance(node, ast.Call):
-        if not isinstance(node.func, ast.Name):
+        if isinstance(node.func, ast.Name):
+            if node.func.id == "len" and len(node.args) == 1:
+                return len(_eval_ast_node(node.args[0], variables))
             raise ValueError("unsupported function call")
-        if node.func.id == "len" and len(node.args) == 1:
-            return len(_eval_ast_node(node.args[0], variables))
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and len(node.args) in {1, 2}
+        ):
+            target = _eval_ast_node(node.func.value, variables)
+            if not isinstance(target, dict):
+                raise ValueError("dict.get target must be an object")
+            key = _eval_ast_node(node.args[0], variables)
+            default = _eval_ast_node(node.args[1], variables) if len(node.args) == 2 else None
+            return target.get(key, default)
         raise ValueError("unsupported function call")
+    if isinstance(node, ast.Subscript):
+        target = _eval_ast_node(node.value, variables)
+        if isinstance(node.slice, ast.Slice):
+            raise ValueError("unsupported subscript slice")
+        key = _eval_ast_node(node.slice, variables)
+        return target[key]
     if isinstance(node, ast.Compare):
         left = _eval_ast_node(node.left, variables)
         current = left

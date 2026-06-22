@@ -144,15 +144,22 @@ def _iter_default_captcha_ocr_roots() -> list[Path]:
 
 
 def _resolve_model_path(runtime_root: Path, model_name: str) -> Path:
-    raw_model = Path(model_name or DEFAULT_CAPTCHA_OCR_MODEL)
+    raw_model_name = model_name or DEFAULT_CAPTCHA_OCR_MODEL
+    if raw_model_name != DEFAULT_CAPTCHA_OCR_MODEL and (
+        "/" in raw_model_name or "\\" in raw_model_name
+    ):
+        raise CaptchaOcrRuntimeUnavailable(
+            f"captcha_ocr model name must be a filename, not a path: {raw_model_name}"
+        )
+    raw_model = Path(raw_model_name)
     if raw_model.is_absolute():
-        if raw_model.is_file():
-            return raw_model
-        raise CaptchaOcrRuntimeUnavailable(f"captcha_ocr model not found: {raw_model}")
+        raise CaptchaOcrRuntimeUnavailable(
+            f"captcha_ocr model name must be a filename, not an absolute path: {raw_model_name}"
+        )
     for candidate in (runtime_root / "model" / raw_model, runtime_root / raw_model):
         if candidate.is_file():
             return candidate.resolve()
-    raise CaptchaOcrRuntimeUnavailable(f"captcha_ocr model not found: {model_name}")
+    raise CaptchaOcrRuntimeUnavailable(f"captcha_ocr model not found: {raw_model_name}")
 
 
 def _ensure_ort_dylib_path(runtime_root: Path) -> None:

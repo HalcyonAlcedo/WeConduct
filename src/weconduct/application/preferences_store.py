@@ -107,9 +107,9 @@ def build_default_preferences() -> dict:
         "security_settings": {
             "confirm_high_risk_actions": True,
             "allow_external_programs": False,
-            "allow_file_access": True,
-            "allow_browser_executor": True,
-            "allow_local_network_access": True,
+            "allow_file_access": False,
+            "allow_browser_executor": False,
+            "allow_local_network_access": False,
         },
         "python_runtime_settings": {
             "python_executable_path": None,

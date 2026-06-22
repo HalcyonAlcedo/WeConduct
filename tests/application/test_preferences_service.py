@@ -24,8 +24,9 @@ def test_preferences_service_builds_default_preferences_document() -> None:
     assert document["compile_settings"]["stop_on_first_error"] is True
     assert document["compile_settings"]["emit_runtime_plan"] is True
     assert document["compile_settings"]["emit_debug_plan"] is True
-    assert document["security_settings"]["allow_browser_executor"] is True
-    assert document["security_settings"]["allow_local_network_access"] is True
+    assert document["security_settings"]["allow_file_access"] is False
+    assert document["security_settings"]["allow_browser_executor"] is False
+    assert document["security_settings"]["allow_local_network_access"] is False
     assert document["python_runtime_settings"]["capture_stdout_stderr"] is True
     assert document["graph_settings"]["auto_sync_mode"] == "responsive"
     assert document["graph_settings"]["save_conflict_policy"] == "prefer_current_graph"

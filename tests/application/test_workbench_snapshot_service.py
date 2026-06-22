@@ -24,6 +24,10 @@ from weconduct.runtime.engine import (
     execute_runtime_node,
     _require_browser_page,
 )
+from weconduct.runtime.captcha_ocr import (
+    CaptchaOcrRuntimeUnavailable,
+    _resolve_model_path,
+)
 
 
 class _RuntimeHttpHandler(BaseHTTPRequestHandler):
@@ -358,7 +362,7 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert snapshot["entrypoints"]["graph_source_projection"] == "/api/workbench/graph/source-projection"
     assert snapshot["workbench"]["host_mode"] == "python_core"
-    assert snapshot["workbench"]["api_version"] == "0.5.0"
+    assert snapshot["workbench"]["api_version"] == "0.5.1"
     assert snapshot["compiler"]["available_source_kinds"] == [
         "graph_workspace",
         "native_flow",
@@ -2250,7 +2254,8 @@ def test_service_can_remove_recent_project_and_track_editor_history(tmp_path) ->
 
 def test_service_can_export_import_and_replace_user_component_resource(tmp_path) -> None:
     service = CompilationWorkbenchService()
-    export_path = tmp_path / "exported-resource.wecresource.json"
+    project_path = tmp_path / "project" / "reusable-component.weconduct.json"
+    export_path = project_path.parent / "exported-resource.wecresource.json"
 
     service.save_graph_document(
         {
@@ -2272,6 +2277,7 @@ def test_service_can_export_import_and_replace_user_component_resource(tmp_path)
             "graph_effective_diagnostic_anchor_refs": [],
         }
     )
+    save_result = service.save_project_as(project_path=project_path)
 
     first_saved = service.save_user_component_resource(resource_name="Reusable Component")
     exported = service.export_resource(resource_id=first_saved["resource"]["resource_id"], export_path=export_path)
@@ -2302,6 +2308,7 @@ def test_service_can_export_import_and_replace_user_component_resource(tmp_path)
     imported = service.import_resource(import_path=export_path, replace_existing=True)
     registry = service.get_resource_registry_document()
 
+    assert save_result["status"] == "saved"
     assert exported["status"] == "exported"
     assert export_path.exists() is True
     assert replaced["status"] == "saved"
@@ -2315,7 +2322,8 @@ def test_service_can_export_import_and_replace_user_component_resource(tmp_path)
 
 def test_service_can_export_import_subgraph_resource_with_schema(tmp_path) -> None:
     service = CompilationWorkbenchService()
-    export_path = tmp_path / "exported-subgraph-resource.wecresource.json"
+    project_path = tmp_path / "project" / "schema-export.weconduct.json"
+    export_path = project_path.parent / "exported-subgraph-resource.wecresource.json"
 
     service.save_graph_document(
         {
@@ -2345,6 +2353,7 @@ def test_service_can_export_import_subgraph_resource_with_schema(tmp_path) -> No
             "graph_effective_diagnostic_anchor_refs": [],
         }
     )
+    save_result = service.save_project_as(project_path=project_path)
 
     saved = service.save_subgraph_resource(resource_name="Schema Export Subgraph")
     exported = service.export_resource(
@@ -2368,6 +2377,7 @@ def test_service_can_export_import_subgraph_resource_with_schema(tmp_path) -> No
     )
     imported = service.import_resource(import_path=export_path, replace_existing=True)
 
+    assert save_result["status"] == "saved"
     assert exported["status"] == "exported"
     assert imported["status"] == "imported"
     assert imported["resource"]["input_schema"] == {
@@ -2376,6 +2386,76 @@ def test_service_can_export_import_subgraph_resource_with_schema(tmp_path) -> No
     assert imported["resource"]["output_schema"] == {
         "message": {"type": "string"},
     }
+
+
+def test_service_export_resource_rejects_path_outside_project_root(tmp_path: Path) -> None:
+    project_path = tmp_path / "project" / "security-demo.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    save_result = service.save_project_as(project_path=project_path)
+    resource_save = service.save_user_component_resource(resource_name="Security Export")
+    outside_path = tmp_path.parent / "forbidden-export.wecresource.json"
+
+    assert save_result["status"] == "saved"
+
+    with pytest.raises(ValueError, match="resource path must be within allowed directories"):
+        service.export_resource(
+            resource_id=resource_save["resource"]["resource_id"],
+            export_path=outside_path,
+        )
+
+
+def test_service_import_resource_rejects_path_outside_project_root(tmp_path: Path) -> None:
+    project_path = tmp_path / "project" / "security-demo.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    save_result = service.save_project_as(project_path=project_path)
+    outside_path = tmp_path.parent / "forbidden-import.wecresource.json"
+    outside_path.write_text(
+        json.dumps(
+            {
+                "resource": {
+                    "resource_type": "custom_node_graph",
+                    "resource_id": "custom_node_graph:forbidden-import",
+                    "display_name": "Forbidden Import",
+                    "resource_key": "custom.forbidden_import",
+                    "source_graph_document": {
+                        "graph_model_id": "graph:workspace",
+                        "compilation_id": None,
+                        "graph_schema_version": "graph-v1",
+                        "nodes": [],
+                        "edges": [],
+                        "graph_effective_diagnostic_anchor_refs": [],
+                    },
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    assert save_result["status"] == "saved"
+
+    with pytest.raises(ValueError, match="resource path must be within allowed directories"):
+        service.import_resource(import_path=outside_path)
 
 
 def test_service_can_import_legacy_webcontrol_blueprint_as_custom_node_graph(
@@ -5940,6 +6020,368 @@ def test_service_runtime_python_run_blocks_disallowed_imports() -> None:
     assert session["result"]["outputs"]["node-python"]["error_code"] == "python.import_not_allowed"
 
 
+def test_service_runtime_python_run_rejects_dunder_introspection_chain() -> None:
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-python",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-python",
+                    "expansion_role": "action:python_run",
+                    "node_kind": "python.run",
+                    "node_config": {
+                        "code": "result = ().__class__.__mro__[1].__subclasses__()",
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "failed"
+    assert session["result"]["failure_reason"] == "python.code_rejected"
+    assert session["result"]["outputs"]["node-python"]["error_code"] == "python.code_rejected"
+    assert "__" in session["result"]["outputs"]["node-python"]["message"]
+
+
+def test_service_runtime_python_run_rejects_dunder_import_builtin_access() -> None:
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-python",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-python",
+                    "expansion_role": "action:python_run",
+                    "node_kind": "python.run",
+                    "node_config": {
+                        "code": "result = __builtins__['__import__']('os').getcwd()",
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "failed"
+    assert session["result"]["failure_reason"] == "python.code_rejected"
+    assert session["result"]["outputs"]["node-python"]["error_code"] == "python.code_rejected"
+    assert "__builtins__" in session["result"]["outputs"]["node-python"]["message"]
+
+
+def test_service_runtime_http_request_blocks_file_scheme_even_when_network_access_is_enabled() -> None:
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": False,
+                    "allow_file_access": True,
+                    "allow_browser_executor": False,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-http",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-http",
+                    "expansion_role": "action:http_request",
+                    "node_kind": "http.request",
+                    "node_config": {"url": "file:///virtual-blocked.txt"},
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "failed"
+    assert session["result"]["failure_reason"] == "http.url_blocked"
+    assert session["result"]["outputs"]["node-http"]["error_code"] == "http.url_blocked"
+
+
+def test_service_runtime_http_request_blocks_metadata_address_even_when_network_access_is_enabled() -> None:
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": False,
+                    "allow_file_access": True,
+                    "allow_browser_executor": False,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-http",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-http",
+                    "expansion_role": "action:http_request",
+                    "node_kind": "http.request",
+                    "node_config": {"url": "http://169.254.169.254/latest/meta-data/"},
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "failed"
+    assert session["result"]["failure_reason"] == "http.url_blocked"
+    assert session["result"]["outputs"]["node-http"]["error_code"] == "http.url_blocked"
+
+
 def test_service_runtime_recognizes_captcha_with_captcha_ocr(monkeypatch) -> None:
     service = CompilationWorkbenchService()
 
@@ -6034,6 +6476,15 @@ def test_service_runtime_reports_captcha_ocr_unavailable(monkeypatch) -> None:
     assert session["result"]["status"] == "failed"
     assert session["result"]["outputs"]["node-captcha"]["error_code"] == "browser.captcha_ocr_unavailable"
     assert "captcha_ocr runtime not found" in session["result"]["outputs"]["node-captcha"]["message"]
+
+
+def test_captcha_ocr_resolve_model_path_rejects_absolute_path(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "captcha_ocr"
+    (runtime_root / "model").mkdir(parents=True, exist_ok=True)
+    absolute_model = (tmp_path / "outside-model.onnx").resolve()
+
+    with pytest.raises(CaptchaOcrRuntimeUnavailable, match="filename, not a path"):
+        _resolve_model_path(runtime_root, str(absolute_model))
 
 
 def test_service_runtime_executes_extended_browser_atomic_components(tmp_path) -> None:
@@ -15248,7 +15699,7 @@ def test_runtime_health_exposes_host_session_capabilities_and_entrypoints() -> N
     assert health["status"] == "ok"
     assert health["service"] == "weconduct-api"
     assert health["host_mode"] == "python_core"
-    assert health["api_version"] == "0.5.0"
+    assert health["api_version"] == "0.5.1"
     assert health["workspace_state_version"] == 1
     assert health["workspace_session_id"].startswith("ws-")
     assert health["service_started_at"]
@@ -19757,7 +20208,7 @@ def test_build_project_wcrun_package_writes_expected_archive_layout(tmp_path: Pa
         assert manifest_payload["integrity"]["checksums_path"] == "meta/checksums.json"
         assert manifest_payload["integrity"]["package_info_path"] == "meta/package-info.json"
         assert package_info_payload["manifest_version"] == 1
-        assert package_info_payload["builder_app_version"] == "0.5.0"
+        assert package_info_payload["builder_app_version"] == "0.5.1"
         assert package_info_payload["source_project_schema_version"] == "project-v2"
         assert package_info_payload["graph_stats"]["graph_count"] == 1
         assert package_info_payload["resource_stats"]["embedded_resource_count"] == 0

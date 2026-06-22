@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import TCPServer
 from openpyxl import Workbook
+import pytest
 
 from weconduct.api.server import WeConductApiHandler
 from weconduct.packaging.msgpack_codec import packb, unpackb
@@ -2494,6 +2495,81 @@ def test_http_api_runtime_run_returns_accepted_while_session_continues(tmp_path:
         server.server_close()
 
 
+def test_http_api_write_request_requires_token_when_server_token_is_configured(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server = ApiTestServer(("127.0.0.1", 0), WeConductApiHandler)
+    server.workspace_state_path = workspace_state_path
+    server.api_token = "phase17-secret"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(_build_valid_graph_document_payload()).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(request)
+
+        assert exc_info.value.code == 401
+        error_payload = json.loads(exc_info.value.read().decode("utf-8"))
+        assert error_payload["error"] == "unauthorized"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_write_request_accepts_valid_token_when_server_token_is_configured(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server = ApiTestServer(("127.0.0.1", 0), WeConductApiHandler)
+    server.workspace_state_path = workspace_state_path
+    server.api_token = "phase17-secret"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(_build_valid_graph_document_payload()).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-WeConduct-Token": "phase17-secret",
+            },
+            method="PUT",
+        )
+        with urllib.request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        assert payload["status"] == "saved"
+        assert payload["view"]["graph_document_save_revision"] == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_read_request_does_not_require_token_when_server_token_is_configured(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server = ApiTestServer(("127.0.0.1", 0), WeConductApiHandler)
+    server.workspace_state_path = workspace_state_path
+    server.api_token = "phase17-secret"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        with urllib.request.urlopen(f"{base_url}/api/health") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        assert payload["status"] == "ok"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_http_api_runtime_stream_emits_snapshot_summary_and_completed(tmp_path: Path) -> None:
     workspace_state_path = tmp_path / "workspace-state.json"
     server, thread = _start_test_server(workspace_state_path=workspace_state_path)
@@ -3007,7 +3083,7 @@ def test_http_api_project_package_build_returns_archive_document(tmp_path: Path)
         assert manifest_payload["entrypoint"]["graph_path"] == "graphs/main.graph.msgpack"
         assert manifest_payload["runtime_requirements"]["required_browser"] == "msedge"
         assert package_info_payload["manifest_version"] == 1
-        assert package_info_payload["builder_app_version"] == "0.5.0"
+        assert package_info_payload["builder_app_version"] == "0.5.1"
         assert package_info_payload["source_project_schema_version"] == "project-v2"
     finally:
         server.shutdown()
@@ -6450,11 +6526,9 @@ def test_http_api_returns_structured_not_found_error(tmp_path: Path) -> None:
         except urllib.error.HTTPError as exc:
             payload = json.loads(exc.read().decode("utf-8"))
             assert exc.code == 404
-            assert payload == {
-                "error": "not_found",
-                "path": missing_path,
-                "message": f"resource not found: {missing_path}",
-            }
+            assert payload["error"] == "not_found"
+            assert payload["path"] == missing_path
+            assert payload["message"] == f"resource not found: {missing_path}"
         else:
             raise AssertionError("expected HTTPError for unknown API route")
     finally:
@@ -6480,16 +6554,23 @@ def test_http_api_returns_structured_not_found_error_for_unknown_post_route(tmp_
         except urllib.error.HTTPError as exc:
             payload = json.loads(exc.read().decode("utf-8"))
             assert exc.code == 404
-            assert payload == {
-                "error": "not_found",
-                "path": missing_path,
-                "message": f"resource not found: {missing_path}",
-            }
+            assert payload["error"] == "not_found"
+            assert payload["path"] == missing_path
+            assert payload["message"] == f"resource not found: {missing_path}"
         else:
             raise AssertionError("expected HTTPError for unknown POST API route")
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_http_api_not_found_error_sanitizes_control_characters(tmp_path: Path) -> None:
+    from weconduct.api.server import _sanitize_path_for_error
+
+    sanitized = _sanitize_path_for_error("/api/missing-\u0000-endpoint")
+
+    assert "\u0000" not in sanitized
+    assert sanitized == "/api/missing--endpoint"
 
 
 def test_http_api_exposes_runtime_health(tmp_path: Path) -> None:
@@ -6509,7 +6590,7 @@ def test_http_api_exposes_runtime_health(tmp_path: Path) -> None:
         assert payload["status"] == "ok"
         assert payload["service"] == "weconduct-api"
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.5.0"
+        assert payload["api_version"] == "0.5.1"
         assert payload["workspace_state_version"] == 1
         assert payload["workspace_session_id"].startswith("ws-")
         assert payload["service_started_at"]
@@ -7874,11 +7955,15 @@ def test_http_runtime_run_returns_extended_excel_outputs_for_transient_graph(tmp
         with urllib.request.urlopen(run_request) as response:
             run_payload = json.loads(response.read().decode("utf-8"))
 
-        assert run_payload["status"] == "completed"
-        assert run_payload["result"]["outputs"]["node-write-file"]["row_count"] == 2
-        assert run_payload["result"]["outputs"]["node-update-cells"]["updated_count"] == 2
-        assert run_payload["result"]["outputs"]["node-update-batch"]["updated_count"] == 2
-        assert run_payload["result"]["outputs"]["node-read-users"]["rows"] == [
+        assert run_payload["status"] in {"accepted", "completed"}
+        with urllib.request.urlopen(f"{base_url}/api/workbench/runtime/{session_id}") as response:
+            session_payload = json.loads(response.read().decode("utf-8"))
+
+        assert session_payload["runtime_session"]["status"] == "completed"
+        assert session_payload["result"]["outputs"]["node-write-file"]["row_count"] == 2
+        assert session_payload["result"]["outputs"]["node-update-cells"]["updated_count"] == 2
+        assert session_payload["result"]["outputs"]["node-update-batch"]["updated_count"] == 2
+        assert session_payload["result"]["outputs"]["node-read-users"]["rows"] == [
             {"name": "alice", "score": 15},
             {"name": "bob", "score": 99},
             {"name": "carol", "score": 99},
@@ -7977,8 +8062,125 @@ def test_http_runtime_run_returns_browser_atomic_outputs(tmp_path: Path) -> None
     finally:
         server.shutdown()
         server.server_close()
-        site_server.shutdown()
-        site_server.server_close()
+
+
+def test_http_runtime_run_rejects_excel_update_batch_eval_escape_expression(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    workbook_path = tmp_path / "output.xlsx"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        graph_document = {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {"node_id": "node-write-file", "lowered_kind": "execution", "source_anchor_ref": "n-write-file", "expansion_role": "action:write_excel_file", "node_kind": "excel.write_file", "node_config": {"path": str(workbook_path), "sheet_name": "Users", "headers": ["name", "score"], "rows": [["alice", 10]], "mode": "create"}},
+                {"node_id": "node-update-batch", "lowered_kind": "execution", "source_anchor_ref": "n-update-batch", "expansion_role": "action:update_excel_batch", "node_kind": "excel.update_batch", "node_config": {"path": str(workbook_path), "sheet_name": "Users", "condition": "__import__('os').system('echo hacked')", "updates": {"score": 99}}},
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+        start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=json.dumps({"graph_document": graph_document}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(start_request) as response:
+            started_payload = json.loads(response.read().decode("utf-8"))
+
+        session_id = started_payload["runtime_session"]["session_id"]
+        run_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/{session_id}/run",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(run_request) as response:
+            run_payload = json.loads(response.read().decode("utf-8"))
+
+        assert run_payload["status"] in {"accepted", "completed", "failed"}
+        with urllib.request.urlopen(f"{base_url}/api/workbench/runtime/{session_id}") as response:
+            session_payload = json.loads(response.read().decode("utf-8"))
+        assert session_payload["runtime_session"]["status"] == "failed"
+        failed_node = next(
+            item for item in session_payload["node_states"] if item["node_id"] == "node-update-batch"
+        )
+        failed_error = failed_node.get("error") or {}
+        failed_output = failed_node.get("output") or {}
+        assert (
+            failed_error.get("error_code") in {"excel.condition_invalid", "runtime.executor_exception"}
+            or failed_output.get("error_code") in {"excel.condition_invalid", "runtime.executor_exception"}
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_runtime_run_rejects_absolute_file_path_outside_project_root(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    outside_path = tmp_path.parent / "forbidden-runtime-write.txt"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        graph_document = {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-write-text",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-write-text",
+                    "expansion_role": "action:write_text_file",
+                    "node_kind": "file.write_text_file",
+                    "node_config": {
+                        "path": str(outside_path),
+                        "content": "blocked",
+                    },
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+        start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=json.dumps({"graph_document": graph_document}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(start_request) as response:
+            started_payload = json.loads(response.read().decode("utf-8"))
+
+        session_id = started_payload["runtime_session"]["session_id"]
+        run_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/{session_id}/run",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(run_request) as response:
+            run_payload = json.loads(response.read().decode("utf-8"))
+
+        assert run_payload["status"] in {"accepted", "completed", "failed"}
+        with urllib.request.urlopen(f"{base_url}/api/workbench/runtime/{session_id}") as response:
+            session_payload = json.loads(response.read().decode("utf-8"))
+        assert session_payload["runtime_session"]["status"] == "failed"
+        failed_node = next(
+            item for item in session_payload["node_states"] if item["node_id"] == "node-write-text"
+        )
+        assert failed_node["error"]["error_code"] in {
+            "runtime.executor_exception",
+            "file.write_failed",
+        }
+        assert "allowed" in failed_node["error"]["message"].lower()
+        assert outside_path.exists() is False
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_http_runtime_run_allows_legacy_webcontrol_click_with_ambiguous_selector(
@@ -8252,16 +8454,18 @@ def test_http_host_info_exposes_release_manifest_and_runtime_binding(tmp_path: P
             payload = json.loads(response.read().decode("utf-8"))
 
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.5.0"
+        assert payload["api_version"] == "0.5.1"
         assert payload["server_bind"]["host"] == "127.0.0.1"
         assert payload["server_bind"]["port"] == server.server_address[1]
         assert payload["server_bind"]["base_url"] == base_url
         assert payload["ui_hosting"]["ui_entrypoint"] == "/"
         assert payload["release_manifest"]["manifest_version"] == "phase3-host-baseline"
-        assert payload["release_manifest"]["workspace_state_path"] == str(workspace_state_path.resolve())
-        assert payload["release_manifest"]["ui_dist_path"] == str(ui_dist_path.resolve())
         assert "--workspace-state-path" in payload["release_manifest"]["startup_command"]
         assert "--ui-dist-path" in payload["release_manifest"]["startup_command"]
+        assert str(workspace_state_path.resolve()) not in payload["release_manifest"]["startup_command"]
+        assert str(ui_dist_path.resolve()) not in payload["release_manifest"]["startup_command"]
+        assert payload["release_manifest"]["workspace_state_path"] != str(workspace_state_path.resolve())
+        assert payload["release_manifest"]["ui_dist_path"] != str(ui_dist_path.resolve())
     finally:
         server.shutdown()
         server.server_close()
@@ -8451,6 +8655,34 @@ def test_http_host_read_file_rejects_directory_path(tmp_path: Path) -> None:
             assert payload["message"] == "path must point to a regular file"
         else:
             raise AssertionError("expected directory path to be rejected")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_host_read_file_rejects_file_outside_allowed_roots(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    outside_root = tmp_path.parent / "outside-security-check.txt"
+    outside_root.write_text("forbidden", encoding="utf-8")
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        request = urllib.request.Request(
+            f"{base_url}/api/host/read-file",
+            data=json.dumps({"path": str(outside_root)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 403
+            assert payload["error"] == "forbidden"
+            assert "allowed directory" in payload["message"]
+        else:
+            raise AssertionError("expected file outside allowed roots to be rejected")
     finally:
         server.shutdown()
         server.server_close()

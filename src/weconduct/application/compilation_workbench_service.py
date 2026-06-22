@@ -2222,6 +2222,7 @@ class CompilationWorkbenchService:
                 project_directory=self._resolve_runtime_project_directory(),
                 workspace_root=self._resolve_runtime_workspace_root(),
                 embedded_resource_paths=self._build_runtime_embedded_resource_path_map(),
+                allowed_path_roots=self._build_runtime_allowed_path_roots(),
             )
             runtime_context.flow_runtime["graph_root_metadata"] = deepcopy(
                 session["runtime_plan"].get("root_metadata", {})
@@ -3858,6 +3859,7 @@ class CompilationWorkbenchService:
             project_directory=parent_runtime_context.project_directory,
             workspace_root=parent_runtime_context.workspace_root,
             embedded_resource_paths=dict(parent_runtime_context.embedded_resource_paths),
+            allowed_path_roots=tuple(parent_runtime_context.allowed_path_roots),
         )
         child_context.browser_runtime = parent_runtime_context.browser_runtime
         child_context.variables.update(inputs)
@@ -6988,7 +6990,7 @@ class CompilationWorkbenchService:
             "workspace_state_version": WORKSPACE_STATE_VERSION,
             "workbench": {
                 "host_mode": "python_core",
-                "api_version": "0.5.0",
+                "api_version": "0.5.1",
                 "workspace_session_id": f"ws-{uuid.uuid4().hex[:12]}",
                 "service_started_at": datetime.now(timezone.utc).isoformat(),
                 "compile_counter": 0,
@@ -9458,6 +9460,28 @@ class CompilationWorkbenchService:
         if not isinstance(workspace_root, str) or not workspace_root.strip():
             return None
         return Path(workspace_root).resolve()
+
+    def _build_runtime_allowed_path_roots(self) -> tuple[Path, ...]:
+        roots: list[Path] = []
+        runtime_project_directory = self._resolve_runtime_project_directory()
+        if runtime_project_directory is not None:
+            roots.append(runtime_project_directory.resolve())
+        runtime_workspace_root = self._resolve_runtime_workspace_root()
+        if runtime_workspace_root is not None:
+            resolved_workspace_root = runtime_workspace_root.resolve()
+            if resolved_workspace_root not in roots:
+                roots.append(resolved_workspace_root)
+        state_store_path = getattr(self._state_store, "_path", None)
+        if isinstance(state_store_path, Path):
+            state_directory = state_store_path.resolve().parent
+            if state_directory not in roots:
+                roots.append(state_directory)
+        downloads_root = Path.home() / "Downloads"
+        if downloads_root.exists():
+            resolved_downloads_root = downloads_root.resolve()
+            if resolved_downloads_root not in roots:
+                roots.append(resolved_downloads_root)
+        return tuple(roots)
 
     def _extract_project_runtime(self, state: dict | None) -> dict:
         raw_runtime = state.get("project_runtime") if isinstance(state, dict) else None
@@ -12849,7 +12873,40 @@ class CompilationWorkbenchService:
             candidate = Path(target_path.strip())
         else:
             raise ValueError("path must be a non-empty path")
-        return candidate.resolve()
+        resolved = candidate.resolve()
+        allowed_roots = self._collect_resource_path_roots()
+        if not any(self._is_path_under_root(resolved, root) for root in allowed_roots):
+            raise ValueError(
+                "resource path must be within allowed directories: "
+                f"{resolved}; allowed roots: {[str(root) for root in allowed_roots]}"
+            )
+        return resolved
+
+    def _collect_resource_path_roots(self) -> tuple[Path, ...]:
+        roots: list[Path] = []
+        project_runtime = self._get_project_runtime()
+        project_file_path = project_runtime.get("project_file_path")
+        if isinstance(project_file_path, str) and project_file_path.strip():
+            roots.append(Path(project_file_path).resolve().parent)
+        workspace_root = self._resolve_runtime_workspace_root()
+        if workspace_root is not None:
+            resolved_workspace_root = workspace_root.resolve()
+            if resolved_workspace_root not in roots:
+                roots.append(resolved_workspace_root)
+        documents_root = Path.home() / "Documents"
+        if documents_root.exists():
+            resolved_documents_root = documents_root.resolve()
+            if resolved_documents_root not in roots:
+                roots.append(resolved_documents_root)
+        return tuple(roots)
+
+    @staticmethod
+    def _is_path_under_root(path: Path, root: Path) -> bool:
+        try:
+            path.resolve().relative_to(root.resolve())
+            return True
+        except (ValueError, OSError):
+            return False
 
     def _require_resource(self, resource_id: str) -> dict:
         for item in self._get_resource_registry():
