@@ -362,7 +362,7 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert snapshot["entrypoints"]["graph_source_projection"] == "/api/workbench/graph/source-projection"
     assert snapshot["workbench"]["host_mode"] == "python_core"
-    assert snapshot["workbench"]["api_version"] == "0.5.1"
+    assert snapshot["workbench"]["api_version"] == "0.5.2"
     assert snapshot["compiler"]["available_source_kinds"] == [
         "graph_workspace",
         "native_flow",
@@ -15699,7 +15699,7 @@ def test_runtime_health_exposes_host_session_capabilities_and_entrypoints() -> N
     assert health["status"] == "ok"
     assert health["service"] == "weconduct-api"
     assert health["host_mode"] == "python_core"
-    assert health["api_version"] == "0.5.1"
+    assert health["api_version"] == "0.5.2"
     assert health["workspace_state_version"] == 1
     assert health["workspace_session_id"].startswith("ws-")
     assert health["service_started_at"]
@@ -19170,6 +19170,81 @@ def test_service_compatibly_loads_legacy_workspace_state_without_pending_recover
     assert snapshot["project"]["is_dirty"] is False
 
 
+def test_service_normalizes_persisted_workbench_api_version_to_current_version(tmp_path) -> None:
+    state_file = tmp_path / "workspace" / "state.json"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        json.dumps(
+            {
+                "workspace_state_version": 1,
+                "workbench": {
+                    "host_mode": "python_core",
+                    "api_version": "0.4.1",
+                    "workspace_session_id": "ws-old-version",
+                    "service_started_at": "2026-06-21T16:35:59.104461+00:00",
+                    "compile_counter": 0,
+                },
+                "project": {
+                    "project_id": "legacy-project",
+                    "project_name": "Legacy Project",
+                    "project_schema_version": "project-v1",
+                    "project_status": "ready",
+                    "workspace_root": r"I:\\WeConduct Object\\WeConduct",
+                    "source_of_truth": "graph_document",
+                    "main_graph_document_id": "graph:workspace",
+                    "resource_registry_revision": 0,
+                },
+                "project_runtime": {
+                    "project_file_path": None,
+                    "is_dirty": False,
+                },
+                "last_compile": None,
+                "compile_history": [],
+                "recent_projects": [],
+                "resource_registry": [],
+                "editor_history": {
+                    "undo_stack": [],
+                    "redo_stack": [],
+                },
+                "execution_history": {
+                    "runtime_runs": [],
+                    "debug_sessions": [],
+                },
+                "runtime_sessions": [],
+                "debug_sessions": [],
+                "graph_document": {
+                    "graph_model_id": "graph:workspace",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                },
+                "graph_document_meta": {
+                    "save_revision": 0,
+                    "saved_at": None,
+                },
+                "pending_recovery": None,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    service = CompilationWorkbenchService(state_store=FileWorkspaceStateStore(state_file))
+    health = service.get_runtime_health()
+    persisted_state = json.loads(state_file.read_text(encoding="utf-8"))
+
+    assert health["api_version"] == "0.5.2"
+    assert persisted_state["workbench"]["api_version"] == "0.5.2"
+    assert persisted_state["workbench"]["workspace_session_id"] == "ws-old-version"
+    assert (
+        persisted_state["workbench"]["service_started_at"]
+        == "2026-06-21T16:35:59.104461+00:00"
+    )
+
+
 def test_service_exposes_pending_recovery_and_can_restore_dirty_workspace_from_file_store(
     tmp_path,
 ) -> None:
@@ -20208,7 +20283,7 @@ def test_build_project_wcrun_package_writes_expected_archive_layout(tmp_path: Pa
         assert manifest_payload["integrity"]["checksums_path"] == "meta/checksums.json"
         assert manifest_payload["integrity"]["package_info_path"] == "meta/package-info.json"
         assert package_info_payload["manifest_version"] == 1
-        assert package_info_payload["builder_app_version"] == "0.5.1"
+        assert package_info_payload["builder_app_version"] == "0.5.2"
         assert package_info_payload["source_project_schema_version"] == "project-v2"
         assert package_info_payload["graph_stats"]["graph_count"] == 1
         assert package_info_payload["resource_stats"]["embedded_resource_count"] == 0

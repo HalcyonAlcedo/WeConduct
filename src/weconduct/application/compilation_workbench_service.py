@@ -60,6 +60,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
+CURRENT_API_VERSION = "0.5.2"
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
@@ -6987,14 +6988,14 @@ class CompilationWorkbenchService:
             else str(Path(__file__).resolve().parents[3])
         )
         return {
-            "workspace_state_version": WORKSPACE_STATE_VERSION,
-            "workbench": {
-                "host_mode": "python_core",
-                "api_version": "0.5.1",
-                "workspace_session_id": f"ws-{uuid.uuid4().hex[:12]}",
-                "service_started_at": datetime.now(timezone.utc).isoformat(),
-                "compile_counter": 0,
-            },
+                "workspace_state_version": WORKSPACE_STATE_VERSION,
+                "workbench": {
+                    "host_mode": "python_core",
+                    "api_version": CURRENT_API_VERSION,
+                    "workspace_session_id": f"ws-{uuid.uuid4().hex[:12]}",
+                    "service_started_at": datetime.now(timezone.utc).isoformat(),
+                    "compile_counter": 0,
+                },
             "project": {
                 "project_id": resolved_project_id,
                 "project_name": project_name,
@@ -9360,6 +9361,10 @@ class CompilationWorkbenchService:
             ), True
 
         changed = False
+        normalized_workbench = self._extract_workbench_metadata(state)
+        if normalized_workbench != state.get("workbench"):
+            state["workbench"] = normalized_workbench
+            changed = True
         if "project" not in state or not isinstance(state.get("project"), dict):
             state["project"] = self._build_initial_workspace_state(
                 project_id="weconduct-workspace"
@@ -9443,6 +9448,31 @@ class CompilationWorkbenchService:
         if self._normalize_compile_records_in_state(state):
             changed = True
         return state, changed
+
+    def _extract_workbench_metadata(self, state: dict | None) -> dict:
+        initial_workbench = self._build_initial_workspace_state()["workbench"]
+        raw_workbench = state.get("workbench") if isinstance(state, dict) else None
+        if not isinstance(raw_workbench, dict):
+            raw_workbench = {}
+        host_mode = raw_workbench.get("host_mode")
+        if not isinstance(host_mode, str) or not host_mode.strip():
+            host_mode = initial_workbench["host_mode"]
+        workspace_session_id = raw_workbench.get("workspace_session_id")
+        if not isinstance(workspace_session_id, str) or not workspace_session_id.strip():
+            workspace_session_id = initial_workbench["workspace_session_id"]
+        service_started_at = raw_workbench.get("service_started_at")
+        if not isinstance(service_started_at, str) or not service_started_at.strip():
+            service_started_at = initial_workbench["service_started_at"]
+        compile_counter = raw_workbench.get("compile_counter")
+        if not isinstance(compile_counter, int) or compile_counter < 0:
+            compile_counter = initial_workbench["compile_counter"]
+        return {
+            "host_mode": host_mode,
+            "api_version": CURRENT_API_VERSION,
+            "workspace_session_id": workspace_session_id,
+            "service_started_at": service_started_at,
+            "compile_counter": compile_counter,
+        }
 
     def _get_project_runtime(self) -> dict:
         return self._extract_project_runtime(self._state)
