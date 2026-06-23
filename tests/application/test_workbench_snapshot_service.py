@@ -362,7 +362,7 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert snapshot["entrypoints"]["graph_source_projection"] == "/api/workbench/graph/source-projection"
     assert snapshot["workbench"]["host_mode"] == "python_core"
-    assert snapshot["workbench"]["api_version"] == "0.6.0"
+    assert snapshot["workbench"]["api_version"] == "0.6.1"
     assert snapshot["compiler"]["available_source_kinds"] == [
         "graph_workspace",
         "native_flow",
@@ -5671,6 +5671,22 @@ def test_service_runtime_blocks_file_actions_when_file_access_is_disabled(tmp_pa
             "graph_schema_version": "graph-v1",
             "nodes": [
                 {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow.start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        }
+                    ],
+                },
+                {
                     "node_id": "node-write",
                     "lowered_kind": "execution",
                     "source_anchor_ref": "n-write",
@@ -5680,7 +5696,16 @@ def test_service_runtime_blocks_file_actions_when_file_access_is_disabled(tmp_pa
                     "ports": [],
                 }
             ],
-            "edges": [],
+            "edges": [
+                {
+                    "edge_id": "edge-start-write",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-write",
+                    "from_port_id": "control-out",
+                    "to_port_id": None,
+                }
+            ],
             "graph_effective_diagnostic_anchor_refs": [],
         }
     )
@@ -5691,6 +5716,413 @@ def test_service_runtime_blocks_file_actions_when_file_access_is_disabled(tmp_pa
     assert session["status"] == "failed"
     assert session["result"]["outputs"]["node-write"]["error_code"] == "file.access_denied"
     assert output_path.exists() is False
+
+
+def test_service_runtime_restricted_file_access_scope_blocks_paths_outside_allowed_roots(
+    tmp_path,
+) -> None:
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    output_path = tmp_path / "restricted-blocked.txt"
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {},
+                "compile_settings": {},
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": False,
+                    "allow_file_access": True,
+                    "file_access_scope": "restricted",
+                    "show_security_warnings_in_runtime": True,
+                },
+                "python_runtime_settings": {},
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow.start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-write",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-write",
+                    "expansion_role": "action:write_text_file",
+                    "node_kind": "file.write_text_file",
+                    "node_config": {"path": str(output_path), "content": "blocked"},
+                    "ports": [],
+                }
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-write",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-write",
+                    "from_port_id": "control-out",
+                    "to_port_id": None,
+                }
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "failed"
+    assert session["result"]["failure_reason"] == "runtime.executor_exception"
+    diagnostic_events = [
+        item for item in session["event_log"] if item.get("event_kind") == "diagnostic.raised"
+    ]
+    assert diagnostic_events
+    assert diagnostic_events[-1]["error_code"] == "runtime.executor_exception"
+    assert "outside allowed directories" in diagnostic_events[-1]["message"]
+    assert output_path.exists() is False
+    assert any(
+        item.get("event_kind") == "security.file_access.scope"
+        and item.get("scope") == "restricted"
+        for item in session["event_log"]
+    )
+
+
+def test_service_runtime_custom_roots_file_access_scope_allows_user_whitelist(
+    tmp_path,
+) -> None:
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir(parents=True, exist_ok=True)
+    output_path = allowed_root / "allowed.txt"
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {},
+                "compile_settings": {},
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": False,
+                    "allow_file_access": True,
+                    "file_access_scope": "custom_roots",
+                    "file_access_allowed_roots": [str(allowed_root)],
+                    "show_security_warnings_in_runtime": True,
+                },
+                "python_runtime_settings": {},
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow.start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-write",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-write",
+                    "expansion_role": "action:write_text_file",
+                    "node_kind": "file.write_text_file",
+                    "node_config": {"path": str(output_path), "content": "allowed"},
+                    "ports": [],
+                }
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-write",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-write",
+                    "from_port_id": "control-out",
+                    "to_port_id": None,
+                }
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert output_path.read_text(encoding="utf-8") == "allowed"
+    allowed_roots_events = [
+        item for item in session["event_log"] if item.get("event_kind") == "security.file_access.allowed_roots"
+    ]
+    assert allowed_roots_events
+    assert str(allowed_root.resolve()) in allowed_roots_events[-1]["allowed_roots"]
+
+
+def test_service_runtime_allow_all_file_access_scope_allows_paths_outside_default_roots(
+    tmp_path,
+) -> None:
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    output_path = tmp_path / "allow-all.txt"
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {},
+                "compile_settings": {},
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": False,
+                    "allow_file_access": True,
+                    "file_access_scope": "allow_all",
+                    "show_security_warnings_in_runtime": True,
+                },
+                "python_runtime_settings": {},
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow.start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-write",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-write",
+                    "expansion_role": "action:write_text_file",
+                    "node_kind": "file.write_text_file",
+                    "node_config": {"path": str(output_path), "content": "allow-all"},
+                    "ports": [],
+                }
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-write",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-write",
+                    "from_port_id": "control-out",
+                    "to_port_id": None,
+                }
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert output_path.read_text(encoding="utf-8") == "allow-all"
+    assert any(
+        item.get("event_kind") == "security.file_access.scope"
+        and item.get("scope") == "allow_all"
+        for item in session["event_log"]
+    )
+
+
+def test_service_runtime_browser_screenshot_rejected_when_screenshots_are_disabled(
+    tmp_path,
+) -> None:
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    screenshot_path = tmp_path / "blocked-shot.png"
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {},
+                "compile_settings": {},
+                "security_settings": {
+                    "allow_browser_executor": True,
+                    "allow_browser_screenshots": False,
+                    "allow_local_network_access": True,
+                },
+                "python_runtime_settings": {},
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow.start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [{"port_id": "control-out", "direction": "output", "relation_layer": "control", "semantic_slot": "control.next"}],
+                },
+                {
+                    "node_id": "node-shot",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-shot",
+                    "expansion_role": "action:screenshot",
+                    "node_kind": "browser.screenshot",
+                    "node_config": {"path": str(screenshot_path)},
+                    "ports": [],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-1",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-shot",
+                    "from_port_id": "control-out",
+                    "to_port_id": None,
+                }
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "failed"
+    assert session["result"]["outputs"]["node-shot"]["error_code"] == "browser.screenshot_disabled"
+    assert screenshot_path.exists() is False
+
+
+def test_service_runtime_remote_http_request_rejected_when_remote_network_is_disabled() -> None:
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {},
+                "compile_settings": {},
+                "security_settings": {
+                    "allow_local_network_access": True,
+                    "allow_remote_network_access": False,
+                },
+                "python_runtime_settings": {},
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow.start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [{"port_id": "control-out", "direction": "output", "relation_layer": "control", "semantic_slot": "control.next"}],
+                },
+                {
+                    "node_id": "node-http",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-http",
+                    "expansion_role": "action:request",
+                    "node_kind": "http.request",
+                    "node_config": {"method": "GET", "url": "https://example.com"},
+                    "ports": [],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-1",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-http",
+                    "from_port_id": "control-out",
+                    "to_port_id": None,
+                }
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "failed"
+    assert session["result"]["outputs"]["node-http"]["error_code"] == "http.remote_network_disabled"
 
 
 from http.server import BaseHTTPRequestHandler
@@ -6360,7 +6792,16 @@ def test_service_runtime_python_run_rejects_dunder_introspection_chain() -> None
                     "ports": [],
                 }
             ],
-            "edges": [],
+            "edges": [
+                {
+                    "edge_id": "edge-start-write",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-write",
+                    "from_port_id": "control-out",
+                    "to_port_id": None,
+                }
+            ],
             "graph_effective_diagnostic_anchor_refs": [],
         }
     )
@@ -6452,7 +6893,16 @@ def test_service_runtime_python_run_rejects_dunder_import_builtin_access() -> No
                     "ports": [],
                 }
             ],
-            "edges": [],
+            "edges": [
+                {
+                    "edge_id": "edge-start-write",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-write",
+                    "from_port_id": "control-out",
+                    "to_port_id": None,
+                }
+            ],
             "graph_effective_diagnostic_anchor_refs": [],
         }
     )
@@ -16684,7 +17134,7 @@ def test_runtime_health_exposes_host_session_capabilities_and_entrypoints() -> N
     assert health["status"] == "ok"
     assert health["service"] == "weconduct-api"
     assert health["host_mode"] == "python_core"
-    assert health["api_version"] == "0.6.0"
+    assert health["api_version"] == "0.6.1"
     assert health["workspace_state_version"] == 1
     assert health["workspace_session_id"].startswith("ws-")
     assert health["service_started_at"]
@@ -19344,10 +19794,13 @@ def test_service_snapshot_exposes_preferences_state() -> None:
     assert snapshot["graph_workspace"]["preferences_state"]["compile_settings"]["stop_on_first_error"] == "stored_only"
     assert snapshot["graph_workspace"]["preferences_state"]["compile_settings"]["emit_runtime_plan"] == "stored_only"
     assert snapshot["graph_workspace"]["preferences_state"]["compile_settings"]["emit_debug_plan"] == "stored_only"
-    assert snapshot["graph_workspace"]["preferences_state"]["security_settings"]["confirm_high_risk_actions"] == "stored_only"
+    assert snapshot["graph_workspace"]["preferences_state"]["security_settings"]["confirm_high_risk_actions"] == "active"
     assert snapshot["graph_workspace"]["preferences_state"]["security_settings"]["allow_file_access"] == "active"
+    assert snapshot["graph_workspace"]["preferences_state"]["security_settings"]["file_access_scope"] == "active"
+    assert snapshot["graph_workspace"]["preferences_state"]["security_settings"]["file_access_allowed_roots"] == "active"
     assert snapshot["graph_workspace"]["preferences_state"]["security_settings"]["allow_browser_executor"] == "active"
     assert snapshot["graph_workspace"]["preferences_state"]["security_settings"]["allow_local_network_access"] == "active"
+    assert snapshot["graph_workspace"]["preferences_state"]["security_settings"]["show_security_warnings_in_runtime"] == "active"
     assert snapshot["graph_workspace"]["preferences_state"]["python_runtime_settings"]["timeout_seconds"] == "active"
     assert snapshot["graph_workspace"]["preferences_state"]["python_runtime_settings"]["python_executable_path"] == "active"
     assert snapshot["graph_workspace"]["preferences_state"]["python_runtime_settings"]["sandbox_mode"] == "active"
@@ -20354,8 +20807,8 @@ def test_service_normalizes_persisted_workbench_api_version_to_current_version(t
     health = service.get_runtime_health()
     persisted_state = json.loads(state_file.read_text(encoding="utf-8"))
 
-    assert health["api_version"] == "0.6.0"
-    assert persisted_state["workbench"]["api_version"] == "0.6.0"
+    assert health["api_version"] == "0.6.1"
+    assert persisted_state["workbench"]["api_version"] == "0.6.1"
     assert persisted_state["workbench"]["workspace_session_id"] == "ws-old-version"
     assert (
         persisted_state["workbench"]["service_started_at"]
@@ -21401,7 +21854,7 @@ def test_build_project_wcrun_package_writes_expected_archive_layout(tmp_path: Pa
         assert manifest_payload["integrity"]["checksums_path"] == "meta/checksums.json"
         assert manifest_payload["integrity"]["package_info_path"] == "meta/package-info.json"
         assert package_info_payload["manifest_version"] == 1
-        assert package_info_payload["builder_app_version"] == "0.6.0"
+        assert package_info_payload["builder_app_version"] == "0.6.1"
         assert package_info_payload["source_project_schema_version"] == "project-v2"
         assert package_info_payload["graph_stats"]["graph_count"] == 1
         assert package_info_payload["resource_stats"]["embedded_resource_count"] == 0

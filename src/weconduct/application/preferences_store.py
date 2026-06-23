@@ -7,6 +7,7 @@ from typing import Any
 
 
 PREFERENCES_FILE_VERSION = 1
+FILE_ACCESS_SCOPES = {"restricted", "custom_roots", "allow_all"}
 
 
 class PreferencesStore:
@@ -108,8 +109,26 @@ def build_default_preferences() -> dict:
             "confirm_high_risk_actions": True,
             "allow_external_programs": False,
             "allow_file_access": False,
+            "file_access_scope": "restricted",
+            "file_access_allowed_roots": [],
+            "file_access_blocked_roots": [],
+            "file_access_allowed_extensions": [],
+            "file_access_blocked_extensions": [],
+            "file_access_require_absolute_path": False,
             "allow_browser_executor": False,
+            "allow_browser_screenshots": True,
+            "allow_cookie_manipulation": True,
+            "allow_browser_storage_manipulation": True,
+            "allow_browser_uploads": True,
+            "allow_browser_downloads": False,
+            "allow_new_browser_windows": True,
             "allow_local_network_access": False,
+            "allow_remote_network_access": False,
+            "allow_python_execution": False,
+            "allow_js_injection": False,
+            "allow_js_evaluation": False,
+            "show_security_warnings_in_runtime": True,
+            "log_security_events": True,
         },
         "python_runtime_settings": {
             "python_executable_path": None,
@@ -154,4 +173,158 @@ def normalize_preferences(preferences: dict | None) -> tuple[dict, bool]:
     for key in normalized:
         if key not in preferences:
             changed = True
+    normalized_security_settings = _normalize_security_settings(normalized["security_settings"])
+    if normalized_security_settings != normalized["security_settings"]:
+        normalized["security_settings"] = normalized_security_settings
+        changed = True
     return normalized, changed
+
+
+def _normalize_security_settings(settings: Any) -> dict:
+    defaults = build_default_preferences()["security_settings"]
+    if not isinstance(settings, dict):
+        return deepcopy(defaults)
+    normalized = deepcopy(defaults)
+    normalized["confirm_high_risk_actions"] = bool(
+        settings.get("confirm_high_risk_actions", defaults["confirm_high_risk_actions"])
+    )
+    normalized["allow_external_programs"] = bool(
+        settings.get("allow_external_programs", defaults["allow_external_programs"])
+    )
+    normalized["allow_file_access"] = bool(
+        settings.get("allow_file_access", defaults["allow_file_access"])
+    )
+    file_access_scope = settings.get("file_access_scope", defaults["file_access_scope"])
+    normalized["file_access_scope"] = (
+        file_access_scope if file_access_scope in FILE_ACCESS_SCOPES else defaults["file_access_scope"]
+    )
+    normalized["file_access_allowed_roots"] = _normalize_path_list(
+        settings.get("file_access_allowed_roots", defaults["file_access_allowed_roots"])
+    )
+    normalized["file_access_blocked_roots"] = _normalize_path_list(
+        settings.get("file_access_blocked_roots", defaults["file_access_blocked_roots"])
+    )
+    normalized["file_access_allowed_extensions"] = _normalize_extension_list(
+        settings.get(
+            "file_access_allowed_extensions",
+            defaults["file_access_allowed_extensions"],
+        )
+    )
+    normalized["file_access_blocked_extensions"] = _normalize_extension_list(
+        settings.get(
+            "file_access_blocked_extensions",
+            defaults["file_access_blocked_extensions"],
+        )
+    )
+    normalized["file_access_require_absolute_path"] = bool(
+        settings.get(
+            "file_access_require_absolute_path",
+            defaults["file_access_require_absolute_path"],
+        )
+    )
+    normalized["allow_browser_executor"] = bool(
+        settings.get("allow_browser_executor", defaults["allow_browser_executor"])
+    )
+    normalized["allow_browser_screenshots"] = bool(
+        settings.get(
+            "allow_browser_screenshots",
+            defaults["allow_browser_screenshots"],
+        )
+    )
+    normalized["allow_cookie_manipulation"] = bool(
+        settings.get(
+            "allow_cookie_manipulation",
+            defaults["allow_cookie_manipulation"],
+        )
+    )
+    normalized["allow_browser_storage_manipulation"] = bool(
+        settings.get(
+            "allow_browser_storage_manipulation",
+            defaults["allow_browser_storage_manipulation"],
+        )
+    )
+    normalized["allow_browser_uploads"] = bool(
+        settings.get(
+            "allow_browser_uploads",
+            defaults["allow_browser_uploads"],
+        )
+    )
+    normalized["allow_browser_downloads"] = bool(
+        settings.get(
+            "allow_browser_downloads",
+            defaults["allow_browser_downloads"],
+        )
+    )
+    normalized["allow_new_browser_windows"] = bool(
+        settings.get(
+            "allow_new_browser_windows",
+            defaults["allow_new_browser_windows"],
+        )
+    )
+    normalized["allow_local_network_access"] = bool(
+        settings.get("allow_local_network_access", defaults["allow_local_network_access"])
+    )
+    normalized["allow_remote_network_access"] = bool(
+        settings.get(
+            "allow_remote_network_access",
+            defaults["allow_remote_network_access"],
+        )
+    )
+    normalized["allow_python_execution"] = bool(
+        settings.get(
+            "allow_python_execution",
+            defaults["allow_python_execution"],
+        )
+    )
+    normalized["allow_js_injection"] = bool(
+        settings.get(
+            "allow_js_injection",
+            defaults["allow_js_injection"],
+        )
+    )
+    normalized["allow_js_evaluation"] = bool(
+        settings.get(
+            "allow_js_evaluation",
+            defaults["allow_js_evaluation"],
+        )
+    )
+    normalized["show_security_warnings_in_runtime"] = bool(
+        settings.get(
+            "show_security_warnings_in_runtime",
+            defaults["show_security_warnings_in_runtime"],
+        )
+    )
+    normalized["log_security_events"] = bool(
+        settings.get("log_security_events", defaults["log_security_events"])
+    )
+    return normalized
+
+
+def _normalize_path_list(raw_value: Any) -> list[str]:
+    if not isinstance(raw_value, list):
+        return []
+    normalized: list[str] = []
+    for item in raw_value:
+        if not isinstance(item, str):
+            continue
+        trimmed = item.strip()
+        if not trimmed:
+            continue
+        if trimmed not in normalized:
+            normalized.append(trimmed)
+    return normalized
+
+
+def _normalize_extension_list(raw_value: Any) -> list[str]:
+    if not isinstance(raw_value, list):
+        return []
+    normalized: list[str] = []
+    for item in raw_value:
+        if not isinstance(item, str):
+            continue
+        trimmed = item.strip().lower()
+        if not trimmed:
+            continue
+        if trimmed not in normalized:
+            normalized.append(trimmed)
+    return normalized

@@ -6,7 +6,7 @@ from .legacy_webcontrol_converter import (
     build_conversion_report,
     convert_legacy_webcontrol_project,
 )
-from .preferences_service import PreferencesService
+from .preferences_service import HighRiskPreferenceChangeRequiredError, PreferencesService
 from .preferences_store import (
     FilePreferencesStore,
     InMemoryPreferencesStore,
@@ -25,6 +25,7 @@ __all__ = [
     "build_conversion_report",
     "convert_legacy_webcontrol_project",
     "PreferencesService",
+    "HighRiskPreferenceChangeRequiredError",
     "FilePreferencesStore",
     "InMemoryPreferencesStore",
     "PreferencesStore",

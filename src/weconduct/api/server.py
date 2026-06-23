@@ -10,6 +10,7 @@ from weconduct.application import (
     CompilationWorkbenchService,
     FileWorkspaceStateStore,
     GraphDocumentRevisionConflictError,
+    HighRiskPreferenceChangeRequiredError,
     PreferencesService,
     FilePreferencesStore,
 )
@@ -695,14 +696,21 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 payload = self._read_json_request_body()
                 section = payload.get("section")
                 values = payload.get("values")
+                confirm_high_risk = payload.get("confirm_high_risk", False)
                 if not isinstance(section, str) or not section.strip():
                     raise ValueError("field must be a non-empty string: section")
                 if not isinstance(values, dict):
                     raise ValueError("field must be a JSON object: values")
+                if not isinstance(confirm_high_risk, bool):
+                    raise ValueError("field must be a boolean when provided: confirm_high_risk")
                 result = self._get_preferences_service().update_preferences(
                     section=section.strip(),
                     values=values,
+                    confirm_high_risk=confirm_high_risk,
                 )
+            except HighRiskPreferenceChangeRequiredError as exc:
+                self._write_high_risk_confirmation_required_error(exc)
+                return
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
                 return
@@ -732,6 +740,25 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     "graph_document": result["graph_document"].model_dump(),
                 },
             )
+            return
+
+        if self.path == "/api/workbench/preferences/preview":
+            try:
+                payload = self._read_json_request_body()
+                section = payload.get("section")
+                values = payload.get("values")
+                if not isinstance(section, str) or not section.strip():
+                    raise ValueError("field must be a non-empty string: section")
+                if not isinstance(values, dict):
+                    raise ValueError("field must be a JSON object: values")
+                result = self._get_preferences_service().preview_preferences_update(
+                    section=section.strip(),
+                    values=values,
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
             return
 
         if self.path == "/api/workbench/project/convert-webcontrol":
@@ -1337,6 +1364,21 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         self._write_json(
             HTTPStatus.BAD_REQUEST,
             payload,
+        )
+
+    def _write_high_risk_confirmation_required_error(
+        self,
+        exc: HighRiskPreferenceChangeRequiredError,
+    ) -> None:
+        self._write_json(
+            HTTPStatus.CONFLICT,
+            {
+                "error": "high_risk_confirmation_required",
+                "message": str(exc),
+                "section": exc.section,
+                "requires_confirmation": True,
+                "high_risk_changes": [dict(item) for item in exc.high_risk_changes],
+            },
         )
 
     def _write_host_file_dialog_unavailable_error(self) -> None:

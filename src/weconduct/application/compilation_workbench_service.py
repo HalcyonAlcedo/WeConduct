@@ -60,7 +60,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
-CURRENT_API_VERSION = "0.6.0"
+CURRENT_API_VERSION = "0.6.1"
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
@@ -2346,17 +2346,19 @@ class CompilationWorkbenchService:
             event_log = list(session["event_log"])
             completed_node_ids: list[str] = []
             failed_node_ids: list[str] = []
+            runtime_execution_settings = self._build_runtime_execution_settings()
             runtime_context = RuntimeContext(
                 project_directory=self._resolve_runtime_project_directory(),
                 workspace_root=self._resolve_runtime_workspace_root(),
                 embedded_resource_paths=self._build_runtime_embedded_resource_path_map(),
                 allowed_path_roots=self._build_runtime_allowed_path_roots(),
+                runtime_settings=deepcopy(runtime_execution_settings),
             )
             runtime_context.flow_runtime["graph_root_metadata"] = deepcopy(
                 session["runtime_plan"].get("root_metadata", {})
             )
             executor_registry = RuntimeExecutorRegistry(
-                runtime_settings=self._build_runtime_execution_settings()
+                runtime_settings=runtime_execution_settings
             )
             session_status = "completed"
             failure_reason = None
@@ -2421,6 +2423,14 @@ class CompilationWorkbenchService:
                             result=None,
                         ),
                     )
+
+                if runtime_execution_settings.get("show_security_warnings_in_runtime", True):
+                    for security_event in self._build_runtime_security_events(
+                        session_id=session_id,
+                        runtime_context=runtime_context,
+                    ):
+                        event_log.append(security_event)
+                        publish_live_update("runtime.security", security_event)
 
                 def queue_control_edge(edge: dict, *, repeat_mode_value: bool) -> None:
                     self._queue_runtime_control_edge_with_wait_all(
@@ -4009,6 +4019,7 @@ class CompilationWorkbenchService:
                 workspace_root=parent_runtime_context.workspace_root,
                 embedded_resource_paths=dict(parent_runtime_context.embedded_resource_paths),
                 allowed_path_roots=tuple(parent_runtime_context.allowed_path_roots),
+                runtime_settings=deepcopy(parent_runtime_context.runtime_settings),
             )
             child_context.browser_runtime = parent_runtime_context.browser_runtime
         child_context.variables.update(inputs)
@@ -10252,6 +10263,25 @@ class CompilationWorkbenchService:
             resolved_downloads_root = downloads_root.resolve()
             if resolved_downloads_root not in roots:
                 roots.append(resolved_downloads_root)
+        preferences = self._preferences_service.get_preferences_document()
+        security_settings = preferences.get("security_settings")
+        file_access_scope = (
+            security_settings.get("file_access_scope", "restricted")
+            if isinstance(security_settings, dict)
+            else "restricted"
+        )
+        raw_allowed_roots = (
+            security_settings.get("file_access_allowed_roots", [])
+            if isinstance(security_settings, dict)
+            else []
+        )
+        if file_access_scope == "custom_roots" and isinstance(raw_allowed_roots, list):
+            for raw_root in raw_allowed_roots:
+                if not isinstance(raw_root, str) or not raw_root.strip():
+                    continue
+                resolved_root = Path(raw_root.strip()).expanduser().resolve()
+                if resolved_root not in roots:
+                    roots.append(resolved_root)
         return tuple(roots)
 
     def _extract_project_runtime(self, state: dict | None) -> dict:
@@ -10817,6 +10847,52 @@ class CompilationWorkbenchService:
                 if isinstance(security_settings, dict)
                 else True
             ),
+            "file_access_scope": (
+                security_settings.get("file_access_scope", "restricted")
+                if isinstance(security_settings, dict)
+                else "restricted"
+            ),
+            "file_access_allowed_roots": (
+                [
+                    item.strip()
+                    for item in security_settings.get("file_access_allowed_roots", [])
+                    if isinstance(item, str) and item.strip()
+                ]
+                if isinstance(security_settings, dict)
+                else []
+            ),
+            "file_access_blocked_roots": (
+                [
+                    item.strip()
+                    for item in security_settings.get("file_access_blocked_roots", [])
+                    if isinstance(item, str) and item.strip()
+                ]
+                if isinstance(security_settings, dict)
+                else []
+            ),
+            "file_access_allowed_extensions": (
+                [
+                    item.strip().lower()
+                    for item in security_settings.get("file_access_allowed_extensions", [])
+                    if isinstance(item, str) and item.strip()
+                ]
+                if isinstance(security_settings, dict)
+                else []
+            ),
+            "file_access_blocked_extensions": (
+                [
+                    item.strip().lower()
+                    for item in security_settings.get("file_access_blocked_extensions", [])
+                    if isinstance(item, str) and item.strip()
+                ]
+                if isinstance(security_settings, dict)
+                else []
+            ),
+            "file_access_require_absolute_path": (
+                security_settings.get("file_access_require_absolute_path", False)
+                if isinstance(security_settings, dict)
+                else False
+            ),
             "allow_external_programs": (
                 security_settings.get("allow_external_programs", False)
                 if isinstance(security_settings, dict)
@@ -10827,10 +10903,70 @@ class CompilationWorkbenchService:
                 if isinstance(security_settings, dict)
                 else False
             ),
+            "allow_browser_screenshots": (
+                security_settings.get("allow_browser_screenshots", True)
+                if isinstance(security_settings, dict)
+                else True
+            ),
+            "allow_cookie_manipulation": (
+                security_settings.get("allow_cookie_manipulation", True)
+                if isinstance(security_settings, dict)
+                else True
+            ),
+            "allow_browser_storage_manipulation": (
+                security_settings.get("allow_browser_storage_manipulation", True)
+                if isinstance(security_settings, dict)
+                else True
+            ),
+            "allow_browser_uploads": (
+                security_settings.get("allow_browser_uploads", True)
+                if isinstance(security_settings, dict)
+                else True
+            ),
+            "allow_browser_downloads": (
+                security_settings.get("allow_browser_downloads", False)
+                if isinstance(security_settings, dict)
+                else False
+            ),
+            "allow_new_browser_windows": (
+                security_settings.get("allow_new_browser_windows", True)
+                if isinstance(security_settings, dict)
+                else True
+            ),
             "allow_local_network_access": (
                 security_settings.get("allow_local_network_access", False)
                 if isinstance(security_settings, dict)
                 else False
+            ),
+            "allow_remote_network_access": (
+                security_settings.get("allow_remote_network_access", False)
+                if isinstance(security_settings, dict)
+                else False
+            ),
+            "allow_python_execution": (
+                security_settings.get("allow_python_execution", False)
+                if isinstance(security_settings, dict)
+                else False
+            ),
+            "allow_js_injection": (
+                security_settings.get("allow_js_injection", False)
+                if isinstance(security_settings, dict)
+                else False
+            ),
+            "allow_js_evaluation": (
+                security_settings.get("allow_js_evaluation", False)
+                if isinstance(security_settings, dict)
+                else False
+            ),
+            "show_security_warnings_in_runtime": (
+                security_settings.get("show_security_warnings_in_runtime", True)
+                if isinstance(security_settings, dict)
+                else True
+            ),
+            "log_security_events": (
+                security_settings.get("log_security_events", True)
+                if isinstance(security_settings, dict)
+                else True
             ),
             "python_timeout_seconds": (
                 python_runtime_settings.get("timeout_seconds", 60)
@@ -10878,11 +11014,29 @@ class CompilationWorkbenchService:
                 "emit_debug_plan": "stored_only",
             },
             "security_settings": {
-                "confirm_high_risk_actions": "stored_only",
+                "confirm_high_risk_actions": "active",
                 "allow_external_programs": "active",
                 "allow_file_access": "active",
+                "file_access_scope": "active",
+                "file_access_allowed_roots": "active",
+                "file_access_blocked_roots": "active",
+                "file_access_allowed_extensions": "active",
+                "file_access_blocked_extensions": "active",
+                "file_access_require_absolute_path": "active",
                 "allow_browser_executor": "active",
+                "allow_browser_screenshots": "active",
+                "allow_cookie_manipulation": "active",
+                "allow_browser_storage_manipulation": "active",
+                "allow_browser_uploads": "active",
+                "allow_browser_downloads": "active",
+                "allow_new_browser_windows": "active",
                 "allow_local_network_access": "active",
+                "allow_remote_network_access": "active",
+                "allow_python_execution": "active",
+                "allow_js_injection": "active",
+                "allow_js_evaluation": "active",
+                "show_security_warnings_in_runtime": "active",
+                "log_security_events": "active",
             },
             "python_runtime_settings": {
                 "python_executable_path": "active",
@@ -10907,6 +11061,137 @@ class CompilationWorkbenchService:
             },
             "preferences_file_version": preferences.get("preferences_file_version"),
         }
+
+    def _build_runtime_security_events(
+        self,
+        *,
+        session_id: str,
+        runtime_context: RuntimeContext,
+    ) -> list[dict]:
+        runtime_settings = runtime_context.runtime_settings
+        if not runtime_settings.get("log_security_events", True):
+            return []
+        allowed_roots = [str(root) for root in runtime_context.allowed_path_roots]
+        events = [
+            {
+                "event_kind": "security.file_access.scope",
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "session_id": session_id,
+                "scope": runtime_settings.get("file_access_scope", "restricted"),
+                "allow_file_access": bool(runtime_settings.get("allow_file_access", True)),
+            },
+            {
+                "event_kind": "security.file_access.allowed_roots",
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "session_id": session_id,
+                "allowed_roots": allowed_roots,
+            },
+        ]
+        if not runtime_settings.get("allow_browser_executor", False):
+            events.append(
+                {
+                    "event_kind": "security.browser_executor.disabled",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                }
+            )
+        if not runtime_settings.get("allow_browser_screenshots", True):
+            events.append(
+                {
+                    "event_kind": "security.browser_screenshots.disabled",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                }
+            )
+        if not runtime_settings.get("allow_cookie_manipulation", True):
+            events.append(
+                {
+                    "event_kind": "security.cookie_manipulation.disabled",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                }
+            )
+        if not runtime_settings.get("allow_browser_storage_manipulation", True):
+            events.append(
+                {
+                    "event_kind": "security.browser_storage.disabled",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                }
+            )
+        if not runtime_settings.get("allow_browser_uploads", True):
+            events.append(
+                {
+                    "event_kind": "security.browser_uploads.disabled",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                }
+            )
+        if not runtime_settings.get("allow_browser_downloads", False):
+            events.append(
+                {
+                    "event_kind": "security.browser_downloads.disabled",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                }
+            )
+        if not runtime_settings.get("allow_new_browser_windows", True):
+            events.append(
+                {
+                    "event_kind": "security.browser_windows.disabled",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                }
+            )
+        if not runtime_settings.get("allow_external_programs", False):
+            events.append(
+                {
+                    "event_kind": "security.external_programs.disabled",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                }
+            )
+        if not runtime_settings.get("allow_local_network_access", False):
+            events.append(
+                {
+                    "event_kind": "security.local_network.disabled",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                }
+            )
+        if not runtime_settings.get("allow_remote_network_access", False):
+            events.append(
+                {
+                    "event_kind": "security.remote_network.disabled",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                }
+            )
+        if not runtime_settings.get("allow_python_execution", False):
+            events.append(
+                {
+                    "event_kind": "security.python_execution.disabled",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                }
+            )
+        if not runtime_settings.get("allow_js_injection", False):
+            events.append(
+                {
+                    "event_kind": "security.js_injection.disabled",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                }
+            )
+        if not runtime_settings.get("allow_js_evaluation", False):
+            events.append(
+                {
+                    "event_kind": "security.js_evaluation.disabled",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                }
+            )
+        return events
 
     def _get_graph_save_conflict_policy(self) -> str:
         graph_preferences = self._get_graph_preferences()

@@ -589,6 +589,7 @@ export interface ParameterFieldSchema {
 export interface PreferencesUpdateRequest {
   section: string
   values: Record<string, unknown>
+  confirm_high_risk?: boolean
 }
 
 export interface PreferencesResponse {

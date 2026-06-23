@@ -39,6 +39,7 @@ class RuntimeContext:
     workspace_root: Path | None = None
     embedded_resource_paths: dict[str, str] = field(default_factory=dict)
     allowed_path_roots: tuple[Path, ...] = field(default_factory=tuple)
+    runtime_settings: dict[str, Any] = field(default_factory=dict)
 
     def close(self) -> None:
         browser_context = self.browser_runtime.get("browser_context")
@@ -208,20 +209,23 @@ class RuntimeExecutorRegistry:
 
     def _execute_http_request(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
-        if not self._is_local_network_access_allowed():
-            return _failed_result(
-                node,
-                "http.local_network_disabled",
-                "local network access is disabled",
-            )
         method = str(_resolve_value(node_config.get("method", "GET"), context)).upper()
         url = _resolve_value(node_config.get("url"), context)
         if not isinstance(url, str) or not url.strip():
             return _failed_result(node, "http.url_required", "http.request requires node_config.url")
         try:
-            normalized_url = _validate_http_request_url(url.strip())
+            normalized_url = _validate_http_request_url(
+                url.strip(),
+                allow_local_network_access=self._is_local_network_access_allowed(),
+                allow_remote_network_access=self._is_remote_network_access_allowed(),
+            )
         except ValueError as exc:
-            return _failed_result(node, "http.url_blocked", str(exc))
+            message = str(exc)
+            if "local network access is disabled" in message:
+                return _failed_result(node, "http.local_network_disabled", message)
+            if "remote network access is disabled" in message:
+                return _failed_result(node, "http.remote_network_disabled", message)
+            return _failed_result(node, "http.url_blocked", message)
 
         headers = _resolve_value(node_config.get("headers", {}), context)
         if not isinstance(headers, dict):
@@ -362,6 +366,8 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_set_input_files(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        if not self._is_browser_uploads_allowed():
+            return _failed_result(node, "browser.upload_disabled", "browser uploads are disabled")
         selector = _resolve_value(node_config.get("selector"), context)
         path_value = _resolve_value(node_config.get("path"), context)
         if not isinstance(selector, str) or not selector.strip():
@@ -542,6 +548,8 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_screenshot(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        if not self._is_browser_screenshots_allowed():
+            return _failed_result(node, "browser.screenshot_disabled", "browser screenshots are disabled")
         path_value = _resolve_value(node_config.get("path"), context)
         if not isinstance(path_value, str) or not path_value.strip():
             return _failed_result(node, "browser.screenshot_path_required", "screenshot path is required")
@@ -559,6 +567,8 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_inject_js(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        if not self._is_js_injection_allowed():
+            return _failed_result(node, "browser.js_injection_disabled", "JavaScript injection is disabled")
         script = _resolve_value(node_config.get("script") or node_config.get("code"), context)
         if not isinstance(script, str) or not script.strip():
             return _failed_result(node, "browser.script_required", "JavaScript script is required")
@@ -574,6 +584,8 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_run_js(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        if not self._is_js_evaluation_allowed():
+            return _failed_result(node, "browser.js_evaluation_disabled", "JavaScript evaluation is disabled")
         script = _resolve_value(node_config.get("script") or node_config.get("code"), context)
         if not isinstance(script, str) or not script.strip():
             return _failed_result(node, "browser.script_required", "JavaScript script is required")
@@ -773,6 +785,12 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_get_cookie(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        if not self._is_cookie_manipulation_allowed():
+            return _failed_result(
+                node,
+                "browser.cookie_manipulation_disabled",
+                "cookie manipulation is disabled",
+            )
         name = _resolve_value(node_config.get("name"), context)
         if not isinstance(name, str) or not name.strip():
             return _failed_result(node, "browser.cookie_name_required", "cookie name is required")
@@ -797,6 +815,12 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_set_cookie(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        if not self._is_cookie_manipulation_allowed():
+            return _failed_result(
+                node,
+                "browser.cookie_manipulation_disabled",
+                "cookie manipulation is disabled",
+            )
         name = _resolve_value(node_config.get("name"), context)
         if not isinstance(name, str) or not name.strip():
             return _failed_result(node, "browser.cookie_name_required", "cookie name is required")
@@ -832,6 +856,12 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_delete_cookie(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        if not self._is_cookie_manipulation_allowed():
+            return _failed_result(
+                node,
+                "browser.cookie_manipulation_disabled",
+                "cookie manipulation is disabled",
+            )
         name = _resolve_value(node_config.get("name"), context)
         if not isinstance(name, str) or not name.strip():
             return _failed_result(node, "browser.cookie_name_required", "cookie name is required")
@@ -856,6 +886,12 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_list_cookies(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        if not self._is_cookie_manipulation_allowed():
+            return _failed_result(
+                node,
+                "browser.cookie_manipulation_disabled",
+                "cookie manipulation is disabled",
+            )
         cookies = _require_browser_page(context).context.cookies()
         _store_optional_variable(node_config, context, cookies)
         return {
@@ -960,6 +996,8 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_element_screenshot(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        if not self._is_browser_screenshots_allowed():
+            return _failed_result(node, "browser.screenshot_disabled", "browser screenshots are disabled")
         selector = _require_selector(node, context)
         if isinstance(selector, dict):
             return selector
@@ -973,6 +1011,8 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_open_tab(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        if not self._is_new_browser_windows_allowed():
+            return _failed_result(node, "browser.new_window_disabled", "new browser windows are disabled")
         url = _resolve_value(node_config.get("url"), context)
         if not isinstance(url, str) or not url.strip():
             return _failed_result(node, "browser.url_required", "browser.open_tab requires node_config.url")
@@ -1027,6 +1067,8 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_download_file(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        if not self._is_browser_downloads_allowed():
+            return _failed_result(node, "browser.download_disabled", "browser downloads are disabled")
         url = _resolve_value(node_config.get("url"), context)
         if not isinstance(url, str) or not url.strip():
             return _failed_result(node, "browser.url_required", "browser.download_file requires node_config.url")
@@ -1041,6 +1083,8 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_wait_for_download(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        if not self._is_browser_downloads_allowed():
+            return _failed_result(node, "browser.download_disabled", "browser downloads are disabled")
         timeout_ms = _resolve_int(_resolve_value(node_config.get("timeout"), context), default=10000)
         record = _wait_for_record(
             context.browser_runtime.setdefault("download_records", []),
@@ -2247,13 +2291,40 @@ class RuntimeExecutorRegistry:
         return bool(self._runtime_settings.get("allow_file_access", True))
 
     def _is_python_execution_allowed(self) -> bool:
-        return bool(self._runtime_settings.get("allow_external_programs", False))
+        return bool(self._runtime_settings.get("allow_python_execution", False))
 
     def _is_browser_executor_allowed(self) -> bool:
         return bool(self._runtime_settings.get("allow_browser_executor", False))
 
     def _is_local_network_access_allowed(self) -> bool:
         return bool(self._runtime_settings.get("allow_local_network_access", False))
+
+    def _is_remote_network_access_allowed(self) -> bool:
+        return bool(self._runtime_settings.get("allow_remote_network_access", False))
+
+    def _is_browser_screenshots_allowed(self) -> bool:
+        return bool(self._runtime_settings.get("allow_browser_screenshots", True))
+
+    def _is_cookie_manipulation_allowed(self) -> bool:
+        return bool(self._runtime_settings.get("allow_cookie_manipulation", True))
+
+    def _is_browser_storage_manipulation_allowed(self) -> bool:
+        return bool(self._runtime_settings.get("allow_browser_storage_manipulation", True))
+
+    def _is_browser_uploads_allowed(self) -> bool:
+        return bool(self._runtime_settings.get("allow_browser_uploads", True))
+
+    def _is_browser_downloads_allowed(self) -> bool:
+        return bool(self._runtime_settings.get("allow_browser_downloads", False))
+
+    def _is_new_browser_windows_allowed(self) -> bool:
+        return bool(self._runtime_settings.get("allow_new_browser_windows", True))
+
+    def _is_js_injection_allowed(self) -> bool:
+        return bool(self._runtime_settings.get("allow_js_injection", False))
+
+    def _is_js_evaluation_allowed(self) -> bool:
+        return bool(self._runtime_settings.get("allow_js_evaluation", False))
 
     def _should_capture_stdout_stderr(self) -> bool:
         return bool(self._runtime_settings.get("capture_stdout_stderr", True))
@@ -2482,7 +2553,7 @@ class RuntimeExecutorRegistry:
                 "error_code": "component.graph_invalid",
                 "message": "component graph is invalid",
             }
-        context = RuntimeContext()
+        context = RuntimeContext(runtime_settings=dict(self._runtime_settings))
         context.variables.update(inputs or {})
         node_lookup = {node.get("node_id"): node for node in graph_nodes if isinstance(node, dict)}
         if len(node_lookup) != len(graph_nodes):
@@ -2875,7 +2946,12 @@ def _validate_python_run_code(code: str) -> None:
             raise PythonCodeRejected(f"access to name is not allowed: {node.id}")
 
 
-def _validate_http_request_url(url: str) -> str:
+def _validate_http_request_url(
+    url: str,
+    *,
+    allow_local_network_access: bool,
+    allow_remote_network_access: bool,
+) -> str:
     try:
         parsed = urllib.parse.urlparse(url)
     except ValueError as exc:
@@ -2886,14 +2962,27 @@ def _validate_http_request_url(url: str) -> str:
     hostname = parsed.hostname
     if not hostname:
         raise ValueError("http.request blocked url without hostname")
-    _validate_http_request_host(hostname)
+    _validate_http_request_host(
+        hostname,
+        allow_local_network_access=allow_local_network_access,
+        allow_remote_network_access=allow_remote_network_access,
+    )
     return url
 
 
-def _validate_http_request_host(hostname: str) -> None:
+def _validate_http_request_host(
+    hostname: str,
+    *,
+    allow_local_network_access: bool,
+    allow_remote_network_access: bool,
+) -> None:
     try:
         ip = ipaddress.ip_address(hostname)
-        _validate_http_request_ip(ip)
+        _validate_http_request_ip(
+            ip,
+            allow_local_network_access=allow_local_network_access,
+            allow_remote_network_access=allow_remote_network_access,
+        )
         return
     except ValueError:
         pass
@@ -2910,12 +2999,27 @@ def _validate_http_request_host(hostname: str) -> None:
             ip = ipaddress.ip_address(address_text)
         except ValueError:
             continue
-        _validate_http_request_ip(ip)
+        _validate_http_request_ip(
+            ip,
+            allow_local_network_access=allow_local_network_access,
+            allow_remote_network_access=allow_remote_network_access,
+        )
 
 
-def _validate_http_request_ip(ip: ipaddress._BaseAddress) -> None:
+def _validate_http_request_ip(
+    ip: ipaddress._BaseAddress,
+    *,
+    allow_local_network_access: bool,
+    allow_remote_network_access: bool,
+) -> None:
     if ip in _HTTP_METADATA_BLOCKED_IPS:
         raise ValueError(f"http.request blocked metadata address: {ip}")
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        if not allow_local_network_access:
+            raise ValueError(f"local network access is disabled for address: {ip}")
+        return
+    if not allow_remote_network_access:
+        raise ValueError(f"remote network access is disabled for address: {ip}")
 
 
 def _resolve_value(value: Any, context: RuntimeContext) -> Any:
@@ -3246,6 +3350,8 @@ def _resolve_runtime_path(path_value: str, context: RuntimeContext) -> Path:
         if embedded_match is not None:
             return Path(embedded_match).expanduser().resolve()
     path = Path(path_value).expanduser()
+    if context.runtime_settings.get("file_access_require_absolute_path", False) and not path.is_absolute():
+        raise ValueError(f"file path must be absolute: {path_value}")
     if path.is_absolute():
         resolved = path.resolve()
         _validate_path_within_allowed_roots(resolved, context)
@@ -3283,7 +3389,44 @@ def _resolve_allowed_path_roots(context: RuntimeContext) -> tuple[Path, ...]:
 
 
 def _validate_path_within_allowed_roots(path: Path, context: RuntimeContext) -> None:
+    file_access_scope = context.runtime_settings.get("file_access_scope", "restricted")
     resolved_path = path.resolve()
+    blocked_roots = [
+        Path(item).expanduser().resolve()
+        for item in context.runtime_settings.get("file_access_blocked_roots", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    for root in blocked_roots:
+        try:
+            resolved_path.relative_to(root)
+            raise ValueError(
+                "file path is inside blocked directory: "
+                f"{resolved_path}; blocked roots: {[str(item) for item in blocked_roots]}"
+            )
+        except ValueError as exc:
+            if str(exc).startswith("file path is inside blocked directory:"):
+                raise
+            continue
+    suffix = path.suffix.strip().lower()
+    blocked_extensions = {
+        str(item).strip().lower()
+        for item in context.runtime_settings.get("file_access_blocked_extensions", [])
+        if isinstance(item, str) and str(item).strip()
+    }
+    if suffix and suffix in blocked_extensions:
+        raise ValueError(f"file path uses blocked extension: {suffix}")
+    allowed_extensions = [
+        str(item).strip().lower()
+        for item in context.runtime_settings.get("file_access_allowed_extensions", [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+    if allowed_extensions and suffix not in allowed_extensions:
+        raise ValueError(
+            "file path extension is not allowed: "
+            f"{suffix or '<none>'}; allowed extensions: {allowed_extensions}"
+        )
+    if file_access_scope == "allow_all":
+        return
     allowed_roots = _resolve_allowed_path_roots(context)
     for root in allowed_roots:
         try:

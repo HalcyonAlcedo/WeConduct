@@ -270,6 +270,7 @@ export function fetchNodeDraft(params: { resource_key: string; node_id?: string;
 // ===== Preferences =====
 export function fetchPreferences(): Promise<PreferencesResponse> { return request<PreferencesResponse>('/workbench/preferences') }
 export function postPreferences(body: PreferencesUpdateRequest): Promise<PreferencesResponse> { return request<PreferencesResponse>('/workbench/preferences', { method: 'POST', body: JSON.stringify(body) }) }
+export function postPreferencesPreview(body: { section: string; values: Record<string, unknown> }): Promise<{ section: string; current_values: Record<string, unknown>; proposed_values: Record<string, unknown>; confirmation_required: boolean; high_risk_changes: { field: string; from: unknown; to: unknown; reason: string }[] }> { return request('/workbench/preferences/preview', { method: 'POST', body: JSON.stringify(body) }) }
 export function postPreferencesReset(): Promise<PreferencesResponse> { return request<PreferencesResponse>('/workbench/preferences/reset', { method: 'POST', body: '{}' }) }
 
 // ===== P13-B: WebControl Converter =====
