@@ -60,7 +60,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
-CURRENT_API_VERSION = "0.6.1"
+CURRENT_API_VERSION = "0.6.2"
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
@@ -95,6 +95,15 @@ MAX_RUNTIME_SESSION_HISTORY = 20
 MAX_DEBUG_SESSION_HISTORY = 20
 MAX_RUNTIME_EXECUTION_STEPS = 1000
 MAX_COMPONENT_CALL_DEPTH = 8
+GRAPH_COMPATIBILITY_BASELINE_VERSION = "0.5.2"
+GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION = "0.6.2"
+GRAPH_DATA_UPGRADERS = [
+    {
+        "from_version": GRAPH_COMPATIBILITY_BASELINE_VERSION,
+        "to_version": GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION,
+        "upgrader_id": "p18d-baseline-052-to-061",
+    }
+]
 SOURCE_TEMPLATES = {
     "graph_workspace": {
         "entry_document": "graph:workspace",
@@ -197,9 +206,14 @@ class CompilationWorkbenchService:
         self._allow_dirty_workspace_recovery_conversion = True
         loaded_state = self._state_store.load()
         state, changed = self._normalize_workspace_state(loaded_state)
+        state, restored_pending_graph_upgrade = self._restore_startup_pending_graph_upgrade(state)
+        if restored_pending_graph_upgrade:
+            changed = True
         if changed:
             state = self._state_store.mutate(
-                lambda current: self._normalize_workspace_state(current)[0]
+                lambda current: self._restore_startup_pending_graph_upgrade(
+                    self._normalize_workspace_state(current)[0]
+                )[0]
             )
         self._state = state
         self._allow_dirty_workspace_recovery_conversion = False
@@ -264,6 +278,9 @@ class CompilationWorkbenchService:
     def get_project_settings_document(self) -> dict:
         self._refresh_state_from_store()
         project_runtime = self._get_project_runtime()
+        graph_compatibility = self._normalize_graph_compatibility_metadata(
+            self._get_graph_document_model()
+        )
         project_file_path = project_runtime.get("project_file_path")
         project_settings_path = None
         project_settings_exists = False
@@ -283,6 +300,7 @@ class CompilationWorkbenchService:
                     str(project_settings_path.resolve()) if project_settings_path is not None else None
                 ),
                 "is_dirty": project_runtime.get("is_dirty", False),
+                "main_graph_compatibility": deepcopy(graph_compatibility),
             },
         }
 
@@ -1279,6 +1297,7 @@ class CompilationWorkbenchService:
         self._refresh_state_from_store()
         resolved_path = self._resolve_project_path(project_path)
         project_document = self._read_project_file(resolved_path)
+        pending_graph_upgrade = self._collect_project_pending_graph_upgrade(project_document)
 
         def mutation(state: dict | None) -> dict:
             recent_projects = self._extract_recent_projects(state)
@@ -1296,6 +1315,7 @@ class CompilationWorkbenchService:
             current_state["editor_history"] = project_document["editor_history"]
             current_state["execution_history"] = project_document["execution_history"]
             current_state["project_settings"] = project_document["project_settings"]
+            current_state["pending_graph_upgrade"] = pending_graph_upgrade
             current_state["recent_projects"] = self._upsert_recent_project_record(
                 recent_projects,
                 project_name=current_state["project"]["project_name"],
@@ -1433,6 +1453,102 @@ class CompilationWorkbenchService:
             "status": "discarded",
             "project": self._build_project_metadata(),
             "graph_document": graph_model,
+        }
+
+    def apply_pending_graph_upgrade(self, *, decision: str) -> dict:
+        self._refresh_state_from_store()
+        normalized_decision = decision.strip() if isinstance(decision, str) else ""
+        if normalized_decision not in {"upgrade_and_load", "force_load"}:
+            raise ValueError("field must be one of: upgrade_and_load, force_load")
+        pending_graph_upgrade = self._extract_pending_graph_upgrade(self._state)
+        if pending_graph_upgrade is None:
+            raise ValueError("pending graph upgrade was not found")
+        if normalized_decision == "force_load":
+            def mutation(state: dict | None) -> dict:
+                current_state, _ = self._normalize_workspace_state(state)
+                current_state["pending_graph_upgrade"] = None
+                return current_state
+
+            self._state = self._state_store.mutate(mutation)
+            graph_model = self._get_graph_document_model()
+            return {
+                "status": "force_loaded",
+                "project": self._build_project_metadata(),
+                "graph_document": graph_model,
+            }
+
+        pending_documents = pending_graph_upgrade.get("documents", [])
+        main_graph_item = next(
+            (
+                item
+                for item in pending_documents
+                if isinstance(item, dict) and item.get("document_role") == "main_graph"
+            ),
+            pending_documents[0] if pending_documents else None,
+        )
+        upgraded_main_graph = self._upgrade_graph_model_to_current_data_version(
+            self._resolve_pending_graph_upgrade_document_model(
+                document_id=(
+                    main_graph_item.get("document_id")
+                    if isinstance(main_graph_item, dict)
+                    else None
+                ),
+                document_role=(
+                    main_graph_item.get("document_role")
+                    if isinstance(main_graph_item, dict)
+                    else None
+                ),
+            )
+        )
+        self._persist_graph_document(upgraded_main_graph)
+        current_main_graph_document_id = upgraded_main_graph.graph_model_id
+        for item in pending_documents:
+            document_id = item.get("document_id")
+            if (
+                not isinstance(document_id, str)
+                or document_id == "graph:workspace"
+                or document_id == current_main_graph_document_id
+            ):
+                continue
+            graph_model = self._resolve_pending_graph_upgrade_document_model(
+                document_id=document_id,
+                document_role=item.get("document_role"),
+            )
+            upgraded_graph = self._upgrade_graph_model_to_current_data_version(graph_model)
+            self._save_custom_node_graph_document(document_id=document_id, graph_model=upgraded_graph)
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            current_state["pending_graph_upgrade"] = None
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        graph_model = self._get_graph_document_model()
+        return {
+            "status": "upgraded",
+            "project": self._build_project_metadata(),
+            "graph_document": graph_model,
+        }
+
+    def recheck_pending_graph_upgrade(self) -> dict:
+        self._refresh_state_from_store()
+        project_file_path = self._extract_project_runtime(self._state).get("project_file_path")
+        if not isinstance(project_file_path, str) or not project_file_path.strip():
+            raise ProjectRequiresSaveAsError()
+        resolved_project_path = self._resolve_project_path(project_file_path)
+        project_document = self._read_project_file(resolved_project_path)
+        pending_graph_upgrade = self._collect_project_pending_graph_upgrade(project_document)
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            current_state["pending_graph_upgrade"] = pending_graph_upgrade
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        return {
+            "status": "rechecked",
+            "project": self._build_project_metadata(),
+            "pending_graph_upgrade": self._build_pending_graph_upgrade_metadata(),
         }
 
     def save_user_component_resource(
@@ -7248,6 +7364,7 @@ class CompilationWorkbenchService:
                 "diagnostics": [],
             },
             "pending_recovery": None,
+            "pending_graph_upgrade": None,
         }
 
     def _build_workbench_metadata(self) -> dict:
@@ -7284,6 +7401,7 @@ class CompilationWorkbenchService:
             ),
             "is_dirty": project_runtime["is_dirty"],
             "pending_recovery": self._build_pending_recovery_metadata(),
+            "pending_graph_upgrade": self._build_pending_graph_upgrade_metadata(),
             "recent_project_count": len(recent_projects),
             "recent_projects": recent_projects,
             "has_persisted_workspace_state": self._has_persisted_workspace_state(),
@@ -7305,6 +7423,9 @@ class CompilationWorkbenchService:
 
     def _build_project_settings_snapshot_summary(self) -> dict:
         project_settings = self._extract_project_settings(self._state)
+        graph_compatibility = self._normalize_graph_compatibility_metadata(
+            self._get_graph_document_model()
+        )
         raw_project = self._state.get("project")
         if not isinstance(raw_project, dict):
             raw_project = self._build_initial_workspace_state()["project"]
@@ -7340,6 +7461,7 @@ class CompilationWorkbenchService:
             "project_settings_schema_version": project_settings.get(
                 "project_settings_schema_version", PROJECT_SETTINGS_SCHEMA_VERSION
             ),
+            "main_graph_compatibility": deepcopy(graph_compatibility),
             "has_external_resources": bool(external_resources) if isinstance(external_resources, list) else False,
             "embedded_resource_count": len(embedded_resources) if isinstance(embedded_resources, list) else 0,
             "external_resource_count": len(external_resources) if isinstance(external_resources, list) else 0,
@@ -10188,6 +10310,10 @@ class CompilationWorkbenchService:
         if normalized_pending_recovery != state.get("pending_recovery"):
             state["pending_recovery"] = normalized_pending_recovery
             changed = True
+        normalized_pending_graph_upgrade = self._extract_pending_graph_upgrade(state)
+        if normalized_pending_graph_upgrade != state.get("pending_graph_upgrade"):
+            state["pending_graph_upgrade"] = normalized_pending_graph_upgrade
+            changed = True
         if (
             isinstance(self._state_store, FileWorkspaceStateStore)
             and self._allow_dirty_workspace_recovery_conversion
@@ -10200,6 +10326,27 @@ class CompilationWorkbenchService:
         if self._normalize_compile_records_in_state(state):
             changed = True
         return state, changed
+
+    def _restore_startup_pending_graph_upgrade(self, state: dict) -> tuple[dict, bool]:
+        if self._extract_pending_graph_upgrade(state) is not None:
+            return state, False
+        project_runtime = self._extract_project_runtime(state)
+        project_file_path = project_runtime.get("project_file_path")
+        if not isinstance(project_file_path, str) or not project_file_path.strip():
+            return state, False
+        resolved_project_path = Path(project_file_path).resolve()
+        if not resolved_project_path.exists():
+            return state, False
+        try:
+            project_document = self._read_project_file(resolved_project_path)
+        except (OSError, ValueError, ValidationError):
+            return state, False
+        pending_graph_upgrade = self._collect_project_pending_graph_upgrade(project_document)
+        if pending_graph_upgrade is None:
+            return state, False
+        next_state = deepcopy(state)
+        next_state["pending_graph_upgrade"] = pending_graph_upgrade
+        return next_state, True
 
     def _extract_workbench_metadata(self, state: dict | None) -> dict:
         initial_workbench = self._build_initial_workspace_state()["workbench"]
@@ -10623,6 +10770,50 @@ class CompilationWorkbenchService:
             "workspace_state": deepcopy(workspace_state),
         }
 
+    def _extract_pending_graph_upgrade(self, state: dict | None) -> dict | None:
+        raw_pending = state.get("pending_graph_upgrade") if isinstance(state, dict) else None
+        if not isinstance(raw_pending, dict):
+            return None
+        status = raw_pending.get("status")
+        if not isinstance(status, str) or not status.strip():
+            return None
+        documents = raw_pending.get("documents")
+        if not isinstance(documents, list) or not documents:
+            return None
+        normalized_documents: list[dict] = []
+        for item in documents:
+            if not isinstance(item, dict):
+                continue
+            document_id = item.get("document_id")
+            compatibility = item.get("compatibility")
+            if not isinstance(document_id, str) or not document_id.strip():
+                continue
+            if not isinstance(compatibility, dict):
+                continue
+            normalized_documents.append(
+                {
+                    "document_id": document_id.strip(),
+                    "document_role": (
+                        item.get("document_role").strip()
+                        if isinstance(item.get("document_role"), str) and item.get("document_role").strip()
+                        else "graph_document"
+                    ),
+                    "display_name": (
+                        item.get("display_name").strip()
+                        if isinstance(item.get("display_name"), str) and item.get("display_name").strip()
+                        else document_id.strip()
+                    ),
+                    "compatibility": deepcopy(compatibility),
+                }
+            )
+        if not normalized_documents:
+            return None
+        return {
+            "status": status.strip(),
+            "document_id": normalized_documents[0]["document_id"],
+            "documents": normalized_documents,
+        }
+
     def _convert_dirty_workspace_state_to_pending_recovery(self, state: dict) -> dict:
         current_state, _ = self._normalize_workspace_state_without_recovery_conversion(
             deepcopy(state)
@@ -10721,6 +10912,10 @@ class CompilationWorkbenchService:
         if normalized_pending_recovery != state.get("pending_recovery"):
             state["pending_recovery"] = normalized_pending_recovery
             changed = True
+        normalized_pending_graph_upgrade = self._extract_pending_graph_upgrade(state)
+        if normalized_pending_graph_upgrade != state.get("pending_graph_upgrade"):
+            state["pending_graph_upgrade"] = normalized_pending_graph_upgrade
+            changed = True
         if self._normalize_compile_records_in_state(state):
             changed = True
         return state, changed
@@ -10741,6 +10936,18 @@ class CompilationWorkbenchService:
             "edge_count": len(graph_model.edges),
             "graph_document_save_revision": graph_document_meta.get("save_revision", 0),
             "graph_document_saved_at": graph_document_meta.get("saved_at"),
+        }
+
+    def _build_pending_graph_upgrade_metadata(self) -> dict | None:
+        pending_graph_upgrade = self._extract_pending_graph_upgrade(self._state)
+        if pending_graph_upgrade is None:
+            return None
+        documents = deepcopy(pending_graph_upgrade["documents"])
+        return {
+            "status": pending_graph_upgrade["status"],
+            "document_id": pending_graph_upgrade["document_id"],
+            "documents": documents,
+            "compatibility": deepcopy(documents[0]["compatibility"]),
         }
 
     def _get_recent_projects(self) -> list[dict]:
@@ -11566,7 +11773,12 @@ class CompilationWorkbenchService:
         return None
 
     def _resolve_graph_document_by_document_id(self, document_id: str | None) -> GraphModel:
-        if document_id is None or document_id == "graph:workspace":
+        current_main_graph_document_id = self._get_graph_document_model().graph_model_id
+        if (
+            document_id is None
+            or document_id == "graph:workspace"
+            or document_id == current_main_graph_document_id
+        ):
             return self._get_graph_document_model()
         resource_id = self._parse_custom_node_graph_document_id(document_id)
         if resource_id is None:
@@ -11580,6 +11792,229 @@ class CompilationWorkbenchService:
         graph_document_payload = deepcopy(source_graph_document)
         graph_document_payload["graph_model_id"] = document_id
         return GraphModel.model_validate(graph_document_payload)
+
+    def _resolve_pending_graph_upgrade_document_model(
+        self,
+        *,
+        document_id: str | None,
+        document_role: str | None,
+    ) -> GraphModel:
+        current_graph_model = self._get_graph_document_model()
+        if (
+            document_id is None
+            or document_id == "graph:workspace"
+            or document_id == current_graph_model.graph_model_id
+        ):
+            return current_graph_model
+        if document_role == "main_graph":
+            pending_recovery = self._extract_pending_recovery(self._state)
+            if pending_recovery is not None:
+                workspace_state = pending_recovery.get("workspace_state")
+                if isinstance(workspace_state, dict):
+                    pending_graph_payload = workspace_state.get("graph_document")
+                    if isinstance(pending_graph_payload, dict):
+                        pending_graph_model = GraphModel.model_validate(pending_graph_payload)
+                        if pending_graph_model.graph_model_id == document_id:
+                            return pending_graph_model
+            project_file_path = self._extract_project_runtime(self._state).get("project_file_path")
+            if isinstance(project_file_path, str) and project_file_path.strip():
+                try:
+                    project_document = self._read_project_file(
+                        self._resolve_project_path(project_file_path)
+                    )
+                except (OSError, ValueError, ValidationError):
+                    project_document = None
+                if isinstance(project_document, dict):
+                    project_graph_payload = project_document.get("graph_document")
+                    if isinstance(project_graph_payload, dict):
+                        project_graph_model = GraphModel.model_validate(project_graph_payload)
+                        if project_graph_model.graph_model_id == document_id:
+                            return project_graph_model
+        return self._resolve_graph_document_by_document_id(document_id)
+
+    def _normalize_graph_compatibility_metadata(self, graph_model: GraphModel) -> dict:
+        root_metadata = graph_model.root_metadata if isinstance(graph_model.root_metadata, dict) else {}
+        compatibility = (
+            root_metadata.get("graph_compatibility")
+            if isinstance(root_metadata.get("graph_compatibility"), dict)
+            else {}
+        )
+        graph_data_version = compatibility.get("graph_data_version")
+        if not isinstance(graph_data_version, str) or not graph_data_version.strip():
+            graph_data_version = GRAPH_COMPATIBILITY_BASELINE_VERSION
+        built_with_app_version = compatibility.get("built_with_app_version")
+        if not isinstance(built_with_app_version, str) or not built_with_app_version.strip():
+            built_with_app_version = graph_data_version
+        minimum_loader_app_version = compatibility.get("minimum_loader_app_version")
+        if not isinstance(minimum_loader_app_version, str) or not minimum_loader_app_version.strip():
+            minimum_loader_app_version = graph_data_version
+        last_upgraded_by_app_version = compatibility.get("last_upgraded_by_app_version")
+        if not isinstance(last_upgraded_by_app_version, str) or not last_upgraded_by_app_version.strip():
+            last_upgraded_by_app_version = built_with_app_version
+        upgrade_history = compatibility.get("upgrade_history")
+        if not isinstance(upgrade_history, list):
+            upgrade_history = []
+        return {
+            "graph_data_version": graph_data_version.strip(),
+            "built_with_app_version": built_with_app_version.strip(),
+            "minimum_loader_app_version": minimum_loader_app_version.strip(),
+            "last_upgraded_by_app_version": last_upgraded_by_app_version.strip(),
+            "upgrade_history": deepcopy(upgrade_history),
+            "is_legacy_unversioned": "graph_compatibility" not in root_metadata,
+        }
+
+    def _evaluate_graph_document_compatibility(
+        self,
+        *,
+        graph_model: GraphModel,
+        document_id: str,
+        document_role: str,
+        display_name: str,
+    ) -> dict:
+        compatibility = self._normalize_graph_compatibility_metadata(graph_model)
+        current_app_version = CURRENT_API_VERSION
+        graph_data_version = compatibility["graph_data_version"]
+        minimum_loader_app_version = compatibility["minimum_loader_app_version"]
+        if self._compare_version_strings(current_app_version, minimum_loader_app_version) < 0:
+            status = "loader_older_than_graph"
+        elif self._compare_version_strings(current_app_version, graph_data_version) > 0:
+            status = "upgrade_available"
+        else:
+            status = "ok"
+        return {
+            "document_id": document_id,
+            "document_role": document_role,
+            "display_name": display_name,
+            "compatibility": {
+                "status": status,
+                "graph_data_version": graph_data_version,
+                "current_app_version": current_app_version,
+                "minimum_loader_app_version": minimum_loader_app_version,
+                "built_with_app_version": compatibility["built_with_app_version"],
+                "last_upgraded_by_app_version": compatibility["last_upgraded_by_app_version"],
+                "upgrade_history": compatibility["upgrade_history"],
+                "is_legacy_unversioned": compatibility["is_legacy_unversioned"],
+                "available_upgrade_path": (
+                    self._build_graph_upgrade_path(graph_data_version)
+                    if status == "upgrade_available"
+                    else []
+                ),
+            },
+        }
+
+    def _collect_project_pending_graph_upgrade(self, project_document: dict) -> dict | None:
+        documents: list[dict] = []
+        main_graph = GraphModel.model_validate(project_document["graph_document"])
+        documents.append(
+            self._evaluate_graph_document_compatibility(
+                graph_model=main_graph,
+                document_id=main_graph.graph_model_id,
+                document_role="main_graph",
+                display_name=project_document["project"].get("project_name", main_graph.graph_model_id),
+            )
+        )
+        for resource in project_document.get("resource_registry", []):
+            if not isinstance(resource, dict) or resource.get("resource_type") != "custom_node_graph":
+                continue
+            source_graph_document = resource.get("source_graph_document")
+            if not isinstance(source_graph_document, dict):
+                continue
+            document_id = (
+                resource.get("source_graph_document_id")
+                if isinstance(resource.get("source_graph_document_id"), str)
+                and resource.get("source_graph_document_id").strip()
+                else self._build_custom_node_graph_document_id(resource["resource_id"])
+            )
+            graph_payload = deepcopy(source_graph_document)
+            graph_payload["graph_model_id"] = document_id
+            documents.append(
+                self._evaluate_graph_document_compatibility(
+                    graph_model=GraphModel.model_validate(graph_payload),
+                    document_id=document_id,
+                    document_role="custom_node_graph",
+                    display_name=(
+                        resource.get("display_name")
+                        if isinstance(resource.get("display_name"), str) and resource.get("display_name").strip()
+                        else document_id
+                    ),
+                )
+            )
+        pending_documents = [
+            item
+            for item in documents
+            if item["compatibility"]["status"] in {"upgrade_available", "loader_older_than_graph"}
+        ]
+        if not pending_documents:
+            return None
+        dominant_status = (
+            "loader_older_than_graph"
+            if any(item["compatibility"]["status"] == "loader_older_than_graph" for item in pending_documents)
+            else "upgrade_available"
+        )
+        return {
+            "status": dominant_status,
+            "document_id": pending_documents[0]["document_id"],
+            "documents": pending_documents,
+        }
+
+    def _upgrade_graph_model_to_current_data_version(self, graph_model: GraphModel) -> GraphModel:
+        payload = graph_model.model_dump(mode="python")
+        root_metadata = payload.get("root_metadata")
+        if not isinstance(root_metadata, dict):
+            root_metadata = {}
+        compatibility = self._normalize_graph_compatibility_metadata(graph_model)
+        upgrade_history = list(compatibility.get("upgrade_history", []))
+        previous_version = compatibility["graph_data_version"]
+        upgrade_path = self._build_graph_upgrade_path(previous_version)
+        if upgrade_path:
+            upgrade_history.append(
+                {
+                    "from_version": upgrade_path[0]["from_version"],
+                    "to_version": upgrade_path[-1]["to_version"],
+                    "upgrader_id": upgrade_path[-1]["upgrader_id"],
+                    "applied_by_app_version": CURRENT_API_VERSION,
+                    "applied_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        root_metadata["graph_compatibility"] = {
+            "graph_data_version": GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION,
+            "built_with_app_version": compatibility["built_with_app_version"],
+            "minimum_loader_app_version": GRAPH_COMPATIBILITY_BASELINE_VERSION,
+            "last_upgraded_by_app_version": CURRENT_API_VERSION,
+            "upgrade_history": upgrade_history,
+        }
+        payload["root_metadata"] = root_metadata
+        return GraphModel.model_validate(payload)
+
+    def _build_graph_upgrade_path(self, graph_data_version: str) -> list[dict]:
+        current_version = graph_data_version.strip() if isinstance(graph_data_version, str) else ""
+        if not current_version:
+            current_version = GRAPH_COMPATIBILITY_BASELINE_VERSION
+        path: list[dict] = []
+        visited_versions: set[str] = set()
+        while self._compare_version_strings(current_version, GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION) < 0:
+            if current_version in visited_versions:
+                break
+            visited_versions.add(current_version)
+            next_upgrader = next(
+                (
+                    {
+                        "from_version": item["from_version"],
+                        "to_version": item["to_version"],
+                        "upgrader_id": item["upgrader_id"],
+                    }
+                    for item in GRAPH_DATA_UPGRADERS
+                    if item["from_version"] == current_version
+                ),
+                None,
+            )
+            if next_upgrader is None:
+                break
+            path.append(next_upgrader)
+            current_version = next_upgrader["to_version"]
+        if self._compare_version_strings(current_version, GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION) != 0:
+            return []
+        return path
 
     def _build_custom_node_graph_documents(self) -> list[dict]:
         documents: list[dict] = []

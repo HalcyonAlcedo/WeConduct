@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed, watch } from 'vue'
 import { fetchProjectSettings, postProjectSettings, postRuntimeDefaults, postOpenPath } from '@/services/api'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useToastStore } from '@/stores/toastStore'
-import type { ProjectSettings } from '@/types/domains/api'
+import type { ProjectSettings, ProjectSettingsSnapshot } from '@/types/domains/api'
 
 const workspace = useWorkspaceStore()
 const toast = useToastStore()
@@ -44,7 +44,7 @@ async function save() { if (isWcrun.value) return; saveState.value = 'saving'; s
 
 async function saveRuntimeDefaults() { saveState.value = 'saving'; syncVars(); try { await postRuntimeDefaults({ runtime_defaults: settings.runtime_defaults }); saveState.value = 'saved'; await workspace.refreshSnapshot(); setTimeout(() => { if (saveState.value === 'saved') saveState.value = 'idle' }, 2000) } catch (e: any) { saveState.value = 'error'; toast.error('保存失败', e?.message) } }
 
-const st = computed(() => (workspace.snapshot?.project_settings || {}) as Record<string, unknown>)
+const st = computed(() => (workspace.snapshot?.project_settings || {}) as ProjectSettingsSnapshot)
 const isWcrun = computed(() => (st.value as any)?.source_of_truth === 'wcrun_package')
 const sectionReadonly = computed(() => isWcrun.value && active.value !== 'runtime')
 const sourceLabel = computed(() => isWcrun.value ? '📦 .wcrun 包 (只读)' : '📁 项目目录')
@@ -55,6 +55,7 @@ async function openProjectDir() { const dir = (st.value as any).project_file_pat
 const NAV = [{ key: 'identity', label: '项目信息' }, { key: 'runtime', label: '运行默认值' }, { key: 'packaging', label: '资源与打包' }, { key: 'compile', label: '编译规则' }, { key: 'status', label: '状态与诊断' }]
 
 onMounted(load)
+watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) load() })
 </script>
 <template>
   <div class="psp-root">
@@ -108,6 +109,11 @@ onMounted(load)
             <div><span>真值来源</span><code>{{ st.source_of_truth || '—' }}</code></div><div><span>状态来源</span><code>{{ st.state_source || '—' }}</code></div><div><span>Schema 版本</span><code>{{ st.project_settings_schema_version || '—' }}</code></div><div><span>是否 dirty</span><code>{{ st.is_dirty ? '是' : '否' }}</code></div>
             <div v-if="st.project_file_path"><span>项目文件</span><code class="psp-path">{{ st.project_file_path }}</code></div><div v-if="st.project_settings_path"><span>设置文件</span><code class="psp-path">{{ st.project_settings_path }}</code></div><div v-if="st.session_dir"><span>会话目录</span><code class="psp-path">{{ st.session_dir }}</code></div>
             <div><span>External 资源</span><code>{{ st.has_external_resources ? '是' : '否' }}</code></div><div><span>Embedded 资源数</span><code>{{ st.embedded_resource_count ?? '—' }}</code></div><div><span>External 资源数</span><code>{{ st.external_resource_count ?? '—' }}</code></div><div><span>默认输出名</span><code>{{ st.package_default_output_name || '—' }}</code></div>
+            <div v-if="st.main_graph_compatibility"><span>图数据版本</span><code>{{ st.main_graph_compatibility.graph_data_version || '—' }}</code></div>
+            <div v-if="st.main_graph_compatibility"><span>创建时版本</span><code>{{ st.main_graph_compatibility.built_with_app_version || '—' }}</code></div>
+            <div v-if="st.main_graph_compatibility"><span>最低加载版本</span><code>{{ st.main_graph_compatibility.minimum_loader_app_version || '—' }}</code></div>
+            <div v-if="st.main_graph_compatibility"><span>最近升级版本</span><code>{{ st.main_graph_compatibility.last_upgraded_by_app_version || '—' }}</code></div>
+            <div v-if="st.main_graph_compatibility"><span>历史无版本图</span><code>{{ st.main_graph_compatibility.is_legacy_unversioned ? '是' : '否' }}</code></div>
           </div>
         </template>
       </div>

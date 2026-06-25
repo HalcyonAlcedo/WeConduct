@@ -17,6 +17,7 @@ from weconduct.application.workspace_state_store import InMemoryWorkspaceStateSt
 from weconduct.application.workspace_state_store import FileWorkspaceStateStore
 from weconduct.builtin_components.registry import BUILTIN_COMPONENT_DEFINITIONS
 from weconduct.contracts import GraphEdge, GraphModel, GraphNode, GraphPort, GraphPosition
+from weconduct.contracts.graph import create_empty_graph_model
 from weconduct.packaging.msgpack_codec import packb, unpackb
 from weconduct.runtime.engine import (
     RuntimeContext,
@@ -362,7 +363,7 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert snapshot["entrypoints"]["graph_source_projection"] == "/api/workbench/graph/source-projection"
     assert snapshot["workbench"]["host_mode"] == "python_core"
-    assert snapshot["workbench"]["api_version"] == "0.6.1"
+    assert snapshot["workbench"]["api_version"] == "0.6.2"
     assert snapshot["compiler"]["available_source_kinds"] == [
         "graph_workspace",
         "native_flow",
@@ -661,6 +662,30 @@ def test_service_create_project_can_persist_into_selected_directory(tmp_path) ->
     assert current_snapshot["project"]["recent_projects"][0]["project_path"] == str(
         expected_project_path.resolve()
     )
+
+
+def test_service_create_project_seeds_current_graph_compatibility_metadata(tmp_path) -> None:
+    project_path = tmp_path / "fresh-project.weconduct.json"
+    service = CompilationWorkbenchService()
+
+    created = service.create_project(project_name="Fresh Project")
+    created_graph = created["graph_document"].model_dump(mode="json")
+    snapshot = service.get_workbench_snapshot()
+    saved = service.save_project_as(project_path=project_path)
+
+    reopened = CompilationWorkbenchService()
+    opened = reopened.open_project(project_path=project_path)
+
+    assert created["status"] == "created"
+    assert created_graph["root_metadata"]["graph_compatibility"]["graph_data_version"] == "0.6.2"
+    assert created_graph["root_metadata"]["graph_compatibility"]["built_with_app_version"] == "0.6.2"
+    assert (
+        created_graph["root_metadata"]["graph_compatibility"]["minimum_loader_app_version"] == "0.5.2"
+    )
+    assert snapshot["project_settings"]["main_graph_compatibility"]["graph_data_version"] == "0.6.2"
+    assert snapshot["project_settings"]["main_graph_compatibility"]["is_legacy_unversioned"] is False
+    assert saved["status"] == "saved"
+    assert opened["project"]["pending_graph_upgrade"] is None
 
 
 def test_service_recent_projects_respects_preferences_limit(tmp_path) -> None:
@@ -17134,7 +17159,7 @@ def test_runtime_health_exposes_host_session_capabilities_and_entrypoints() -> N
     assert health["status"] == "ok"
     assert health["service"] == "weconduct-api"
     assert health["host_mode"] == "python_core"
-    assert health["api_version"] == "0.6.1"
+    assert health["api_version"] == "0.6.2"
     assert health["workspace_state_version"] == 1
     assert health["workspace_session_id"].startswith("ws-")
     assert health["service_started_at"]
@@ -20807,12 +20832,420 @@ def test_service_normalizes_persisted_workbench_api_version_to_current_version(t
     health = service.get_runtime_health()
     persisted_state = json.loads(state_file.read_text(encoding="utf-8"))
 
-    assert health["api_version"] == "0.6.1"
-    assert persisted_state["workbench"]["api_version"] == "0.6.1"
-    assert persisted_state["workbench"]["workspace_session_id"] == "ws-old-version"
+    assert health["api_version"] == "0.6.2"
+    assert persisted_state["workbench"]["api_version"] == "0.6.2"
+
+
+def test_open_project_marks_legacy_graph_document_as_pending_upgrade(tmp_path) -> None:
+    project_path = tmp_path / "legacy-graph.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Legacy Graph Project")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "root_metadata": {},
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    service.save_project_as(project_path=project_path)
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    graph_path = project_path.parent / project_payload["project"]["main_graph_path"]
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["root_metadata"] = {
+        "graph_compatibility": {
+            "graph_data_version": "0.5.2",
+            "built_with_app_version": "0.5.2",
+            "minimum_loader_app_version": "0.5.2",
+            "last_upgraded_by_app_version": "0.5.2",
+            "upgrade_history": [],
+        }
+    }
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    opened = reopened.open_project(project_path=project_path)
+
+    assert opened["status"] == "opened"
+    assert opened["project"]["pending_graph_upgrade"] is not None
+    assert opened["project"]["pending_graph_upgrade"]["status"] == "upgrade_available"
+    assert opened["project"]["pending_graph_upgrade"]["document_id"] == "graph:workspace"
+    assert opened["project"]["pending_graph_upgrade"]["compatibility"]["graph_data_version"] == "0.5.2"
+    assert opened["project"]["pending_graph_upgrade"]["compatibility"]["current_app_version"] == "0.6.2"
     assert (
-        persisted_state["workbench"]["service_started_at"]
-        == "2026-06-21T16:35:59.104461+00:00"
+        opened["project"]["pending_graph_upgrade"]["compatibility"]["available_upgrade_path"][0]["upgrader_id"]
+        == "p18d-baseline-052-to-061"
+    )
+
+
+def test_open_project_marks_custom_node_graph_as_pending_upgrade(tmp_path) -> None:
+    project_path = tmp_path / "legacy-subgraph.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Legacy Subgraph Project")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Legacy Child Graph")
+    custom_document_id = f"custom_node_graph:{saved['resource']['resource_id']}"
+    service.save_graph_document(
+        {
+            "document_id": custom_document_id,
+            "graph_model_id": custom_document_id,
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "root_metadata": {},
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    service.save_project_as(project_path=project_path)
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    resources_index_path = project_path.parent / project_payload["project"]["project_resources_index_path"]
+    resources_index = json.loads(resources_index_path.read_text(encoding="utf-8"))
+    resource_ref = next(
+        item
+        for item in resources_index["resources"]
+        if item["resource_id"] == saved["resource"]["resource_id"]
+    )
+    graph_path = project_path.parent / resource_ref["graph_path"]
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["root_metadata"] = {}
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    opened = reopened.open_project(project_path=project_path)
+    pending = opened["project"]["pending_graph_upgrade"]
+
+    assert opened["status"] == "opened"
+    assert pending is not None
+    assert pending["status"] == "upgrade_available"
+    assert pending["documents"][0]["document_id"] == "graph:workspace"
+    assert any(item["document_id"] == custom_document_id for item in pending["documents"])
+
+
+def test_workbench_snapshot_exposes_pending_graph_upgrade_after_open_project(tmp_path) -> None:
+    project_path = tmp_path / "legacy-snapshot.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Legacy Snapshot Project")
+    service.save_project_as(project_path=project_path)
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    graph_path = project_path.parent / project_payload["project"]["main_graph_path"]
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["root_metadata"] = {}
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    reopened.open_project(project_path=project_path)
+    snapshot = reopened.get_workbench_snapshot()
+
+    assert snapshot["project"]["pending_graph_upgrade"] is not None
+    assert snapshot["project"]["pending_graph_upgrade"]["status"] == "upgrade_available"
+
+
+def test_apply_pending_graph_upgrade_upgrades_workspace_graph_metadata(tmp_path) -> None:
+    project_path = tmp_path / "upgrade-graph.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Upgrade Graph Project")
+    service.save_project_as(project_path=project_path)
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    graph_path = project_path.parent / project_payload["project"]["main_graph_path"]
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["root_metadata"] = {}
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    reopened.open_project(project_path=project_path)
+
+    result = reopened.apply_pending_graph_upgrade(decision="upgrade_and_load")
+    upgraded_graph = reopened.get_graph_document()["graph_model"].model_dump(mode="json")
+
+    assert result["status"] == "upgraded"
+    assert result["project"]["pending_graph_upgrade"] is None
+    assert (
+        upgraded_graph["root_metadata"]["graph_compatibility"]["graph_data_version"] == "0.6.2"
+    )
+    assert (
+        upgraded_graph["root_metadata"]["graph_compatibility"]["built_with_app_version"]
+        == "0.5.2"
+    )
+    assert (
+        upgraded_graph["root_metadata"]["graph_compatibility"]["last_upgraded_by_app_version"]
+        == "0.6.2"
+    )
+    assert (
+        upgraded_graph["root_metadata"]["graph_compatibility"]["built_with_app_version"]
+        == "0.5.2"
+    )
+    assert (
+        upgraded_graph["root_metadata"]["graph_compatibility"]["upgrade_history"][0]["upgrader_id"]
+        == "p18d-baseline-052-to-061"
+    )
+
+
+def test_apply_pending_graph_upgrade_supports_legacy_main_graph_document_id(tmp_path) -> None:
+    project_path = tmp_path / "upgrade-legacy-main-graph-id.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Upgrade Legacy Main Graph Id Project")
+    service.save_project_as(project_path=project_path)
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    graph_path = project_path.parent / project_payload["project"]["main_graph_path"]
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["graph_model_id"] = "graph:legacy-main-upgrade"
+    graph_payload["root_metadata"] = {}
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    opened = reopened.open_project(project_path=project_path)
+
+    assert opened["project"]["pending_graph_upgrade"] is not None
+    assert opened["project"]["pending_graph_upgrade"]["document_id"] == "graph:legacy-main-upgrade"
+
+    result = reopened.apply_pending_graph_upgrade(decision="upgrade_and_load")
+    upgraded_graph = reopened.get_graph_document()["graph_model"].model_dump(mode="json")
+
+    assert result["status"] == "upgraded"
+    assert result["project"]["pending_graph_upgrade"] is None
+    assert upgraded_graph["graph_model_id"] == "graph:legacy-main-upgrade"
+    assert (
+        upgraded_graph["root_metadata"]["graph_compatibility"]["graph_data_version"] == "0.6.2"
+    )
+
+
+def test_apply_pending_graph_upgrade_uses_pending_recovery_main_graph_when_workspace_draft_is_empty(
+    tmp_path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    project_path = tmp_path / "upgrade-pending-recovery.weconduct.json"
+    service = CompilationWorkbenchService(state_store=FileWorkspaceStateStore(workspace_state_path))
+    service.create_project(project_name="Upgrade Pending Recovery Project")
+    service.save_project_as(project_path=project_path)
+
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    graph_path = project_path.parent / project_payload["project"]["main_graph_path"]
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["graph_model_id"] = "graph:legacy-pending-recovery"
+    graph_payload["root_metadata"] = {}
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService(state_store=FileWorkspaceStateStore(workspace_state_path))
+    opened = reopened.open_project(project_path=project_path)
+    assert opened["project"]["pending_graph_upgrade"] is not None
+    assert opened["project"]["pending_graph_upgrade"]["document_id"] == "graph:legacy-pending-recovery"
+
+    state_payload = json.loads(workspace_state_path.read_text(encoding="utf-8"))
+    pending_recovery_workspace_state = deepcopy(state_payload)
+    pending_recovery_workspace_state["pending_recovery"] = None
+    pending_recovery_workspace_state["pending_graph_upgrade"] = None
+
+    state_payload["project_runtime"]["is_dirty"] = True
+    state_payload["graph_document"] = create_empty_graph_model("graph:workspace", None).model_dump(
+        mode="json"
+    )
+    state_payload["graph_document_meta"] = {
+        "save_revision": 4,
+        "saved_at": "2026-06-24T12:19:45.224045+08:00",
+    }
+    state_payload["pending_recovery"] = {
+        "status": "pending",
+        "project_id": state_payload["project"]["project_id"],
+        "project_name": state_payload["project"]["project_name"],
+        "project_file_path": str(project_path.resolve()),
+        "workspace_state": pending_recovery_workspace_state,
+    }
+    workspace_state_path.write_text(
+        json.dumps(state_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    restarted = CompilationWorkbenchService(state_store=FileWorkspaceStateStore(workspace_state_path))
+    snapshot = restarted.get_workbench_snapshot()
+
+    assert snapshot["project"]["pending_graph_upgrade"] is not None
+    assert snapshot["project"]["pending_graph_upgrade"]["document_id"] == "graph:legacy-pending-recovery"
+    assert snapshot["graph_workspace"]["graph_model_id"] == "graph:workspace"
+    assert snapshot["project"]["pending_recovery"] is not None
+
+    result = restarted.apply_pending_graph_upgrade(decision="upgrade_and_load")
+    upgraded_graph = restarted.get_graph_document()["graph_model"].model_dump(mode="json")
+
+    assert result["status"] == "upgraded"
+    assert result["project"]["pending_graph_upgrade"] is None
+    assert upgraded_graph["graph_model_id"] == "graph:legacy-pending-recovery"
+    assert (
+        upgraded_graph["root_metadata"]["graph_compatibility"]["graph_data_version"] == "0.6.2"
+    )
+
+
+def test_apply_pending_graph_upgrade_force_load_clears_pending_state_without_upgrading(tmp_path) -> None:
+    project_path = tmp_path / "force-load-graph.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Force Load Graph Project")
+    service.save_project_as(project_path=project_path)
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    graph_path = project_path.parent / project_payload["project"]["main_graph_path"]
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["root_metadata"] = {}
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    reopened.open_project(project_path=project_path)
+
+    result = reopened.apply_pending_graph_upgrade(decision="force_load")
+    loaded_graph = reopened.get_graph_document()["graph_model"].model_dump(mode="json")
+
+    assert result["status"] == "force_loaded"
+    assert result["project"]["pending_graph_upgrade"] is None
+    assert loaded_graph.get("root_metadata", {}) == {}
+
+
+def test_force_loaded_legacy_graph_is_detected_again_after_service_restart(tmp_path) -> None:
+    project_path = tmp_path / "force-load-restart.weconduct.json"
+    workspace_state_path = tmp_path / "workspace-state.json"
+    service = CompilationWorkbenchService(state_store=FileWorkspaceStateStore(workspace_state_path))
+    service.create_project(project_name="Force Load Restart Project")
+    service.save_project_as(project_path=project_path)
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    graph_path = project_path.parent / project_payload["project"]["main_graph_path"]
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["root_metadata"] = {}
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService(state_store=FileWorkspaceStateStore(workspace_state_path))
+    opened = reopened.open_project(project_path=project_path)
+    assert opened["project"]["pending_graph_upgrade"] is not None
+
+    force_loaded = reopened.apply_pending_graph_upgrade(decision="force_load")
+    assert force_loaded["project"]["pending_graph_upgrade"] is None
+
+    restarted = CompilationWorkbenchService(state_store=FileWorkspaceStateStore(workspace_state_path))
+    snapshot = restarted.get_workbench_snapshot()
+
+    assert snapshot["project"]["pending_graph_upgrade"] is not None
+    assert snapshot["project"]["pending_graph_upgrade"]["status"] == "upgrade_available"
+
+
+def test_force_loaded_legacy_graph_can_be_rechecked_without_service_restart(tmp_path) -> None:
+    project_path = tmp_path / "force-load-recheck.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Force Load Recheck Project")
+    service.save_project_as(project_path=project_path)
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    graph_path = project_path.parent / project_payload["project"]["main_graph_path"]
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["root_metadata"] = {}
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    opened = reopened.open_project(project_path=project_path)
+    assert opened["project"]["pending_graph_upgrade"] is not None
+
+    force_loaded = reopened.apply_pending_graph_upgrade(decision="force_load")
+    assert force_loaded["project"]["pending_graph_upgrade"] is None
+
+    rechecked = reopened.recheck_pending_graph_upgrade()
+
+    assert rechecked["project"]["pending_graph_upgrade"] is not None
+    assert rechecked["project"]["pending_graph_upgrade"]["status"] == "upgrade_available"
+    assert rechecked["pending_graph_upgrade"]["document_id"] == "graph:workspace"
+
+
+def test_upgraded_graph_persists_after_save_and_reopen(tmp_path) -> None:
+    project_path = tmp_path / "persist-upgraded-graph.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Persist Upgraded Graph Project")
+    service.save_project_as(project_path=project_path)
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    graph_path = project_path.parent / project_payload["project"]["main_graph_path"]
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["root_metadata"] = {}
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    reopened.open_project(project_path=project_path)
+    reopened.apply_pending_graph_upgrade(decision="upgrade_and_load")
+    save_result = reopened.save_project()
+
+    saved_graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    restored = CompilationWorkbenchService()
+    reopened_result = restored.open_project(project_path=project_path)
+
+    assert save_result["status"] == "saved"
+    assert (
+        saved_graph_payload["root_metadata"]["graph_compatibility"]["graph_data_version"] == "0.6.2"
+    )
+    assert reopened_result["project"]["pending_graph_upgrade"] is None
+
+
+def test_open_project_marks_loader_older_than_graph_when_minimum_loader_is_higher(tmp_path) -> None:
+    project_path = tmp_path / "future-graph.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Future Graph Project")
+    service.save_project_as(project_path=project_path)
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    graph_path = project_path.parent / project_payload["project"]["main_graph_path"]
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["root_metadata"] = {
+        "graph_compatibility": {
+            "graph_data_version": "0.7.0",
+            "built_with_app_version": "0.7.0",
+            "minimum_loader_app_version": "0.7.0",
+            "last_upgraded_by_app_version": "0.7.0",
+            "upgrade_history": [],
+        }
+    }
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    opened = reopened.open_project(project_path=project_path)
+    pending = opened["project"]["pending_graph_upgrade"]
+
+    assert pending is not None
+    assert pending["status"] == "loader_older_than_graph"
+    assert pending["compatibility"]["status"] == "loader_older_than_graph"
+    assert pending["compatibility"]["minimum_loader_app_version"] == "0.7.0"
+
+
+def test_project_settings_document_exposes_main_graph_compatibility_summary(tmp_path) -> None:
+    project_path = tmp_path / "compat-summary.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Compat Summary Project")
+    service.save_project_as(project_path=project_path)
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    graph_path = project_path.parent / project_payload["project"]["main_graph_path"]
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["root_metadata"] = {
+        "graph_compatibility": {
+            "graph_data_version": "0.7.0",
+            "built_with_app_version": "0.7.0",
+            "minimum_loader_app_version": "0.7.0",
+            "last_upgraded_by_app_version": "0.7.0",
+            "upgrade_history": [],
+        }
+    }
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    reopened.open_project(project_path=project_path)
+    settings_document = reopened.get_project_settings_document()
+
+    assert settings_document["state"]["main_graph_compatibility"]["graph_data_version"] == "0.7.0"
+    assert settings_document["state"]["main_graph_compatibility"]["built_with_app_version"] == "0.7.0"
+    assert (
+        settings_document["state"]["main_graph_compatibility"]["minimum_loader_app_version"] == "0.7.0"
+    )
+    assert (
+        settings_document["state"]["main_graph_compatibility"]["last_upgraded_by_app_version"] == "0.7.0"
     )
 
 
@@ -21854,7 +22287,7 @@ def test_build_project_wcrun_package_writes_expected_archive_layout(tmp_path: Pa
         assert manifest_payload["integrity"]["checksums_path"] == "meta/checksums.json"
         assert manifest_payload["integrity"]["package_info_path"] == "meta/package-info.json"
         assert package_info_payload["manifest_version"] == 1
-        assert package_info_payload["builder_app_version"] == "0.6.1"
+        assert package_info_payload["builder_app_version"] == "0.6.2"
         assert package_info_payload["source_project_schema_version"] == "project-v2"
         assert package_info_payload["graph_stats"]["graph_count"] == 1
         assert package_info_payload["resource_stats"]["embedded_resource_count"] == 0

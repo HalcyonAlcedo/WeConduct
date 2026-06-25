@@ -742,6 +742,43 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if self.path == "/api/workbench/project/graph-upgrade/apply":
+            try:
+                payload = self._read_json_request_body()
+                decision = payload.get("decision")
+                if not isinstance(decision, str) or not decision.strip():
+                    raise ValueError("field must be a non-empty string: decision")
+                result = service.apply_pending_graph_upgrade(decision=decision.strip())
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "status": result["status"],
+                    "project": result["project"],
+                    "graph_document": result["graph_document"].model_dump(),
+                },
+            )
+            return
+
+        if self.path == "/api/workbench/project/graph-upgrade/recheck":
+            try:
+                self._read_json_request_body()
+                result = service.recheck_pending_graph_upgrade()
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "status": result["status"],
+                    "project": result["project"],
+                    "pending_graph_upgrade": result["pending_graph_upgrade"],
+                },
+            )
+            return
+
         if self.path == "/api/workbench/preferences/preview":
             try:
                 payload = self._read_json_request_body()

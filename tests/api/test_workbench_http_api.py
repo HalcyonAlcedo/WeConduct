@@ -4,6 +4,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from copy import deepcopy
 from typing import Callable
 import zipfile
 from http.server import BaseHTTPRequestHandler
@@ -1130,6 +1131,561 @@ def test_http_api_save_and_open_project_supports_split_storage_layout(tmp_path: 
             == f"{project_path.stem}.data/graphs/workspace.graph.json"
         )
         assert graph_payload["graph_model_id"] == "graph:workspace"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_open_project_exposes_pending_graph_upgrade(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    project_path = tmp_path / "legacy-upgrade" / "legacy-upgrade.weconduct.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+
+        project_manifest = json.loads(project_path.read_text(encoding="utf-8"))
+        graph_path = project_path.parent / project_manifest["project"]["main_graph_path"]
+        graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph_payload["root_metadata"] = {}
+        graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        open_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/open",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(open_request) as response:
+            open_payload = json.loads(response.read().decode("utf-8"))
+
+        assert open_payload["status"] == "opened"
+        assert open_payload["project"]["pending_graph_upgrade"] is not None
+        assert open_payload["project"]["pending_graph_upgrade"]["status"] == "upgrade_available"
+        assert (
+            open_payload["project"]["pending_graph_upgrade"]["compatibility"]["graph_data_version"]
+            == "0.5.2"
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_can_apply_pending_graph_upgrade(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    project_path = tmp_path / "legacy-apply" / "legacy-apply.weconduct.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+
+        project_manifest = json.loads(project_path.read_text(encoding="utf-8"))
+        graph_path = project_path.parent / project_manifest["project"]["main_graph_path"]
+        graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph_payload["root_metadata"] = {}
+        graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        open_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/open",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(open_request):
+            pass
+
+        apply_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/graph-upgrade/apply",
+            data=json.dumps({"decision": "upgrade_and_load"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(apply_request) as response:
+            apply_payload = json.loads(response.read().decode("utf-8"))
+
+        snapshot_request = urllib.request.urlopen(f"{base_url}/api/workbench/snapshot")
+        with snapshot_request as response:
+            snapshot_payload = json.loads(response.read().decode("utf-8"))
+
+        assert apply_payload["status"] == "upgraded"
+        assert apply_payload["project"]["pending_graph_upgrade"] is None
+        assert snapshot_payload["project"]["pending_graph_upgrade"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_can_apply_pending_graph_upgrade_for_legacy_main_graph_document_id(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    project_path = tmp_path / "legacy-main-graph-id" / "legacy-main-graph-id.weconduct.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+
+        project_manifest = json.loads(project_path.read_text(encoding="utf-8"))
+        graph_path = project_path.parent / project_manifest["project"]["main_graph_path"]
+        graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph_payload["graph_model_id"] = "graph:legacy-main-api"
+        graph_payload["root_metadata"] = {}
+        graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        open_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/open",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(open_request) as response:
+            open_payload = json.loads(response.read().decode("utf-8"))
+
+        assert open_payload["project"]["pending_graph_upgrade"] is not None
+        assert open_payload["project"]["pending_graph_upgrade"]["document_id"] == "graph:legacy-main-api"
+
+        apply_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/graph-upgrade/apply",
+            data=json.dumps({"decision": "upgrade_and_load"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(apply_request) as response:
+            apply_payload = json.loads(response.read().decode("utf-8"))
+
+        assert apply_payload["status"] == "upgraded"
+        assert apply_payload["project"]["pending_graph_upgrade"] is None
+        assert apply_payload["graph_document"]["graph_model_id"] == "graph:legacy-main-api"
+        assert (
+            apply_payload["graph_document"]["root_metadata"]["graph_compatibility"]["graph_data_version"]
+            == "0.6.2"
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_can_apply_pending_graph_upgrade_when_workspace_draft_is_empty_but_pending_recovery_keeps_main_graph(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    project_path = tmp_path / "legacy-pending-recovery" / "legacy-pending-recovery.weconduct.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+
+        project_manifest = json.loads(project_path.read_text(encoding="utf-8"))
+        graph_path = project_path.parent / project_manifest["project"]["main_graph_path"]
+        graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph_payload["graph_model_id"] = "graph:legacy-pending-recovery-api"
+        graph_payload["root_metadata"] = {}
+        graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        open_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/open",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(open_request) as response:
+            open_payload = json.loads(response.read().decode("utf-8"))
+
+        assert open_payload["project"]["pending_graph_upgrade"] is not None
+        assert (
+            open_payload["project"]["pending_graph_upgrade"]["document_id"]
+            == "graph:legacy-pending-recovery-api"
+        )
+
+        state_payload = json.loads(workspace_state_path.read_text(encoding="utf-8"))
+        pending_recovery_workspace_state = deepcopy(state_payload)
+        pending_recovery_workspace_state["pending_recovery"] = None
+        pending_recovery_workspace_state["pending_graph_upgrade"] = None
+        pending_recovery_workspace_state["project_runtime"]["is_dirty"] = False
+
+        state_payload["project_runtime"]["is_dirty"] = True
+        state_payload["graph_document"] = {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "viewport": None,
+            "root_metadata": {
+                "graph_compatibility": {
+                    "graph_data_version": "0.6.2",
+                    "built_with_app_version": "0.6.2",
+                    "minimum_loader_app_version": "0.5.2",
+                    "last_upgraded_by_app_version": "0.6.2",
+                    "upgrade_history": [],
+                }
+            },
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+        state_payload["graph_document_meta"] = {
+            "save_revision": 4,
+            "saved_at": "2026-06-24T12:19:45.224045+08:00",
+        }
+        state_payload["pending_recovery"] = {
+            "status": "pending",
+            "project_id": state_payload["project"]["project_id"],
+            "project_name": state_payload["project"]["project_name"],
+            "project_file_path": str(project_path.resolve()),
+            "workspace_state": pending_recovery_workspace_state,
+        }
+        workspace_state_path.write_text(
+            json.dumps(state_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        restarted_server, restarted_thread = _start_test_server(workspace_state_path=workspace_state_path)
+        restarted_base_url = f"http://127.0.0.1:{restarted_server.server_address[1]}"
+        try:
+            apply_request = urllib.request.Request(
+                f"{restarted_base_url}/api/workbench/project/graph-upgrade/apply",
+                data=json.dumps({"decision": "upgrade_and_load"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(apply_request) as response:
+                apply_payload = json.loads(response.read().decode("utf-8"))
+
+            assert apply_payload["status"] == "upgraded"
+            assert apply_payload["project"]["pending_graph_upgrade"] is None
+            assert apply_payload["graph_document"]["graph_model_id"] == "graph:legacy-pending-recovery-api"
+            assert (
+                apply_payload["graph_document"]["root_metadata"]["graph_compatibility"][
+                    "graph_data_version"
+                ]
+                == "0.6.2"
+            )
+        finally:
+            restarted_server.shutdown()
+            restarted_server.server_close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_force_loaded_legacy_graph_is_detected_again_after_server_restart(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    project_path = tmp_path / "legacy-force-restart" / "legacy-force-restart.weconduct.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+
+        project_manifest = json.loads(project_path.read_text(encoding="utf-8"))
+        graph_path = project_path.parent / project_manifest["project"]["main_graph_path"]
+        graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph_payload["root_metadata"] = {}
+        graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        open_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/open",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(open_request):
+            pass
+
+        force_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/graph-upgrade/apply",
+            data=json.dumps({"decision": "force_load"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(force_request) as response:
+            force_payload = json.loads(response.read().decode("utf-8"))
+
+        assert force_payload["status"] == "force_loaded"
+        assert force_payload["project"]["pending_graph_upgrade"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    restarted_server, restarted_thread = _start_test_server(workspace_state_path=workspace_state_path)
+    restarted_base_url = f"http://127.0.0.1:{restarted_server.server_address[1]}"
+    try:
+        with urllib.request.urlopen(f"{restarted_base_url}/api/workbench/snapshot") as response:
+            restarted_snapshot = json.loads(response.read().decode("utf-8"))
+
+        assert restarted_snapshot["project"]["pending_graph_upgrade"] is not None
+        assert restarted_snapshot["project"]["pending_graph_upgrade"]["status"] == "upgrade_available"
+    finally:
+        restarted_server.shutdown()
+        restarted_server.server_close()
+
+
+def test_http_api_force_loaded_legacy_graph_can_be_rechecked_without_server_restart(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    project_path = tmp_path / "legacy-force-recheck" / "legacy-force-recheck.weconduct.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+
+        project_manifest = json.loads(project_path.read_text(encoding="utf-8"))
+        graph_path = project_path.parent / project_manifest["project"]["main_graph_path"]
+        graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph_payload["root_metadata"] = {}
+        graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        open_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/open",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(open_request) as response:
+            open_payload = json.loads(response.read().decode("utf-8"))
+
+        assert open_payload["project"]["pending_graph_upgrade"] is not None
+
+        force_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/graph-upgrade/apply",
+            data=json.dumps({"decision": "force_load"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(force_request) as response:
+            force_payload = json.loads(response.read().decode("utf-8"))
+
+        assert force_payload["status"] == "force_loaded"
+        assert force_payload["project"]["pending_graph_upgrade"] is None
+
+        recheck_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/graph-upgrade/recheck",
+            data=json.dumps({}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(recheck_request) as response:
+            recheck_payload = json.loads(response.read().decode("utf-8"))
+
+        assert recheck_payload["status"] == "rechecked"
+        assert recheck_payload["project"]["pending_graph_upgrade"] is not None
+        assert recheck_payload["project"]["pending_graph_upgrade"]["status"] == "upgrade_available"
+        assert recheck_payload["pending_graph_upgrade"]["document_id"] == "graph:workspace"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_upgraded_graph_persists_after_save_and_reopen(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    project_path = tmp_path / "legacy-persist" / "legacy-persist.weconduct.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        save_as_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_as_request):
+            pass
+
+        project_manifest = json.loads(project_path.read_text(encoding="utf-8"))
+        graph_path = project_path.parent / project_manifest["project"]["main_graph_path"]
+        graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph_payload["root_metadata"] = {}
+        graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        open_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/open",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(open_request):
+            pass
+
+        apply_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/graph-upgrade/apply",
+            data=json.dumps({"decision": "upgrade_and_load"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(apply_request):
+            pass
+
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save",
+            data=json.dumps({}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_request) as response:
+            save_payload = json.loads(response.read().decode("utf-8"))
+
+        reopen_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/open",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(reopen_request) as response:
+            reopen_payload = json.loads(response.read().decode("utf-8"))
+
+        saved_graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+
+        assert save_payload["status"] == "saved"
+        assert (
+            saved_graph_payload["root_metadata"]["graph_compatibility"]["graph_data_version"]
+            == "0.6.2"
+        )
+        assert reopen_payload["project"]["pending_graph_upgrade"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_open_project_exposes_loader_older_than_graph_status(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    project_path = tmp_path / "future-open" / "future-open.weconduct.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        save_as_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_as_request):
+            pass
+
+        project_manifest = json.loads(project_path.read_text(encoding="utf-8"))
+        graph_path = project_path.parent / project_manifest["project"]["main_graph_path"]
+        graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph_payload["root_metadata"] = {
+            "graph_compatibility": {
+                "graph_data_version": "0.7.0",
+                "built_with_app_version": "0.7.0",
+                "minimum_loader_app_version": "0.7.0",
+                "last_upgraded_by_app_version": "0.7.0",
+                "upgrade_history": [],
+            }
+        }
+        graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        open_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/open",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(open_request) as response:
+            open_payload = json.loads(response.read().decode("utf-8"))
+
+        assert open_payload["project"]["pending_graph_upgrade"] is not None
+        assert open_payload["project"]["pending_graph_upgrade"]["status"] == "loader_older_than_graph"
+        assert (
+            open_payload["project"]["pending_graph_upgrade"]["compatibility"]["minimum_loader_app_version"]
+            == "0.7.0"
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_project_settings_expose_main_graph_compatibility_summary(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    project_path = tmp_path / "settings-compat" / "settings-compat.weconduct.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        save_as_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_as_request):
+            pass
+
+        project_manifest = json.loads(project_path.read_text(encoding="utf-8"))
+        graph_path = project_path.parent / project_manifest["project"]["main_graph_path"]
+        graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph_payload["root_metadata"] = {
+            "graph_compatibility": {
+                "graph_data_version": "0.7.0",
+                "built_with_app_version": "0.7.0",
+                "minimum_loader_app_version": "0.7.0",
+                "last_upgraded_by_app_version": "0.7.0",
+                "upgrade_history": [],
+            }
+        }
+        graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        open_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/open",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(open_request):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/settings") as response:
+            settings_payload = json.loads(response.read().decode("utf-8"))
+
+        assert settings_payload["state"]["main_graph_compatibility"]["graph_data_version"] == "0.7.0"
+        assert settings_payload["state"]["main_graph_compatibility"]["built_with_app_version"] == "0.7.0"
     finally:
         server.shutdown()
         server.server_close()
@@ -3346,7 +3902,7 @@ def test_http_api_project_package_build_returns_archive_document(tmp_path: Path)
         assert manifest_payload["entrypoint"]["graph_path"] == "graphs/main.graph.msgpack"
         assert manifest_payload["runtime_requirements"]["required_browser"] == "msedge"
         assert package_info_payload["manifest_version"] == 1
-        assert package_info_payload["builder_app_version"] == "0.6.1"
+        assert package_info_payload["builder_app_version"] == "0.6.2"
         assert package_info_payload["source_project_schema_version"] == "project-v2"
     finally:
         server.shutdown()
@@ -6853,7 +7409,7 @@ def test_http_api_exposes_runtime_health(tmp_path: Path) -> None:
         assert payload["status"] == "ok"
         assert payload["service"] == "weconduct-api"
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.6.1"
+        assert payload["api_version"] == "0.6.2"
         assert payload["workspace_state_version"] == 1
         assert payload["workspace_session_id"].startswith("ws-")
         assert payload["service_started_at"]
@@ -8717,7 +9273,7 @@ def test_http_host_info_exposes_release_manifest_and_runtime_binding(tmp_path: P
             payload = json.loads(response.read().decode("utf-8"))
 
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.6.1"
+        assert payload["api_version"] == "0.6.2"
         assert payload["server_bind"]["host"] == "127.0.0.1"
         assert payload["server_bind"]["port"] == server.server_address[1]
         assert payload["server_bind"]["base_url"] == base_url

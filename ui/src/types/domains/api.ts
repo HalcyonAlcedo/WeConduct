@@ -65,6 +65,26 @@ export interface SnapshotWorkbench {
   workspace_state_version: number
 }
 
+export interface GraphCompatibilitySummary {
+  status?: string; graph_data_version?: string; current_app_version?: string
+  minimum_loader_app_version?: string; built_with_app_version?: string
+  last_upgraded_by_app_version?: string; upgrade_history?: { from_version: string; to_version: string; upgrader_id: string; applied_at?: string }[]
+  is_legacy_unversioned?: boolean; available_upgrade_path?: { from_version: string; to_version: string; upgrader_id: string }[]
+}
+
+export interface PendingGraphUpgrade {
+  status: string; document_id?: string
+  compatibility?: GraphCompatibilitySummary
+  documents?: { document_id: string; document_role: string; display_name?: string; compatibility?: GraphCompatibilitySummary }[]
+}
+
+/** POST /api/workbench/project/graph-upgrade/recheck response */
+export interface GraphUpgradeRecheckResponse {
+  status: string
+  project: Record<string, unknown>
+  pending_graph_upgrade: PendingGraphUpgrade | null
+}
+
 export interface SnapshotProject {
   loaded: boolean
   project_id: string
@@ -79,6 +99,8 @@ export interface SnapshotProject {
   main_graph_path?: string
   project_resources_index_path?: string
   resource_overrides_path?: string
+  /** 0.6.2: graph upgrade gate */
+  pending_graph_upgrade?: PendingGraphUpgrade | null
 }
 
 export interface SnapshotCompiler {
@@ -134,7 +156,7 @@ export interface SnapshotResponse {
     preferences_state?: Record<string, Record<string, string>>
   }
   /** P16: lightweight project settings state */
-  project_settings?: Record<string, unknown>
+  project_settings?: ProjectSettingsSnapshot
 }
 
 // ===== POST /api/workbench/compile =====
@@ -510,9 +532,20 @@ export interface ProjectSettings {
   compile_profile: { source_of_truth: string; inject_project_runtime_defaults_into_main_flow_start: boolean }
 }
 
+export interface ProjectSettingsSnapshot {
+  loaded?: boolean; source_of_truth?: string; state_source?: string
+  project_file_path?: string | null; project_settings_path?: string | null; session_dir?: string | null
+  is_dirty?: boolean; project_settings_schema_version?: number
+  has_external_resources?: boolean; embedded_resource_count?: number; external_resource_count?: number
+  package_default_output_name?: string
+  main_graph_compatibility?: GraphCompatibilitySummary
+}
+
 export interface ProjectSettingsState {
   loaded: boolean; source: string; project_file_path: string | null
   session_dir: string | null; project_settings_path: string | null; is_dirty: boolean
+  /** 0.6.2: main graph compatibility summary */
+  main_graph_compatibility?: GraphCompatibilitySummary
 }
 
 export interface ProjectSettingsResponse { project_settings: ProjectSettings; state: ProjectSettingsState }

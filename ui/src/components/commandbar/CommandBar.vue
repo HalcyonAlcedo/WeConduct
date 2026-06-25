@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useCompilationStore } from '@/stores/compilationStore'
 import { useThemeStore } from '@/stores/themeStore'
@@ -11,9 +11,9 @@ import { useToastStore } from '@/stores/toastStore'
 import {
   postProjectNew, postProjectOpen, postProjectSave, postProjectSaveAs,
   fetchProject, fetchGraphDocument, fetchRecentProjects, postRecentProjectRemove,
-  postFileDialog, postReadFile,
+  postFileDialog, postReadFile, postGraphUpgradeApply, postGraphUpgradeRecheck,
 } from '@/services/api'
-import type { RecentProject } from '@/types/domains/api'
+import type { RecentProject, PendingGraphUpgrade } from '@/types/domains/api'
 import WebControlConverter from '@/components/shells/WebControlConverter.vue'
 
 const workspace = useWorkspaceStore()
@@ -36,7 +36,9 @@ async function applyOpenedProject() {
   runtime.refreshAll()
   resource.refreshAll()
   await graphWs.refreshGraphDocuments()
-  closeDialog()
+      const upgrade = workspace.snapshot?.project?.pending_graph_upgrade
+    if (upgrade) { upgradeInfo.value = upgrade; showUpgradeDialog.value = true }
+    closeDialog()
 }
 
 const activeMenu = ref<string | null>(null)
@@ -50,6 +52,13 @@ function closeDialog() { activeDialog.value = null }
 
 const pendingConfirm = ref<(() => void) | null>(null)
 const showConverter = ref(false)
+const showUpgradeDialog = ref(false)
+const upgradeInfo = ref<PendingGraphUpgrade | null>(null)
+
+// Global watch: auto-show upgrade dialog when pending_graph_upgrade appears
+watch(() => workspace.snapshot?.project?.pending_graph_upgrade, (pending) => {
+  if (pending) { upgradeInfo.value = pending; showUpgradeDialog.value = true }
+}, { immediate: true })
 
 const dialogPath = ref('')
 
@@ -66,9 +75,12 @@ async function doNew() {
     // Clear cached data after new project
     compilation.clearSource()
     graphWs.reset()
+    await workspace.refreshSnapshot()
     runtime.refreshAll()
     resource.refreshAll()
     await graphWs.refreshGraphDocuments()
+        const upgrade = workspace.snapshot?.project?.pending_graph_upgrade
+    if (upgrade) { upgradeInfo.value = upgrade; showUpgradeDialog.value = true }
     closeDialog()
   } catch(e:any){ toast.error('创建失败', e?.message) }
   finally { dialogLoading.value = false }
@@ -94,8 +106,11 @@ async function doSave() {
     if (!proj.project.project_file_path) { closeDialog(); openDialog('saveas'); dialogLoading.value = false; return }
     const mainModel = await getMainGraphModel()
     await postProjectSave(mainModel)
+    await workspace.refreshSnapshot()
     await graphWs.loadGraph(undefined, { forceRefresh: true }) // refresh view/saveRevision after project save
-    toast.success('已保存'); closeDialog()
+    toast.success('已保存');     const upgrade = workspace.snapshot?.project?.pending_graph_upgrade
+    if (upgrade) { upgradeInfo.value = upgrade; showUpgradeDialog.value = true }
+    closeDialog()
   } catch(e: any) {
     if (e?.body?.error === 'project.needs_save_as') { closeDialog(); openDialog('saveas') }
     else { toast.error('保存失败', e?.message) }
@@ -108,12 +123,42 @@ async function doSaveAs() {
   try {
     const mainModel = await getMainGraphModel()
     await postProjectSaveAs({ project_path: dialogInput.value, graph_document: mainModel })
+    await workspace.refreshSnapshot()
     await graphWs.loadGraph(undefined, { forceRefresh: true }) // refresh view/saveRevision after project save
-    toast.success('已另存'); closeDialog()
+    toast.success('已另存');     const upgrade = workspace.snapshot?.project?.pending_graph_upgrade
+    if (upgrade) { upgradeInfo.value = upgrade; showUpgradeDialog.value = true }
+    closeDialog()
   } catch(e:any){ toast.error('另存失败', e?.message) }
   finally { dialogLoading.value = false }
 }
+  async function handleGraphUpgrade(decision: 'upgrade_and_load' | 'force_load') {
+    try {
+      await postGraphUpgradeApply(decision)
+      toast.success(decision === 'upgrade_and_load' ? '已升级' : '已强制加载')
+      showUpgradeDialog.value = false
+      await workspace.refreshSnapshot()
+      await graphWs.loadGraph()
+      if (graphWs.graphModel) await graphWs.syncSource()
+      await graphWs.refreshGraphDocuments()
+      runtime.refreshAll(); resource.refreshAll()
+    } catch (e: any) { toast.error('操作失败', e?.message) }
+  }
 async function doOpenRecent(fp: string) { dialogLoading.value = true; try { await postProjectOpen({ project_path: fp }); toast.success('已打开'); await applyOpenedProject() } catch(e:any){ toast.error('打开失败', e?.message) } finally { dialogLoading.value = false } }
+  async function handleManualGraphUpgrade() {
+    closeMenu()
+    try {
+      const r = await postGraphUpgradeRecheck()
+      if (r.pending_graph_upgrade) {
+        upgradeInfo.value = r.pending_graph_upgrade
+        showUpgradeDialog.value = true
+        await workspace.refreshSnapshot()
+        return
+      }
+      toast.info('', '当前项目没有待升级的节点图')
+    } catch (e: any) {
+      toast.error('重新检测失败', e?.message)
+    }
+  }
 async function doRemoveRecent(fp: string) { try { await postRecentProjectRemove({ project_path: fp }); recentProjects.value = recentProjects.value.filter(r => r.project_path !== fp) } catch(e:any){ toast.error('移除失败', e?.message) } }
 
 const projectLabel = computed(() => {
@@ -180,7 +225,9 @@ async function doImportGraph() {
     const json = JSON.parse(importJson.value)
     await graphWs.saveGraph(json)
     toast.success('已导入', '节点图 JSON 已加载，画布已刷新')
-    importJson.value = ''; closeDialog()
+    importJson.value = '';     const upgrade = workspace.snapshot?.project?.pending_graph_upgrade
+    if (upgrade) { upgradeInfo.value = upgrade; showUpgradeDialog.value = true }
+    closeDialog()
   } catch (e: any) { toast.error('导入失败', e?.message) }
   finally { dialogLoading.value = false }
 }
@@ -222,6 +269,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
           <hr>
           <button @click="openDialog('importGraph')">导入节点图 JSON</button>
           <button @click="closeMenu(); showConverter = true">转换 WebControl</button>
+          <button @click="handleManualGraphUpgrade()">手动升级节点图</button>
           <hr>
           <button @click="dock.restorePanel('projectSettings'); closeMenu()">项目设置</button>
           <button @click="dock.restorePanel('packageManager'); closeMenu()">.wcrun 打包</button>
@@ -358,7 +406,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
             <!-- About -->
             <template v-else-if="activeDialog === 'about'">
               <p><strong>WeConduct</strong></p>
-              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.6.1' }}</p>
+              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.6.2' }}</p>
               <p class="dlg-meta">运行模式: {{ workspace.health?.host_mode ?? '—' }}</p>
               <p class="dlg-meta">工作区会话: {{ workspace.health?.workspace_session_id ?? '—' }}</p>
               <template v-if="workspace.projectName">
@@ -397,6 +445,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
 
     <!-- WebControl Converter -->
     <WebControlConverter v-if="showConverter" @close="showConverter = false" />
+    <Teleport to="body"><div v-if="showUpgradeDialog" class="upg-overlay"><div class="upg-box"><div class="upg-hd">节点图版本升级</div><div class="upg-body"><p>图数据版本 <strong>{{ upgradeInfo?.compatibility?.graph_data_version }}</strong> → 程序版本 <strong>{{ upgradeInfo?.compatibility?.current_app_version }}</strong></p><p class="upg-meta">创建时版本: {{ upgradeInfo?.compatibility?.built_with_app_version }} · 最低加载: {{ upgradeInfo?.compatibility?.minimum_loader_app_version }}</p><div v-if="upgradeInfo?.documents?.length"><p class="upg-meta">涉及文档:</p><div v-for="d in upgradeInfo.documents" :key="d.document_id" class="upg-doc-item">{{ d.display_name || d.document_id }} <small>({{ d.document_role }})</small></div></div><template v-if="upgradeInfo?.status === 'upgrade_available'"><div class="upg-actions"><button class="upg-btn upg-btn-primary" @click="handleGraphUpgrade('upgrade_and_load')">升级并加载</button><button class="upg-btn" @click="handleGraphUpgrade('force_load')">跳过升级</button></div></template><template v-else><div class="upg-actions"><button class="upg-btn upg-btn-primary" @click="handleGraphUpgrade('force_load')">强制加载</button><button class="upg-btn" @click="showUpgradeDialog = false">取消</button></div></template></div></div></div></Teleport>
   </header>
 </template>
 
@@ -522,4 +571,40 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
 .dlg-field .dlg-path-row { margin-bottom: 0; }
 .dlg-field .dlg-input { margin-bottom: 0; }
 
+</style>
+
+<!-- Upgrade dialog styles: non-scoped so Teleport renders correctly -->
+<style>
+.upg-overlay {
+  position: fixed; inset: 0; z-index: 4000;
+  background: rgba(0,0,0,0.4);
+  display: flex; align-items: center; justify-content: center;
+}
+.upg-box {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  min-width: 360px; max-width: 480px;
+  box-shadow: var(--shadow-menu);
+}
+.upg-hd {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-weight: 600; color: var(--accent);
+}
+.upg-body { padding: 12px 14px; font-size: var(--text-small); }
+.upg-actions { display: flex; gap: 8px; margin-top: 12px; }
+.upg-btn {
+  padding: 4px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  cursor: pointer; font-size: var(--text-small);
+}
+.upg-btn-primary {
+  border-color: var(--accent);
+  background: var(--accent); color: #fff;
+}
+.upg-meta { font-size: var(--text-caption); color: var(--text-disabled); margin-top: 4px; }
+.upg-doc-item { font-size: var(--text-caption); padding: 2px 0; }
 </style>

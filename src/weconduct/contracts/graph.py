@@ -57,4 +57,16 @@ class GraphModel(BaseModel):
 
 
 def create_empty_graph_model(graph_model_id: str, compilation_id: str | None) -> GraphModel:
-    return GraphModel(graph_model_id=graph_model_id, compilation_id=compilation_id)
+    return GraphModel(
+        graph_model_id=graph_model_id,
+        compilation_id=compilation_id,
+        root_metadata={
+            "graph_compatibility": {
+                "graph_data_version": "0.6.2",
+                "built_with_app_version": "0.6.2",
+                "minimum_loader_app_version": "0.5.2",
+                "last_upgraded_by_app_version": "0.6.2",
+                "upgrade_history": [],
+            }
+        },
+    )
