@@ -60,7 +60,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
-CURRENT_API_VERSION = "0.6.2"
+CURRENT_API_VERSION = "0.6.3"
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
@@ -1523,6 +1523,13 @@ class CompilationWorkbenchService:
             return current_state
 
         self._state = self._state_store.mutate(mutation)
+        project_runtime = self._get_project_runtime()
+        project_file_path = project_runtime["project_file_path"]
+        if isinstance(project_file_path, str) and project_file_path.strip():
+            self._write_project_storage_layout(Path(project_file_path))
+            self._state = self._state_store.mutate(
+                lambda state: self._normalize_workspace_state(state)[0]
+            )
         graph_model = self._get_graph_document_model()
         return {
             "status": "upgraded",
@@ -10328,8 +10335,14 @@ class CompilationWorkbenchService:
         return state, changed
 
     def _restore_startup_pending_graph_upgrade(self, state: dict) -> tuple[dict, bool]:
-        if self._extract_pending_graph_upgrade(state) is not None:
-            return state, False
+        existing_pending_graph_upgrade = self._extract_pending_graph_upgrade(state)
+        if existing_pending_graph_upgrade is not None:
+            refreshed_pending_graph_upgrade = self._recompute_pending_graph_upgrade_for_state(state)
+            if refreshed_pending_graph_upgrade == existing_pending_graph_upgrade:
+                return state, False
+            next_state = deepcopy(state)
+            next_state["pending_graph_upgrade"] = refreshed_pending_graph_upgrade
+            return next_state, True
         project_runtime = self._extract_project_runtime(state)
         project_file_path = project_runtime.get("project_file_path")
         if not isinstance(project_file_path, str) or not project_file_path.strip():
@@ -10347,6 +10360,39 @@ class CompilationWorkbenchService:
         next_state = deepcopy(state)
         next_state["pending_graph_upgrade"] = pending_graph_upgrade
         return next_state, True
+
+    def _recompute_pending_graph_upgrade_for_state(self, state: dict) -> dict | None:
+        pending_recovery = self._extract_pending_recovery(state)
+        if pending_recovery is not None:
+            workspace_state = pending_recovery.get("workspace_state")
+            if isinstance(workspace_state, dict):
+                normalized_workspace_state, _ = self._normalize_workspace_state_without_recovery_conversion(
+                    deepcopy(workspace_state)
+                )
+                graph_payload = normalized_workspace_state.get("graph_document")
+                raw_project = normalized_workspace_state.get("project")
+                resource_registry = self._extract_resource_registry(normalized_workspace_state)
+                if isinstance(graph_payload, dict) and isinstance(raw_project, dict):
+                    project_document = {
+                        "project": deepcopy(raw_project),
+                        "graph_document": deepcopy(graph_payload),
+                        "resource_registry": deepcopy(resource_registry),
+                    }
+                    pending_graph_upgrade = self._collect_project_pending_graph_upgrade(project_document)
+                    if pending_graph_upgrade is not None:
+                        return pending_graph_upgrade
+        project_runtime = self._extract_project_runtime(state)
+        project_file_path = project_runtime.get("project_file_path")
+        if not isinstance(project_file_path, str) or not project_file_path.strip():
+            return None
+        resolved_project_path = Path(project_file_path).resolve()
+        if not resolved_project_path.exists():
+            return None
+        try:
+            project_document = self._read_project_file(resolved_project_path)
+        except (OSError, ValueError, ValidationError):
+            return None
+        return self._collect_project_pending_graph_upgrade(project_document)
 
     def _extract_workbench_metadata(self, state: dict | None) -> dict:
         initial_workbench = self._build_initial_workspace_state()["workbench"]
@@ -11762,15 +11808,20 @@ class CompilationWorkbenchService:
         return deepcopy(source_graph_document)
 
     def _build_custom_node_graph_document_id(self, resource_id: str) -> str:
-        return f"custom_node_graph:{resource_id}"
+        normalized_resource_id = resource_id.strip() if isinstance(resource_id, str) else ""
+        if normalized_resource_id.startswith(CUSTOM_NODE_GRAPH_RESOURCE_PREFIX):
+            return normalized_resource_id
+        return f"{CUSTOM_NODE_GRAPH_RESOURCE_PREFIX}{normalized_resource_id}"
 
     def _parse_custom_node_graph_document_id(self, document_id: str) -> str | None:
         if not isinstance(document_id, str) or not document_id.startswith("custom_node_graph:"):
             return None
         resource_id = document_id.removeprefix("custom_node_graph:")
+        while resource_id.startswith(CUSTOM_NODE_GRAPH_RESOURCE_PREFIX):
+            resource_id = resource_id.removeprefix(CUSTOM_NODE_GRAPH_RESOURCE_PREFIX)
         if resource_id.startswith(CUSTOM_NODE_GRAPH_RESOURCE_PREFIX):
             return resource_id
-        return None
+        return f"{CUSTOM_NODE_GRAPH_RESOURCE_PREFIX}{resource_id}" if resource_id else None
 
     def _resolve_graph_document_by_document_id(self, document_id: str | None) -> GraphModel:
         current_main_graph_document_id = self._get_graph_document_model().graph_model_id
@@ -11873,11 +11924,12 @@ class CompilationWorkbenchService:
     ) -> dict:
         compatibility = self._normalize_graph_compatibility_metadata(graph_model)
         current_app_version = CURRENT_API_VERSION
+        current_graph_data_version = GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION
         graph_data_version = compatibility["graph_data_version"]
         minimum_loader_app_version = compatibility["minimum_loader_app_version"]
         if self._compare_version_strings(current_app_version, minimum_loader_app_version) < 0:
             status = "loader_older_than_graph"
-        elif self._compare_version_strings(current_app_version, graph_data_version) > 0:
+        elif self._compare_version_strings(current_graph_data_version, graph_data_version) > 0:
             status = "upgrade_available"
         else:
             status = "ok"
@@ -14271,13 +14323,25 @@ class CompilationWorkbenchService:
             raw_item=item,
         )
         if normalized_resource_type in {"user_component", "subgraph_resource", "custom_node_graph"}:
-            normalized["source_graph_document_id"] = item.get("source_graph_document_id")
+            raw_source_graph_document_id = item.get("source_graph_document_id")
+            if normalized_resource_type == "custom_node_graph":
+                normalized["source_graph_document_id"] = self._build_custom_node_graph_document_id(
+                    self._parse_custom_node_graph_document_id(raw_source_graph_document_id)
+                    or normalized_resource_id
+                )
+            else:
+                normalized["source_graph_document_id"] = raw_source_graph_document_id
             normalized["source_graph_document_save_revision"] = item.get(
                 "source_graph_document_save_revision"
             )
             source_graph_document = item.get("source_graph_document")
             if isinstance(source_graph_document, dict):
-                normalized["source_graph_document"] = source_graph_document
+                normalized_source_graph_document = deepcopy(source_graph_document)
+                if normalized_resource_type == "custom_node_graph":
+                    normalized_source_graph_document["graph_model_id"] = normalized[
+                        "source_graph_document_id"
+                    ]
+                normalized["source_graph_document"] = normalized_source_graph_document
             input_schema = item.get("input_schema")
             if isinstance(input_schema, dict):
                 normalized["input_schema"] = self._extract_graph_resource_schema(

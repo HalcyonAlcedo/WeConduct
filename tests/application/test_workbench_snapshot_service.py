@@ -363,7 +363,7 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert snapshot["entrypoints"]["graph_source_projection"] == "/api/workbench/graph/source-projection"
     assert snapshot["workbench"]["host_mode"] == "python_core"
-    assert snapshot["workbench"]["api_version"] == "0.6.2"
+    assert snapshot["workbench"]["api_version"] == "0.6.3"
     assert snapshot["compiler"]["available_source_kinds"] == [
         "graph_workspace",
         "native_flow",
@@ -1100,6 +1100,19 @@ def test_service_can_save_custom_node_graph_resource_and_expose_it_in_registry()
         item["resource_type"] == "custom_node_graph"
         and item["display_name"] == "Greeting Graph"
         for item in registry
+    )
+
+
+def test_create_empty_custom_node_graph_resource_uses_single_prefixed_document_id() -> None:
+    service = CompilationWorkbenchService()
+
+    created = service.create_empty_custom_node_graph_resource(resource_name="Probe Graph")
+
+    assert created["resource"]["resource_id"].startswith("custom_node_graph:")
+    assert created["resource"]["source_graph_document_id"] == created["resource"]["resource_id"]
+    assert (
+        created["resource"]["source_graph_document"]["graph_model_id"]
+        == created["resource"]["resource_id"]
     )
 
 
@@ -17159,7 +17172,7 @@ def test_runtime_health_exposes_host_session_capabilities_and_entrypoints() -> N
     assert health["status"] == "ok"
     assert health["service"] == "weconduct-api"
     assert health["host_mode"] == "python_core"
-    assert health["api_version"] == "0.6.2"
+    assert health["api_version"] == "0.6.3"
     assert health["workspace_state_version"] == 1
     assert health["workspace_session_id"].startswith("ws-")
     assert health["service_started_at"]
@@ -20832,8 +20845,8 @@ def test_service_normalizes_persisted_workbench_api_version_to_current_version(t
     health = service.get_runtime_health()
     persisted_state = json.loads(state_file.read_text(encoding="utf-8"))
 
-    assert health["api_version"] == "0.6.2"
-    assert persisted_state["workbench"]["api_version"] == "0.6.2"
+    assert health["api_version"] == "0.6.3"
+    assert persisted_state["workbench"]["api_version"] == "0.6.3"
 
 
 def test_open_project_marks_legacy_graph_document_as_pending_upgrade(tmp_path) -> None:
@@ -20874,7 +20887,7 @@ def test_open_project_marks_legacy_graph_document_as_pending_upgrade(tmp_path) -
     assert opened["project"]["pending_graph_upgrade"]["status"] == "upgrade_available"
     assert opened["project"]["pending_graph_upgrade"]["document_id"] == "graph:workspace"
     assert opened["project"]["pending_graph_upgrade"]["compatibility"]["graph_data_version"] == "0.5.2"
-    assert opened["project"]["pending_graph_upgrade"]["compatibility"]["current_app_version"] == "0.6.2"
+    assert opened["project"]["pending_graph_upgrade"]["compatibility"]["current_app_version"] == "0.6.3"
     assert (
         opened["project"]["pending_graph_upgrade"]["compatibility"]["available_upgrade_path"][0]["upgrader_id"]
         == "p18d-baseline-052-to-061"
@@ -20934,6 +20947,76 @@ def test_open_project_marks_custom_node_graph_as_pending_upgrade(tmp_path) -> No
     assert any(item["document_id"] == custom_document_id for item in pending["documents"])
 
 
+def test_apply_pending_graph_upgrade_and_save_clears_custom_node_graph_upgrade_prompt_on_reopen(
+    tmp_path,
+) -> None:
+    project_path = tmp_path / "legacy-subgraph-upgrade.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Legacy Subgraph Upgrade Project")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    saved = service.save_custom_node_graph_resource(resource_name="Legacy Child Graph")
+    custom_document_id = f"custom_node_graph:{saved['resource']['resource_id']}"
+    service.save_graph_document(
+        {
+            "document_id": custom_document_id,
+            "graph_model_id": custom_document_id,
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "root_metadata": {},
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    service.save_project_as(project_path=project_path)
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    resources_index_path = (
+        project_path.parent / project_payload["project"]["project_resources_index_path"]
+    )
+    resources_index = json.loads(resources_index_path.read_text(encoding="utf-8"))
+    resource_ref = next(
+        item
+        for item in resources_index["resources"]
+        if item["resource_id"] == saved["resource"]["resource_id"]
+    )
+    custom_graph_path = project_path.parent / resource_ref["graph_path"]
+    custom_graph_payload = json.loads(custom_graph_path.read_text(encoding="utf-8"))
+    custom_graph_payload["root_metadata"] = {}
+    custom_graph_path.write_text(
+        json.dumps(custom_graph_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    reopened = CompilationWorkbenchService()
+    opened = reopened.open_project(project_path=project_path)
+
+    assert opened["project"]["pending_graph_upgrade"] is not None
+
+    upgrade_result = reopened.apply_pending_graph_upgrade(decision="upgrade_and_load")
+    save_result = reopened.save_project()
+
+    saved_custom_graph_payload = json.loads(custom_graph_path.read_text(encoding="utf-8"))
+    restored = CompilationWorkbenchService()
+    reopened_result = restored.open_project(project_path=project_path)
+
+    assert upgrade_result["status"] == "upgraded"
+    assert save_result["status"] == "saved"
+    assert (
+        saved_custom_graph_payload["root_metadata"]["graph_compatibility"]["graph_data_version"]
+        == "0.6.2"
+    )
+    assert reopened_result["project"]["pending_graph_upgrade"] is None
+
+
 def test_workbench_snapshot_exposes_pending_graph_upgrade_after_open_project(tmp_path) -> None:
     project_path = tmp_path / "legacy-snapshot.weconduct.json"
     service = CompilationWorkbenchService()
@@ -20981,7 +21064,7 @@ def test_apply_pending_graph_upgrade_upgrades_workspace_graph_metadata(tmp_path)
     )
     assert (
         upgraded_graph["root_metadata"]["graph_compatibility"]["last_upgraded_by_app_version"]
-        == "0.6.2"
+        == "0.6.3"
     )
     assert (
         upgraded_graph["root_metadata"]["graph_compatibility"]["built_with_app_version"]
@@ -21185,6 +21268,152 @@ def test_upgraded_graph_persists_after_save_and_reopen(tmp_path) -> None:
         saved_graph_payload["root_metadata"]["graph_compatibility"]["graph_data_version"] == "0.6.2"
     )
     assert reopened_result["project"]["pending_graph_upgrade"] is None
+
+
+def test_apply_pending_graph_upgrade_persists_legacy_project_without_manual_save(tmp_path) -> None:
+    project_path = tmp_path / "upgrade-without-manual-save.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="Upgrade Without Manual Save Project")
+    service.save_project_as(project_path=project_path)
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    graph_path = project_path.parent / project_payload["project"]["main_graph_path"]
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["root_metadata"] = {}
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    opened = reopened.open_project(project_path=project_path)
+    assert opened["project"]["pending_graph_upgrade"] is not None
+
+    upgraded = reopened.apply_pending_graph_upgrade(decision="upgrade_and_load")
+
+    saved_graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    restored = CompilationWorkbenchService()
+    reopened_result = restored.open_project(project_path=project_path)
+
+    assert upgraded["status"] == "upgraded"
+    assert (
+        saved_graph_payload["root_metadata"]["graph_compatibility"]["graph_data_version"] == "0.6.2"
+    )
+    assert reopened_result["project"]["pending_graph_upgrade"] is None
+
+
+def test_service_restart_clears_stale_pending_graph_upgrade_when_project_and_recovery_graph_are_already_upgraded(
+    tmp_path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    project_path = tmp_path / "stale-pending-upgrade.weconduct.json"
+    service = CompilationWorkbenchService(state_store=FileWorkspaceStateStore(workspace_state_path))
+    service.create_project(project_name="Stale Pending Upgrade Project")
+    service.save_custom_node_graph_resource(resource_name="已升级子图")
+    service.save_project_as(project_path=project_path)
+
+    project_payload = json.loads(project_path.read_text(encoding="utf-8"))
+    project_storage_root = project_path.parent / f"{project_path.stem}.data"
+    custom_graph_path = (
+        project_storage_root
+        / "resources"
+        / "custom-node-graphs"
+        / "custom_node_graph_984cc1b4429c"
+        / "graph.json"
+    )
+    if not custom_graph_path.exists():
+        resource_index = json.loads(
+            (project_storage_root / "resources" / "index.json").read_text(encoding="utf-8")
+        )
+        custom_source_ref = resource_index["resources"][0]["source_ref"]
+        custom_graph_path = project_path.parent / custom_source_ref / "graph.json"
+
+    custom_graph_payload = json.loads(custom_graph_path.read_text(encoding="utf-8"))
+    custom_graph_payload["graph_model_id"] = "custom_node_graph:custom_node_graph:984cc1b4429c"
+    custom_graph_path.write_text(
+        json.dumps(custom_graph_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    reopened = CompilationWorkbenchService(state_store=FileWorkspaceStateStore(workspace_state_path))
+    opened = reopened.open_project(project_path=project_path)
+    custom_resource = next(
+        item
+        for item in reopened.get_resource_registry_document()["resources"]
+        if item["resource_type"] == "custom_node_graph"
+    )
+    assert opened["project"]["pending_graph_upgrade"] is None
+
+    state_payload = json.loads(workspace_state_path.read_text(encoding="utf-8"))
+    pending_recovery_workspace_state = deepcopy(state_payload)
+    pending_recovery_workspace_state["pending_recovery"] = None
+    pending_recovery_workspace_state["pending_graph_upgrade"] = None
+    pending_recovery_workspace_state["project_runtime"]["is_dirty"] = True
+
+    state_payload["project_runtime"]["is_dirty"] = True
+    state_payload["pending_recovery"] = {
+        "status": "pending",
+        "project_id": state_payload["project"]["project_id"],
+        "project_name": state_payload["project"]["project_name"],
+        "project_file_path": str(project_path.resolve()),
+        "workspace_state": pending_recovery_workspace_state,
+    }
+    state_payload["pending_graph_upgrade"] = {
+        "status": "upgrade_available",
+        "document_id": "graph:workspace",
+        "documents": [
+            {
+                "document_id": "graph:workspace",
+                "document_role": "main_graph",
+                "display_name": state_payload["project"]["project_name"],
+                "compatibility": {
+                    "status": "upgrade_available",
+                    "graph_data_version": "0.5.2",
+                    "current_app_version": "0.6.3",
+                    "minimum_loader_app_version": "0.5.2",
+                    "built_with_app_version": "0.5.2",
+                    "last_upgraded_by_app_version": "0.5.2",
+                    "upgrade_history": [],
+                    "is_legacy_unversioned": True,
+                    "available_upgrade_path": [
+                        {
+                            "from_version": "0.5.2",
+                            "to_version": "0.6.2",
+                            "upgrader_id": "p18d-baseline-052-to-061",
+                        }
+                    ],
+                },
+            },
+            {
+                "document_id": "custom_node_graph:custom_node_graph:984cc1b4429c",
+                "document_role": "custom_node_graph",
+                "display_name": custom_resource["display_name"],
+                "compatibility": {
+                    "status": "upgrade_available",
+                    "graph_data_version": "0.5.2",
+                    "current_app_version": "0.6.3",
+                    "minimum_loader_app_version": "0.5.2",
+                    "built_with_app_version": "0.5.2",
+                    "last_upgraded_by_app_version": "0.5.2",
+                    "upgrade_history": [],
+                    "is_legacy_unversioned": True,
+                    "available_upgrade_path": [
+                        {
+                            "from_version": "0.5.2",
+                            "to_version": "0.6.2",
+                            "upgrader_id": "p18d-baseline-052-to-061",
+                        }
+                    ],
+                },
+            },
+        ],
+    }
+    workspace_state_path.write_text(
+        json.dumps(state_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    restarted = CompilationWorkbenchService(state_store=FileWorkspaceStateStore(workspace_state_path))
+    snapshot = restarted.get_workbench_snapshot()
+
+    assert snapshot["project"]["pending_recovery"] is not None
+    assert snapshot["project"]["pending_graph_upgrade"] is None
 
 
 def test_open_project_marks_loader_older_than_graph_when_minimum_loader_is_higher(tmp_path) -> None:
@@ -21636,6 +21865,54 @@ def test_save_project_writes_project_resources_into_resource_directories(tmp_pat
     assert manifest_payload["resource_id"] == saved["resource"]["resource_id"]
     assert manifest_payload["resource_type"] == "custom_node_graph"
     assert graph_payload["graph_model_id"] == saved["resource"]["source_graph_document_id"]
+
+
+def test_save_project_normalizes_legacy_double_prefixed_custom_graph_document_ids(tmp_path) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "normalize-legacy-custom-graph.weconduct.json"
+
+    created = builder.create_empty_custom_node_graph_resource(resource_name="登录流程")
+    resource_id = created["resource"]["resource_id"]
+    save_result = builder.save_project_as(project_path=str(project_path))
+
+    storage_root = project_path.parent / f"{project_path.stem}.data"
+    index_payload = json.loads(
+        (storage_root / "resources" / "index.json").read_text(encoding="utf-8")
+    )
+    resource_ref = next(
+        item
+        for item in index_payload["resources"]
+        if item["resource_id"] == created["resource"]["resource_id"]
+    )
+    manifest_path = project_path.parent / Path(resource_ref["manifest_path"])
+    graph_path = project_path.parent / Path(resource_ref["graph_path"])
+
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    legacy_document_id = f"custom_node_graph:{resource_id}"
+    manifest_payload["graph_document_id"] = legacy_document_id
+    graph_payload["graph_model_id"] = legacy_document_id
+    manifest_path.write_text(json.dumps(manifest_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    graph_path.write_text(json.dumps(graph_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    opened = reopened.open_project(project_path=project_path)
+    normalized_resource = next(
+        item
+        for item in reopened.get_resource_registry_document()["resources"]
+        if item["resource_id"] == resource_id
+    )
+
+    reopened.save_project()
+
+    normalized_manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    normalized_graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+
+    assert save_result["status"] == "saved"
+    assert opened["status"] == "opened"
+    assert normalized_resource["source_graph_document_id"] == resource_id
+    assert normalized_manifest_payload["graph_document_id"] == resource_id
+    assert normalized_graph_payload["graph_model_id"] == resource_id
 
 
 def test_save_project_extracts_enabled_and_tags_into_resource_overrides(tmp_path: Path) -> None:
@@ -22287,7 +22564,7 @@ def test_build_project_wcrun_package_writes_expected_archive_layout(tmp_path: Pa
         assert manifest_payload["integrity"]["checksums_path"] == "meta/checksums.json"
         assert manifest_payload["integrity"]["package_info_path"] == "meta/package-info.json"
         assert package_info_payload["manifest_version"] == 1
-        assert package_info_payload["builder_app_version"] == "0.6.2"
+        assert package_info_payload["builder_app_version"] == "0.6.3"
         assert package_info_payload["source_project_schema_version"] == "project-v2"
         assert package_info_payload["graph_stats"]["graph_count"] == 1
         assert package_info_payload["resource_stats"]["embedded_resource_count"] == 0
