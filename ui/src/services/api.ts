@@ -40,6 +40,9 @@ import type {
   PackageBuildResponse,
   PackageInspectResponse,
   PackageLoadResponse,
+  PythonRuntimeGetResponse,
+  PythonRuntimeActionResponse,
+  PythonRuntimeExportResponse,
 } from '@/types/domains/api'
 
 const API_BASE = '/api'
@@ -302,5 +305,31 @@ export function fetchPackageInspect(packagePath: string): Promise<PackageInspect
 export function postPackageLoad(packagePath: string): Promise<PackageLoadResponse> { return request('/workbench/project/package/load', { method: 'POST', body: JSON.stringify({ package_path: packagePath }) }) }
 export function postPackageUnload(): Promise<{ status: string }> { return request('/workbench/project/package/unload', { method: 'POST', body: '{}' }) }
 export function postPackageBindExternal(body: { resource_id: string; value: string }): Promise<{ status: string }> { return request('/workbench/project/package/external-resources/bind', { method: 'POST', body: JSON.stringify(body) }) }
+
+// ===== 0.7-E: Python Runtime =====
+
+export function fetchPythonRuntime(): Promise<PythonRuntimeGetResponse> {
+  return request<PythonRuntimeGetResponse>('/workbench/project/python-runtime')
+}
+
+export function postPythonRuntimeHealthCheck(): Promise<PythonRuntimeActionResponse> {
+  return request<PythonRuntimeActionResponse>('/workbench/project/python-runtime/health-check', { method: 'POST', body: '{}' })
+}
+
+export function postPythonRuntimePrepare(): Promise<PythonRuntimeActionResponse> {
+  return request<PythonRuntimeActionResponse>('/workbench/project/python-runtime/prepare', { method: 'POST', body: '{}' })
+}
+
+export function postPythonRuntimeRebuild(): Promise<PythonRuntimeActionResponse> {
+  return request<PythonRuntimeActionResponse>('/workbench/project/python-runtime/rebuild', { method: 'POST', body: '{}' })
+}
+
+export function postPythonRuntimeClear(): Promise<PythonRuntimeActionResponse> {
+  return request<PythonRuntimeActionResponse>('/workbench/project/python-runtime/clear', { method: 'POST', body: '{}' })
+}
+
+export function postPythonRuntimeExportBundle(body: { output_path: string; package_embed_mode?: string }): Promise<PythonRuntimeExportResponse> {
+  return request<PythonRuntimeExportResponse>('/workbench/project/python-runtime/export-bundle', { method: 'POST', body: JSON.stringify(body) })
+}
 
 export { ApiError }

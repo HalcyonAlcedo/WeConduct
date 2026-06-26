@@ -49,6 +49,11 @@ def test_preferences_service_builds_default_preferences_document() -> None:
     assert document["security_settings"]["show_security_warnings_in_runtime"] is True
     assert document["security_settings"]["log_security_events"] is True
     assert document["python_runtime_settings"]["capture_stdout_stderr"] is True
+    assert document["python_runtime_settings"]["default_python_version_spec"] == "3.13"
+    assert document["python_runtime_settings"]["default_cache_location_mode"] == "software_cache"
+    assert document["python_runtime_settings"]["default_project_cache_mode"] == "wheelhouse_rebuild"
+    assert document["python_runtime_settings"]["default_requirements_source_mode"] == "inline"
+    assert document["python_runtime_settings"]["default_package_embed_mode"] == "wheelhouse_rebuild"
     assert document["graph_settings"]["auto_sync_mode"] == "responsive"
     assert document["graph_settings"]["save_conflict_policy"] == "prefer_current_graph"
     assert document["graph_settings"]["auto_open_node_on_drop"] is True
@@ -56,6 +61,20 @@ def test_preferences_service_builds_default_preferences_document() -> None:
     assert document["graph_settings"]["show_inline_config_summary"] is True
     assert document["other_settings"]["workspace_draft_recovery_enabled"] is True
     assert document["other_settings"]["workspace_draft_recovery_ttl_minutes"] == 30
+
+
+def test_preferences_service_exposes_python_runtime_default_fields() -> None:
+    service = PreferencesService(preferences_store=InMemoryPreferencesStore())
+
+    document = service.get_preferences_document()
+
+    settings = document["python_runtime_settings"]
+    assert settings["capture_stdout_stderr"] is True
+    assert settings["default_python_version_spec"] == "3.13"
+    assert settings["default_cache_location_mode"] == "software_cache"
+    assert settings["default_project_cache_mode"] == "wheelhouse_rebuild"
+    assert settings["default_requirements_source_mode"] == "inline"
+    assert settings["default_package_embed_mode"] == "wheelhouse_rebuild"
 
 
 def test_preferences_service_can_update_program_settings() -> None:

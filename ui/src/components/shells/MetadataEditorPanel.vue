@@ -60,6 +60,7 @@ const PARAM_TEMPLATES: Record<string, ParamField[]> = {
   'data.list_index': [{ key: 'variable_name', type: 'string' }, { key: 'value', type: 'typed-value' }, { key: 'output_variable_name', type: 'string' }],
   'browser.inject_js': [{ key: 'script', type: 'code' }],
   'browser.run_js': [{ key: 'script', type: 'code' }, { key: 'variable_name', type: 'string' }],
+  'python.run': [{ key: 'code', type: 'code' }],
   'browser.extract_web_table': [{ key: 'selector', type: 'string' }, { key: 'variable_name', type: 'string' }],
   'browser.extract_web_table_to_excel': [{ key: 'selector', type: 'string' }, { key: 'path', type: 'string' }, { key: 'sheet_name', type: 'string' }],
   'session.apply_auth_session': [{ key: 'cookies', type: 'json' }, { key: 'local_storage', type: 'object-map' }],
@@ -239,7 +240,7 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
           </template>
         </div>
         <!-- Code -->
-        <div v-for="f in paramFields.filter(p => p.type === 'code')" :key="f.key" class="mep-code-row"><label class="mep-code-label">{{ f.key }}</label><div class="mep-code-editor"><MonacoEditor :model-value="String(getCfgVal(f.key) ?? '')" language="javascript" :read-only="!workspace.isGraphEditable" @update:model-value="setCfgVal(f.key, $event)" /></div></div>
+        <div v-for="f in paramFields.filter(p => p.type === 'code')" :key="f.key" class="mep-code-row"><label class="mep-code-label">{{ f.key }}</label><div class="mep-code-editor"><MonacoEditor :model-value="String(getCfgVal(f.key) ?? '')" :language="selectedNode?.node_kind === 'python.run' ? 'python' : 'javascript'" :read-only="!workspace.isGraphEditable" @update:model-value="setCfgVal(f.key, $event)" /></div></div>
         <!-- Component-schema -->
         <template v-for="f in paramFields.filter(p => p.type === 'component-schema')" :key="f.key"><div class="mep-cfg-section">{{ f.key }}</div>
           <div v-for="(e, ei) in getSchemaEntries(f.key)" :key="ei" class="mep-cs-row">

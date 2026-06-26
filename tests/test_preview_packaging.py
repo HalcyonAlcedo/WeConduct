@@ -27,3 +27,13 @@ def test_preview_packaging_files_reference_desktop_shell_entrypoint() -> None:
     )
     assert "pywebview" in pyproject_text
     assert "pyinstaller" in pyproject_text
+
+
+def test_preview_packaging_spec_collects_bundled_python_runtime() -> None:
+    root = Path(__file__).resolve().parents[1]
+    spec_text = (
+        root / "packaging" / "pyinstaller" / "weconduct_preview.spec"
+    ).read_text(encoding="utf-8")
+
+    assert "bundled_python_source" in spec_text
+    assert 'datas.append((str(bundled_python_source), "."))' in spec_text

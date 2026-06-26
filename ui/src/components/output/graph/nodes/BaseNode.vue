@@ -85,7 +85,7 @@ function isEditable(v: unknown, fieldKey?: string): boolean {
   if (!workspace.isGraphEditable) return false
   if (fieldKey) {
     const t = getFieldTemplate(fieldKey)
-    if (t && (t.type === 'object-map' || t.type === 'branch-list' || t.type === 'code' || t.type === 'typed-value')) return false
+    if (t && (t.type === 'object-map' || t.type === 'branch-list' || t.type === 'typed-value')) return false
   }
   return typeof v === 'string' || typeof v === 'boolean' || typeof v === 'number'
 }
@@ -234,6 +234,7 @@ async function applyBranches() {
                   <option v-for="o in getFieldTemplate(e.key)!.options" :key="o" :value="o">{{ o }}</option>
                 </select>
                 <input v-else-if="e.editable && typeof e.value === 'number'" class="vf-cfg-input" :disabled="!workspace.isGraphEditable" type="number" :value="e.value as number" @change="updateConfigField(e.path, ($event.target as HTMLInputElement).value)" @mousedown.stop @click.stop />
+                <textarea v-else-if="e.editable && getFieldTemplate(e.key)?.type === 'code'" class="vf-cfg-input vf-cfg-code" :disabled="!workspace.isGraphEditable" :value="String(e.value ?? '')" rows="3" @change="updateConfigField(e.path, ($event.target as HTMLTextAreaElement).value)" @mousedown.stop @click.stop />
                 <span v-else-if="e.editable" style="display:flex;gap:1px;align-items:center">
                   <input class="vf-cfg-input" :disabled="!workspace.isGraphEditable" :value="String(e.value ?? '')" @change="updateConfigField(e.path, ($event.target as HTMLInputElement).value)" @mousedown.stop @click.stop />
                   <button v-if="isPathField(e.key)" class="vf-path-btn" :disabled="!workspace.isGraphEditable" @mousedown.stop @click.stop @click="pickPathForInline(e.path)" title="选择路径">…</button>
@@ -327,6 +328,7 @@ async function applyBranches() {
 .vf-cfg-key { font-size: 9px; font-family: var(--font-mono); color: var(--text-disabled); width: 60px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vf-cfg-input { flex: 1; padding: 0 4px; border: 1px solid var(--border-subtle); border-radius: 2px; background: var(--bg-input); color: var(--text-primary); font-size: 10px; font-family: var(--font-ui); min-width: 0; }
 .vf-cfg-input:focus { border-color: var(--accent); outline: none; }
+.vf-cfg-code { font-family: var(--font-mono); resize: vertical; min-height: 36px; }
 .vf-cfg-ro { flex: 1; font-size: 10px; color: var(--text-disabled); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: italic; }
 .vf-cfg-ro.vf-bound { color: var(--state-info); font-style: normal; font-weight: 500; }
 .vf-branch-edit { margin-left: auto; padding: 0 3px; border: none; background: transparent; color: var(--text-disabled); cursor: pointer; font-size: 10px; flex-shrink: 0; }

@@ -151,6 +151,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 {
                     "project_settings": result["project_settings"],
+                    "python_runtime_summary": result.get("python_runtime_summary"),
                     "state": result["state"],
                 },
             )
@@ -164,6 +165,14 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     "runtime_defaults": result["project_settings"]["runtime_defaults"],
                     "state": result["state"],
                 },
+            )
+            return
+
+        if self.path == "/api/workbench/project/python-runtime":
+            result = service.get_project_python_runtime_document()
+            self._write_json(
+                HTTPStatus.OK,
+                result,
             )
             return
 
@@ -579,6 +588,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 {
                     "project_settings": result["project_settings"],
+                    "python_runtime_summary": result.get("python_runtime_summary"),
                     "state": result["state"],
                 },
             )
@@ -604,6 +614,65 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     "graph_projection_refresh": result["graph_projection_refresh"],
                 },
             )
+            return
+
+        if self.path == "/api/workbench/project/python-runtime/health-check":
+            try:
+                self._read_optional_json_request_body()
+                result = service.health_check_project_python_runtime()
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
+        if self.path == "/api/workbench/project/python-runtime/prepare":
+            try:
+                self._read_optional_json_request_body()
+                result = service.prepare_project_python_runtime()
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
+        if self.path == "/api/workbench/project/python-runtime/rebuild":
+            try:
+                self._read_optional_json_request_body()
+                result = service.rebuild_project_python_runtime()
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
+        if self.path == "/api/workbench/project/python-runtime/clear":
+            try:
+                self._read_optional_json_request_body()
+                result = service.clear_project_python_runtime()
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
+        if self.path == "/api/workbench/project/python-runtime/export-bundle":
+            try:
+                payload = self._read_json_request_body()
+                output_path = payload.get("output_path")
+                package_embed_mode = payload.get("package_embed_mode")
+                if not isinstance(output_path, str) or not output_path.strip():
+                    raise ValueError("field must be a non-empty string: output_path")
+                if package_embed_mode is not None and not isinstance(package_embed_mode, str):
+                    raise ValueError("field must be a string when provided: package_embed_mode")
+                result = service.export_project_python_runtime_bundle(
+                    output_path=output_path,
+                    package_embed_mode=package_embed_mode,
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
             return
 
         if self.path == "/api/workbench/project/package/preflight":

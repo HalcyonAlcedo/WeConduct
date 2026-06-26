@@ -3,16 +3,17 @@ from __future__ import annotations
 import base64
 import binascii
 from dataclasses import dataclass, field
-from contextlib import redirect_stderr, redirect_stdout
 import csv
 from datetime import datetime, timezone
-import io
 import ipaddress
 import json
+import os
 from pathlib import Path
 import re
 import ast
 import socket
+import subprocess
+import tempfile
 from time import monotonic
 import urllib.error
 import urllib.parse
@@ -2220,27 +2221,99 @@ class RuntimeExecutorRegistry:
         node_config = _node_config(node)
         if not self._is_python_execution_allowed():
             return _failed_result(node, "python.execution_disabled", "python execution is disabled")
+        project_runtime_prepare_error = self._runtime_settings.get(
+            "python_project_runtime_prepare_error"
+        )
+        if isinstance(project_runtime_prepare_error, str) and project_runtime_prepare_error.strip():
+            return {
+                "status": "failed",
+                "node_id": node["node_id"],
+                "error_code": "python.runtime_prepare_failed",
+                "message": project_runtime_prepare_error.strip(),
+                "stdout": "",
+                "stderr": "",
+            }
         code = _resolve_value(node_config.get("code"), context)
         if not isinstance(code, str) or not code.strip():
             return _failed_result(node, "python.code_required", "python.run requires node_config.code")
         default_variable_name = node_config.get("variable_name")
-        scope = {
-            "variables": context.variables,
-            "page": context.browser_runtime.get("page"),
-            "browser": context.browser_runtime.get("browser"),
-            "result": None,
+        python_executable_path = self._runtime_settings.get("python_executable_path")
+        python_runtime_root = self._runtime_settings.get("python_project_runtime_root")
+        python_runtime_source = (
+            "project_runtime"
+            if self._runtime_settings.get("python_project_runtime_enabled", False)
+            else "preferences"
+        )
+        if self._runtime_settings.get("python_project_runtime_enabled", False):
+            return self._execute_python_run_in_project_runtime(
+                node=node,
+                context=context,
+                code=code,
+                default_variable_name=default_variable_name,
+                python_executable_path=python_executable_path,
+                python_runtime_root=python_runtime_root,
+                python_runtime_source=python_runtime_source,
+            )
+        return _failed_result(
+            node,
+            "python.runtime_disabled",
+            "python.run requires project python runtime to be enabled",
+        )
+
+    def _execute_python_run_in_project_runtime(
+        self,
+        *,
+        node: dict,
+        context: RuntimeContext,
+        code: str,
+        default_variable_name: object,
+        python_executable_path: object,
+        python_runtime_root: object,
+        python_runtime_source: str,
+    ) -> dict:
+        if not isinstance(python_executable_path, str) or not python_executable_path.strip():
+            return {
+                "status": "failed",
+                "node_id": node["node_id"],
+                "error_code": "python.runtime_prepare_failed",
+                "message": "python runtime executable path is unavailable",
+                "stdout": "",
+                "stderr": "",
+            }
+        python_executable = Path(python_executable_path)
+        capture_stdout_stderr = self._should_capture_stdout_stderr()
+        payload = {
+            "code": code,
+            "variables": _make_python_run_json_safe(context.variables),
             "result_variable": default_variable_name,
         }
-        capture_stdout_stderr = self._should_capture_stdout_stderr()
-        stdout_buffer = io.StringIO()
-        stderr_buffer = io.StringIO()
+        command_timeout = _resolve_int(self._runtime_settings.get("python_timeout_seconds"), default=60)
+        if command_timeout <= 0:
+            command_timeout = 60
+        working_directory = context.project_directory or context.workspace_root
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        env.pop("PYTHONPATH", None)
         try:
             _validate_python_run_code(code)
-            compiled = compile(code, "<weconduct-python.run>", "exec")
-            stdout_target = stdout_buffer if capture_stdout_stderr else io.StringIO()
-            stderr_target = stderr_buffer if capture_stdout_stderr else io.StringIO()
-            with redirect_stdout(stdout_target), redirect_stderr(stderr_target):
-                exec(compiled, {"__builtins__": _PYTHON_SAFE_BUILTINS}, scope)
+            with tempfile.TemporaryDirectory(prefix="weconduct-python-run-") as temp_dir:
+                temp_root = Path(temp_dir)
+                input_path = temp_root / "input.json"
+                output_path = temp_root / "output.json"
+                runner_path = temp_root / "runner.py"
+                input_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                runner_path.write_text(_PYTHON_RUN_CHILD_SCRIPT, encoding="utf-8")
+                process = subprocess.run(
+                    [str(python_executable), str(runner_path), str(input_path), str(output_path)],
+                    cwd=str(working_directory) if working_directory is not None else None,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=command_timeout,
+                    check=False,
+                )
+                child_result = self._read_python_run_child_result(output_path)
         except PythonCodeRejected as exc:
             return {
                 "status": "failed",
@@ -2248,31 +2321,100 @@ class RuntimeExecutorRegistry:
                 "error_code": "python.code_rejected",
                 "message": str(exc),
                 "exception_type": type(exc).__name__,
-                "stdout": stdout_buffer.getvalue(),
-                "stderr": stderr_buffer.getvalue(),
+                "stdout": "",
+                "stderr": "",
             }
-        except PythonImportNotAllowed as exc:
+        except subprocess.TimeoutExpired:
             return {
                 "status": "failed",
                 "node_id": node["node_id"],
-                "error_code": "python.import_not_allowed",
-                "message": str(exc),
-                "exception_type": type(exc).__name__,
-                "stdout": stdout_buffer.getvalue(),
-                "stderr": stderr_buffer.getvalue(),
+                "error_code": "python.execution_timeout",
+                "message": f"python.run timed out after {command_timeout} seconds",
+                "stdout": "",
+                "stderr": "",
             }
-        except Exception as exc:
+        except OSError as exc:
             return {
                 "status": "failed",
                 "node_id": node["node_id"],
                 "error_code": "python.execution_failed",
                 "message": str(exc),
                 "exception_type": type(exc).__name__,
-                "stdout": stdout_buffer.getvalue(),
-                "stderr": stderr_buffer.getvalue(),
+                "stdout": "",
+                "stderr": "",
             }
-        result = scope.get("result")
-        result_variable = scope.get("result_variable")
+        except ValueError as exc:
+            return {
+                "status": "failed",
+                "node_id": node["node_id"],
+                "error_code": "python.execution_failed",
+                "message": str(exc),
+                "exception_type": type(exc).__name__,
+                "stdout": "",
+                "stderr": "",
+            }
+        child_stdout = child_result.get("stdout", "")
+        child_stderr = child_result.get("stderr", "")
+        if process.returncode != 0 and child_result.get("status") != "failed":
+            detail = process.stderr.strip() or process.stdout.strip() or f"exit code {process.returncode}"
+            return {
+                "status": "failed",
+                "node_id": node["node_id"],
+                "error_code": "python.execution_failed",
+                "message": detail,
+                "stdout": child_stdout if capture_stdout_stderr else "",
+                "stderr": child_stderr if capture_stdout_stderr else "",
+            }
+        if child_result.get("status") == "failed":
+            return {
+                "status": "failed",
+                "node_id": node["node_id"],
+                "error_code": "python.execution_failed",
+                "message": str(child_result.get("message") or "python child execution failed"),
+                "exception_type": child_result.get("exception_type"),
+                "stdout": child_stdout if capture_stdout_stderr else "",
+                "stderr": child_stderr if capture_stdout_stderr else "",
+            }
+        child_variables = child_result.get("variables")
+        if isinstance(child_variables, dict):
+            context.variables.clear()
+            context.variables.update(child_variables)
+        return self._finalize_python_run_result(
+            node=node,
+            context=context,
+            result=child_result.get("result"),
+            result_variable=child_result.get("result_variable"),
+            python_runtime_source=python_runtime_source,
+            python_executable_path=python_executable_path,
+            python_runtime_root=python_runtime_root,
+            stdout=child_stdout if capture_stdout_stderr else "",
+            stderr=child_stderr if capture_stdout_stderr else "",
+        )
+
+    def _read_python_run_child_result(self, output_path: Path) -> dict:
+        if not output_path.exists():
+            raise ValueError(f"python.run child result file missing: {output_path}")
+        try:
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"python.run child result is unreadable: {output_path}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"python.run child result must be object: {output_path}")
+        return payload
+
+    def _finalize_python_run_result(
+        self,
+        *,
+        node: dict,
+        context: RuntimeContext,
+        result: Any,
+        result_variable: Any,
+        python_runtime_source: str,
+        python_executable_path: object,
+        python_runtime_root: object,
+        stdout: str,
+        stderr: str,
+    ) -> dict:
         if isinstance(result_variable, str) and result_variable.strip():
             context.variables[result_variable.strip()] = result
             result_variable = result_variable.strip()
@@ -2283,8 +2425,11 @@ class RuntimeExecutorRegistry:
             "node_id": node["node_id"],
             "result": result,
             "result_variable": result_variable,
-            "stdout": stdout_buffer.getvalue() if capture_stdout_stderr else "",
-            "stderr": stderr_buffer.getvalue() if capture_stdout_stderr else "",
+            "python_runtime_source": python_runtime_source,
+            "python_executable_path": python_executable_path,
+            "python_runtime_root": python_runtime_root,
+            "stdout": stdout,
+            "stderr": stderr,
         }
 
     def _is_file_access_allowed(self) -> bool:
@@ -2850,35 +2995,8 @@ _WEB_TABLE_EXTRACT_SCRIPT = """
 }
 """
 
-_PYTHON_ALLOWED_IMPORTS = {
-    "csv",
-    "datetime",
-    "json",
-    "math",
-    "re",
-    "statistics",
-}
-
-
-class PythonImportNotAllowed(ImportError):
-    pass
-
-
 class PythonCodeRejected(ValueError):
     pass
-
-
-def _python_safe_import(
-    name: str,
-    globals: dict | None = None,  # noqa: A002
-    locals: dict | None = None,  # noqa: A002
-    fromlist: tuple | list = (),
-    level: int = 0,
-) -> Any:
-    root_name = name.split(".", 1)[0]
-    if level != 0 or root_name not in _PYTHON_ALLOWED_IMPORTS:
-        raise PythonImportNotAllowed(f"python.run import is not allowed: {name}")
-    return __import__(name, globals, locals, fromlist, level)
 
 
 _PYTHON_DANGEROUS_ATTRIBUTES = frozenset(
@@ -2898,29 +3016,79 @@ _PYTHON_DANGEROUS_ATTRIBUTES = frozenset(
     }
 )
 
-_PYTHON_SAFE_BUILTINS = {
-    "abs": abs,
-    "all": all,
-    "any": any,
-    "bool": bool,
-    "dict": dict,
-    "enumerate": enumerate,
-    "float": float,
-    "int": int,
-    "len": len,
-    "list": list,
-    "max": max,
-    "min": min,
-    "print": print,
-    "range": range,
-    "round": round,
-    "set": set,
-    "sorted": sorted,
-    "str": str,
-    "sum": sum,
-    "tuple": tuple,
-    "__import__": _python_safe_import,
-}
+_PYTHON_RUN_CHILD_SCRIPT = """
+from __future__ import annotations
+
+import io
+import json
+import sys
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+
+
+def _json_safe(value):
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    return repr(value)
+
+
+def main() -> int:
+    input_path = Path(sys.argv[1])
+    output_path = Path(sys.argv[2])
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    scope = {
+        "variables": payload.get("variables", {}),
+        "page": None,
+        "browser": None,
+        "result": None,
+        "result_variable": payload.get("result_variable"),
+    }
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+    response = {}
+    try:
+        compiled = compile(payload["code"], "<weconduct-python.run>", "exec")
+        with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+            exec(compiled, {"__builtins__": __builtins__}, scope)
+        response = {
+            "status": "succeeded",
+            "result": _json_safe(scope.get("result")),
+            "result_variable": _json_safe(scope.get("result_variable")),
+            "variables": _json_safe(scope.get("variables", {})),
+        }
+    except Exception as exc:
+        response = {
+            "status": "failed",
+            "message": str(exc),
+            "exception_type": type(exc).__name__,
+        }
+    response["stdout"] = stdout_buffer.getvalue()
+    response["stderr"] = stderr_buffer.getvalue()
+    output_path.write_text(json.dumps(response, ensure_ascii=False), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""".strip()
+
+
+def _make_python_run_json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, list):
+        return [_make_python_run_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_make_python_run_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _make_python_run_json_safe(item) for key, item in value.items()}
+    return repr(value)
 
 
 _HTTP_BLOCKED_SCHEMES = frozenset({"file", "ftp", "gopher", "dict", "ldap"})

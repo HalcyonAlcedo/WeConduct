@@ -19,6 +19,7 @@ export const PARAM_TEMPLATES: Record<string, FieldTemplate[]> = {
   'data.list_index':         [{ key: 'variable_name', type: 'string' }, { key: 'value', type: 'typed-value' }, { key: 'output_variable_name', type: 'string' }],
   'browser.inject_js':       [{ key: 'script', type: 'code' }],
   'browser.run_js':          [{ key: 'script', type: 'code' }, { key: 'variable_name', type: 'string' }],
+  'python.run':              [{ key: 'code', type: 'code' }],
   'browser.extract_web_table': [{ key: 'selector', type: 'string' }, { key: 'variable_name', type: 'string' }],
   'browser.extract_web_table_to_excel': [{ key: 'selector', type: 'string' }, { key: 'path', type: 'string' }, { key: 'sheet_name', type: 'string' }],
   'session.apply_auth_session': [{ key: 'cookies', type: 'json' }, { key: 'local_storage', type: 'object-map' }],

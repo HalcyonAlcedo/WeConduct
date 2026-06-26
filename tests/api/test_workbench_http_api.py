@@ -866,6 +866,330 @@ def test_http_api_exposes_and_updates_project_settings_document(tmp_path: Path) 
         server.server_close()
 
 
+def test_http_api_project_settings_exposes_python_runtime_summary(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        create_payload = json.dumps({"project_name": "HTTP Python Runtime Summary"}).encode("utf-8")
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=create_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/settings") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        assert "python_runtime_profile" in payload["project_settings"]
+        assert "python_runtime_summary" in payload
+        assert payload["python_runtime_summary"]["enabled"] is False
+        assert payload["python_runtime_summary"]["health_status"] == "disabled"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_can_prepare_health_check_and_clear_project_python_runtime(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        create_payload = json.dumps(
+            {
+                "project_name": "HTTP Python Runtime Actions",
+                "project_directory": str(tmp_path),
+            }
+        ).encode("utf-8")
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=create_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/settings") as response:
+            settings_payload = json.loads(response.read().decode("utf-8"))
+
+        update_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/settings",
+            data=json.dumps(
+                {
+                    "project_settings": {
+                        **settings_payload["project_settings"],
+                        "python_runtime_profile": {
+                            **settings_payload["project_settings"]["python_runtime_profile"],
+                            "runtime_enabled": True,
+                            "cache_location_mode": "project_cache",
+                            "project_cache_mode": "wheelhouse_rebuild",
+                            "requirements_inline": [],
+                        },
+                    }
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(update_request):
+            pass
+
+        def _post_runtime_action(path: str) -> dict:
+            request = urllib.request.Request(
+                f"{base_url}{path}",
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        prepare_payload = _post_runtime_action("/api/workbench/project/python-runtime/prepare")
+        health_payload = _post_runtime_action("/api/workbench/project/python-runtime/health-check")
+        clear_payload = _post_runtime_action("/api/workbench/project/python-runtime/clear")
+
+        assert prepare_payload["python_runtime_profile"]["runtime_enabled"] is True
+        assert prepare_payload["runtime_status"]["health_status"] == "ready"
+        assert prepare_payload["runtime_status"]["runtime_root"]
+        assert health_payload["runtime_status"]["health_status"] == "ready"
+        assert clear_payload["runtime_status"]["health_status"] == "missing"
+        assert clear_payload["diagnostics"] == []
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_can_get_and_rebuild_project_python_runtime(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        create_payload = json.dumps(
+            {
+                "project_name": "HTTP Python Runtime Rebuild",
+                "project_directory": str(tmp_path),
+            }
+        ).encode("utf-8")
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=create_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/settings") as response:
+            settings_payload = json.loads(response.read().decode("utf-8"))
+
+        update_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/settings",
+            data=json.dumps(
+                {
+                    "project_settings": {
+                        **settings_payload["project_settings"],
+                        "python_runtime_profile": {
+                            **settings_payload["project_settings"]["python_runtime_profile"],
+                            "runtime_enabled": True,
+                            "cache_location_mode": "project_cache",
+                            "project_cache_mode": "wheelhouse_rebuild",
+                            "requirements_inline": [],
+                        },
+                    }
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(update_request):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/python-runtime") as response:
+            initial_payload = json.loads(response.read().decode("utf-8"))
+
+        prepare_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/python-runtime/prepare",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(prepare_request) as response:
+            prepare_payload = json.loads(response.read().decode("utf-8"))
+
+        rebuild_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/python-runtime/rebuild",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(rebuild_request) as response:
+            rebuild_payload = json.loads(response.read().decode("utf-8"))
+
+        assert initial_payload["python_runtime_profile"]["runtime_enabled"] is True
+        assert initial_payload["runtime_status"]["health_status"] in {"missing", "broken", "stale", "ready"}
+        assert prepare_payload["runtime_status"]["health_status"] == "ready"
+        assert rebuild_payload["runtime_status"]["health_status"] == "ready"
+        assert rebuild_payload["runtime_status"]["runtime_root"] == prepare_payload["runtime_status"]["runtime_root"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_can_export_project_python_runtime_bundle(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        output_path = tmp_path / "exports" / "python-runtime-export.zip"
+        create_payload = json.dumps(
+            {
+                "project_name": "HTTP Python Runtime Export",
+                "project_directory": str(tmp_path),
+            }
+        ).encode("utf-8")
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=create_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/settings") as response:
+            settings_payload = json.loads(response.read().decode("utf-8"))
+
+        update_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/settings",
+            data=json.dumps(
+                {
+                    "project_settings": {
+                        **settings_payload["project_settings"],
+                        "python_runtime_profile": {
+                            **settings_payload["project_settings"]["python_runtime_profile"],
+                            "runtime_enabled": True,
+                            "cache_location_mode": "project_cache",
+                            "project_cache_mode": "wheelhouse_rebuild",
+                            "requirements_source_mode": "inline",
+                            "requirements_inline": ["samplepkg==0.1.0"],
+                            "package_embed_mode": "wheelhouse_rebuild",
+                        },
+                    }
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(update_request):
+            pass
+
+        export_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/python-runtime/export-bundle",
+            data=json.dumps({"output_path": str(output_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(export_request) as response:
+            export_payload = json.loads(response.read().decode("utf-8"))
+
+        assert export_payload["status"] == "exported"
+        assert export_payload["export_bundle"]["bundle_mode"] == "wheelhouse_rebuild"
+        assert export_payload["export_bundle"]["bundle_root"] == "wheelhouse"
+        assert export_payload["export_bundle"]["output_path"] == str(output_path.resolve())
+        assert export_payload["export_bundle"]["entry_count"] >= 2
+        assert output_path.exists() is True
+        with zipfile.ZipFile(output_path, mode="r") as archive:
+            archive_names = set(archive.namelist())
+            assert "wheelhouse/requirements.txt" in archive_names
+            assert "wheelhouse/runtime-manifest.json" in archive_names
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_export_project_python_runtime_bundle_rejects_none_mode(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        output_path = tmp_path / "exports" / "python-runtime-export-none.zip"
+        create_payload = json.dumps(
+            {
+                "project_name": "HTTP Python Runtime Export None",
+                "project_directory": str(tmp_path),
+            }
+        ).encode("utf-8")
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=create_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        with urllib.request.urlopen(f"{base_url}/api/workbench/project/settings") as response:
+            settings_payload = json.loads(response.read().decode("utf-8"))
+
+        update_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/settings",
+            data=json.dumps(
+                {
+                    "project_settings": {
+                        **settings_payload["project_settings"],
+                        "python_runtime_profile": {
+                            **settings_payload["project_settings"]["python_runtime_profile"],
+                            "runtime_enabled": True,
+                            "cache_location_mode": "project_cache",
+                            "package_embed_mode": "none",
+                        },
+                    }
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(update_request):
+            pass
+
+        export_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/python-runtime/export-bundle",
+            data=json.dumps({"output_path": str(output_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(export_request)
+
+        assert exc_info.value.code == 400
+        error_payload = json.loads(exc_info.value.read().decode("utf-8"))
+        assert error_payload["error"] == "invalid_request"
+        assert (
+            error_payload["message"]
+            == "python runtime bundle export requires package_embed_mode other than none"
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_http_api_create_project_uses_default_preferences_directory_when_missing(tmp_path: Path) -> None:
     workspace_state_path = tmp_path / "workspace-state.json"
     default_project_directory = tmp_path / "preferred-project-home"
@@ -1344,9 +1668,9 @@ def test_http_api_can_apply_pending_graph_upgrade_when_workspace_draft_is_empty_
             "root_metadata": {
                 "graph_compatibility": {
                     "graph_data_version": "0.6.2",
-                    "built_with_app_version": "0.6.2",
+                    "built_with_app_version": "0.7.0",
                     "minimum_loader_app_version": "0.5.2",
-                    "last_upgraded_by_app_version": "0.6.2",
+                    "last_upgraded_by_app_version": "0.7.0",
                     "upgrade_history": [],
                 }
             },
@@ -1740,7 +2064,7 @@ def test_http_api_restart_clears_stale_pending_graph_upgrade_when_project_and_re
                     "compatibility": {
                         "status": "upgrade_available",
                         "graph_data_version": "0.5.2",
-                        "current_app_version": "0.6.3",
+                        "current_app_version": "0.7.0",
                         "minimum_loader_app_version": "0.5.2",
                         "built_with_app_version": "0.5.2",
                         "last_upgraded_by_app_version": "0.5.2",
@@ -1762,7 +2086,7 @@ def test_http_api_restart_clears_stale_pending_graph_upgrade_when_project_and_re
                     "compatibility": {
                         "status": "upgrade_available",
                         "graph_data_version": "0.5.2",
-                        "current_app_version": "0.6.3",
+                        "current_app_version": "0.7.0",
                         "minimum_loader_app_version": "0.5.2",
                         "built_with_app_version": "0.5.2",
                         "last_upgraded_by_app_version": "0.5.2",
@@ -4110,7 +4434,7 @@ def test_http_api_project_package_build_returns_archive_document(tmp_path: Path)
         assert manifest_payload["entrypoint"]["graph_path"] == "graphs/main.graph.msgpack"
         assert manifest_payload["runtime_requirements"]["required_browser"] == "msedge"
         assert package_info_payload["manifest_version"] == 1
-        assert package_info_payload["builder_app_version"] == "0.6.3"
+        assert package_info_payload["builder_app_version"] == "0.7.0"
         assert package_info_payload["source_project_schema_version"] == "project-v2"
     finally:
         server.shutdown()
@@ -4143,6 +4467,33 @@ def test_http_api_project_package_build_returns_blocking_diagnostics(tmp_path: P
         with urllib.request.urlopen(save_request):
             pass
 
+        graph_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:workspace",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(graph_request):
+            pass
+
+        save_updated_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_updated_request):
+            pass
+
         build_request = urllib.request.Request(
             f"{base_url}/api/workbench/project/package/build",
             data=json.dumps({"mode": "wcrun", "source_of_truth": "saved_project_only"}).encode("utf-8"),
@@ -4157,9 +4508,9 @@ def test_http_api_project_package_build_returns_blocking_diagnostics(tmp_path: P
             assert payload["status"] == "failed"
             assert payload["summary"]["blocking"] is True
             assert payload["diagnostics"]["total_count"] >= 1
-            assert payload["diagnostics"]["highest_severity"] == "error"
+            assert payload["diagnostics"]["highest_severity"] == "fatal"
             assert any(
-                entry["setting_field"] == "runtime_defaults.initial_variables.base_url"
+                entry["category"] == "graph.flow_start.invalid_entry_count"
                 for entry in payload["diagnostics"]["entries"]
             )
         else:
@@ -4795,6 +5146,197 @@ def test_http_api_package_load_rewrites_embedded_runtime_default_paths(
         assert load_payload["status"] == "loaded"
         assert expected_runtime_path.exists() is True
         assert actual_runtime_path == str(expected_runtime_path.resolve())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_project_package_build_allows_non_browser_project_without_base_url(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "package-api-non-browser.weconduct.json"
+        output_path = tmp_path / "dist" / "package-api-non-browser.wcrun"
+
+        create_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=json.dumps({"project_name": "Package API Non Browser Project"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(create_request):
+            pass
+
+        save_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save-as",
+            data=json.dumps({"project_path": str(project_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_request):
+            pass
+
+        graph_request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(
+                {
+                    "graph_model_id": "graph:workspace",
+                    "compilation_id": None,
+                    "graph_schema_version": "graph-v1",
+                    "nodes": [
+                        {
+                            "node_id": "node-start",
+                            "lowered_kind": "control",
+                            "source_anchor_ref": "n-node-start",
+                            "expansion_role": "flow.start",
+                            "display_name": "流程入口",
+                            "node_kind": "flow.start",
+                            "node_config": {
+                                "initial_variables": {},
+                                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                            },
+                            "ports": [],
+                        }
+                    ],
+                    "edges": [],
+                    "graph_effective_diagnostic_anchor_refs": [],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(graph_request):
+            pass
+
+        save_updated_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/save",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(save_updated_request):
+            pass
+
+        build_request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/package/build",
+            data=json.dumps(
+                {
+                    "mode": "wcrun",
+                    "source_of_truth": "saved_project_only",
+                    "output_path": str(output_path),
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(build_request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        assert response.status == 200
+        assert payload["status"] == "built"
+        assert output_path.exists() is True
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_inspect_package_reports_missing_python_runtime_manifest(
+    tmp_path: Path,
+) -> None:
+    from weconduct.application import CompilationWorkbenchService
+
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        builder = CompilationWorkbenchService()
+        project_path = tmp_path / "python-runtime-api.weconduct.json"
+        output_path = tmp_path / "dist" / "python-runtime-api.wcrun"
+
+        builder.create_project(project_name="Python Runtime API Inspect")
+        builder.save_graph_document(
+            {
+                "graph_model_id": "graph:python-runtime-api",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [
+                    {
+                        "node_id": "node-start",
+                        "lowered_kind": "control",
+                        "source_anchor_ref": "n-node-start",
+                        "expansion_role": "flow.start",
+                        "display_name": "流程入口",
+                        "node_kind": "flow.start",
+                        "node_config": {
+                            "initial_variables": {"base_url": "http://python-runtime-api.test"},
+                            "browser_config": {"headless": True, "slow_mo_ms": 0},
+                        },
+                        "ports": [],
+                    }
+                ],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+        builder.update_project_settings(
+            project_settings={
+                **builder.get_project_settings_document()["project_settings"],
+                "python_runtime_profile": {
+                    **builder.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                    "runtime_enabled": True,
+                    "cache_location_mode": "project_cache",
+                    "package_embed_mode": "wheelhouse_rebuild",
+                },
+            }
+        )
+        builder.save_project_as(project_path=str(project_path))
+        build_result = builder.build_project_package(
+            mode="wcrun",
+            source_of_truth="saved_project_only",
+            output_path=str(output_path),
+        )
+        assert build_result["status"] == "built"
+
+        tampered_path = tmp_path / "dist" / "python-runtime-api-tampered.wcrun"
+        with zipfile.ZipFile(output_path, "r") as source_archive, zipfile.ZipFile(
+            tampered_path, "w", compression=zipfile.ZIP_DEFLATED
+        ) as target_archive:
+            for info in source_archive.infolist():
+                payload = source_archive.read(info.filename)
+                if info.filename == "python-runtime/manifest.json":
+                    payload = b"{}"
+                if info.filename == "meta/checksums.json":
+                    checksums_payload = json.loads(payload.decode("utf-8"))
+                    for entry in checksums_payload["entries"]:
+                        if entry["path"] == "python-runtime/manifest.json":
+                            entry["sha256"] = hashlib.sha256(b"{}").hexdigest()
+                            entry["size"] = len(b"{}")
+                    payload = json.dumps(
+                        checksums_payload,
+                        ensure_ascii=False,
+                        indent=2,
+                    ).encode("utf-8")
+                target_archive.writestr(info, payload)
+
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        inspect_url = (
+            f"{base_url}/api/workbench/project/package/inspect"
+            f"?package_path={urllib.parse.quote(str(tampered_path))}"
+        )
+        with urllib.request.urlopen(inspect_url) as response:
+            inspect_payload = json.loads(response.read().decode("utf-8"))
+
+        assert inspect_payload["status"] == "ok"
+        assert inspect_payload["runtime_readiness_summary"]["ready"] is False
+        assert inspect_payload["runtime_readiness_summary"]["python_runtime_status"]["required"] is True
+        assert any(
+            entry["category"] == "package.python_runtime.manifest_hash_mismatch"
+            for entry in inspect_payload["runtime_readiness_summary"]["diagnostics"]
+        )
     finally:
         server.shutdown()
         server.server_close()
@@ -5561,6 +6103,36 @@ def test_http_api_loaded_package_requires_external_resource_binding_before_runti
 
         with urllib.request.urlopen(
             urllib.request.Request(
+                f"{base_url}/api/workbench/graph",
+                data=json.dumps(
+                    {
+                        "graph_model_id": "graph:external-required-api",
+                        "compilation_id": None,
+                        "graph_schema_version": "graph-v1",
+                        "nodes": [
+                            {
+                                "node_id": "node-request",
+                                "lowered_kind": "execution",
+                                "source_anchor_ref": "n-node-request",
+                                "expansion_role": "action:request",
+                                "display_name": "请求",
+                                "node_kind": "http.request",
+                                "node_config": {"url": "http://example.test", "method": "GET"},
+                                "ports": [],
+                            }
+                        ],
+                        "edges": [],
+                        "graph_effective_diagnostic_anchor_refs": [],
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
                 f"{base_url}/api/workbench/project/settings",
                 data=json.dumps(
                     {
@@ -5856,6 +6428,39 @@ def test_http_api_loaded_package_snapshot_project_settings_exposes_wcrun_state(
                 data=json.dumps({"project_name": "Snapshot Loaded API Project"}).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
                 method="POST",
+            )
+        ):
+            pass
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/graph",
+                data=json.dumps(
+                    {
+                        "graph_model_id": "graph:snapshot-loaded-api",
+                        "compilation_id": None,
+                        "graph_schema_version": "graph-v1",
+                        "nodes": [
+                            {
+                                "node_id": "node-start",
+                                "lowered_kind": "control",
+                                "source_anchor_ref": "n-node-start",
+                                "expansion_role": "flow.start",
+                                "display_name": "流程入口",
+                                "node_kind": "flow.start",
+                                "node_config": {
+                                    "initial_variables": {"base_url": "http://snapshot-loaded-api.test"},
+                                    "browser_config": {"headless": True, "slow_mo_ms": 0},
+                                },
+                                "ports": [],
+                            }
+                        ],
+                        "edges": [],
+                        "graph_effective_diagnostic_anchor_refs": [],
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
             )
         ):
             pass
@@ -7617,7 +8222,7 @@ def test_http_api_exposes_runtime_health(tmp_path: Path) -> None:
         assert payload["status"] == "ok"
         assert payload["service"] == "weconduct-api"
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.6.3"
+        assert payload["api_version"] == "0.7.0"
         assert payload["workspace_state_version"] == 1
         assert payload["workspace_session_id"].startswith("ws-")
         assert payload["service_started_at"]
@@ -8790,6 +9395,7 @@ def test_http_runtime_run_returns_python_outputs_for_transient_graph(tmp_path: P
                 "compile_settings": {},
                 "security_settings": {
                     "allow_external_programs": True,
+                    "allow_python_execution": True,
                 },
                 "python_runtime_settings": {},
                 "graph_settings": {},
@@ -8813,12 +9419,42 @@ def test_http_runtime_run_returns_python_outputs_for_transient_graph(tmp_path: P
             "graph_schema_version": "graph-v1",
             "nodes": [
                 {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow.start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        }
+                    ],
+                },
+                {
                     "node_id": "node-a",
                     "lowered_kind": "execution",
                     "source_anchor_ref": "n-a",
                     "expansion_role": "transform:set_variable",
                     "node_kind": "data.set_variable",
                     "node_config": {"name": "A", "value": 7},
+                    "ports": [
+                        {
+                            "port_id": "control-in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.in",
+                        },
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        },
+                    ],
                 },
                 {
                     "node_id": "node-b",
@@ -8827,6 +9463,20 @@ def test_http_runtime_run_returns_python_outputs_for_transient_graph(tmp_path: P
                     "expansion_role": "transform:set_variable",
                     "node_kind": "data.set_variable",
                     "node_config": {"name": "B", "value": 5},
+                    "ports": [
+                        {
+                            "port_id": "control-in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.in",
+                        },
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        },
+                    ],
                 },
                 {
                     "node_id": "node-python",
@@ -8841,9 +9491,45 @@ def test_http_runtime_run_returns_python_outputs_for_transient_graph(tmp_path: P
                         ),
                         "variable_name": "default_sum",
                     },
+                    "ports": [
+                        {
+                            "port_id": "control-in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.in",
+                        }
+                    ],
                 },
             ],
-            "edges": [],
+            "edges": [
+                {
+                    "edge_id": "edge-start-a",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-a",
+                    "from_port_id": "control-out",
+                    "to_port_id": "control-in",
+                    "edge_state": "draft",
+                },
+                {
+                    "edge_id": "edge-a-b",
+                    "relation_layer": "control",
+                    "from_node_id": "node-a",
+                    "to_node_id": "node-b",
+                    "from_port_id": "control-out",
+                    "to_port_id": "control-in",
+                    "edge_state": "draft",
+                },
+                {
+                    "edge_id": "edge-b-python",
+                    "relation_layer": "control",
+                    "from_node_id": "node-b",
+                    "to_node_id": "node-python",
+                    "from_port_id": "control-out",
+                    "to_port_id": "control-in",
+                    "edge_state": "draft",
+                },
+            ],
             "graph_effective_diagnostic_anchor_refs": [],
         }
         start_request = urllib.request.Request(
@@ -8865,11 +9551,143 @@ def test_http_runtime_run_returns_python_outputs_for_transient_graph(tmp_path: P
         with urllib.request.urlopen(run_request) as response:
             run_payload = json.loads(response.read().decode("utf-8"))
 
-        assert run_payload["status"] == "completed"
-        assert run_payload["result"]["outputs"]["node-python"]["result"] == 12
-        assert run_payload["result"]["outputs"]["node-python"]["result_variable"] == "sum_value"
-        assert run_payload["result"]["variables"]["sum_value"] == 12
-        assert "default_sum" not in run_payload["result"]["variables"]
+        deadline = time.monotonic() + 5
+        session_payload = None
+        while time.monotonic() < deadline:
+            with urllib.request.urlopen(f"{base_url}/api/workbench/runtime/{session_id}") as response:
+                session_payload = json.loads(response.read().decode("utf-8"))
+            if session_payload["runtime_session"]["status"] in {"completed", "failed"}:
+                break
+            time.sleep(0.05)
+
+        assert run_payload["status"] == "accepted"
+        assert session_payload is not None
+        assert session_payload["runtime_session"]["status"] == "completed"
+        assert session_payload["result"]["outputs"]["node-python"]["result"] == 12
+        assert session_payload["result"]["outputs"]["node-python"]["result_variable"] == "sum_value"
+        assert session_payload["result"]["variables"]["sum_value"] == 12
+        assert "default_sum" not in session_payload["result"]["variables"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_loaded_package_blocks_runtime_start_when_python_runtime_manifest_is_invalid(
+    tmp_path: Path,
+) -> None:
+    from weconduct.application import CompilationWorkbenchService
+
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server, thread = _start_test_server(workspace_state_path=workspace_state_path)
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        project_path = tmp_path / "python-runtime-start-api.weconduct.json"
+        output_path = tmp_path / "dist" / "python-runtime-start-api.wcrun"
+
+        builder = CompilationWorkbenchService()
+        builder.create_project(project_name="Python Runtime Start API")
+        builder.save_graph_document(
+            {
+                "graph_model_id": "graph:python-runtime-start-api",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [
+                    {
+                        "node_id": "node-start",
+                        "lowered_kind": "control",
+                        "source_anchor_ref": "n-node-start",
+                        "expansion_role": "flow.start",
+                        "display_name": "流程入口",
+                        "node_kind": "flow.start",
+                        "node_config": {
+                            "initial_variables": {"base_url": "http://python-runtime-start-api.test"},
+                            "browser_config": {"headless": True, "slow_mo_ms": 0},
+                        },
+                        "ports": [],
+                    },
+                    {
+                        "node_id": "node-python",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-node-python",
+                        "expansion_role": "action:python_run",
+                        "display_name": "Python",
+                        "node_kind": "python.run",
+                        "node_config": {"code": "result = 1"},
+                        "ports": [],
+                    },
+                ],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+        builder.update_project_settings(
+            project_settings={
+                **builder.get_project_settings_document()["project_settings"],
+                "python_runtime_profile": {
+                    **builder.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                    "runtime_enabled": True,
+                    "cache_location_mode": "project_cache",
+                    "package_embed_mode": "wheelhouse_rebuild",
+                },
+            }
+        )
+        builder.save_project_as(project_path=str(project_path))
+        builder.build_project_package(
+            mode="wcrun",
+            source_of_truth="saved_project_only",
+            output_path=str(output_path),
+        )
+
+        tampered_path = tmp_path / "dist" / "python-runtime-start-api-tampered.wcrun"
+        with zipfile.ZipFile(output_path, "r") as source_archive, zipfile.ZipFile(
+            tampered_path, "w", compression=zipfile.ZIP_DEFLATED
+        ) as target_archive:
+            for info in source_archive.infolist():
+                payload = source_archive.read(info.filename)
+                if info.filename == "python-runtime/manifest.json":
+                    payload = b"{}"
+                if info.filename == "meta/checksums.json":
+                    checksums_payload = json.loads(payload.decode("utf-8"))
+                    for entry in checksums_payload["entries"]:
+                        if entry["path"] == "python-runtime/manifest.json":
+                            entry["sha256"] = hashlib.sha256(b"{}").hexdigest()
+                            entry["size"] = len(b"{}")
+                    payload = json.dumps(
+                        checksums_payload,
+                        ensure_ascii=False,
+                        indent=2,
+                    ).encode("utf-8")
+                target_archive.writestr(info, payload)
+
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/project/package/load",
+                data=json.dumps({"package_path": str(tampered_path)}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        ):
+            pass
+
+        runtime_start_request = urllib.request.Request(
+            f"{base_url}/api/workbench/runtime/start",
+            data=json.dumps({}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(runtime_start_request)
+        except urllib.error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert exc.code == 400
+            assert payload["error"] == "runtime_start_failed"
+            assert any(
+                entry["category"] == "package.python_runtime.manifest_hash_mismatch"
+                for entry in payload["diagnostics"]["entries"]
+            )
+        else:
+            raise AssertionError("expected runtime start failure for invalid python runtime manifest")
     finally:
         server.shutdown()
         server.server_close()
@@ -9481,7 +10299,7 @@ def test_http_host_info_exposes_release_manifest_and_runtime_binding(tmp_path: P
             payload = json.loads(response.read().decode("utf-8"))
 
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.6.3"
+        assert payload["api_version"] == "0.7.0"
         assert payload["server_bind"]["host"] == "127.0.0.1"
         assert payload["server_bind"]["port"] == server.server_address[1]
         assert payload["server_bind"]["base_url"] == base_url

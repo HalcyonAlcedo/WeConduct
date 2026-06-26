@@ -530,6 +530,8 @@ export interface ProjectSettings {
   external_resources: Record<string, unknown>[]
   resource_policy: { embedded_resources: string[]; external_resource_bindings: Record<string, unknown>[] }
   compile_profile: { source_of_truth: string; inject_project_runtime_defaults_into_main_flow_start: boolean }
+  /** 0.7-E: Python runtime profile (editable in project settings) */
+  python_runtime_profile: PythonRuntimeProfile
 }
 
 export interface ProjectSettingsSnapshot {
@@ -548,7 +550,7 @@ export interface ProjectSettingsState {
   main_graph_compatibility?: GraphCompatibilitySummary
 }
 
-export interface ProjectSettingsResponse { project_settings: ProjectSettings; state: ProjectSettingsState }
+export interface ProjectSettingsResponse { project_settings: ProjectSettings; state: ProjectSettingsState; python_runtime_summary?: PythonRuntimeSummary }
 
 export interface RuntimeDefaults {
   initial_variables: Record<string, unknown>; browser_config: Record<string, unknown>; execution_defaults: Record<string, unknown>
@@ -627,6 +629,80 @@ export interface PreferencesUpdateRequest {
 
 export interface PreferencesResponse {
   preferences: Record<string, unknown>
+}
+
+// ===== 0.7-E: Python Runtime =====
+
+export interface PythonRuntimeProfile {
+  // Editable fields (1-14):
+  runtime_enabled: boolean
+  python_version_spec: string
+  interpreter_strategy: 'bundled' | 'system' | 'custom_path'
+  custom_python_path: string | null
+  cache_location_mode: 'software_cache' | 'project_cache'
+  project_cache_mode: 'wheelhouse_rebuild' | 'full_venv'
+  requirements_source_mode: 'inline' | 'requirements_txt' | 'lock_file'
+  requirements_inline: string[]
+  requirements_file_path: string | null
+  lock_file_path: string | null
+  index_strategy: 'default' | 'custom'
+  custom_index_url: string | null
+  auto_prepare_on_run: boolean
+  package_embed_mode: 'none' | 'wheelhouse_rebuild' | 'full_venv'
+  // Read-only status fields (15-17):
+  materialized_runtime_hash: string | null
+  last_health_status: 'unknown' | 'ready' | 'missing' | 'broken' | 'stale'
+  last_health_message: string | null
+}
+
+export interface PythonRuntimeStatus {
+  health_status: string | null
+  health_message: string | null
+  runtime_root: string | null
+  python_executable: string | null
+  manifest_hash: string | null
+  cache_location_mode: string | null
+  project_cache_mode: string | null
+}
+
+export interface PythonRuntimeSummary {
+  enabled: boolean
+  health_status: string | null
+  health_message: string | null
+  runtime_root: string | null
+  python_executable: string | null
+  manifest_hash: string | null
+  cache_location_mode: string | null
+  project_cache_mode: string | null
+  package_embed_mode: string | null
+}
+
+export interface PythonRuntimeGetResponse {
+  python_runtime_profile: PythonRuntimeProfile
+  runtime_status: PythonRuntimeStatus
+  diagnostics: unknown[]
+}
+
+export interface PythonRuntimeActionResponse {
+  python_runtime_profile: PythonRuntimeProfile
+  runtime_status: PythonRuntimeStatus
+  diagnostics: unknown[]
+}
+
+export interface PythonRuntimeExportBundle {
+  output_path: string
+  bundle_mode: string
+  bundle_root: string | null
+  entry_count: number
+  written_bytes: number
+}
+
+export interface PythonRuntimeExportResponse {
+  status: string
+  python_runtime_profile: PythonRuntimeProfile
+  runtime_status: PythonRuntimeStatus
+  export_bundle: PythonRuntimeExportBundle
+  diagnostics: unknown[]
 }
 
 // ===== P6: Recent Projects =====

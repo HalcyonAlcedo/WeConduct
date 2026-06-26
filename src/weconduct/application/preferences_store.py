@@ -5,6 +5,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .project_python_runtime import (
+    build_default_python_runtime_preferences,
+    normalize_python_runtime_preferences,
+)
+
 
 PREFERENCES_FILE_VERSION = 1
 FILE_ACCESS_SCOPES = {"restricted", "custom_roots", "allow_all"}
@@ -135,6 +140,7 @@ def build_default_preferences() -> dict:
             "timeout_seconds": 60,
             "sandbox_mode": "restricted",
             "capture_stdout_stderr": True,
+            **build_default_python_runtime_preferences(),
         },
         "graph_settings": {
             "auto_sync_mode": "responsive",
@@ -176,6 +182,12 @@ def normalize_preferences(preferences: dict | None) -> tuple[dict, bool]:
     normalized_security_settings = _normalize_security_settings(normalized["security_settings"])
     if normalized_security_settings != normalized["security_settings"]:
         normalized["security_settings"] = normalized_security_settings
+        changed = True
+    normalized_python_runtime_settings = _normalize_python_runtime_settings(
+        normalized["python_runtime_settings"]
+    )
+    if normalized_python_runtime_settings != normalized["python_runtime_settings"]:
+        normalized["python_runtime_settings"] = normalized_python_runtime_settings
         changed = True
     return normalized, changed
 
@@ -297,6 +309,34 @@ def _normalize_security_settings(settings: Any) -> dict:
     normalized["log_security_events"] = bool(
         settings.get("log_security_events", defaults["log_security_events"])
     )
+    return normalized
+
+
+def _normalize_python_runtime_settings(settings: Any) -> dict:
+    defaults = build_default_preferences()["python_runtime_settings"]
+    if not isinstance(settings, dict):
+        return deepcopy(defaults)
+    normalized = deepcopy(defaults)
+    normalized["python_executable_path"] = (
+        settings.get("python_executable_path").strip()
+        if isinstance(settings.get("python_executable_path"), str)
+        and settings.get("python_executable_path").strip()
+        else None
+    )
+    normalized["timeout_seconds"] = (
+        settings.get("timeout_seconds")
+        if isinstance(settings.get("timeout_seconds"), int) and settings.get("timeout_seconds") > 0
+        else defaults["timeout_seconds"]
+    )
+    normalized["sandbox_mode"] = (
+        settings.get("sandbox_mode")
+        if isinstance(settings.get("sandbox_mode"), str) and settings.get("sandbox_mode").strip()
+        else defaults["sandbox_mode"]
+    )
+    normalized["capture_stdout_stderr"] = bool(
+        settings.get("capture_stdout_stderr", defaults["capture_stdout_stderr"])
+    )
+    normalized.update(normalize_python_runtime_preferences(settings))
     return normalized
 
 

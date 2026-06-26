@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import sys
 import tempfile
 from time import perf_counter
 from threading import Lock, Thread
@@ -44,6 +45,11 @@ from weconduct.application.legacy_webcontrol_converter import (
     build_conversion_report,
     convert_legacy_webcontrol_project,
 )
+from weconduct.application.project_python_runtime import (
+    ProjectPythonRuntimeManager,
+    build_default_python_runtime_profile,
+    normalize_python_runtime_profile,
+)
 from weconduct.packaging.msgpack_codec import packb
 from weconduct.packaging.msgpack_codec import unpackb
 from weconduct.application.runtime_session_stream import RuntimeSessionStreamBroker
@@ -60,7 +66,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
-CURRENT_API_VERSION = "0.6.3"
+CURRENT_API_VERSION = "0.7.0"
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
@@ -88,7 +94,7 @@ MAX_RECENT_PROJECTS = 10
 MAX_RECENT_PROJECTS_LIMIT = 100
 PROJECT_FILE_SCHEMA_VERSION = 2
 LEGACY_PROJECT_FILE_SCHEMA_VERSION = 1
-PROJECT_SETTINGS_SCHEMA_VERSION = 1
+PROJECT_SETTINGS_SCHEMA_VERSION = 2
 RESOURCE_EXPORT_SCHEMA_VERSION = 1
 MAX_EDITOR_HISTORY_DEPTH = 100
 MAX_RUNTIME_SESSION_HISTORY = 20
@@ -200,6 +206,9 @@ class CompilationWorkbenchService:
         self._state_store = state_store or InMemoryWorkspaceStateStore()
         self._preferences_service = preferences_service or PreferencesService()
         self._runtime_stream_broker = runtime_stream_broker or RuntimeSessionStreamBroker()
+        self._project_python_runtime_manager = ProjectPythonRuntimeManager(
+            app_data_root=self._resolve_application_data_root()
+        )
         self._runtime_execution_lock = Lock()
         self._runtime_execution_threads: dict[str, Thread] = {}
         self._suppress_dirty_workspace_recovery = False
@@ -291,6 +300,7 @@ class CompilationWorkbenchService:
             project_settings_exists = project_settings_path.exists()
         return {
             "project_settings": deepcopy(self._extract_project_settings(self._state)),
+            "python_runtime_summary": self._build_project_python_runtime_summary(),
             "state": {
                 "loaded": True,
                 "source": "project_settings_file" if project_settings_exists else "workspace_state",
@@ -321,6 +331,7 @@ class CompilationWorkbenchService:
             return current_state
 
         self._state = self._state_store.mutate(mutation)
+        self._persist_project_settings_file_if_bound()
         return self.get_project_settings_document()
 
     def update_project_runtime_defaults(self, *, runtime_defaults: dict) -> dict:
@@ -338,6 +349,7 @@ class CompilationWorkbenchService:
             return current_state
 
         self._state = self._state_store.mutate(mutation)
+        self._persist_project_settings_file_if_bound()
         graph_projection_refresh = {
             "node_id": "node-start",
             "node_config": {
@@ -351,6 +363,16 @@ class CompilationWorkbenchService:
             "runtime_defaults": deepcopy(normalized_runtime_defaults),
             "graph_projection_refresh": graph_projection_refresh,
         }
+
+    def _persist_project_settings_file_if_bound(self) -> None:
+        project_runtime = self._extract_project_runtime(self._state)
+        project_file_path = project_runtime.get("project_file_path")
+        if not isinstance(project_file_path, str) or not project_file_path.strip():
+            return
+        resolved_project_path = Path(project_file_path)
+        project_settings = self._build_project_settings_storage_document(resolved_project_path)
+        storage_root = self._resolve_project_storage_root(resolved_project_path)
+        self._write_json_file(storage_root / "project-settings.json", project_settings)
 
     def run_project_package_preflight(self) -> dict:
         self._refresh_state_from_store()
@@ -381,20 +403,6 @@ class CompilationWorkbenchService:
             if isinstance(runtime_defaults.get("initial_variables"), dict)
             else {}
         )
-        if not isinstance(initial_variables.get("base_url"), str) or not initial_variables.get("base_url", "").strip():
-            result_entries.append(
-                {
-                    "diagnostic_id": f"package-preflight-{uuid.uuid4().hex[:12]}",
-                    "severity": "error",
-                    "stage": "package.preflight",
-                    "category": "project_settings.missing_required_field",
-                    "message": "project runtime default missing: base_url",
-                    "object_ref": "project_settings.runtime_defaults.initial_variables.base_url",
-                    "setting_field": "runtime_defaults.initial_variables.base_url",
-                    "node_id": None,
-                    "resource_id": None,
-                }
-            )
 
         external_resources = project_settings.get("external_resources")
         if isinstance(external_resources, list):
@@ -598,6 +606,10 @@ class CompilationWorkbenchService:
             package_document["project_settings"],
             package_document=package_document,
             session_dir=session_dir,
+        )
+        self._restore_loaded_package_python_runtime_bundle(
+            session_dir=session_dir,
+            project_settings=project_settings,
         )
         manifest = package_document["manifest"]
         project_summary = {}
@@ -7661,6 +7673,126 @@ class CompilationWorkbenchService:
             },
         }
 
+    def get_project_python_runtime_document(self) -> dict:
+        self._refresh_state_from_store()
+        project_settings = deepcopy(self._extract_project_settings(self._state))
+        runtime_state = self._resolve_project_python_runtime_execution(auto_prepare=False)
+        runtime_status = (
+            self._serialize_project_python_runtime_report(runtime_state["report"])
+            if runtime_state is not None
+            else self._build_disabled_project_python_runtime_status()
+        )
+        return {
+            "python_runtime_profile": deepcopy(project_settings["python_runtime_profile"]),
+            "runtime_status": runtime_status,
+            "diagnostics": [],
+        }
+
+    def health_check_project_python_runtime(self) -> dict:
+        self._refresh_state_from_store()
+        runtime_state = self._require_enabled_project_python_runtime_state()
+        report = self._project_python_runtime_manager.health_check(
+            runtime_state["profile"],
+            project_id=runtime_state["project_id"],
+            project_storage_root=runtime_state["project_storage_root"],
+        )
+        return self._build_project_python_runtime_action_result(
+            profile=runtime_state["profile"],
+            report=report,
+        )
+
+    def prepare_project_python_runtime(self) -> dict:
+        self._refresh_state_from_store()
+        self._assert_project_package_allows_mutation("prepare_project_python_runtime")
+        runtime_state = self._require_enabled_project_python_runtime_state()
+        report = self._project_python_runtime_manager.prepare_runtime(
+            runtime_state["profile"],
+            project_id=runtime_state["project_id"],
+            project_storage_root=runtime_state["project_storage_root"],
+        )
+        return self._build_project_python_runtime_action_result(
+            profile=runtime_state["profile"],
+            report=report,
+        )
+
+    def rebuild_project_python_runtime(self) -> dict:
+        self._refresh_state_from_store()
+        self._assert_project_package_allows_mutation("rebuild_project_python_runtime")
+        runtime_state = self._require_enabled_project_python_runtime_state()
+        report = self._project_python_runtime_manager.rebuild_runtime(
+            runtime_state["profile"],
+            project_id=runtime_state["project_id"],
+            project_storage_root=runtime_state["project_storage_root"],
+        )
+        return self._build_project_python_runtime_action_result(
+            profile=runtime_state["profile"],
+            report=report,
+        )
+
+    def clear_project_python_runtime(self) -> dict:
+        self._refresh_state_from_store()
+        self._assert_project_package_allows_mutation("clear_project_python_runtime")
+        runtime_state = self._require_enabled_project_python_runtime_state()
+        report = self._project_python_runtime_manager.clear_runtime(
+            runtime_state["profile"],
+            project_id=runtime_state["project_id"],
+            project_storage_root=runtime_state["project_storage_root"],
+        )
+        return self._build_project_python_runtime_action_result(
+            profile=runtime_state["profile"],
+            report=report,
+        )
+
+    def export_project_python_runtime_bundle(
+        self,
+        *,
+        output_path: str | Path,
+        package_embed_mode: str | None = None,
+    ) -> dict:
+        self._refresh_state_from_store()
+        self._assert_project_package_allows_mutation("export_project_python_runtime_bundle")
+        runtime_state = self._require_enabled_project_python_runtime_state()
+        resolved_output_path = self._resolve_export_path(output_path)
+        profile = deepcopy(runtime_state["profile"])
+        bundle_mode = (
+            package_embed_mode.strip()
+            if isinstance(package_embed_mode, str) and package_embed_mode.strip()
+            else str(profile.get("package_embed_mode") or "none")
+        )
+        exported_bundle = self._project_python_runtime_manager.export_runtime_bundle(
+            profile,
+            project_id=runtime_state["project_id"],
+            project_storage_root=runtime_state["project_storage_root"],
+            package_embed_mode=bundle_mode,
+        )
+        archive_entries = exported_bundle.get("archive_entries", {})
+        normalized_entries = (
+            dict(archive_entries)
+            if isinstance(archive_entries, dict)
+            else {}
+        )
+        self._write_zip_archive(resolved_output_path, normalized_entries)
+        report = self._project_python_runtime_manager.health_check(
+            runtime_state["profile"],
+            project_id=runtime_state["project_id"],
+            project_storage_root=runtime_state["project_storage_root"],
+        )
+        result = self._build_project_python_runtime_action_result(
+            profile=runtime_state["profile"],
+            report=report,
+        )
+        result["status"] = "exported"
+        result["export_bundle"] = {
+            "output_path": str(resolved_output_path),
+            "bundle_mode": bundle_mode,
+            "bundle_root": exported_bundle.get("bundle_root"),
+            "entry_count": len(normalized_entries),
+            "written_bytes": (
+                resolved_output_path.stat().st_size if resolved_output_path.exists() else 0
+            ),
+        }
+        return result
+
     def _build_type_compatible_custom_node_graph_input_default(self, input_meta: dict) -> object:
         raw_type = input_meta.get("type")
         if isinstance(raw_type, str):
@@ -10503,6 +10635,7 @@ class CompilationWorkbenchService:
         project_file_path: str | None,
         runtime_defaults: dict | None = None,
     ) -> dict:
+        python_runtime_profile = self._build_default_project_python_runtime_profile()
         if project_file_path:
             default_output_name = self._build_default_package_output_name(Path(project_file_path))
         else:
@@ -10519,6 +10652,7 @@ class CompilationWorkbenchService:
                 "tags": [],
             },
             "runtime_defaults": self._normalize_runtime_defaults_payload(runtime_defaults),
+            "python_runtime_profile": python_runtime_profile,
             "packaging": {
                 "default_output_name": default_output_name,
                 "include_embedded_resources": True,
@@ -10536,6 +10670,39 @@ class CompilationWorkbenchService:
                 "inject_project_runtime_defaults_into_main_flow_start": True,
             },
         }
+
+    def _build_default_project_python_runtime_profile(self) -> dict:
+        defaults = build_default_python_runtime_profile()
+        try:
+            preferences = self._preferences_service.get_preferences_document()
+        except ValueError:
+            preferences = {}
+        runtime_settings = (
+            preferences.get("python_runtime_settings")
+            if isinstance(preferences, dict) and isinstance(preferences.get("python_runtime_settings"), dict)
+            else {}
+        )
+        defaults["python_version_spec"] = runtime_settings.get(
+            "default_python_version_spec",
+            defaults["python_version_spec"],
+        )
+        defaults["cache_location_mode"] = runtime_settings.get(
+            "default_cache_location_mode",
+            defaults["cache_location_mode"],
+        )
+        defaults["project_cache_mode"] = runtime_settings.get(
+            "default_project_cache_mode",
+            defaults["project_cache_mode"],
+        )
+        defaults["requirements_source_mode"] = runtime_settings.get(
+            "default_requirements_source_mode",
+            defaults["requirements_source_mode"],
+        )
+        defaults["package_embed_mode"] = runtime_settings.get(
+            "default_package_embed_mode",
+            defaults["package_embed_mode"],
+        )
+        return defaults
 
     def _extract_runtime_defaults_from_workspace_graph(self) -> dict:
         graph_model = self._get_graph_document_model()
@@ -10662,6 +10829,7 @@ class CompilationWorkbenchService:
         raw_payload = payload if isinstance(payload, dict) else {}
         raw_identity = raw_payload.get("project_identity")
         raw_runtime_defaults = raw_payload.get("runtime_defaults")
+        raw_python_runtime_profile = raw_payload.get("python_runtime_profile")
         raw_packaging = raw_payload.get("packaging")
         raw_resource_policy = raw_payload.get("resource_policy")
         raw_compile_profile = raw_payload.get("compile_profile")
@@ -10691,6 +10859,10 @@ class CompilationWorkbenchService:
             else (project.get("project_name") if isinstance(project, dict) else "WeConduct Workspace")
         )
         runtime_defaults = self._normalize_runtime_defaults_payload(raw_runtime_defaults)
+        python_runtime_profile = normalize_python_runtime_profile(
+            raw_python_runtime_profile,
+            defaults=self._build_default_project_python_runtime_profile(),
+        )
         default_output_name = raw_packaging.get("default_output_name")
         if not isinstance(default_output_name, str) or not default_output_name.strip():
             runtime = (
@@ -10729,6 +10901,7 @@ class CompilationWorkbenchService:
                 else [],
             },
             "runtime_defaults": runtime_defaults,
+            "python_runtime_profile": python_runtime_profile,
             "packaging": {
                 "default_output_name": default_output_name,
                 "include_embedded_resources": bool(raw_packaging.get("include_embedded_resources", True)),
@@ -11089,7 +11262,7 @@ class CompilationWorkbenchService:
         preferences = self._preferences_service.get_preferences_document()
         security_settings = preferences.get("security_settings")
         python_runtime_settings = preferences.get("python_runtime_settings")
-        return {
+        runtime_settings = {
             "confirm_high_risk_actions": (
                 security_settings.get("confirm_high_risk_actions", True)
                 if isinstance(security_settings, dict)
@@ -11241,6 +11414,213 @@ class CompilationWorkbenchService:
                 if isinstance(python_runtime_settings, dict)
                 else True
             ),
+        }
+        project_python_runtime = self._resolve_project_python_runtime_execution()
+        if project_python_runtime is not None:
+            runtime_report = project_python_runtime["report"]
+            runtime_settings.update(
+                {
+                    "python_project_runtime_enabled": True,
+                    "python_project_runtime_profile": deepcopy(project_python_runtime["profile"]),
+                    "python_project_runtime_health_status": runtime_report["health_status"],
+                    "python_project_runtime_health_message": runtime_report["health_message"],
+                    "python_project_runtime_root": str(runtime_report["runtime_root"]),
+                    "python_project_runtime_manifest_hash": runtime_report["manifest_hash"],
+                    "python_project_runtime_cache_location_mode": runtime_report[
+                        "cache_location_mode"
+                    ],
+                    "python_project_runtime_project_cache_mode": runtime_report[
+                        "project_cache_mode"
+                    ],
+                    "python_project_runtime_prepare_error": (
+                        None
+                        if runtime_report["health_status"] == "ready"
+                        else "python runtime prepare failed: "
+                        f"{runtime_report['health_message'] or runtime_report['health_status']}"
+                    ),
+                }
+            )
+            if runtime_report["health_status"] == "ready":
+                runtime_settings["python_executable_path"] = str(
+                    runtime_report["python_executable"]
+                )
+        else:
+            runtime_settings["python_project_runtime_enabled"] = False
+            runtime_settings["python_project_runtime_prepare_error"] = None
+        return runtime_settings
+
+    def _resolve_application_data_root(self) -> Path:
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if isinstance(local_app_data, str) and local_app_data.strip():
+            base_path = Path(local_app_data.strip())
+        else:
+            base_path = Path.home() / "AppData" / "Local"
+        return base_path / "WeConduct"
+
+    def _resolve_project_python_runtime_storage_root(self) -> Path | None:
+        project_runtime = self._get_project_runtime()
+        project_file_path = project_runtime.get("project_file_path")
+        if isinstance(project_file_path, str) and project_file_path.strip():
+            return self._resolve_project_storage_root(Path(project_file_path))
+        session_dir = project_runtime.get("session_dir")
+        if isinstance(session_dir, str) and session_dir.strip():
+            return Path(session_dir).resolve()
+        workspace_root = self._resolve_runtime_workspace_root()
+        if workspace_root is not None:
+            return workspace_root.resolve() / ".weconduct-workspace"
+        return None
+
+    def _build_project_python_runtime_summary(self) -> dict:
+        runtime_state = self._resolve_project_python_runtime_execution(auto_prepare=False)
+        if runtime_state is None:
+            return {
+                "enabled": False,
+                "health_status": "disabled",
+                "health_message": None,
+                "runtime_root": None,
+                "python_executable": None,
+                "manifest_hash": None,
+                "cache_location_mode": None,
+                "project_cache_mode": None,
+                "package_embed_mode": None,
+            }
+        report = runtime_state["report"]
+        return {
+            "enabled": True,
+            **self._serialize_project_python_runtime_report(report),
+            "package_embed_mode": runtime_state["profile"].get("package_embed_mode"),
+        }
+
+    def _build_disabled_project_python_runtime_status(self) -> dict:
+        return {
+            "health_status": "disabled",
+            "health_message": None,
+            "runtime_root": None,
+            "python_executable": None,
+            "manifest_hash": None,
+            "cache_location_mode": None,
+            "project_cache_mode": None,
+        }
+
+    def _serialize_project_python_runtime_report(self, report: dict) -> dict:
+        return {
+            "health_status": report.get("health_status"),
+            "health_message": report.get("health_message"),
+            "runtime_root": (
+                str(report["runtime_root"])
+                if isinstance(report.get("runtime_root"), Path)
+                else report.get("runtime_root")
+            ),
+            "python_executable": (
+                str(report["python_executable"])
+                if isinstance(report.get("python_executable"), Path)
+                else report.get("python_executable")
+            ),
+            "manifest_hash": report.get("manifest_hash"),
+            "cache_location_mode": report.get("cache_location_mode"),
+            "project_cache_mode": report.get("project_cache_mode"),
+        }
+
+    def _build_project_python_runtime_action_result(self, *, profile: dict, report: dict) -> dict:
+        return {
+            "python_runtime_profile": deepcopy(profile),
+            "runtime_status": self._serialize_project_python_runtime_report(report),
+            "diagnostics": [],
+        }
+
+    def _require_enabled_project_python_runtime_state(self) -> dict:
+        runtime_state = self._resolve_project_python_runtime_execution(auto_prepare=False)
+        if runtime_state is None:
+            raise ValueError("project python runtime is disabled")
+        project_storage_root = runtime_state.get("project_storage_root")
+        if not isinstance(project_storage_root, Path):
+            raise ValueError("project python runtime storage root unavailable")
+        return runtime_state
+
+    def _resolve_project_python_runtime_execution(self, *, auto_prepare: bool = True) -> dict | None:
+        project_settings = self._extract_project_settings(self._state)
+        runtime_profile = project_settings.get("python_runtime_profile")
+        if not isinstance(runtime_profile, dict):
+            return None
+        normalized_profile = normalize_python_runtime_profile(
+            runtime_profile,
+            defaults=self._build_default_project_python_runtime_profile(),
+        )
+        project_metadata = self._state.get("project")
+        if (
+            isinstance(project_metadata, dict)
+            and project_metadata.get("source_of_truth") == "wcrun_package"
+            and normalized_profile.get("runtime_enabled", False)
+        ):
+            normalized_profile["cache_location_mode"] = "project_cache"
+        if not normalized_profile.get("runtime_enabled", False):
+            return None
+
+        project_identity = project_settings.get("project_identity")
+        project_id = (
+            project_identity.get("project_id")
+            if isinstance(project_identity, dict)
+            and isinstance(project_identity.get("project_id"), str)
+            and project_identity.get("project_id").strip()
+            else self._state["project"]["project_id"]
+        )
+        project_storage_root = self._resolve_project_python_runtime_storage_root()
+        if project_storage_root is None:
+            report = {
+                "runtime_root": self._resolve_application_data_root() / "python-runtimes" / project_id,
+                "python_executable": Path(
+                    sys.executable
+                ) if isinstance(sys.executable, str) and sys.executable else Path("python"),
+                "manifest_hash": normalized_profile.get("materialized_runtime_hash") or "unresolved",
+                "cache_location_mode": normalized_profile["cache_location_mode"],
+                "project_cache_mode": normalized_profile["project_cache_mode"],
+                "runtime_handle": None,
+                "health_status": "broken",
+                "health_message": "project runtime storage root unavailable",
+            }
+            return {
+                "profile": normalized_profile,
+                "project_id": project_id,
+                "project_storage_root": None,
+                "report": report,
+            }
+
+        try:
+            report = self._project_python_runtime_manager.health_check(
+                normalized_profile,
+                project_id=project_id,
+                project_storage_root=project_storage_root,
+            )
+            if (
+                auto_prepare
+                and
+                report["health_status"] != "ready"
+                and normalized_profile.get("auto_prepare_on_run", True)
+            ):
+                report = self._project_python_runtime_manager.prepare_runtime(
+                    normalized_profile,
+                    project_id=project_id,
+                    project_storage_root=project_storage_root,
+                )
+        except ValueError as exc:
+            report = {
+                "runtime_root": project_storage_root,
+                "python_executable": Path(
+                    sys.executable
+                ) if isinstance(sys.executable, str) and sys.executable else Path("python"),
+                "manifest_hash": normalized_profile.get("materialized_runtime_hash") or "unresolved",
+                "cache_location_mode": normalized_profile["cache_location_mode"],
+                "project_cache_mode": normalized_profile["project_cache_mode"],
+                "runtime_handle": None,
+                "health_status": "broken",
+                "health_message": str(exc),
+            }
+
+        return {
+            "profile": normalized_profile,
+            "project_id": project_id,
+            "project_storage_root": project_storage_root,
+            "report": report,
         }
 
     def _build_preferences_state(self) -> dict:
@@ -12225,6 +12605,10 @@ class CompilationWorkbenchService:
             graph_model=graph_model,
             packaged_resources=packaged_resources,
         )
+        python_runtime_bundle = self._build_wcrun_python_runtime_bundle(
+            project_settings=project_settings,
+            project_path=project_path,
+        )
         package_info_payload = self._build_wcrun_package_info_document(
             project_path=project_path,
             output_path=output_path,
@@ -12240,6 +12624,7 @@ class CompilationWorkbenchService:
             "graphs/main.graph.msgpack": self._encode_pseudo_msgpack_bytes(graph_model.model_dump()),
             "meta/package-info.json": self._encode_json_bytes(package_info_payload),
         }
+        contents.update(python_runtime_bundle["archive_entries"])
         contents.update(packaged_resources["archive_entries"])
         return contents
 
@@ -12314,6 +12699,10 @@ class CompilationWorkbenchService:
                 "embedded": deepcopy(packaged_resources["embedded_resources"]),
                 "external": deepcopy(packaged_resources["external_resources"]),
             },
+            "python_runtime": self._build_wcrun_python_runtime_manifest_payload(
+                project_settings=project_settings,
+                project_path=project_path,
+            ),
             "integrity": {
                 "checksums_path": "meta/checksums.json",
                 "package_info_path": "meta/package-info.json",
@@ -12523,6 +12912,97 @@ class CompilationWorkbenchService:
             "requires_captcha_ocr": requires_captcha_ocr,
         }
 
+    def _build_wcrun_python_runtime_manifest_payload(
+        self,
+        *,
+        project_settings: dict,
+        project_path: Path,
+    ) -> dict:
+        runtime_profile = (
+            project_settings.get("python_runtime_profile")
+            if isinstance(project_settings.get("python_runtime_profile"), dict)
+            else {}
+        )
+        normalized_profile = normalize_python_runtime_profile(
+            runtime_profile,
+            defaults=self._build_default_project_python_runtime_profile(),
+        )
+        project_identity = (
+            project_settings.get("project_identity")
+            if isinstance(project_settings.get("project_identity"), dict)
+            else {}
+        )
+        project_id = (
+            project_identity.get("project_id")
+            if isinstance(project_identity.get("project_id"), str)
+            and project_identity.get("project_id").strip()
+            else "weconduct-workspace"
+        )
+        manifest = self._project_python_runtime_manager.build_manifest(
+            normalized_profile,
+            project_id=project_id,
+        )
+        required = bool(normalized_profile.get("runtime_enabled", False))
+        bundle_mode = (
+            normalized_profile.get("package_embed_mode", "none")
+            if required
+            else "none"
+        )
+        runtime_root_entry = None
+        if required and bundle_mode == "wheelhouse_rebuild":
+            runtime_root_entry = "python-runtime/wheelhouse"
+        elif required and bundle_mode == "full_venv":
+            runtime_root_entry = "python-runtime/full-venv"
+        return {
+            "required": required,
+            "bundle_mode": bundle_mode,
+            "manifest_entry": "python-runtime/manifest.json" if required else None,
+            "runtime_root_entry": runtime_root_entry,
+            "cache_location_mode": normalized_profile["cache_location_mode"],
+            "project_cache_mode": normalized_profile["project_cache_mode"],
+            "manifest_hash": manifest["manifest_hash"],
+            "manifest": manifest,
+        }
+
+    def _build_wcrun_python_runtime_bundle(
+        self,
+        *,
+        project_settings: dict,
+        project_path: Path,
+    ) -> dict:
+        payload = self._build_wcrun_python_runtime_manifest_payload(
+            project_settings=project_settings,
+            project_path=project_path,
+        )
+        archive_entries: dict[str, bytes] = {}
+        if payload["required"]:
+            archive_entries["python-runtime/manifest.json"] = self._encode_json_bytes(
+                payload["manifest"]
+            )
+            project_identity = (
+                project_settings.get("project_identity")
+                if isinstance(project_settings.get("project_identity"), dict)
+                else {}
+            )
+            project_id = (
+                project_identity.get("project_id")
+                if isinstance(project_identity.get("project_id"), str)
+                and project_identity.get("project_id").strip()
+                else "weconduct-workspace"
+            )
+            exported_bundle = self._project_python_runtime_manager.export_runtime_bundle(
+                project_settings.get("python_runtime_profile", {}),
+                project_id=project_id,
+                project_storage_root=self._resolve_project_storage_root(project_path),
+                package_embed_mode=payload["bundle_mode"],
+            )
+            for relative_path, file_bytes in exported_bundle["archive_entries"].items():
+                archive_entries[f"python-runtime/{relative_path}"] = file_bytes
+        return {
+            "archive_entries": archive_entries,
+            "manifest_payload": payload,
+        }
+
     def _build_wcrun_custom_component_prefix(self, resource_id: str) -> str:
         normalized_id = resource_id.replace(":", "_").replace("/", "_").replace("\\", "_")
         return f"resources/custom-components/{normalized_id}"
@@ -12558,6 +13038,39 @@ class CompilationWorkbenchService:
             if not isinstance(graph_payload, dict):
                 raise ValueError("package graph payload must decode to JSON object equivalent")
             package_info_payload = json.loads(archive.read("meta/package-info.json").decode("utf-8"))
+            python_runtime_payload = (
+                manifest_payload.get("python_runtime")
+                if isinstance(manifest_payload.get("python_runtime"), dict)
+                else {}
+            )
+            python_runtime_manifest_entry = (
+                python_runtime_payload.get("manifest_entry")
+                if isinstance(python_runtime_payload.get("manifest_entry"), str)
+                and python_runtime_payload.get("manifest_entry").strip()
+                else None
+            )
+            python_runtime_manifest_payload = None
+            python_runtime_missing_entries: list[str] = []
+            if python_runtime_manifest_entry is not None:
+                if python_runtime_manifest_entry in archive_names:
+                    python_runtime_manifest_payload = json.loads(
+                        archive.read(python_runtime_manifest_entry).decode("utf-8")
+                    )
+                else:
+                    python_runtime_missing_entries.append(python_runtime_manifest_entry)
+            python_runtime_root_entry = (
+                python_runtime_payload.get("runtime_root_entry")
+                if isinstance(python_runtime_payload.get("runtime_root_entry"), str)
+                and python_runtime_payload.get("runtime_root_entry").strip()
+                else None
+            )
+            if python_runtime_root_entry is not None:
+                normalized_prefix = f"{python_runtime_root_entry.rstrip('/')}/"
+                if not any(
+                    name == python_runtime_root_entry or name.startswith(normalized_prefix)
+                    for name in archive_names
+                ):
+                    python_runtime_missing_entries.append(python_runtime_root_entry)
             return {
                 "package_kind": "wcrun",
                 "manifest": manifest_payload,
@@ -12567,6 +13080,9 @@ class CompilationWorkbenchService:
                 "checksums": checksums_payload,
                 "resources": deepcopy(manifest_payload.get("resources", {})),
                 "dependencies": deepcopy(manifest_payload.get("dependencies", {})),
+                "python_runtime": deepcopy(python_runtime_payload),
+                "python_runtime_manifest": python_runtime_manifest_payload,
+                "python_runtime_missing_entries": python_runtime_missing_entries,
                 "archive_entries": sorted(archive_names),
             }
 
@@ -12895,6 +13411,12 @@ class CompilationWorkbenchService:
             if isinstance(manifest_payload.get("runtime_requirements"), dict)
             else {}
         )
+        python_runtime = (
+            package_document.get("python_runtime")
+            if isinstance(package_document.get("python_runtime"), dict)
+            else {}
+        )
+        python_runtime_entries = self._evaluate_package_python_runtime_entries(package_document)
         blocking_entries = self._evaluate_package_runtime_requirement_entries(runtime_requirements)
         blocking_entries = blocking_entries if isinstance(blocking_entries, list) else []
         return {
@@ -12903,10 +13425,11 @@ class CompilationWorkbenchService:
             "required_platform": runtime_requirements.get("required_platform"),
             "required_browser": runtime_requirements.get("required_browser"),
             "requires_captcha_ocr": bool(runtime_requirements.get("requires_captcha_ocr", False)),
-            "blocking_count": len(blocking_entries),
+            "python_runtime": deepcopy(python_runtime),
+            "blocking_count": len(blocking_entries) + len(python_runtime_entries),
             "blocking_categories": [
                 entry.get("category")
-                for entry in blocking_entries
+                for entry in [*blocking_entries, *python_runtime_entries]
                 if isinstance(entry, dict) and isinstance(entry.get("category"), str)
             ],
         }
@@ -12928,6 +13451,7 @@ class CompilationWorkbenchService:
             else {}
         )
         binding_entries = self._evaluate_package_external_resource_binding_entries(project_settings)
+        python_runtime_entries = self._evaluate_package_python_runtime_entries(package_document)
         requirement_entries = (
             requirement_entries
             if isinstance(requirement_entries, list)
@@ -12940,11 +13464,17 @@ class CompilationWorkbenchService:
         )
         diagnostics = [
             *[deepcopy(entry) for entry in requirement_entries if isinstance(entry, dict)],
+            *[deepcopy(entry) for entry in python_runtime_entries if isinstance(entry, dict)],
             *[deepcopy(entry) for entry in binding_entries if isinstance(entry, dict)],
         ]
         runtime_requirements = (
             manifest_payload.get("runtime_requirements")
             if isinstance(manifest_payload.get("runtime_requirements"), dict)
+            else {}
+        )
+        python_runtime = (
+            package_document.get("python_runtime")
+            if isinstance(package_document.get("python_runtime"), dict)
             else {}
         )
         external_resources = (
@@ -12965,6 +13495,16 @@ class CompilationWorkbenchService:
             "runtime_requirement_status": {
                 "declared": deepcopy(runtime_requirements),
                 "blocking_count": len(requirement_entries),
+            },
+            "python_runtime_status": {
+                "required": bool(python_runtime.get("required", False)),
+                "bundle_mode": python_runtime.get("bundle_mode"),
+                "blocking_count": len(python_runtime_entries),
+                "missing_entries": deepcopy(
+                    package_document.get("python_runtime_missing_entries", [])
+                    if isinstance(package_document.get("python_runtime_missing_entries"), list)
+                    else []
+                ),
             },
             "external_resource_binding_status": {
                 "required_count": len([item for item in external_resources if isinstance(item, dict)]),
@@ -13017,6 +13557,85 @@ class CompilationWorkbenchService:
                 }
             )
         return missing_entries
+
+    def _evaluate_package_python_runtime_entries(self, package_document: dict) -> list[dict]:
+        python_runtime = (
+            package_document.get("python_runtime")
+            if isinstance(package_document.get("python_runtime"), dict)
+            else {}
+        )
+        if not bool(python_runtime.get("required", False)):
+            return []
+        entries: list[dict] = []
+        missing_entries = (
+            package_document.get("python_runtime_missing_entries")
+            if isinstance(package_document.get("python_runtime_missing_entries"), list)
+            else []
+        )
+        for missing_entry in missing_entries:
+            if not isinstance(missing_entry, str) or not missing_entry.strip():
+                continue
+            category = "package.python_runtime.manifest_missing"
+            object_ref = "manifest.python_runtime.manifest_entry"
+            message = (
+                "loaded package requires embedded python runtime manifest before runtime start: "
+                f"{missing_entry}"
+            )
+            if missing_entry != python_runtime.get("manifest_entry"):
+                category = "package.python_runtime.bundle_missing"
+                object_ref = "manifest.python_runtime.runtime_root_entry"
+                message = (
+                    "loaded package requires embedded python runtime bundle before runtime start: "
+                    f"{missing_entry}"
+                )
+            entries.append(
+                {
+                    "category": category,
+                    "message": message,
+                    "severity": "error",
+                    "stage": "runtime.prepare",
+                    "object_ref": object_ref,
+                    "resource_id": None,
+                    "setting_field": None,
+                }
+            )
+        runtime_manifest = package_document.get("python_runtime_manifest")
+        if not isinstance(runtime_manifest, dict):
+            if not entries:
+                entries.append(
+                    {
+                        "category": "package.python_runtime.manifest_unreadable",
+                        "message": "loaded package python runtime manifest is unreadable before runtime start",
+                        "severity": "error",
+                        "stage": "runtime.prepare",
+                        "object_ref": "manifest.python_runtime",
+                        "resource_id": None,
+                        "setting_field": None,
+                    }
+                )
+            return entries
+        declared_hash = python_runtime.get("manifest_hash")
+        actual_hash = runtime_manifest.get("manifest_hash")
+        if (
+            isinstance(declared_hash, str)
+            and declared_hash.strip()
+            and declared_hash != actual_hash
+        ):
+            entries.append(
+                {
+                    "category": "package.python_runtime.manifest_hash_mismatch",
+                    "message": (
+                        "loaded package python runtime manifest hash mismatched before runtime start: "
+                        f"{declared_hash} != {actual_hash}"
+                    ),
+                    "severity": "error",
+                    "stage": "runtime.prepare",
+                    "object_ref": "manifest.python_runtime.manifest_hash",
+                    "resource_id": None,
+                    "setting_field": None,
+                }
+            )
+        return entries
 
     def _evaluate_package_runtime_requirement_entries(self, runtime_requirements: dict) -> list[dict]:
         entries: list[dict] = []
@@ -13129,6 +13748,57 @@ class CompilationWorkbenchService:
         with zipfile.ZipFile(package_path, mode="r") as archive:
             archive.extractall(session_root)
         return session_root
+
+    def _restore_loaded_package_python_runtime_bundle(
+        self,
+        *,
+        session_dir: Path,
+        project_settings: dict,
+    ) -> None:
+        runtime_profile = (
+            project_settings.get("python_runtime_profile")
+            if isinstance(project_settings.get("python_runtime_profile"), dict)
+            else {}
+        )
+        normalized_profile = normalize_python_runtime_profile(
+            runtime_profile,
+            defaults=self._build_default_project_python_runtime_profile(),
+        )
+        if not normalized_profile.get("runtime_enabled", False):
+            return
+        normalized_profile["cache_location_mode"] = "project_cache"
+        project_identity = (
+            project_settings.get("project_identity")
+            if isinstance(project_settings.get("project_identity"), dict)
+            else {}
+        )
+        project_id = (
+            project_identity.get("project_id")
+            if isinstance(project_identity.get("project_id"), str)
+            and project_identity.get("project_id").strip()
+            else "weconduct-workspace"
+        )
+        manifest = self._project_python_runtime_manager.build_manifest(
+            normalized_profile,
+            project_id=project_id,
+        )
+        runtime_root = self._project_python_runtime_manager.resolve_runtime_root(
+            normalized_profile,
+            project_id=project_id,
+            project_storage_root=session_dir,
+            manifest_hash=manifest["manifest_hash"],
+        )
+        full_venv_root = session_dir / "python-runtime" / "full-venv"
+        wheelhouse_root = session_dir / "python-runtime" / "wheelhouse"
+        if full_venv_root.exists():
+            if runtime_root.exists():
+                shutil.rmtree(runtime_root, ignore_errors=True)
+            shutil.copytree(full_venv_root, runtime_root, dirs_exist_ok=True)
+            return
+        if wheelhouse_root.exists():
+            target_wheelhouse_root = runtime_root / "wheelhouse"
+            target_wheelhouse_root.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(wheelhouse_root, target_wheelhouse_root, dirs_exist_ok=True)
 
     def _build_loaded_package_resource_registry(self, package_document: dict) -> list[dict]:
         resources = deepcopy(self._build_initial_resource_registry())
@@ -13322,86 +13992,10 @@ class CompilationWorkbenchService:
         if not isinstance(project, dict) or project.get("source_of_truth") != "wcrun_package":
             return None
         runtime_requirements = self._read_loaded_package_runtime_requirements()
-        if runtime_requirements is None:
-            return None
         entries: list[dict] = []
-        minimum_app_version = runtime_requirements.get("minimum_app_version")
-        current_app_version = self._build_workbench_metadata()["api_version"]
-        if (
-            isinstance(minimum_app_version, str)
-            and minimum_app_version.strip()
-            and self._compare_version_strings(current_app_version, minimum_app_version.strip()) < 0
-        ):
-            entries.append(
-                {
-                    "category": "package.runtime_requirement.minimum_app_version_unsupported",
-                    "message": (
-                        "loaded package requires newer app version before runtime start: "
-                        f"{minimum_app_version.strip()} > {current_app_version}"
-                    ),
-                    "severity": "error",
-                    "stage": "runtime.prepare",
-                    "object_ref": "manifest.runtime_requirements.minimum_app_version",
-                    "resource_id": None,
-                    "setting_field": None,
-                }
-            )
-        required_platform = runtime_requirements.get("required_platform")
-        current_platform = self._get_runtime_platform_name()
-        if (
-            isinstance(required_platform, str)
-            and required_platform.strip()
-            and required_platform.strip().lower() != current_platform
-        ):
-            entries.append(
-                {
-                    "category": "package.runtime_requirement.required_platform_unsupported",
-                    "message": (
-                        "loaded package requires unsupported runtime platform before runtime start: "
-                        f"{required_platform.strip().lower()} != {current_platform}"
-                    ),
-                    "severity": "error",
-                    "stage": "runtime.prepare",
-                    "object_ref": "manifest.runtime_requirements.required_platform",
-                    "resource_id": None,
-                    "setting_field": None,
-                }
-            )
-        required_browser = runtime_requirements.get("required_browser")
-        if isinstance(required_browser, str) and required_browser.strip():
-            browser_ok, browser_detail = self._probe_browser_runtime_requirement(required_browser.strip())
-            if not browser_ok:
-                entries.append(
-                    {
-                        "category": "package.runtime_requirement.required_browser_unsupported",
-                        "message": (
-                            "loaded package requires unavailable browser runtime before runtime start: "
-                            f"{required_browser.strip()} ({browser_detail})"
-                        ),
-                        "severity": "error",
-                        "stage": "runtime.prepare",
-                        "object_ref": "manifest.runtime_requirements.required_browser",
-                        "resource_id": None,
-                        "setting_field": None,
-                    }
-                )
-        if bool(runtime_requirements.get("requires_captcha_ocr", False)):
-            captcha_ok, captcha_detail = self._probe_captcha_ocr_runtime_requirement()
-            if not captcha_ok:
-                entries.append(
-                    {
-                        "category": "package.runtime_requirement.captcha_ocr_unavailable",
-                        "message": (
-                            "loaded package requires captcha_ocr runtime before runtime start: "
-                            f"{captcha_detail}"
-                        ),
-                        "severity": "error",
-                        "stage": "runtime.prepare",
-                        "object_ref": "manifest.runtime_requirements.requires_captcha_ocr",
-                        "resource_id": None,
-                        "setting_field": None,
-                    }
-                )
+        if runtime_requirements is not None:
+            entries.extend(self._evaluate_package_runtime_requirement_entries(runtime_requirements))
+        entries.extend(self._evaluate_package_python_runtime_entries(self._read_loaded_package_python_runtime_state()))
         if not entries:
             return None
         return {
@@ -13442,6 +14036,60 @@ class CompilationWorkbenchService:
         if not isinstance(runtime_requirements, dict):
             return None
         return runtime_requirements
+
+    def _read_loaded_package_python_runtime_state(self) -> dict:
+        project_runtime = self._get_project_runtime()
+        session_dir = project_runtime.get("session_dir")
+        if not isinstance(session_dir, str) or not session_dir.strip():
+            return {}
+        resolved_session_dir = Path(session_dir)
+        manifest_path = resolved_session_dir / "manifest.msgpack"
+        if not manifest_path.exists():
+            return {}
+        manifest_payload = unpackb(manifest_path.read_bytes())
+        if not isinstance(manifest_payload, dict):
+            return {}
+        python_runtime = (
+            manifest_payload.get("python_runtime")
+            if isinstance(manifest_payload.get("python_runtime"), dict)
+            else {}
+        )
+        manifest_entry = (
+            python_runtime.get("manifest_entry")
+            if isinstance(python_runtime.get("manifest_entry"), str)
+            and python_runtime.get("manifest_entry").strip()
+            else None
+        )
+        python_runtime_manifest = None
+        python_runtime_missing_entries: list[str] = []
+        if manifest_entry is not None:
+            runtime_manifest_path = resolved_session_dir / manifest_entry
+            if runtime_manifest_path.exists():
+                try:
+                    payload = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    payload = None
+                if isinstance(payload, dict):
+                    python_runtime_manifest = payload
+            else:
+                python_runtime_missing_entries.append(manifest_entry)
+        runtime_root_entry = (
+            python_runtime.get("runtime_root_entry")
+            if isinstance(python_runtime.get("runtime_root_entry"), str)
+            and python_runtime.get("runtime_root_entry").strip()
+            else None
+        )
+        if runtime_root_entry is not None:
+            runtime_root_path = resolved_session_dir / runtime_root_entry
+            if not runtime_root_path.exists():
+                python_runtime_missing_entries.append(runtime_root_entry)
+            elif runtime_root_path.is_dir() and not any(runtime_root_path.rglob("*")):
+                python_runtime_missing_entries.append(runtime_root_entry)
+        return {
+            "python_runtime": deepcopy(python_runtime),
+            "python_runtime_manifest": deepcopy(python_runtime_manifest),
+            "python_runtime_missing_entries": list(python_runtime_missing_entries),
+        }
 
     def _get_runtime_platform_name(self) -> str:
         system_name = platform.system().strip().lower()

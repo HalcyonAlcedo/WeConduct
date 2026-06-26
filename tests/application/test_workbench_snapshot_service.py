@@ -1,6 +1,9 @@
 import hashlib
 import json
+import os
 from pathlib import Path
+import sys
+import subprocess
 import threading
 import base64
 from copy import deepcopy
@@ -9,10 +12,14 @@ import zipfile
 from http.server import BaseHTTPRequestHandler
 from socketserver import TCPServer
 import urllib.parse
+import openpyxl
 from openpyxl import Workbook, load_workbook
 import pytest
 
 from weconduct.application import CompilationWorkbenchService
+from weconduct.application.preferences_service import PreferencesService
+from weconduct.application.preferences_store import InMemoryPreferencesStore
+from weconduct.application import project_python_runtime as project_python_runtime_module
 from weconduct.application.workspace_state_store import InMemoryWorkspaceStateStore
 from weconduct.application.workspace_state_store import FileWorkspaceStateStore
 from weconduct.builtin_components.registry import BUILTIN_COMPONENT_DEFINITIONS
@@ -63,6 +70,174 @@ def _start_runtime_http_server() -> tuple[_RuntimeHttpServer, threading.Thread]:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
+
+
+def _build_linear_main_graph(*nodes: dict) -> dict:
+    materialized_nodes = [
+        {
+            "node_id": "node-start",
+            "lowered_kind": "control",
+            "source_anchor_ref": "n-start",
+            "expansion_role": "flow.start",
+            "node_kind": "flow.start",
+            "node_config": {},
+            "ports": [
+                {
+                    "port_id": "control-out",
+                    "direction": "output",
+                    "relation_layer": "control",
+                    "semantic_slot": "control.next",
+                }
+            ],
+        }
+    ]
+    edges: list[dict] = []
+    previous_node_id = "node-start"
+    for index, raw_node in enumerate(nodes):
+        node = deepcopy(raw_node)
+        raw_ports = node.get("ports")
+        ports = [deepcopy(item) for item in raw_ports] if isinstance(raw_ports, list) else []
+        if not any(
+            isinstance(port, dict)
+            and port.get("direction") == "input"
+            and port.get("relation_layer") == "control"
+            for port in ports
+        ):
+            ports.append(
+                {
+                    "port_id": "control-in",
+                    "direction": "input",
+                    "relation_layer": "control",
+                    "semantic_slot": "control.in",
+                }
+            )
+        if index < len(nodes) - 1 and not any(
+            isinstance(port, dict)
+            and port.get("direction") == "output"
+            and port.get("relation_layer") == "control"
+            for port in ports
+        ):
+            ports.append(
+                {
+                    "port_id": "control-out",
+                    "direction": "output",
+                    "relation_layer": "control",
+                    "semantic_slot": "control.next",
+                }
+            )
+        node["ports"] = ports
+        materialized_nodes.append(node)
+        edges.append(
+            {
+                "edge_id": f"edge-{previous_node_id}-{node['node_id']}",
+                "relation_layer": "control",
+                "from_node_id": previous_node_id,
+                "to_node_id": node["node_id"],
+                "from_port_id": "control-out",
+                "to_port_id": "control-in",
+                "edge_state": "draft",
+            }
+        )
+        previous_node_id = node["node_id"]
+    return {
+        "nodes": materialized_nodes,
+        "edges": edges,
+    }
+
+
+def _enable_ready_project_python_runtime(
+    service: CompilationWorkbenchService,
+    *,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    project_name: str,
+    project_slug: str,
+) -> Path:
+    from weconduct.application import project_python_runtime as runtime_module
+
+    runtime_root = tmp_path / "project.data" / "python-runtime" / project_slug
+    runtime_root.mkdir(parents=True, exist_ok=True)
+
+    def fake_health_check(self, profile, *, project_id: str, project_storage_root: Path) -> dict:
+        return {
+            "runtime_root": runtime_root,
+            "python_executable": Path(sys.executable),
+            "manifest_hash": project_slug,
+            "cache_location_mode": profile["cache_location_mode"],
+            "project_cache_mode": profile["project_cache_mode"],
+            "runtime_handle": None,
+            "health_status": "ready",
+            "health_message": None,
+        }
+
+    monkeypatch.setattr(
+        runtime_module.ProjectPythonRuntimeManager,
+        "health_check",
+        fake_health_check,
+    )
+
+    project_path = tmp_path / f"{project_slug}.weconduct.json"
+    service.create_project(project_name=project_name)
+    service.save_project_as(project_path=str(project_path))
+    service.update_project_settings(
+        project_settings={
+            **service.get_project_settings_document()["project_settings"],
+            "python_runtime_profile": {
+                **service.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "cache_location_mode": "project_cache",
+            },
+        }
+    )
+    return project_path
+
+
+def _write_minimal_python_wheel(
+    wheelhouse_dir: Path,
+    *,
+    package_name: str,
+    version: str,
+    package_body: str,
+) -> Path:
+    normalized_name = package_name.replace("-", "_")
+    dist_info_dir = f"{normalized_name}-{version}.dist-info"
+    wheel_path = wheelhouse_dir / f"{normalized_name}-{version}-py3-none-any.whl"
+    wheelhouse_dir.mkdir(parents=True, exist_ok=True)
+    metadata = "\n".join(
+        [
+            "Metadata-Version: 2.1",
+            f"Name: {package_name}",
+            f"Version: {version}",
+            "Summary: WeConduct runtime test package",
+            "",
+        ]
+    )
+    wheel = "\n".join(
+        [
+            "Wheel-Version: 1.0",
+            "Generator: weconduct-tests",
+            "Root-Is-Purelib: true",
+            "Tag: py3-none-any",
+            "",
+        ]
+    )
+    record = "\n".join(
+        [
+            f"{normalized_name}/__init__.py,,",
+            f"{dist_info_dir}/METADATA,,",
+            f"{dist_info_dir}/WHEEL,,",
+            f"{dist_info_dir}/top_level.txt,,",
+            f"{dist_info_dir}/RECORD,,",
+            "",
+        ]
+    )
+    with zipfile.ZipFile(wheel_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(f"{normalized_name}/__init__.py", package_body)
+        archive.writestr(f"{dist_info_dir}/METADATA", metadata)
+        archive.writestr(f"{dist_info_dir}/WHEEL", wheel)
+        archive.writestr(f"{dist_info_dir}/top_level.txt", f"{normalized_name}\n")
+        archive.writestr(f"{dist_info_dir}/RECORD", record)
+    return wheel_path
 
 
 class _BrowserMockSiteHandler(BaseHTTPRequestHandler):
@@ -363,7 +538,7 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert snapshot["entrypoints"]["graph_source_projection"] == "/api/workbench/graph/source-projection"
     assert snapshot["workbench"]["host_mode"] == "python_core"
-    assert snapshot["workbench"]["api_version"] == "0.6.3"
+    assert snapshot["workbench"]["api_version"] == "0.7.0"
     assert snapshot["compiler"]["available_source_kinds"] == [
         "graph_workspace",
         "native_flow",
@@ -678,7 +853,7 @@ def test_service_create_project_seeds_current_graph_compatibility_metadata(tmp_p
 
     assert created["status"] == "created"
     assert created_graph["root_metadata"]["graph_compatibility"]["graph_data_version"] == "0.6.2"
-    assert created_graph["root_metadata"]["graph_compatibility"]["built_with_app_version"] == "0.6.2"
+    assert created_graph["root_metadata"]["graph_compatibility"]["built_with_app_version"] == "0.7.0"
     assert (
         created_graph["root_metadata"]["graph_compatibility"]["minimum_loader_app_version"] == "0.5.2"
     )
@@ -6280,10 +6455,10 @@ def test_service_runtime_executes_http_request_and_browser_navigation_with_defau
         thread.join(timeout=5)
 
 
-def test_service_runtime_executes_python_run_and_writes_overridden_result_variable() -> None:
-    from weconduct.application.preferences_service import PreferencesService
-    from weconduct.application.preferences_store import InMemoryPreferencesStore
-
+def test_service_runtime_executes_python_run_and_writes_overridden_result_variable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     preferences_service = PreferencesService(
         preferences_store=InMemoryPreferencesStore(
             {
@@ -6314,6 +6489,7 @@ def test_service_runtime_executes_python_run_and_writes_overridden_result_variab
                     "allow_file_access": True,
                     "allow_browser_executor": True,
                     "allow_local_network_access": True,
+                    "allow_python_execution": True,
                 },
                 "python_runtime_settings": {
                     "python_executable_path": None,
@@ -6339,49 +6515,56 @@ def test_service_runtime_executes_python_run_and_writes_overridden_result_variab
         )
     )
     service = CompilationWorkbenchService(preferences_service=preferences_service)
+    _enable_ready_project_python_runtime(
+        service,
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        project_name="Python Run Result Variable",
+        project_slug="python-run-result-variable",
+    )
 
+    linear_graph = _build_linear_main_graph(
+        {
+            "node_id": "node-a",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "n-a",
+            "expansion_role": "transform:set_variable",
+            "node_kind": "data.set_variable",
+            "node_config": {"name": "A", "value": 7},
+            "ports": [],
+        },
+        {
+            "node_id": "node-b",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "n-b",
+            "expansion_role": "transform:set_variable",
+            "node_kind": "data.set_variable",
+            "node_config": {"name": "B", "value": 5},
+            "ports": [],
+        },
+        {
+            "node_id": "node-python",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "n-python",
+            "expansion_role": "action:run_python",
+            "node_kind": "python.run",
+            "node_config": {
+                "code": (
+                    "total = variables.get('A', 0) + variables.get('B', 0)\n"
+                    "result = {'sum': total, 'page_available': page is not None}\n"
+                    "result_variable = 'python_summary'\n"
+                ),
+                "variable_name": "default_summary",
+            },
+            "ports": [],
+        },
+    )
     service.save_graph_document(
         {
             "graph_model_id": "graph:workspace",
             "compilation_id": None,
             "graph_schema_version": "graph-v1",
-            "nodes": [
-                {
-                    "node_id": "node-a",
-                    "lowered_kind": "execution",
-                    "source_anchor_ref": "n-a",
-                    "expansion_role": "transform:set_variable",
-                    "node_kind": "data.set_variable",
-                    "node_config": {"name": "A", "value": 7},
-                    "ports": [],
-                },
-                {
-                    "node_id": "node-b",
-                    "lowered_kind": "execution",
-                    "source_anchor_ref": "n-b",
-                    "expansion_role": "transform:set_variable",
-                    "node_kind": "data.set_variable",
-                    "node_config": {"name": "B", "value": 5},
-                    "ports": [],
-                },
-                {
-                    "node_id": "node-python",
-                    "lowered_kind": "execution",
-                    "source_anchor_ref": "n-python",
-                    "expansion_role": "action:run_python",
-                    "node_kind": "python.run",
-                    "node_config": {
-                        "code": (
-                            "total = variables.get('A', 0) + variables.get('B', 0)\n"
-                            "result = {'sum': total, 'page_available': page is not None}\n"
-                            "result_variable = 'python_summary'\n"
-                        ),
-                        "variable_name": "default_summary",
-                    },
-                    "ports": [],
-                },
-            ],
-            "edges": [],
+            **linear_graph,
             "graph_effective_diagnostic_anchor_refs": [],
         }
     )
@@ -6400,6 +6583,481 @@ def test_service_runtime_executes_python_run_and_writes_overridden_result_variab
         "page_available": False,
     }
     assert "default_summary" not in session["result"]["variables"]
+
+
+def test_service_runtime_python_run_auto_prepares_project_runtime_when_profile_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from weconduct.application import project_python_runtime as runtime_module
+
+    calls: list[tuple[str, str, Path]] = []
+    runtime_root = tmp_path / "project.data" / "python-runtime" / "auto-prepare"
+
+    def fake_health_check(self, profile, *, project_id: str, project_storage_root: Path) -> dict:
+        calls.append(("health", project_id, Path(project_storage_root)))
+        return {
+            "runtime_root": runtime_root,
+            "python_executable": Path(sys.executable),
+            "manifest_hash": "auto-prepare",
+            "cache_location_mode": profile["cache_location_mode"],
+            "project_cache_mode": profile["project_cache_mode"],
+            "runtime_handle": None,
+            "health_status": "missing",
+            "health_message": "runtime root missing",
+        }
+
+    def fake_prepare_runtime(self, profile, *, project_id: str, project_storage_root: Path) -> dict:
+        calls.append(("prepare", project_id, Path(project_storage_root)))
+        runtime_root.mkdir(parents=True, exist_ok=True)
+        return {
+            "runtime_root": runtime_root,
+            "python_executable": Path(sys.executable),
+            "manifest_hash": "auto-prepare",
+            "cache_location_mode": profile["cache_location_mode"],
+            "project_cache_mode": profile["project_cache_mode"],
+            "runtime_handle": None,
+            "health_status": "ready",
+            "health_message": None,
+        }
+
+    monkeypatch.setattr(
+        runtime_module.ProjectPythonRuntimeManager,
+        "health_check",
+        fake_health_check,
+    )
+    monkeypatch.setattr(
+        runtime_module.ProjectPythonRuntimeManager,
+        "prepare_runtime",
+        fake_prepare_runtime,
+    )
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {"default_project_directory": None},
+                "compile_settings": {},
+                "security_settings": {
+                    "allow_external_programs": True,
+                    "allow_python_execution": True,
+                },
+                "python_runtime_settings": {},
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    project_path = tmp_path / "project-runtime-auto-prepare.weconduct.json"
+
+    service.create_project(project_name="Project Runtime Auto Prepare")
+    service.save_project_as(project_path=str(project_path))
+    service.update_project_settings(
+        project_settings={
+            **service.get_project_settings_document()["project_settings"],
+            "python_runtime_profile": {
+                **service.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "auto_prepare_on_run": True,
+                "cache_location_mode": "project_cache",
+            },
+        }
+    )
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow.start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-python",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-python",
+                    "expansion_role": "action:python_run",
+                    "node_kind": "python.run",
+                    "node_config": {"code": "result = 42", "variable_name": "runtime_value"},
+                    "ports": [
+                        {
+                            "port_id": "control-in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.in",
+                        }
+                    ],
+                }
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-python",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-python",
+                    "from_port_id": "control-out",
+                    "to_port_id": "control-in",
+                    "edge_state": "draft",
+                }
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    project_id = service.get_project_settings_document()["project_settings"]["project_identity"][
+        "project_id"
+    ]
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert session["result"]["outputs"]["node-python"]["result"] == 42
+    assert session["result"]["variables"]["runtime_value"] == 42
+    assert ("health", project_id, service._resolve_project_storage_root(project_path)) in calls
+    assert ("prepare", project_id, service._resolve_project_storage_root(project_path)) in calls
+
+
+def test_service_runtime_python_run_reports_project_runtime_prepare_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from weconduct.application import project_python_runtime as runtime_module
+
+    runtime_root = tmp_path / "project.data" / "python-runtime" / "broken"
+
+    def fake_health_check(self, profile, *, project_id: str, project_storage_root: Path) -> dict:
+        return {
+            "runtime_root": runtime_root,
+            "python_executable": Path(sys.executable),
+            "manifest_hash": "broken",
+            "cache_location_mode": profile["cache_location_mode"],
+            "project_cache_mode": profile["project_cache_mode"],
+            "runtime_handle": None,
+            "health_status": "missing",
+            "health_message": "runtime root missing",
+        }
+
+    def fake_prepare_runtime(self, profile, *, project_id: str, project_storage_root: Path) -> dict:
+        return {
+            "runtime_root": runtime_root,
+            "python_executable": Path(sys.executable),
+            "manifest_hash": "broken",
+            "cache_location_mode": profile["cache_location_mode"],
+            "project_cache_mode": profile["project_cache_mode"],
+            "runtime_handle": None,
+            "health_status": "broken",
+            "health_message": "python executable not launchable",
+        }
+
+    monkeypatch.setattr(
+        runtime_module.ProjectPythonRuntimeManager,
+        "health_check",
+        fake_health_check,
+    )
+    monkeypatch.setattr(
+        runtime_module.ProjectPythonRuntimeManager,
+        "prepare_runtime",
+        fake_prepare_runtime,
+    )
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {"default_project_directory": None},
+                "compile_settings": {},
+                "security_settings": {
+                    "allow_external_programs": True,
+                    "allow_python_execution": True,
+                },
+                "python_runtime_settings": {},
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    project_path = tmp_path / "project-runtime-prepare-failure.weconduct.json"
+
+    service.create_project(project_name="Project Runtime Prepare Failure")
+    service.save_project_as(project_path=str(project_path))
+    service.update_project_settings(
+        project_settings={
+            **service.get_project_settings_document()["project_settings"],
+            "python_runtime_profile": {
+                **service.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "auto_prepare_on_run": True,
+            },
+        }
+    )
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow.start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-python",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-python",
+                    "expansion_role": "action:python_run",
+                    "node_kind": "python.run",
+                    "node_config": {"code": "result = 42"},
+                    "ports": [
+                        {
+                            "port_id": "control-in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.in",
+                        }
+                    ],
+                }
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-python",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-python",
+                    "from_port_id": "control-out",
+                    "to_port_id": "control-in",
+                    "edge_state": "draft",
+                }
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "failed"
+    assert session["result"]["failure_reason"] == "python.runtime_prepare_failed"
+    assert session["result"]["outputs"]["node-python"]["error_code"] == "python.runtime_prepare_failed"
+    assert "python executable not launchable" in session["result"]["outputs"]["node-python"]["message"]
+
+
+def test_service_runtime_python_run_fails_when_project_runtime_is_disabled(
+    tmp_path: Path,
+) -> None:
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {"default_project_directory": None},
+                "compile_settings": {},
+                "security_settings": {
+                    "allow_external_programs": True,
+                    "allow_python_execution": True,
+                },
+                "python_runtime_settings": {
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    project_path = tmp_path / "project-runtime-disabled.weconduct.json"
+
+    service.create_project(project_name="Project Runtime Disabled")
+    service.save_project_as(project_path=str(project_path))
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow.start",
+                    "node_kind": "flow.start",
+                    "node_config": {},
+                    "ports": [
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-python",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-python",
+                    "expansion_role": "action:python_run",
+                    "node_kind": "python.run",
+                    "node_config": {"code": "result = 42", "variable_name": "runtime_value"},
+                    "ports": [
+                        {
+                            "port_id": "control-in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.in",
+                        }
+                    ],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-start-python",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-python",
+                    "from_port_id": "control-out",
+                    "to_port_id": "control-in",
+                    "edge_state": "draft",
+                }
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "failed"
+    assert session["result"]["failure_reason"] == "python.runtime_disabled"
+    assert session["result"]["outputs"]["node-python"]["error_code"] == "python.runtime_disabled"
+    assert (
+        session["result"]["outputs"]["node-python"]["message"]
+        == "python.run requires project python runtime to be enabled"
+    )
+
+
+def test_service_runtime_python_run_imports_dependency_from_project_runtime_wheelhouse(
+    tmp_path: Path,
+) -> None:
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {"default_project_directory": None},
+                "compile_settings": {},
+                "security_settings": {
+                    "allow_external_programs": True,
+                    "allow_python_execution": True,
+                    "allow_file_access": True,
+                },
+                "python_runtime_settings": {
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    project_path = tmp_path / "project-runtime-wheelhouse.weconduct.json"
+
+    service.create_project(project_name="Project Runtime Wheelhouse")
+    service.save_project_as(project_path=str(project_path))
+    project_storage_root = service._resolve_project_storage_root(project_path)
+    (project_storage_root / "requirements.txt").write_text("samplepkg==0.1.0\n", encoding="utf-8")
+    _write_minimal_python_wheel(
+        project_storage_root / "wheelhouse",
+        package_name="samplepkg",
+        version="0.1.0",
+        package_body=(
+            "def value():\n"
+            "    return 'samplepkg-0.1.0'\n"
+        ),
+    )
+    service.update_project_settings(
+        project_settings={
+            **service.get_project_settings_document()["project_settings"],
+            "python_runtime_profile": {
+                **service.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "cache_location_mode": "project_cache",
+                "project_cache_mode": "wheelhouse_rebuild",
+                "requirements_source_mode": "requirements_txt",
+                "requirements_file_path": "requirements.txt",
+                "package_embed_mode": "wheelhouse_rebuild",
+            },
+        }
+    )
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            **_build_linear_main_graph(
+                {
+                    "node_id": "node-python",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-python",
+                    "expansion_role": "action:python_run",
+                    "node_kind": "python.run",
+                    "node_config": {
+                        "code": (
+                            "import samplepkg\n"
+                            "print(samplepkg.value())\n"
+                            "result = samplepkg.value()\n"
+                            "result_variable = 'wheel_value'\n"
+                        ),
+                    },
+                    "ports": [
+                        {
+                            "port_id": "control-in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.in",
+                        }
+                    ],
+                }
+            ),
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert session["result"]["outputs"]["node-python"]["result"] == "samplepkg-0.1.0"
+    assert session["result"]["outputs"]["node-python"]["python_runtime_source"] == "project_runtime"
+    assert session["result"]["outputs"]["node-python"]["stdout"] == "samplepkg-0.1.0\n"
+    assert session["result"]["variables"]["wheel_value"] == "samplepkg-0.1.0"
 
 
 def test_service_runtime_hides_python_stdout_stderr_when_capture_is_disabled() -> None:
@@ -6462,26 +7120,26 @@ def test_service_runtime_hides_python_stdout_stderr_when_capture_is_disabled() -
     )
     service = CompilationWorkbenchService(preferences_service=preferences_service)
 
+    linear_graph = _build_linear_main_graph(
+        {
+            "node_id": "node-python",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "n-python",
+            "expansion_role": "action:run_python",
+            "node_kind": "python.run",
+            "node_config": {
+                "code": "print('visible'); result = 1",
+                "variable_name": "python_result",
+            },
+            "ports": [],
+        }
+    )
     service.save_graph_document(
         {
             "graph_model_id": "graph:workspace",
             "compilation_id": None,
             "graph_schema_version": "graph-v1",
-            "nodes": [
-                {
-                    "node_id": "node-python",
-                    "lowered_kind": "execution",
-                    "source_anchor_ref": "n-python",
-                    "expansion_role": "action:run_python",
-                    "node_kind": "python.run",
-                    "node_config": {
-                        "code": "print('visible'); result = 1",
-                        "variable_name": "python_result",
-                    },
-                    "ports": [],
-                }
-            ],
-            "edges": [],
+            **linear_graph,
             "graph_effective_diagnostic_anchor_refs": [],
         }
     )
@@ -6538,23 +7196,23 @@ def test_service_runtime_blocks_python_run_when_external_programs_are_disabled()
     )
     service = CompilationWorkbenchService(preferences_service=preferences_service)
 
+    linear_graph = _build_linear_main_graph(
+        {
+            "node_id": "node-python",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "n-python",
+            "expansion_role": "action:python_run",
+            "node_kind": "python.run",
+            "node_config": {"code": "result = 1"},
+            "ports": [],
+        }
+    )
     service.save_graph_document(
         {
             "graph_model_id": "graph:workspace",
             "compilation_id": None,
             "graph_schema_version": "graph-v1",
-            "nodes": [
-                {
-                    "node_id": "node-python",
-                    "lowered_kind": "execution",
-                    "source_anchor_ref": "n-python",
-                    "expansion_role": "action:python_run",
-                    "node_kind": "python.run",
-                    "node_config": {"code": "result = 1"},
-                    "ports": [],
-                }
-            ],
-            "edges": [],
+            **linear_graph,
             "graph_effective_diagnostic_anchor_refs": [],
         }
     )
@@ -6566,10 +7224,10 @@ def test_service_runtime_blocks_python_run_when_external_programs_are_disabled()
     assert session["result"]["outputs"]["node-python"]["error_code"] == "python.execution_disabled"
 
 
-def test_service_runtime_python_run_captures_output_and_allows_safe_imports() -> None:
-    from weconduct.application.preferences_service import PreferencesService
-    from weconduct.application.preferences_store import InMemoryPreferencesStore
-
+def test_service_runtime_python_run_captures_output_and_allows_safe_imports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     preferences_service = PreferencesService(
         preferences_store=InMemoryPreferencesStore(
             {
@@ -6600,6 +7258,7 @@ def test_service_runtime_python_run_captures_output_and_allows_safe_imports() ->
                     "allow_file_access": True,
                     "allow_browser_executor": True,
                     "allow_local_network_access": True,
+                    "allow_python_execution": True,
                 },
                 "python_runtime_settings": {
                     "python_executable_path": None,
@@ -6625,31 +7284,38 @@ def test_service_runtime_python_run_captures_output_and_allows_safe_imports() ->
         )
     )
     service = CompilationWorkbenchService(preferences_service=preferences_service)
+    _enable_ready_project_python_runtime(
+        service,
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        project_name="Python Run Safe Import",
+        project_slug="python-run-safe-import",
+    )
 
+    linear_graph = _build_linear_main_graph(
+        {
+            "node_id": "node-python",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "n-python",
+            "expansion_role": "action:python_run",
+            "node_kind": "python.run",
+            "node_config": {
+                "code": (
+                    "import math\n"
+                    "print('hello stdout')\n"
+                    "result = math.sqrt(16)\n"
+                    "result_variable = 'sqrt_value'\n"
+                )
+            },
+            "ports": [],
+        }
+    )
     service.save_graph_document(
         {
             "graph_model_id": "graph:workspace",
             "compilation_id": None,
             "graph_schema_version": "graph-v1",
-            "nodes": [
-                {
-                    "node_id": "node-python",
-                    "lowered_kind": "execution",
-                    "source_anchor_ref": "n-python",
-                    "expansion_role": "action:python_run",
-                    "node_kind": "python.run",
-                    "node_config": {
-                        "code": (
-                            "import math\n"
-                            "print('hello stdout')\n"
-                            "result = math.sqrt(16)\n"
-                            "result_variable = 'sqrt_value'\n"
-                        )
-                    },
-                    "ports": [],
-                }
-            ],
-            "edges": [],
+            **linear_graph,
             "graph_effective_diagnostic_anchor_refs": [],
         }
     )
@@ -6663,10 +7329,10 @@ def test_service_runtime_python_run_captures_output_and_allows_safe_imports() ->
     assert session["result"]["variables"]["sqrt_value"] == 4.0
 
 
-def test_service_runtime_python_run_blocks_disallowed_imports() -> None:
-    from weconduct.application.preferences_service import PreferencesService
-    from weconduct.application.preferences_store import InMemoryPreferencesStore
-
+def test_service_runtime_python_run_uses_project_directory_as_working_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     preferences_service = PreferencesService(
         preferences_store=InMemoryPreferencesStore(
             {
@@ -6697,6 +7363,7 @@ def test_service_runtime_python_run_blocks_disallowed_imports() -> None:
                     "allow_file_access": True,
                     "allow_browser_executor": True,
                     "allow_local_network_access": True,
+                    "allow_python_execution": True,
                 },
                 "python_runtime_settings": {
                     "python_executable_path": None,
@@ -6722,24 +7389,31 @@ def test_service_runtime_python_run_blocks_disallowed_imports() -> None:
         )
     )
     service = CompilationWorkbenchService(preferences_service=preferences_service)
+    project_path = _enable_ready_project_python_runtime(
+        service,
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        project_name="Python Run Working Directory",
+        project_slug="python-run-working-directory",
+    )
 
+    linear_graph = _build_linear_main_graph(
+        {
+            "node_id": "node-python",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "n-python",
+            "expansion_role": "action:python_run",
+            "node_kind": "python.run",
+            "node_config": {"code": "import os\nresult = os.getcwd()"},
+            "ports": [],
+        }
+    )
     service.save_graph_document(
         {
             "graph_model_id": "graph:workspace",
             "compilation_id": None,
             "graph_schema_version": "graph-v1",
-            "nodes": [
-                {
-                    "node_id": "node-python",
-                    "lowered_kind": "execution",
-                    "source_anchor_ref": "n-python",
-                    "expansion_role": "action:python_run",
-                    "node_kind": "python.run",
-                    "node_config": {"code": "import os\nresult = os.getcwd()"},
-                    "ports": [],
-                }
-            ],
-            "edges": [],
+            **linear_graph,
             "graph_effective_diagnostic_anchor_refs": [],
         }
     )
@@ -6747,15 +7421,13 @@ def test_service_runtime_python_run_blocks_disallowed_imports() -> None:
     started = service.start_runtime_session(None)
     session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
 
-    assert session["status"] == "failed"
-    assert session["result"]["failure_reason"] == "python.import_not_allowed"
-    assert session["result"]["outputs"]["node-python"]["error_code"] == "python.import_not_allowed"
+    assert session["status"] == "completed"
+    assert session["result"]["outputs"]["node-python"]["result"] == str(project_path.parent.resolve())
 
 
-def test_service_runtime_python_run_rejects_dunder_introspection_chain() -> None:
-    from weconduct.application.preferences_service import PreferencesService
-    from weconduct.application.preferences_store import InMemoryPreferencesStore
-
+def test_service_project_python_runtime_can_prepare_and_execute_openpyxl_excel_flow(
+    tmp_path: Path,
+) -> None:
     preferences_service = PreferencesService(
         preferences_store=InMemoryPreferencesStore(
             {
@@ -6786,6 +7458,344 @@ def test_service_runtime_python_run_rejects_dunder_introspection_chain() -> None
                     "allow_file_access": True,
                     "allow_browser_executor": True,
                     "allow_local_network_access": True,
+                    "allow_python_execution": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 120,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    project_path = tmp_path / "python-runtime-openpyxl.weconduct.json"
+    excel_path = tmp_path / "python-runtime-openpyxl.xlsx"
+
+    service.create_project(project_name="Python Runtime OpenPyXL")
+    service.save_project_as(project_path=str(project_path))
+    service.update_project_settings(
+        project_settings={
+            **service.get_project_settings_document()["project_settings"],
+            "python_runtime_profile": {
+                **service.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "cache_location_mode": "project_cache",
+                "project_cache_mode": "wheelhouse_rebuild",
+                "requirements_source_mode": "inline",
+                "requirements_inline": [f"openpyxl=={openpyxl.__version__}"],
+                "auto_prepare_on_run": True,
+                "package_embed_mode": "wheelhouse_rebuild",
+            },
+        }
+    )
+
+    health_before_prepare = service.health_check_project_python_runtime()
+    assert health_before_prepare["runtime_status"]["health_status"] == "missing"
+    assert health_before_prepare["runtime_status"]["health_message"] == "runtime root missing"
+
+    prepared = service.prepare_project_python_runtime()
+    assert prepared["runtime_status"]["health_status"] == "ready"
+    assert Path(prepared["runtime_status"]["python_executable"]).exists() is True
+
+    linear_graph = _build_linear_main_graph(
+        {
+            "node_id": "node-python",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "n-python",
+            "expansion_role": "action:python_run",
+            "node_kind": "python.run",
+            "node_config": {
+                "code": (
+                    "from openpyxl import Workbook, load_workbook\n"
+                    "from pathlib import Path\n"
+                    "path = Path('python-runtime-openpyxl.xlsx')\n"
+                    "wb = Workbook()\n"
+                    "ws = wb.active\n"
+                    "ws['A1'] = 'WeConduct'\n"
+                    "ws['B2'] = 42\n"
+                    "wb.save(path)\n"
+                    "loaded = load_workbook(path)\n"
+                    "result = {\n"
+                    "  'path': str(path.resolve()),\n"
+                    "  'a1': loaded.active['A1'].value,\n"
+                    "  'b2': loaded.active['B2'].value,\n"
+                    "}\n"
+                )
+            },
+            "ports": [],
+        }
+    )
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            **linear_graph,
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert session["result"]["outputs"]["node-python"]["python_runtime_source"] == "project_runtime"
+    assert session["result"]["outputs"]["node-python"]["result"] == {
+        "path": str(excel_path.resolve()),
+        "a1": "WeConduct",
+        "b2": 42,
+    }
+    assert excel_path.exists() is True
+    workbook = load_workbook(excel_path)
+    assert workbook.active["A1"].value == "WeConduct"
+    assert workbook.active["B2"].value == 42
+
+
+def test_python_runtime_sitecustomize_removes_shadow_numpy_path(tmp_path: Path) -> None:
+    shadow_root = tmp_path / "shadow"
+    shadow_numpy = shadow_root / "numpy"
+    shadow_numpy.mkdir(parents=True)
+    (shadow_numpy / "__init__.py").write_text("__all__ = []\n", encoding="utf-8")
+
+    runtime_site_root = tmp_path / "runtime-site"
+    runtime_site_root.mkdir(parents=True)
+
+    project_python_runtime_module._write_runtime_sitecustomize(
+        runtime_site_root,
+        blocked_sys_paths=[shadow_root],
+    )
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(runtime_site_root), str(shadow_root)])
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from openpyxl import Workbook; print('ok')",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout.strip() == "ok"
+
+
+def test_collect_blocked_runtime_sys_paths_reads_pyvenv_internal_home(tmp_path: Path) -> None:
+    venv_root = tmp_path / "venv"
+    venv_root.mkdir(parents=True)
+    internal_home = tmp_path / "bundle" / "_internal"
+    (venv_root / "pyvenv.cfg").write_text(
+        f"home = {internal_home}\n",
+        encoding="utf-8",
+    )
+
+    blocked_paths = project_python_runtime_module._collect_blocked_runtime_sys_paths(
+        base_python_executable=tmp_path / "python.exe",
+        venv_root=venv_root,
+    )
+
+    assert internal_home in blocked_paths
+
+
+def test_project_python_runtime_health_check_marks_stale_when_sitecustomize_missing(
+    tmp_path: Path,
+) -> None:
+    manager = project_python_runtime_module.ProjectPythonRuntimeManager(
+        app_data_root=tmp_path / "appdata",
+    )
+    profile = project_python_runtime_module.build_default_python_runtime_profile()
+    profile["runtime_enabled"] = True
+    profile["interpreter_strategy"] = "system"
+    profile["cache_location_mode"] = "project_cache"
+    profile["requirements_source_mode"] = "inline"
+    profile["requirements_inline"] = []
+    project_id = "runtime-sitecustomize-stale"
+    project_storage_root = tmp_path / "project"
+    project_storage_root.mkdir(parents=True)
+
+    prepared = manager.prepare_runtime(
+        profile,
+        project_id=project_id,
+        project_storage_root=project_storage_root,
+    )
+    assert prepared["health_status"] == "ready"
+
+    runtime_root = manager.resolve_runtime_root(
+        profile,
+        project_id=project_id,
+        project_storage_root=project_storage_root,
+        manifest_hash=manager.build_manifest(profile, project_id=project_id)["manifest_hash"],
+    )
+    venv_root = runtime_root / "venv"
+    pyvenv_cfg = venv_root / "pyvenv.cfg"
+    original_cfg = pyvenv_cfg.read_text(encoding="utf-8")
+    internal_home = tmp_path / "bundle" / "_internal"
+    pyvenv_cfg.write_text(
+        original_cfg + f"\nhome = {internal_home}\n",
+        encoding="utf-8",
+    )
+    (venv_root / "Lib" / "site-packages" / "sitecustomize.py").unlink(missing_ok=True)
+
+    report = manager.health_check(
+        profile,
+        project_id=project_id,
+        project_storage_root=project_storage_root,
+    )
+
+    assert report["health_status"] == "stale"
+
+
+def test_service_can_export_project_python_runtime_bundle_zip(tmp_path: Path) -> None:
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {"default_project_directory": None},
+                "compile_settings": {},
+                "security_settings": {
+                    "allow_external_programs": True,
+                    "allow_python_execution": True,
+                },
+                "python_runtime_settings": {},
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    project_path = tmp_path / "python-runtime-export.weconduct.json"
+    output_path = tmp_path / "exports" / "python-runtime-bundle.zip"
+
+    service.create_project(project_name="Python Runtime Export")
+    service.save_project_as(project_path=str(project_path))
+    service.update_project_settings(
+        project_settings={
+            **service.get_project_settings_document()["project_settings"],
+            "python_runtime_profile": {
+                **service.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "cache_location_mode": "project_cache",
+                "project_cache_mode": "wheelhouse_rebuild",
+                "requirements_source_mode": "inline",
+                "requirements_inline": ["samplepkg==0.1.0"],
+                "package_embed_mode": "wheelhouse_rebuild",
+            },
+        }
+    )
+
+    exported = service.export_project_python_runtime_bundle(output_path=str(output_path))
+
+    assert exported["status"] == "exported"
+    assert exported["export_bundle"]["bundle_mode"] == "wheelhouse_rebuild"
+    assert exported["export_bundle"]["bundle_root"] == "wheelhouse"
+    assert exported["export_bundle"]["output_path"] == str(output_path.resolve())
+    assert exported["export_bundle"]["entry_count"] >= 2
+    assert output_path.exists() is True
+
+    with zipfile.ZipFile(output_path, mode="r") as archive:
+        archive_names = set(archive.namelist())
+        assert "wheelhouse/requirements.txt" in archive_names
+        assert "wheelhouse/runtime-manifest.json" in archive_names
+        assert archive.read("wheelhouse/requirements.txt").decode("utf-8") == "samplepkg==0.1.0\n"
+
+
+def test_service_export_project_python_runtime_bundle_rejects_none_mode(tmp_path: Path) -> None:
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {"default_project_directory": None},
+                "compile_settings": {},
+                "security_settings": {
+                    "allow_external_programs": True,
+                    "allow_python_execution": True,
+                },
+                "python_runtime_settings": {},
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    project_path = tmp_path / "python-runtime-export-none.weconduct.json"
+    output_path = tmp_path / "exports" / "python-runtime-export-none.zip"
+
+    service.create_project(project_name="Python Runtime Export None")
+    service.save_project_as(project_path=str(project_path))
+    service.update_project_settings(
+        project_settings={
+            **service.get_project_settings_document()["project_settings"],
+            "python_runtime_profile": {
+                **service.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "cache_location_mode": "project_cache",
+                "package_embed_mode": "none",
+            },
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="python runtime bundle export requires package_embed_mode other than none",
+    ):
+        service.export_project_python_runtime_bundle(output_path=str(output_path))
+
+
+def test_service_runtime_python_run_rejects_dunder_introspection_chain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                    "allow_python_execution": True,
                 },
                 "python_runtime_settings": {
                     "python_executable_path": None,
@@ -6811,35 +7821,33 @@ def test_service_runtime_python_run_rejects_dunder_introspection_chain() -> None
         )
     )
     service = CompilationWorkbenchService(preferences_service=preferences_service)
+    _enable_ready_project_python_runtime(
+        service,
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        project_name="Python Run Reject Dunder Mro",
+        project_slug="python-run-reject-dunder-mro",
+    )
 
+    linear_graph = _build_linear_main_graph(
+        {
+            "node_id": "node-python",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "n-python",
+            "expansion_role": "action:python_run",
+            "node_kind": "python.run",
+            "node_config": {
+                "code": "result = ().__class__.__mro__[1].__subclasses__()",
+            },
+            "ports": [],
+        }
+    )
     service.save_graph_document(
         {
             "graph_model_id": "graph:workspace",
             "compilation_id": None,
             "graph_schema_version": "graph-v1",
-            "nodes": [
-                {
-                    "node_id": "node-python",
-                    "lowered_kind": "execution",
-                    "source_anchor_ref": "n-python",
-                    "expansion_role": "action:python_run",
-                    "node_kind": "python.run",
-                    "node_config": {
-                        "code": "result = ().__class__.__mro__[1].__subclasses__()",
-                    },
-                    "ports": [],
-                }
-            ],
-            "edges": [
-                {
-                    "edge_id": "edge-start-write",
-                    "relation_layer": "control",
-                    "from_node_id": "node-start",
-                    "to_node_id": "node-write",
-                    "from_port_id": "control-out",
-                    "to_port_id": None,
-                }
-            ],
+            **linear_graph,
             "graph_effective_diagnostic_anchor_refs": [],
         }
     )
@@ -6853,10 +7861,10 @@ def test_service_runtime_python_run_rejects_dunder_introspection_chain() -> None
     assert "__" in session["result"]["outputs"]["node-python"]["message"]
 
 
-def test_service_runtime_python_run_rejects_dunder_import_builtin_access() -> None:
-    from weconduct.application.preferences_service import PreferencesService
-    from weconduct.application.preferences_store import InMemoryPreferencesStore
-
+def test_service_runtime_python_run_rejects_dunder_import_builtin_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     preferences_service = PreferencesService(
         preferences_store=InMemoryPreferencesStore(
             {
@@ -6887,6 +7895,7 @@ def test_service_runtime_python_run_rejects_dunder_import_builtin_access() -> No
                     "allow_file_access": True,
                     "allow_browser_executor": True,
                     "allow_local_network_access": True,
+                    "allow_python_execution": True,
                 },
                 "python_runtime_settings": {
                     "python_executable_path": None,
@@ -6912,35 +7921,33 @@ def test_service_runtime_python_run_rejects_dunder_import_builtin_access() -> No
         )
     )
     service = CompilationWorkbenchService(preferences_service=preferences_service)
+    _enable_ready_project_python_runtime(
+        service,
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        project_name="Python Run Reject Dunder Import",
+        project_slug="python-run-reject-dunder-import",
+    )
 
+    linear_graph = _build_linear_main_graph(
+        {
+            "node_id": "node-python",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "n-python",
+            "expansion_role": "action:python_run",
+            "node_kind": "python.run",
+            "node_config": {
+                "code": "result = __builtins__['__import__']('os').getcwd()",
+            },
+            "ports": [],
+        }
+    )
     service.save_graph_document(
         {
             "graph_model_id": "graph:workspace",
             "compilation_id": None,
             "graph_schema_version": "graph-v1",
-            "nodes": [
-                {
-                    "node_id": "node-python",
-                    "lowered_kind": "execution",
-                    "source_anchor_ref": "n-python",
-                    "expansion_role": "action:python_run",
-                    "node_kind": "python.run",
-                    "node_config": {
-                        "code": "result = __builtins__['__import__']('os').getcwd()",
-                    },
-                    "ports": [],
-                }
-            ],
-            "edges": [
-                {
-                    "edge_id": "edge-start-write",
-                    "relation_layer": "control",
-                    "from_node_id": "node-start",
-                    "to_node_id": "node-write",
-                    "from_port_id": "control-out",
-                    "to_port_id": None,
-                }
-            ],
+            **linear_graph,
             "graph_effective_diagnostic_anchor_refs": [],
         }
     )
@@ -17172,7 +18179,7 @@ def test_runtime_health_exposes_host_session_capabilities_and_entrypoints() -> N
     assert health["status"] == "ok"
     assert health["service"] == "weconduct-api"
     assert health["host_mode"] == "python_core"
-    assert health["api_version"] == "0.6.3"
+    assert health["api_version"] == "0.7.0"
     assert health["workspace_state_version"] == 1
     assert health["workspace_session_id"].startswith("ws-")
     assert health["service_started_at"]
@@ -20845,8 +21852,8 @@ def test_service_normalizes_persisted_workbench_api_version_to_current_version(t
     health = service.get_runtime_health()
     persisted_state = json.loads(state_file.read_text(encoding="utf-8"))
 
-    assert health["api_version"] == "0.6.3"
-    assert persisted_state["workbench"]["api_version"] == "0.6.3"
+    assert health["api_version"] == "0.7.0"
+    assert persisted_state["workbench"]["api_version"] == "0.7.0"
 
 
 def test_open_project_marks_legacy_graph_document_as_pending_upgrade(tmp_path) -> None:
@@ -20887,7 +21894,7 @@ def test_open_project_marks_legacy_graph_document_as_pending_upgrade(tmp_path) -
     assert opened["project"]["pending_graph_upgrade"]["status"] == "upgrade_available"
     assert opened["project"]["pending_graph_upgrade"]["document_id"] == "graph:workspace"
     assert opened["project"]["pending_graph_upgrade"]["compatibility"]["graph_data_version"] == "0.5.2"
-    assert opened["project"]["pending_graph_upgrade"]["compatibility"]["current_app_version"] == "0.6.3"
+    assert opened["project"]["pending_graph_upgrade"]["compatibility"]["current_app_version"] == "0.7.0"
     assert (
         opened["project"]["pending_graph_upgrade"]["compatibility"]["available_upgrade_path"][0]["upgrader_id"]
         == "p18d-baseline-052-to-061"
@@ -21064,7 +22071,7 @@ def test_apply_pending_graph_upgrade_upgrades_workspace_graph_metadata(tmp_path)
     )
     assert (
         upgraded_graph["root_metadata"]["graph_compatibility"]["last_upgraded_by_app_version"]
-        == "0.6.3"
+        == "0.7.0"
     )
     assert (
         upgraded_graph["root_metadata"]["graph_compatibility"]["built_with_app_version"]
@@ -21365,7 +22372,7 @@ def test_service_restart_clears_stale_pending_graph_upgrade_when_project_and_rec
                 "compatibility": {
                     "status": "upgrade_available",
                     "graph_data_version": "0.5.2",
-                    "current_app_version": "0.6.3",
+                    "current_app_version": "0.7.0",
                     "minimum_loader_app_version": "0.5.2",
                     "built_with_app_version": "0.5.2",
                     "last_upgraded_by_app_version": "0.5.2",
@@ -21387,7 +22394,7 @@ def test_service_restart_clears_stale_pending_graph_upgrade_when_project_and_rec
                 "compatibility": {
                     "status": "upgrade_available",
                     "graph_data_version": "0.5.2",
-                    "current_app_version": "0.6.3",
+                    "current_app_version": "0.7.0",
                     "minimum_loader_app_version": "0.5.2",
                     "built_with_app_version": "0.5.2",
                     "last_upgraded_by_app_version": "0.5.2",
@@ -21976,7 +22983,7 @@ def test_save_project_writes_project_settings_document_and_snapshot_summary(tmp_
     project_document = service.get_project_document()
 
     assert settings_path.exists()
-    assert settings_payload["project_settings_schema_version"] == 1
+    assert settings_payload["project_settings_schema_version"] == 2
     assert settings_payload["project_identity"]["name"] == "Settings Demo"
     assert settings_payload["runtime_defaults"]["initial_variables"]["base_url"] == "http://example.test"
     assert settings_payload["runtime_defaults"]["browser_config"]["slow_mo_ms"] == 120
@@ -21986,7 +22993,7 @@ def test_save_project_writes_project_settings_document_and_snapshot_summary(tmp_
     assert snapshot["project_settings"]["project_settings_path"] == str(settings_path.resolve())
     assert snapshot["project_settings"]["session_dir"] is None
     assert snapshot["project_settings"]["is_dirty"] is False
-    assert snapshot["project_settings"]["project_settings_schema_version"] == 1
+    assert snapshot["project_settings"]["project_settings_schema_version"] == 2
     assert snapshot["project_settings"]["package_default_output_name"] == "demo.wcrun"
     assert project_document["project_settings"]["runtime_defaults"]["initial_variables"]["username"] == "demo"
 
@@ -22031,6 +23038,50 @@ def test_open_project_restores_project_settings_document(tmp_path: Path) -> None
         settings_document["project_settings"]["runtime_defaults"]["initial_variables"]["base_url"]
         == "http://restored.test"
     )
+
+
+def test_project_settings_document_backfills_python_runtime_profile_defaults(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "python-runtime-defaults.weconduct.json"
+
+    service.create_project(project_name="Python Runtime Defaults")
+    service.save_project_as(project_path=str(project_path))
+
+    settings = service.get_project_settings_document()
+    profile = settings["project_settings"]["python_runtime_profile"]
+
+    assert settings["project_settings"]["project_settings_schema_version"] == 2
+    assert profile["runtime_enabled"] is False
+    assert profile["python_version_spec"] == "3.13"
+    assert profile["cache_location_mode"] == "software_cache"
+    assert profile["project_cache_mode"] == "wheelhouse_rebuild"
+    assert profile["requirements_source_mode"] == "inline"
+    assert profile["package_embed_mode"] == "wheelhouse_rebuild"
+    assert profile["last_health_status"] == "unknown"
+
+
+def test_open_legacy_project_backfills_missing_python_runtime_profile(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "legacy-python-runtime.weconduct.json"
+
+    service.create_project(project_name="Legacy Python Runtime")
+    service.save_project_as(project_path=str(project_path))
+
+    storage_root = service._resolve_project_storage_root(project_path)
+    settings_path = storage_root / "project-settings.json"
+    settings_payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    settings_payload.pop("python_runtime_profile", None)
+    settings_payload["project_settings_schema_version"] = 1
+    settings_path.write_text(json.dumps(settings_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reopened = CompilationWorkbenchService()
+    reopened.open_project(project_path=str(project_path))
+
+    settings = reopened.get_project_settings_document()
+
+    assert settings["project_settings"]["project_settings_schema_version"] == 2
+    assert "python_runtime_profile" in settings["project_settings"]
+    assert settings["project_settings"]["python_runtime_profile"]["runtime_enabled"] is False
 
 
 def test_open_project_backfills_runtime_defaults_from_flow_start_when_project_settings_missing_values(
@@ -22091,6 +23142,82 @@ def test_open_project_backfills_runtime_defaults_from_flow_start_when_project_se
     assert (
         settings_document["project_settings"]["runtime_defaults"]["browser_config"]["slow_mo_ms"] == 150
     )
+
+
+def test_project_settings_normalizes_invalid_python_runtime_profile_values(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "python-runtime-normalize.weconduct.json"
+
+    service.create_project(project_name="Python Runtime Normalize")
+    service.save_project_as(project_path=str(project_path))
+
+    updated = service.update_project_settings(
+        project_settings={
+            **service.get_project_settings_document()["project_settings"],
+            "python_runtime_profile": {
+                "runtime_enabled": "yes",
+                "auto_prepare_on_run": "false",
+                "interpreter_strategy": "bad-mode",
+                "cache_location_mode": "bad-cache",
+                "project_cache_mode": "bad-project-cache",
+                "requirements_source_mode": "bad-source",
+                "requirements_inline": ["requests", "", 1, "playwright"],
+                "requirements_file_path": "",
+                "custom_index_url": "",
+                "package_embed_mode": "bad-embed",
+                "last_health_status": "bad-health",
+            },
+        }
+    )
+
+    profile = updated["project_settings"]["python_runtime_profile"]
+    assert updated["project_settings"]["project_settings_schema_version"] == 2
+    assert profile["runtime_enabled"] is False
+    assert profile["auto_prepare_on_run"] is True
+    assert profile["interpreter_strategy"] == "bundled"
+    assert profile["cache_location_mode"] == "software_cache"
+    assert profile["project_cache_mode"] == "wheelhouse_rebuild"
+    assert profile["requirements_source_mode"] == "inline"
+    assert profile["requirements_inline"] == ["requests", "playwright"]
+    assert profile["requirements_file_path"] is None
+    assert profile["custom_index_url"] is None
+    assert profile["package_embed_mode"] == "wheelhouse_rebuild"
+    assert profile["last_health_status"] == "unknown"
+
+
+def test_new_project_python_runtime_profile_uses_preferences_defaults(tmp_path: Path) -> None:
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {},
+                "compile_settings": {},
+                "security_settings": {},
+                "python_runtime_settings": {
+                    "default_python_version_spec": "3.12",
+                    "default_cache_location_mode": "project_cache",
+                    "default_project_cache_mode": "full_venv",
+                    "default_requirements_source_mode": "requirements_txt",
+                    "default_package_embed_mode": "full_venv",
+                },
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    project_path = tmp_path / "python-runtime-preferences-defaults.weconduct.json"
+
+    service.create_project(project_name="Python Runtime Preference Defaults")
+    service.save_project_as(project_path=str(project_path))
+
+    profile = service.get_project_settings_document()["project_settings"]["python_runtime_profile"]
+
+    assert profile["python_version_spec"] == "3.12"
+    assert profile["cache_location_mode"] == "project_cache"
+    assert profile["project_cache_mode"] == "full_venv"
+    assert profile["requirements_source_mode"] == "requirements_txt"
+    assert profile["package_embed_mode"] == "full_venv"
 
 
 def test_file_workspace_state_backfills_runtime_defaults_from_graph_when_state_settings_are_stale(
@@ -22417,6 +23544,78 @@ def test_update_project_settings_keeps_project_name_and_snapshot_in_sync() -> No
     assert snapshot["project"]["project_name"] == "After Rename"
 
 
+def test_update_project_settings_persists_python_runtime_profile_to_project_settings_file(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "persist-python-runtime.weconduct.json"
+
+    service.create_project(project_name="Persist Python Runtime")
+    service.save_project_as(project_path=str(project_path))
+
+    updated = service.update_project_settings(
+        project_settings={
+            **service.get_project_settings_document()["project_settings"],
+            "python_runtime_profile": {
+                **service.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "requirements_source_mode": "inline",
+                "requirements_inline": ["openpyxl==3.1.5"],
+                "auto_prepare_on_run": False,
+            },
+        }
+    )
+
+    assert updated["project_settings"]["python_runtime_profile"]["runtime_enabled"] is True
+    assert updated["project_settings"]["python_runtime_profile"]["requirements_inline"] == [
+        "openpyxl==3.1.5"
+    ]
+    assert updated["project_settings"]["python_runtime_profile"]["auto_prepare_on_run"] is False
+
+    reopened = CompilationWorkbenchService()
+    reopened.open_project(project_path=str(project_path))
+    reopened_settings = reopened.get_project_settings_document()["project_settings"]
+    profile = reopened_settings["python_runtime_profile"]
+
+    assert profile["runtime_enabled"] is True
+    assert profile["requirements_inline"] == ["openpyxl==3.1.5"]
+    assert profile["auto_prepare_on_run"] is False
+
+
+def test_update_project_runtime_defaults_persists_to_project_settings_file(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "persist-runtime-defaults.weconduct.json"
+
+    service.create_project(project_name="Persist Runtime Defaults")
+    service.save_project_as(project_path=str(project_path))
+
+    service.update_project_runtime_defaults(
+        runtime_defaults={
+            "initial_variables": {
+                "base_url": "http://persist-runtime.test",
+                "username": "persist-user",
+            },
+            "browser_config": {"headless": False, "slow_mo_ms": 321},
+            "execution_defaults": {
+                "default_timeout_ms": 45678,
+                "default_retry_count": 2,
+            },
+        }
+    )
+
+    reopened = CompilationWorkbenchService()
+    reopened.open_project(project_path=str(project_path))
+    runtime_defaults = reopened.get_project_settings_document()["project_settings"]["runtime_defaults"]
+
+    assert runtime_defaults["initial_variables"]["base_url"] == "http://persist-runtime.test"
+    assert runtime_defaults["initial_variables"]["username"] == "persist-user"
+    assert runtime_defaults["browser_config"]["slow_mo_ms"] == 321
+    assert runtime_defaults["execution_defaults"]["default_timeout_ms"] == 45678
+    assert runtime_defaults["execution_defaults"]["default_retry_count"] == 2
+
+
 def test_package_preflight_reports_setting_and_resource_blockers(tmp_path: Path) -> None:
     service = CompilationWorkbenchService()
     project_path = tmp_path / "preflight.weconduct.json"
@@ -22564,7 +23763,7 @@ def test_build_project_wcrun_package_writes_expected_archive_layout(tmp_path: Pa
         assert manifest_payload["integrity"]["checksums_path"] == "meta/checksums.json"
         assert manifest_payload["integrity"]["package_info_path"] == "meta/package-info.json"
         assert package_info_payload["manifest_version"] == 1
-        assert package_info_payload["builder_app_version"] == "0.6.3"
+        assert package_info_payload["builder_app_version"] == "0.7.0"
         assert package_info_payload["source_project_schema_version"] == "project-v2"
         assert package_info_payload["graph_stats"]["graph_count"] == 1
         assert package_info_payload["resource_stats"]["embedded_resource_count"] == 0
@@ -22576,6 +23775,41 @@ def test_build_project_wcrun_package_returns_diagnostics_when_preflight_blocks(t
     project_path = tmp_path / "package-build-failed.weconduct.json"
 
     service.create_project(project_name="Package Build Failed Project")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    service.save_project_as(project_path=str(project_path))
+
+    result = service.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+    )
+
+    assert result["status"] == "failed"
+    assert result["summary"]["blocking"] is True
+    assert result["diagnostics"]["total_count"] >= 1
+    assert result["diagnostics"]["highest_severity"] == "fatal"
+    assert any(
+        entry["category"] == "graph.flow_start.invalid_entry_count"
+        for entry in result["diagnostics"]["entries"]
+    )
+
+
+def test_build_project_wcrun_package_allows_non_browser_project_without_base_url(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "package-non-browser.weconduct.json"
+    output_path = tmp_path / "dist" / "package-non-browser.wcrun"
+
+    service.create_project(project_name="Package Non Browser Project")
     service.save_graph_document(
         {
             "graph_model_id": "graph:workspace",
@@ -22605,16 +23839,11 @@ def test_build_project_wcrun_package_returns_diagnostics_when_preflight_blocks(t
     result = service.build_project_package(
         mode="wcrun",
         source_of_truth="saved_project_only",
+        output_path=str(output_path),
     )
 
-    assert result["status"] == "failed"
-    assert result["summary"]["blocking"] is True
-    assert result["diagnostics"]["total_count"] >= 1
-    assert result["diagnostics"]["highest_severity"] == "error"
-    assert any(
-        entry["setting_field"] == "runtime_defaults.initial_variables.base_url"
-        for entry in result["diagnostics"]["entries"]
-    )
+    assert result["status"] == "built"
+    assert output_path.exists() is True
 
 
 def test_build_project_wcrun_package_embeds_project_resources_and_manifest_indexes(tmp_path: Path) -> None:
@@ -22793,6 +24022,156 @@ def test_inspect_and_load_wcrun_package_restores_runtime_package_document(tmp_pa
     assert loaded["resource_summary"]["custom_component_count"] == 1
     assert (
         loaded["resource_summary"]["custom_components"][0]["resource_id"].startswith("custom_node_graph:")
+    )
+
+
+def test_build_project_wcrun_package_embeds_python_runtime_manifest(tmp_path: Path) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "python-runtime-package.weconduct.json"
+    output_path = tmp_path / "dist" / "python-runtime-package.wcrun"
+
+    builder.create_project(project_name="Python Runtime Package")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:python-runtime-package",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://python-runtime-package.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "python_runtime_profile": {
+                **builder.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "cache_location_mode": "project_cache",
+                "requirements_inline": ["requests"],
+                "package_embed_mode": "wheelhouse_rebuild",
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+
+    result = builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    assert result["status"] == "built"
+    with zipfile.ZipFile(output_path) as archive:
+        manifest_payload = unpackb(archive.read("manifest.msgpack"))
+        assert manifest_payload["python_runtime"]["required"] is True
+        assert manifest_payload["python_runtime"]["bundle_mode"] == "wheelhouse_rebuild"
+        assert manifest_payload["python_runtime"]["manifest_entry"] == "python-runtime/manifest.json"
+        assert manifest_payload["python_runtime"]["runtime_root_entry"] == "python-runtime/wheelhouse"
+        embedded_manifest = json.loads(
+            archive.read("python-runtime/manifest.json").decode("utf-8")
+        )
+        assert embedded_manifest["requirements_inline"] == ["requests"]
+        assert archive.read("python-runtime/wheelhouse/requirements.txt").decode("utf-8") == "requests\n"
+
+
+def test_inspect_wcrun_package_reports_missing_python_runtime_manifest_as_not_ready(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "python-runtime-missing.weconduct.json"
+    output_path = tmp_path / "dist" / "python-runtime-missing.wcrun"
+
+    builder.create_project(project_name="Python Runtime Missing")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:python-runtime-missing",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://python-runtime-missing.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "python_runtime_profile": {
+                **builder.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "cache_location_mode": "project_cache",
+                "package_embed_mode": "wheelhouse_rebuild",
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    build_result = builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+    assert build_result["status"] == "built"
+
+    tampered_path = tmp_path / "dist" / "python-runtime-missing-tampered.wcrun"
+    with zipfile.ZipFile(output_path, "r") as source_archive, zipfile.ZipFile(
+        tampered_path, "w", compression=zipfile.ZIP_DEFLATED
+    ) as target_archive:
+        rewritten_checksums = None
+        for info in source_archive.infolist():
+            payload = source_archive.read(info.filename)
+            if info.filename == "python-runtime/manifest.json":
+                payload = b"{}"
+            if info.filename == "meta/checksums.json":
+                checksums_payload = json.loads(payload.decode("utf-8"))
+                for entry in checksums_payload["entries"]:
+                    if entry["path"] == "python-runtime/manifest.json":
+                        entry["sha256"] = hashlib.sha256(b"{}").hexdigest()
+                        entry["size"] = len(b"{}")
+                rewritten_checksums = json.dumps(
+                    checksums_payload,
+                    ensure_ascii=False,
+                    indent=2,
+                ).encode("utf-8")
+                payload = rewritten_checksums
+            target_archive.writestr(info, payload)
+
+    loader = CompilationWorkbenchService()
+    inspected = loader.inspect_project_package(package_path=str(tampered_path))
+
+    assert inspected["runtime_readiness_summary"]["ready"] is False
+    assert inspected["runtime_readiness_summary"]["python_runtime_status"]["required"] is True
+    assert inspected["runtime_readiness_summary"]["python_runtime_status"]["blocking_count"] >= 1
+    assert any(
+        entry["category"] == "package.python_runtime.manifest_hash_mismatch"
+        for entry in inspected["runtime_readiness_summary"]["diagnostics"]
     )
 
 
@@ -23089,6 +24468,30 @@ def test_load_wcrun_package_restores_full_custom_component_resource_record(tmp_p
         }
     )
     saved = builder.save_custom_node_graph_resource(resource_name="Restored Resource")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:load-resource-main",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://restore.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
     builder.update_project_settings(
         project_settings={
             **builder.get_project_settings_document()["project_settings"],
@@ -23114,7 +24517,9 @@ def test_load_wcrun_package_restores_full_custom_component_resource_record(tmp_p
     assert restored["display_name"] == "Restored Resource"
     assert restored["origin"] == "package"
     assert restored["source_graph_document"]["nodes"][0]["node_id"] == "node-component-input-text"
-    assert restored["input_schema"]["username"]["type"] == "string"
+    assert restored["source_graph_document"]["nodes"][0]["node_config"]["name"] == "username"
+    assert restored["source_graph_document"]["nodes"][0]["node_config"]["value_type"] == "string"
+    assert restored["input_schema"] == saved["resource"]["input_schema"]
 
 
 def test_loaded_wcrun_package_can_start_runtime_session_using_loaded_workspace_graph(
@@ -23676,6 +25081,374 @@ def test_loaded_wcrun_package_blocks_runtime_start_when_runtime_requirements_mis
         entry["category"] == "package.runtime_requirement.minimum_app_version_unsupported"
         for entry in started["diagnostics"]["entries"]
     )
+
+
+def test_loaded_wcrun_package_blocks_runtime_start_when_python_runtime_manifest_is_invalid(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "python-runtime-start-block.weconduct.json"
+    output_path = tmp_path / "dist" / "python-runtime-start-block.wcrun"
+
+    builder.create_project(project_name="Python Runtime Start Block")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:python-runtime-start-block",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://python-runtime-start-block.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                },
+                {
+                    "node_id": "node-python",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-node-python",
+                    "expansion_role": "action:python_run",
+                    "display_name": "Python",
+                    "node_kind": "python.run",
+                    "node_config": {"code": "result = 1"},
+                    "ports": [],
+                },
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "python_runtime_profile": {
+                **builder.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "cache_location_mode": "project_cache",
+                "package_embed_mode": "wheelhouse_rebuild",
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    tampered_path = tmp_path / "dist" / "python-runtime-start-block-tampered.wcrun"
+    with zipfile.ZipFile(output_path, "r") as source_archive, zipfile.ZipFile(
+        tampered_path, "w", compression=zipfile.ZIP_DEFLATED
+    ) as target_archive:
+        for info in source_archive.infolist():
+            payload = source_archive.read(info.filename)
+            if info.filename == "python-runtime/manifest.json":
+                payload = b"{}"
+            if info.filename == "meta/checksums.json":
+                checksums_payload = json.loads(payload.decode("utf-8"))
+                for entry in checksums_payload["entries"]:
+                    if entry["path"] == "python-runtime/manifest.json":
+                        entry["sha256"] = hashlib.sha256(b"{}").hexdigest()
+                        entry["size"] = len(b"{}")
+                payload = json.dumps(
+                    checksums_payload,
+                    ensure_ascii=False,
+                    indent=2,
+                ).encode("utf-8")
+            target_archive.writestr(info, payload)
+
+    loader = CompilationWorkbenchService()
+    loader.load_project_package(package_path=str(tampered_path))
+    started = loader.start_runtime_session(None)
+
+    assert started["status"] == "failed"
+    assert started["runtime_session"]["status"] == "diagnostic_blocked"
+    assert any(
+        entry["category"] == "package.python_runtime.manifest_hash_mismatch"
+        for entry in started["diagnostics"]["entries"]
+    )
+
+
+def test_load_wcrun_package_restores_embedded_full_venv_runtime_to_session_root(
+    tmp_path: Path,
+) -> None:
+    builder = CompilationWorkbenchService()
+    project_path = tmp_path / "python-runtime-full-venv.weconduct.json"
+    output_path = tmp_path / "dist" / "python-runtime-full-venv.wcrun"
+
+    builder.create_project(project_name="Python Runtime Full Venv")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:python-runtime-full-venv",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://python-runtime-full-venv.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "python_runtime_profile": {
+                **builder.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "cache_location_mode": "project_cache",
+                "requirements_inline": [],
+                "package_embed_mode": "full_venv",
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    build_result = builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    assert build_result["status"] == "built"
+
+    loader = CompilationWorkbenchService()
+    loaded = loader.load_project_package(package_path=str(output_path))
+
+    session_dir = Path(loaded["package"]["session_dir"])
+    manifest_hash = loaded["package"]["python_runtime"]["manifest_hash"]
+    runtime_root = session_dir / "python-runtime" / manifest_hash
+    python_executable_literal = (runtime_root / "python-executable.txt").read_text(
+        encoding="utf-8"
+    ).strip()
+    python_executable_path = Path(python_executable_literal)
+    if not python_executable_path.is_absolute():
+        python_executable_path = (runtime_root / python_executable_path).resolve()
+
+    assert (runtime_root / "runtime-manifest.json").exists() is True
+    assert python_executable_literal
+    assert python_executable_path.exists() is True
+    assert str(python_executable_path).startswith(str(runtime_root.resolve()))
+
+
+def test_loaded_full_venv_wcrun_package_can_execute_python_run(
+    tmp_path: Path,
+) -> None:
+    from weconduct.application.preferences_service import PreferencesService
+    from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {},
+                "compile_settings": {},
+                "security_settings": {
+                    "allow_external_programs": True,
+                    "allow_python_execution": True,
+                    "allow_local_network_access": True,
+                    "allow_file_access": True,
+                },
+                "python_runtime_settings": {},
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    builder = CompilationWorkbenchService(preferences_service=preferences_service)
+    project_path = tmp_path / "python-runtime-full-venv-run.weconduct.json"
+    output_path = tmp_path / "dist" / "python-runtime-full-venv-run.wcrun"
+
+    builder.create_project(project_name="Python Runtime Full Venv Run")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:python-runtime-full-venv-run",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            **_build_linear_main_graph(
+                {
+                    "node_id": "node-python",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-python",
+                    "expansion_role": "action:python_run",
+                    "node_kind": "python.run",
+                    "node_config": {"code": "result = 42", "variable_name": "runtime_value"},
+                    "ports": [
+                        {
+                            "port_id": "control-in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.in",
+                        }
+                    ],
+                }
+            ),
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://python-runtime-full-venv-run.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+            "python_runtime_profile": {
+                **builder.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "cache_location_mode": "project_cache",
+                "requirements_inline": [],
+                "package_embed_mode": "full_venv",
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    build_result = builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    assert build_result["status"] == "built"
+
+    loader = CompilationWorkbenchService(preferences_service=preferences_service)
+    loader.load_project_package(package_path=str(output_path))
+    started = loader.start_runtime_session(None)
+    session = loader.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert session["result"]["outputs"]["node-python"]["result"] == 42
+    assert session["result"]["variables"]["runtime_value"] == 42
+
+
+def test_loaded_wheelhouse_rebuild_wcrun_package_can_execute_python_run_with_embedded_dependency(
+    tmp_path: Path,
+) -> None:
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {},
+                "compile_settings": {},
+                "security_settings": {
+                    "allow_external_programs": True,
+                    "allow_python_execution": True,
+                    "allow_local_network_access": True,
+                    "allow_file_access": True,
+                },
+                "python_runtime_settings": {},
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    builder = CompilationWorkbenchService(preferences_service=preferences_service)
+    project_path = tmp_path / "python-runtime-wheelhouse-run.weconduct.json"
+    output_path = tmp_path / "dist" / "python-runtime-wheelhouse-run.wcrun"
+
+    builder.create_project(project_name="Python Runtime Wheelhouse Run")
+    builder.save_graph_document(
+        {
+            "graph_model_id": "graph:python-runtime-wheelhouse-run",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            **_build_linear_main_graph(
+                {
+                    "node_id": "node-python",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-python",
+                    "expansion_role": "action:python_run",
+                    "node_kind": "python.run",
+                    "node_config": {
+                        "code": (
+                            "import samplepkg\n"
+                            "print(samplepkg.value())\n"
+                            "result = samplepkg.value()\n"
+                            "result_variable = 'runtime_value'\n"
+                        )
+                    },
+                    "ports": [
+                        {
+                            "port_id": "control-in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.in",
+                        }
+                    ],
+                }
+            ),
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    builder.update_project_settings(
+        project_settings={
+            **builder.get_project_settings_document()["project_settings"],
+            "runtime_defaults": {
+                "initial_variables": {"base_url": "http://python-runtime-wheelhouse-run.test"},
+                "browser_config": {"headless": True, "slow_mo_ms": 0},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            },
+            "python_runtime_profile": {
+                **builder.get_project_settings_document()["project_settings"]["python_runtime_profile"],
+                "runtime_enabled": True,
+                "cache_location_mode": "project_cache",
+                "project_cache_mode": "wheelhouse_rebuild",
+                "requirements_source_mode": "requirements_txt",
+                "requirements_file_path": "requirements.txt",
+                "package_embed_mode": "wheelhouse_rebuild",
+            },
+        }
+    )
+    builder.save_project_as(project_path=str(project_path))
+    project_storage_root = builder._resolve_project_storage_root(project_path)
+    (project_storage_root / "requirements.txt").write_text("samplepkg==0.1.0\n", encoding="utf-8")
+    _write_minimal_python_wheel(
+        project_storage_root / "wheelhouse",
+        package_name="samplepkg",
+        version="0.1.0",
+        package_body=(
+            "def value():\n"
+            "    return 'samplepkg-0.1.0'\n"
+        ),
+    )
+    build_result = builder.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=str(output_path),
+    )
+
+    assert build_result["status"] == "built"
+
+    loader = CompilationWorkbenchService(preferences_service=preferences_service)
+    loaded = loader.load_project_package(package_path=str(output_path))
+    session_dir = Path(loaded["package"]["session_dir"])
+    assert any((session_dir / "python-runtime" / "wheelhouse").rglob("samplepkg-0.1.0-py3-none-any.whl"))
+    started = loader.start_runtime_session(None)
+    session = loader.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "completed"
+    assert session["result"]["outputs"]["node-python"]["result"] == "samplepkg-0.1.0"
+    assert session["result"]["outputs"]["node-python"]["python_runtime_source"] == "project_runtime"
+    assert session["result"]["outputs"]["node-python"]["stdout"] == "samplepkg-0.1.0\n"
+    assert session["result"]["variables"]["runtime_value"] == "samplepkg-0.1.0"
 
 
 def test_loaded_wcrun_package_blocks_runtime_start_when_required_platform_is_unsupported(

@@ -49,6 +49,11 @@ const FIELD_DEFS: Record<string, FieldDef[]> = {
   python: [
     { key: 'python_executable_path', label: 'Python 路径', type: 'text' }, { key: 'timeout_seconds', label: '超时（秒）', type: 'number' },
     { key: 'sandbox_mode', label: '沙盒模式', type: 'select', options: ['restricted'] }, { key: 'capture_stdout_stderr', label: '捕获标准输出/错误', type: 'bool' },
+    { key: 'default_python_version_spec', label: '默认 Python 版本', type: 'text' },
+    { key: 'default_cache_location_mode', label: '默认缓存位置模式', type: 'select', options: ['software_cache', 'project_cache'] },
+    { key: 'default_project_cache_mode', label: '默认项目缓存模式', type: 'select', options: ['full_venv', 'wheelhouse_rebuild'] },
+    { key: 'default_requirements_source_mode', label: '默认需求来源模式', type: 'select', options: ['inline', 'requirements_txt', 'lock_file'] },
+    { key: 'default_package_embed_mode', label: '默认包嵌入模式', type: 'select', options: ['none', 'wheelhouse_rebuild', 'full_venv'] },
   ],
   nodegraph: [
     { key: 'auto_sync_mode', label: '自动同步模式', type: 'select', options: ['responsive'] }, { key: 'show_node_id_on_node', label: '显示节点 ID', type: 'bool' },
@@ -101,6 +106,7 @@ async function doSave(section: string) {
     await postPreferences({ section, values } as PreferencesUpdateRequest)
     saveState[section] = 'saved'; setTimeout(() => { if (saveState[section] === 'saved') saveState[section] = 'idle' }, 2000)
     try { const r = await fetchPreferences(); if (section === 'security_settings') { form[section] = { ...(r.preferences[section] as any || {}), file_access_allowed_roots: normalizeRoots((r.preferences[section] as any)?.file_access_allowed_roots), file_access_blocked_roots: normalizeRoots((r.preferences[section] as any)?.file_access_blocked_roots) } } else { form[section] = { ...(r.preferences[section] as Record<string, any> || {}) } } } catch {}
+    await workspace.refreshSnapshot()
   } catch (e: any) {
     if (e?.body?.error === 'high_risk_confirmation_required') { confirmDialog.value = { section, changes: e.body.high_risk_changes || [] }; saveState[section] = 'idle'; return }
     saveState[section] = 'error'; saveError[section] = e?.message || '保存失败'
@@ -109,7 +115,7 @@ async function doSave(section: string) {
 
 async function confirmHighRiskSave() {
   if (!confirmDialog.value) return; const { section } = confirmDialog.value; confirmDialog.value = null; saveState[section] = 'saving'
-  try { await postPreferences({ section, values: flattenForSave(section, form[section]), confirm_high_risk: true } as PreferencesUpdateRequest); saveState[section] = 'saved'; setTimeout(() => { if (saveState[section] === 'saved') saveState[section] = 'idle' }, 2000); try { const r = await fetchPreferences(); if (section === 'security_settings') { form[section] = { ...(r.preferences[section] as any || {}), file_access_allowed_roots: normalizeRoots((r.preferences[section] as any)?.file_access_allowed_roots), file_access_blocked_roots: normalizeRoots((r.preferences[section] as any)?.file_access_blocked_roots) } } else { form[section] = { ...(r.preferences[section] as Record<string, any> || {}) } } } catch {} } catch (e: any) { saveState[section] = 'error'; saveError[section] = e?.message || '保存失败' }
+  try { await postPreferences({ section, values: flattenForSave(section, form[section]), confirm_high_risk: true } as PreferencesUpdateRequest); saveState[section] = 'saved'; setTimeout(() => { if (saveState[section] === 'saved') saveState[section] = 'idle' }, 2000); try { const r = await fetchPreferences(); if (section === 'security_settings') { form[section] = { ...(r.preferences[section] as any || {}), file_access_allowed_roots: normalizeRoots((r.preferences[section] as any)?.file_access_allowed_roots), file_access_blocked_roots: normalizeRoots((r.preferences[section] as any)?.file_access_blocked_roots) } } else { form[section] = { ...(r.preferences[section] as Record<string, any> || {}) } } } catch {}; await workspace.refreshSnapshot() } catch (e: any) { saveState[section] = 'error'; saveError[section] = e?.message || '保存失败' }
 }
 
 function flattenForSave(section: string, vals: Record<string, any>): Record<string, unknown> {
@@ -132,6 +138,7 @@ function setDirectoryList(fieldKey: string, next: string[]) { setField('security
 function addDirectoryItem(fieldKey: string, path: string) { const n = path.trim(); if (!n) return; const cur = getDirectoryList(fieldKey); if (cur.includes(n)) return; setDirectoryList(fieldKey, [...cur, n]) }
 function removeDirectoryItem(fieldKey: string, path: string) { setDirectoryList(fieldKey, getDirectoryList(fieldKey).filter(item => item !== path)) }
 async function pickDirectoryItem(fieldKey: string) { try { const r = await postFileDialog({ mode: 'open_folder', title: '选择目录' }); if (r.status === 'selected' && r.paths.length) addDirectoryItem(fieldKey, r.paths[0]) } catch (e: any) { if (e?.status === 503) toast.info('', '当前运行环境不支持系统目录选择器') } }
+async function pickPythonPath() { try { const r = await postFileDialog({ mode: 'open_file', title: '选择 Python 可执行文件' }); if (r.status === 'selected' && r.paths.length) setField('python_runtime_settings', 'python_executable_path', r.paths[0]) } catch (e: any) { if (e?.status === 503) toast.info('', '当前运行环境不支持系统文件选择器') } }
 
 // Extension display helper: convert string[] to comma-separated display
 function extDisplay(fieldKey: string): string { const v = getField('security_settings', fieldKey); if (Array.isArray(v)) return v.join(', '); return typeof v === 'string' ? v : '' }
@@ -164,6 +171,11 @@ const currentFields = computed(() => FIELD_DEFS[active.value] || [])
             <div v-else class="pref-roots-empty">未配置目录</div>
             <div class="pref-roots-actions"><button class="pref-btn pref-btn-sm" type="button" @click="pickDirectoryItem(f.key)">📁 选择目录</button></div>
             <div v-if="f.hint" class="pref-field-hint">{{ f.hint }}</div>
+          </div>
+          <!-- Path picker for python_executable_path -->
+          <div v-else-if="f.key === 'python_executable_path'" class="pref-path-row">
+            <input type="text" class="pref-input" :value="getField(currentSection, f.key) ?? ''" @input="setField(currentSection, f.key, ($event.target as HTMLInputElement).value)" />
+            <button class="pref-btn pref-btn-pick" type="button" @click="pickPythonPath">…</button>
           </div>
           <!-- Extension fields (display string[] as comma-separated) -->
           <input v-else-if="f.key.includes('extensions')" type="text" class="pref-input" :value="extDisplay(f.key)" @input="setField(currentSection, f.key, ($event.target as HTMLInputElement).value)" />
@@ -233,4 +245,8 @@ select.pref-input { cursor: pointer; }
 .pref-roots-empty { font-size: var(--text-caption); color: var(--text-disabled); padding: 4px 0; }
 .pref-roots-actions { display: flex; gap: 4px; }
 .pref-field-hint { font-size: var(--text-caption); color: var(--text-disabled); margin-top: 2px; }
+.pref-path-row { display: flex; gap: 2px; width: 100%; }
+.pref-path-row .pref-input { flex: 1; }
+.pref-btn-pick { padding: 2px 8px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-panel); color: var(--text-secondary); cursor: pointer; font-size: var(--text-small); font-family: var(--font-ui); }
+.pref-btn-pick:hover { background: var(--bg-hover); }
 </style>
