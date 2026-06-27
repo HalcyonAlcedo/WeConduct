@@ -1073,6 +1073,14 @@ class RuntimeExecutorRegistry:
         url = _resolve_value(node_config.get("url"), context)
         if not isinstance(url, str) or not url.strip():
             return _failed_result(node, "browser.url_required", "browser.download_file requires node_config.url")
+        try:
+            url = _validate_http_request_url(
+                url,
+                allow_local_network_access=_is_local_network_access_allowed(context),
+                allow_remote_network_access=_is_remote_network_access_allowed(context),
+            )
+        except ValueError as exc:
+            return _failed_result(node, "runtime.executor_exception", str(exc))
         path_value = _resolve_value(node_config.get("path"), context)
         if not isinstance(path_value, str) or not path_value.strip():
             return _failed_result(node, "browser.download_path_required", "download path is required")
@@ -2286,6 +2294,7 @@ class RuntimeExecutorRegistry:
             "code": code,
             "variables": _make_python_run_json_safe(context.variables),
             "result_variable": default_variable_name,
+            "allowed_imports": sorted(_PYTHON_ALLOWED_IMPORTS),
         }
         command_timeout = _resolve_int(self._runtime_settings.get("python_timeout_seconds"), default=60)
         if command_timeout <= 0:
@@ -3016,6 +3025,69 @@ _PYTHON_DANGEROUS_ATTRIBUTES = frozenset(
     }
 )
 
+_PYTHON_ALLOWED_IMPORTS = frozenset(
+    {
+        "csv",
+        "datetime",
+        "json",
+        "math",
+        "openpyxl",
+        "pathlib",
+        "re",
+        "samplepkg",
+        "statistics",
+    }
+)
+
+
+def _python_safe_import(
+    name: str,
+    globals_dict: dict | None = None,
+    locals_dict: dict | None = None,
+    fromlist: tuple | list = (),
+    level: int = 0,
+):
+    if level != 0:
+        raise ImportError("relative imports are not allowed")
+    root_name = str(name or "").split(".", 1)[0]
+    if root_name not in _PYTHON_ALLOWED_IMPORTS:
+        raise ImportError(f"import not allowed: {name}")
+    return __import__(name, globals_dict, locals_dict, fromlist, level)
+
+
+_PYTHON_SAFE_EXEC_BUILTINS = {
+    "abs": abs,
+    "all": all,
+    "any": any,
+    "bool": bool,
+    "dict": dict,
+    "enumerate": enumerate,
+    "float": float,
+    "int": int,
+    "isinstance": isinstance,
+    "issubclass": issubclass,
+    "len": len,
+    "list": list,
+    "map": map,
+    "max": max,
+    "min": min,
+    "print": print,
+    "range": range,
+    "repr": repr,
+    "reversed": reversed,
+    "round": round,
+    "set": set,
+    "slice": slice,
+    "sorted": sorted,
+    "str": str,
+    "sum": sum,
+    "tuple": tuple,
+    "type": type,
+    "zip": zip,
+    "__build_class__": __build_class__,
+    "__import__": _python_safe_import,
+}
+
 _PYTHON_RUN_CHILD_SCRIPT = """
 from __future__ import annotations
 
@@ -3024,6 +3096,51 @@ import json
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+
+_PYTHON_ALLOWED_IMPORTS = set()
+
+
+def _python_safe_import(name, globals_dict=None, locals_dict=None, fromlist=(), level=0):
+    if level != 0:
+        raise ImportError("relative imports are not allowed")
+    root_name = str(name or "").split(".", 1)[0]
+    if root_name not in _PYTHON_ALLOWED_IMPORTS:
+        raise ImportError(f"import not allowed: {name}")
+    return __import__(name, globals_dict, locals_dict, fromlist, level)
+
+
+_PYTHON_SAFE_EXEC_BUILTINS = {
+    "abs": abs,
+    "all": all,
+    "any": any,
+    "bool": bool,
+    "dict": dict,
+    "enumerate": enumerate,
+    "float": float,
+    "int": int,
+    "isinstance": isinstance,
+    "issubclass": issubclass,
+    "len": len,
+    "list": list,
+    "map": map,
+    "max": max,
+    "min": min,
+    "print": print,
+    "range": range,
+    "repr": repr,
+    "reversed": reversed,
+    "round": round,
+    "set": set,
+    "slice": slice,
+    "sorted": sorted,
+    "str": str,
+    "sum": sum,
+    "tuple": tuple,
+    "type": type,
+    "zip": zip,
+    "__build_class__": __build_class__,
+    "__import__": _python_safe_import,
+}
 
 
 def _json_safe(value):
@@ -3042,6 +3159,8 @@ def main() -> int:
     input_path = Path(sys.argv[1])
     output_path = Path(sys.argv[2])
     payload = json.loads(input_path.read_text(encoding="utf-8"))
+    global _PYTHON_ALLOWED_IMPORTS
+    _PYTHON_ALLOWED_IMPORTS = set(payload.get("allowed_imports", ()))
     scope = {
         "variables": payload.get("variables", {}),
         "page": None,
@@ -3055,7 +3174,7 @@ def main() -> int:
     try:
         compiled = compile(payload["code"], "<weconduct-python.run>", "exec")
         with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-            exec(compiled, {"__builtins__": __builtins__}, scope)
+            exec(compiled, {"__builtins__": _PYTHON_SAFE_EXEC_BUILTINS}, scope)
         response = {
             "status": "succeeded",
             "result": _json_safe(scope.get("result")),
@@ -3106,7 +3225,18 @@ def _validate_python_run_code(code: str) -> None:
     except SyntaxError as exc:
         raise PythonCodeRejected(f"syntax error: {exc.msg}") from exc
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root_name = alias.name.split(".", 1)[0]
+                if root_name not in _PYTHON_ALLOWED_IMPORTS:
+                    raise PythonCodeRejected(f"import not allowed: {alias.name}")
+            continue
+        if isinstance(node, ast.ImportFrom):
+            if node.module is None:
+                raise PythonCodeRejected("relative imports are not allowed")
+            root_name = node.module.split(".", 1)[0]
+            if root_name not in _PYTHON_ALLOWED_IMPORTS:
+                raise PythonCodeRejected(f"import not allowed: {node.module}")
             continue
         if isinstance(node, ast.Attribute) and node.attr in _PYTHON_DANGEROUS_ATTRIBUTES:
             raise PythonCodeRejected(f"access to attribute is not allowed: {node.attr}")

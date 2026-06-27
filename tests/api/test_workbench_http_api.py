@@ -3861,7 +3861,7 @@ def test_http_api_write_request_accepts_valid_token_when_server_token_is_configu
         server.server_close()
 
 
-def test_http_api_read_request_does_not_require_token_when_server_token_is_configured(tmp_path: Path) -> None:
+def test_http_api_health_request_does_not_require_token_when_server_token_is_configured(tmp_path: Path) -> None:
     workspace_state_path = tmp_path / "workspace-state.json"
     server = ApiTestServer(("127.0.0.1", 0), WeConductApiHandler)
     server.workspace_state_path = workspace_state_path
@@ -4434,7 +4434,7 @@ def test_http_api_project_package_build_returns_archive_document(tmp_path: Path)
         assert manifest_payload["entrypoint"]["graph_path"] == "graphs/main.graph.msgpack"
         assert manifest_payload["runtime_requirements"]["required_browser"] == "msedge"
         assert package_info_payload["manifest_version"] == 1
-        assert package_info_payload["builder_app_version"] == "0.7.0"
+        assert package_info_payload["builder_app_version"] == "0.7.1"
         assert package_info_payload["source_project_schema_version"] == "project-v2"
     finally:
         server.shutdown()
@@ -5146,6 +5146,35 @@ def test_http_api_package_load_rewrites_embedded_runtime_default_paths(
         assert load_payload["status"] == "loaded"
         assert expected_runtime_path.exists() is True
         assert actual_runtime_path == str(expected_runtime_path.resolve())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_api_sensitive_get_requires_token_when_server_token_is_configured(tmp_path: Path) -> None:
+    workspace_state_path = tmp_path / "workspace-state.json"
+    server = ApiTestServer(("127.0.0.1", 0), WeConductApiHandler)
+    server.workspace_state_path = workspace_state_path
+    server.api_token = "phase17-secret"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(f"{base_url}/api/workbench/project")
+        assert exc_info.value.code == 401
+
+        request = urllib.request.Request(
+            f"{base_url}/api/workbench/project",
+            headers={"X-WeConduct-Token": "phase17-secret"},
+            method="GET",
+        )
+        with urllib.request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        assert response.status == 200
+        assert payload["project"]["loaded"] is True
     finally:
         server.shutdown()
         server.server_close()
@@ -5870,6 +5899,45 @@ def test_http_api_project_package_load_restores_full_custom_component_resource_r
         ) as response:
             resource_payload = json.loads(response.read().decode("utf-8"))
 
+        main_graph_payload = {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-node-start",
+                    "expansion_role": "flow.start",
+                    "display_name": "流程入口",
+                    "node_kind": "flow.start",
+                    "node_config": {
+                        "initial_variables": {"base_url": "http://restore-api.test"},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                    "ports": [
+                        {
+                            "port_id": "control-out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "control.next",
+                        }
+                    ],
+                }
+            ],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/graph",
+                data=json.dumps(main_graph_payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            )
+        ):
+            pass
+
         with urllib.request.urlopen(
             urllib.request.Request(
                 f"{base_url}/api/workbench/project/settings",
@@ -5954,7 +6022,8 @@ def test_http_api_project_package_load_restores_full_custom_component_resource_r
         assert restored["display_name"] == "Restored Resource API"
         assert restored["origin"] == "package"
         assert restored["source_graph_document"]["nodes"][0]["node_id"] == "node-component-input-text"
-        assert restored["input_schema"]["username"]["type"] == "string"
+        assert restored["source_graph_document"]["nodes"][0]["node_config"]["name"] == "username"
+        assert restored["source_graph_document"]["nodes"][0]["node_config"]["value_type"] == "string"
     finally:
         server.shutdown()
         server.server_close()
@@ -8222,7 +8291,7 @@ def test_http_api_exposes_runtime_health(tmp_path: Path) -> None:
         assert payload["status"] == "ok"
         assert payload["service"] == "weconduct-api"
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.7.0"
+        assert payload["api_version"] == "0.7.1"
         assert payload["workspace_state_version"] == 1
         assert payload["workspace_session_id"].startswith("ws-")
         assert payload["service_started_at"]
@@ -10299,7 +10368,7 @@ def test_http_host_info_exposes_release_manifest_and_runtime_binding(tmp_path: P
             payload = json.loads(response.read().decode("utf-8"))
 
         assert payload["host_mode"] == "python_core"
-        assert payload["api_version"] == "0.7.0"
+        assert payload["api_version"] == "0.7.1"
         assert payload["server_bind"]["host"] == "127.0.0.1"
         assert payload["server_bind"]["port"] == server.server_address[1]
         assert payload["server_bind"]["base_url"] == base_url

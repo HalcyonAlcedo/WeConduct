@@ -287,3 +287,36 @@ def test_python_runtime_manager_clear_runtime_rejects_paths_outside_cache_bounda
         )
 
     assert sentinel.exists()
+
+
+def test_python_runtime_manager_rejects_requirements_file_path_outside_project_root(tmp_path: Path) -> None:
+    manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
+    profile = build_default_python_runtime_profile()
+    profile["requirements_source_mode"] = "requirements_txt"
+    outside_file = tmp_path / "outside-requirements.txt"
+    outside_file.write_text("requests==2.32.0\n", encoding="utf-8")
+    profile["requirements_file_path"] = str(outside_file.resolve())
+
+    with pytest.raises(ValueError, match="outside project"):
+        manager._collect_runtime_requirements_lines(
+            profile,
+            project_storage_root=tmp_path / "project.data",
+        )
+
+
+def test_python_runtime_manager_rejects_wheelhouse_source_path_outside_project_root(tmp_path: Path) -> None:
+    manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
+    profile = build_default_python_runtime_profile()
+    profile["requirements_source_mode"] = "requirements_txt"
+    outside_dir = tmp_path / "external-root"
+    outside_dir.mkdir(parents=True, exist_ok=True)
+    outside_file = outside_dir / "requirements.txt"
+    outside_file.write_text("requests==2.32.0\n", encoding="utf-8")
+    profile["requirements_file_path"] = str(outside_file.resolve())
+
+    with pytest.raises(ValueError, match="outside project"):
+        manager._resolve_runtime_wheelhouse_source_directory(
+            profile,
+            project_storage_root=tmp_path / "project.data",
+            runtime_root=tmp_path / "runtime.data",
+        )

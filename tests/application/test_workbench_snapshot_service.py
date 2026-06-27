@@ -538,7 +538,7 @@ def test_workbench_snapshot_exposes_ui_read_model() -> None:
     assert snapshot["entrypoints"]["compile_action"] == "/api/workbench/compile"
     assert snapshot["entrypoints"]["graph_source_projection"] == "/api/workbench/graph/source-projection"
     assert snapshot["workbench"]["host_mode"] == "python_core"
-    assert snapshot["workbench"]["api_version"] == "0.7.0"
+    assert snapshot["workbench"]["api_version"] == "0.7.1"
     assert snapshot["compiler"]["available_source_kinds"] == [
         "graph_workspace",
         "native_flow",
@@ -853,7 +853,7 @@ def test_service_create_project_seeds_current_graph_compatibility_metadata(tmp_p
 
     assert created["status"] == "created"
     assert created_graph["root_metadata"]["graph_compatibility"]["graph_data_version"] == "0.6.2"
-    assert created_graph["root_metadata"]["graph_compatibility"]["built_with_app_version"] == "0.7.0"
+    assert created_graph["root_metadata"]["graph_compatibility"]["built_with_app_version"] == "0.7.1"
     assert (
         created_graph["root_metadata"]["graph_compatibility"]["minimum_loader_app_version"] == "0.5.2"
     )
@@ -7404,7 +7404,7 @@ def test_service_runtime_python_run_uses_project_directory_as_working_directory(
             "source_anchor_ref": "n-python",
             "expansion_role": "action:python_run",
             "node_kind": "python.run",
-            "node_config": {"code": "import os\nresult = os.getcwd()"},
+            "node_config": {"code": "from pathlib import Path\nresult = str(Path.cwd())"},
             "ports": [],
         }
     )
@@ -7423,6 +7423,106 @@ def test_service_runtime_python_run_uses_project_directory_as_working_directory(
 
     assert session["status"] == "completed"
     assert session["result"]["outputs"]["node-python"]["result"] == str(project_path.parent.resolve())
+
+
+def test_service_runtime_python_run_rejects_blocked_os_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {
+                    "language": "zh-CN",
+                    "resource_language": "zh-CN",
+                    "theme": "light",
+                    "default_window_size": {"width": 1440, "height": 900},
+                    "startup_action": "restore_last_workspace",
+                    "default_project_directory": None,
+                    "recent_project_limit": 10,
+                    "preferences_auto_save": True,
+                    "font_scale": 100,
+                },
+                "compile_settings": {
+                    "default_source_kind": "graph_workspace",
+                    "diagnostic_level": "error",
+                    "block_on_disabled_components": True,
+                    "allow_degraded_compile": True,
+                    "stop_on_first_error": True,
+                    "emit_runtime_plan": True,
+                    "emit_debug_plan": True,
+                },
+                "security_settings": {
+                    "confirm_high_risk_actions": True,
+                    "allow_external_programs": True,
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_local_network_access": True,
+                    "allow_python_execution": True,
+                },
+                "python_runtime_settings": {
+                    "python_executable_path": None,
+                    "timeout_seconds": 60,
+                    "sandbox_mode": "restricted",
+                    "capture_stdout_stderr": True,
+                },
+                "graph_settings": {
+                    "auto_sync_mode": "responsive",
+                    "show_node_id_on_node": True,
+                    "show_disabled_resource_badge": True,
+                    "snap_to_grid": True,
+                    "grid_enabled": True,
+                    "auto_open_node_on_drop": True,
+                    "confirm_delete_node": True,
+                    "show_inline_config_summary": True,
+                },
+                "other_settings": {
+                    "workspace_draft_recovery_enabled": True,
+                    "workspace_draft_recovery_ttl_minutes": 30,
+                },
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    _enable_ready_project_python_runtime(
+        service,
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        project_name="Python Run Reject Os Import",
+        project_slug="python-run-reject-os-import",
+    )
+
+    linear_graph = _build_linear_main_graph(
+        {
+            "node_id": "node-python",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "n-python",
+            "expansion_role": "action:python_run",
+            "node_kind": "python.run",
+            "node_config": {
+                "code": "import os\nresult = os.getcwd()",
+            },
+            "ports": [],
+        }
+    )
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            **linear_graph,
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    started = service.start_runtime_session(None)
+    session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    assert session["status"] == "failed"
+    assert session["result"]["failure_reason"] == "python.code_rejected"
+    assert session["result"]["outputs"]["node-python"]["error_code"] == "python.code_rejected"
+    assert "import not allowed: os" in session["result"]["outputs"]["node-python"]["message"]
 
 
 def test_service_project_python_runtime_can_prepare_and_execute_openpyxl_excel_flow(
@@ -17865,6 +17965,74 @@ def test_service_runtime_executes_p9_browser_extraction_js_and_table_components(
         site_server.server_close()
 
 
+def test_service_runtime_browser_download_file_blocks_local_network_url_by_ssrf_policy(tmp_path: Path) -> None:
+    preferences_service = PreferencesService(
+        preferences_store=InMemoryPreferencesStore(
+            {
+                "preferences_file_version": 1,
+                "program_settings": {},
+                "compile_settings": {},
+                "security_settings": {
+                    "allow_file_access": True,
+                    "allow_browser_executor": True,
+                    "allow_browser_downloads": True,
+                    "allow_local_network_access": False,
+                    "allow_remote_network_access": True,
+                },
+                "python_runtime_settings": {},
+                "graph_settings": {},
+                "other_settings": {},
+            }
+        )
+    )
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    project_dir = tmp_path / "download-ssrf-project"
+    project_path = project_dir / "download-ssrf.weconduct.json"
+    site_server, site_thread = _start_browser_mock_site()
+
+    try:
+        base_url = f"http://127.0.0.1:{site_server.server_address[1]}"
+        service.create_project(project_name="Download SSRF", project_directory=project_dir)
+        service.save_graph_document(
+            {
+                "graph_model_id": "graph:workspace",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                **_build_linear_main_graph(
+                    {
+                        "node_id": "node-download-file",
+                        "lowered_kind": "execution",
+                        "source_anchor_ref": "n-download-file",
+                        "expansion_role": "action:download_file",
+                        "node_kind": "browser.download_file",
+                        "node_config": {
+                            "url": f"{base_url}/download",
+                            "path": r"artifacts\blocked-download.txt",
+                        },
+                        "ports": [],
+                    }
+                ),
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+        service.save_project_as(project_path=project_path)
+        started = service.start_runtime_session(None)
+        assert started["runtime_session"]["session_id"] is not None
+        session = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+        assert session["status"] == "failed"
+        assert session["result"]["failure_reason"] == "runtime.executor_exception"
+        assert any(
+            isinstance(item, dict)
+            and item.get("node_id") == "node-download-file"
+            and item.get("node_status") == "failed"
+            for item in session["node_states"]
+        )
+    finally:
+        site_server.shutdown()
+        site_server.server_close()
+
+
 def test_service_runtime_executes_p9_session_apply_auth_session_and_dialog_components() -> None:
     service = CompilationWorkbenchService()
     site_server, site_thread = _start_browser_mock_site()
@@ -21852,8 +22020,8 @@ def test_service_normalizes_persisted_workbench_api_version_to_current_version(t
     health = service.get_runtime_health()
     persisted_state = json.loads(state_file.read_text(encoding="utf-8"))
 
-    assert health["api_version"] == "0.7.0"
-    assert persisted_state["workbench"]["api_version"] == "0.7.0"
+    assert health["api_version"] == "0.7.1"
+    assert persisted_state["workbench"]["api_version"] == "0.7.1"
 
 
 def test_open_project_marks_legacy_graph_document_as_pending_upgrade(tmp_path) -> None:
@@ -21894,7 +22062,7 @@ def test_open_project_marks_legacy_graph_document_as_pending_upgrade(tmp_path) -
     assert opened["project"]["pending_graph_upgrade"]["status"] == "upgrade_available"
     assert opened["project"]["pending_graph_upgrade"]["document_id"] == "graph:workspace"
     assert opened["project"]["pending_graph_upgrade"]["compatibility"]["graph_data_version"] == "0.5.2"
-    assert opened["project"]["pending_graph_upgrade"]["compatibility"]["current_app_version"] == "0.7.0"
+    assert opened["project"]["pending_graph_upgrade"]["compatibility"]["current_app_version"] == "0.7.1"
     assert (
         opened["project"]["pending_graph_upgrade"]["compatibility"]["available_upgrade_path"][0]["upgrader_id"]
         == "p18d-baseline-052-to-061"
@@ -23763,7 +23931,7 @@ def test_build_project_wcrun_package_writes_expected_archive_layout(tmp_path: Pa
         assert manifest_payload["integrity"]["checksums_path"] == "meta/checksums.json"
         assert manifest_payload["integrity"]["package_info_path"] == "meta/package-info.json"
         assert package_info_payload["manifest_version"] == 1
-        assert package_info_payload["builder_app_version"] == "0.7.0"
+        assert package_info_payload["builder_app_version"] == "0.7.1"
         assert package_info_payload["source_project_schema_version"] == "project-v2"
         assert package_info_payload["graph_stats"]["graph_count"] == 1
         assert package_info_payload["resource_stats"]["embedded_resource_count"] == 0
@@ -25174,6 +25342,52 @@ def test_loaded_wcrun_package_blocks_runtime_start_when_python_runtime_manifest_
         entry["category"] == "package.python_runtime.manifest_hash_mismatch"
         for entry in started["diagnostics"]["entries"]
     )
+
+
+def test_load_wcrun_package_rejects_zip_entries_that_escape_session_root(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    package_path = tmp_path / "zip-slip.wcrun"
+    with zipfile.ZipFile(package_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "manifest.msgpack",
+            packb(
+                {
+                    "manifest_version": 1,
+                    "package_identity": {"package_name": "zip-slip", "package_version": "0.1.0"},
+                    "source_project": {"project_name": "Zip Slip Project"},
+                    "runtime_requirements": {"required_platform": "windows", "required_browser": "msedge"},
+                    "entrypoint": {"graph_path": "graphs/main.graph.msgpack", "entry_node_kind": "flow.start"},
+                    "graphs": [
+                        {
+                            "graph_path": "graphs/main.graph.msgpack",
+                            "graph_id": "graph:workspace",
+                            "graph_role": "entrypoint",
+                        }
+                    ],
+                    "integrity": {
+                        "checksums_path": "meta/checksums.json",
+                        "package_info_path": "meta/package-info.json",
+                    },
+                }
+            ),
+        )
+        archive.writestr(
+            "project-settings.json",
+            json.dumps({"project_settings_schema_version": 2, "project_identity": {"name": "Zip Slip Project"}}).encode("utf-8"),
+        )
+        archive.writestr("graphs/main.graph.msgpack", packb({"graph_model_id": "graph:workspace"}))
+        archive.writestr(
+            "meta/package-info.json",
+            json.dumps({"manifest_version": 1, "builder_app_version": "0.7.0"}).encode("utf-8"),
+        )
+        archive.writestr(
+            "meta/checksums.json",
+            json.dumps({"checksum_schema_version": 1, "algorithm": "sha256", "entries": []}).encode("utf-8"),
+        )
+        archive.writestr("..\\..\\evil.txt", b"owned")
+
+    with pytest.raises(ValueError, match="escapes target directory"):
+        service.load_project_package(package_path=str(package_path))
 
 
 def test_load_wcrun_package_restores_embedded_full_venv_runtime_to_session_root(

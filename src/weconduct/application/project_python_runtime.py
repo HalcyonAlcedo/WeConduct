@@ -20,6 +20,20 @@ PYTHON_RUNTIME_PACKAGE_EMBED_MODES = {"none", "wheelhouse_rebuild", "full_venv"}
 PYTHON_RUNTIME_HEALTH_STATUSES = {"unknown", "ready", "missing", "broken", "stale"}
 
 
+def _resolve_project_scoped_path(path_value: str, *, project_storage_root: Path, field_name: str) -> Path:
+    candidate = Path(path_value.strip())
+    project_root = project_storage_root.resolve()
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+    else:
+        resolved = (project_root / candidate).resolve()
+    try:
+        resolved.relative_to(project_root)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} is outside project root: {resolved}") from exc
+    return resolved
+
+
 def build_default_python_runtime_profile() -> dict:
     return {
         "runtime_enabled": False,
@@ -674,9 +688,11 @@ class ProjectPythonRuntimeManager:
             relative_path = normalized_profile.get("lock_file_path")
         if not isinstance(relative_path, str) or not relative_path.strip():
             return []
-        candidate = Path(relative_path.strip())
-        if not candidate.is_absolute():
-            candidate = Path(project_storage_root) / candidate
+        candidate = _resolve_project_scoped_path(
+            relative_path,
+            project_storage_root=project_storage_root,
+            field_name="requirements file path",
+        )
         try:
             return [
                 line.strip()
@@ -741,9 +757,11 @@ class ProjectPythonRuntimeManager:
         else:
             relative_path = None
         if isinstance(relative_path, str) and relative_path.strip():
-            requirements_path = Path(relative_path.strip())
-            if not requirements_path.is_absolute():
-                requirements_path = project_storage_root / requirements_path
+            requirements_path = _resolve_project_scoped_path(
+                relative_path,
+                project_storage_root=project_storage_root,
+                field_name="wheelhouse source path",
+            )
             candidate_directories.append(requirements_path.parent / "wheelhouse")
         candidate_directories.append(project_storage_root / "wheelhouse")
         for candidate in candidate_directories:

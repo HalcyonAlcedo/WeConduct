@@ -76,6 +76,9 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.OK, payload)
             return
 
+        if not self._require_api_token():
+            return
+
         if self.path == "/api/workbench/snapshot":
             payload = dict(service.get_workbench_snapshot())
             payload["ui_hosting"] = self._build_ui_hosting_metadata()

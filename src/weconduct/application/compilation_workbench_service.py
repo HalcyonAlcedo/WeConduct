@@ -66,7 +66,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
-CURRENT_API_VERSION = "0.7.0"
+CURRENT_API_VERSION = "0.7.1"
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
@@ -13744,8 +13744,16 @@ class CompilationWorkbenchService:
                 prefix=f"weconduct-session-{package_stem}-",
                 dir=tempfile.gettempdir(),
             )
-        )
+        ).resolve()
         with zipfile.ZipFile(package_path, mode="r") as archive:
+            for entry in archive.infolist():
+                extracted_path = (session_root / entry.filename).resolve()
+                try:
+                    extracted_path.relative_to(session_root)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Package entry escapes target directory: {entry.filename}"
+                    ) from exc
             archive.extractall(session_root)
         return session_root
 
