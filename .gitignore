@@ -38,7 +38,7 @@ coverage.xml
 build/
 dist/
 *.spec
-packaging/nsis/
+packaging/nsis/*
 !packaging/nsis/setup.nsi
 
 # --- Local runtime / workspace state ---
