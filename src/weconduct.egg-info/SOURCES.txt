@@ -1,3 +1,5 @@
+LICENSE
+README.md
 pyproject.toml
 src/weconduct/__init__.py
 src/weconduct.egg-info/PKG-INFO
@@ -9,7 +11,16 @@ src/weconduct/api/__init__.py
 src/weconduct/api/server.py
 src/weconduct/application/__init__.py
 src/weconduct/application/compilation_workbench_service.py
+src/weconduct/application/legacy_webcontrol_converter.py
+src/weconduct/application/preferences_service.py
+src/weconduct/application/preferences_store.py
+src/weconduct/application/preview_smoke.py
+src/weconduct/application/project_python_runtime.py
+src/weconduct/application/runtime_session_stream.py
 src/weconduct/application/workspace_state_store.py
+src/weconduct/builtin_components/__init__.py
+src/weconduct/builtin_components/node_drafts.py
+src/weconduct/builtin_components/registry.py
 src/weconduct/cli/__init__.py
 src/weconduct/cli/main.py
 src/weconduct/compiler/__init__.py
@@ -20,6 +31,7 @@ src/weconduct/compiler/stage_state.py
 src/weconduct/compiler/services/__init__.py
 src/weconduct/compiler/services/stable_identity.py
 src/weconduct/compiler/sources/__init__.py
+src/weconduct/compiler/sources/graph_workspace.py
 src/weconduct/compiler/sources/legacy_webcontrol.py
 src/weconduct/compiler/sources/native_flow.py
 src/weconduct/compiler/stages/__init__.py
@@ -34,4 +46,11 @@ src/weconduct/contracts/__init__.py
 src/weconduct/contracts/compilation.py
 src/weconduct/contracts/diagnostics.py
 src/weconduct/contracts/graph.py
+src/weconduct/desktop_shell/__init__.py
+src/weconduct/desktop_shell/launcher.py
+src/weconduct/packaging/msgpack_codec.py
+src/weconduct/runtime/__init__.py
+src/weconduct/runtime/captcha_ocr.py
+src/weconduct/runtime/engine.py
+tests/test_preview_packaging.py
 tests/test_workspace_layout.py

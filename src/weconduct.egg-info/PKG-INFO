@@ -1,6 +1,12 @@
 Metadata-Version: 2.4
 Name: weconduct
-Version: 0.2.0
+Version: 0.7.1
 Summary: WeConduct Python core
 Requires-Python: >=3.11
+License-File: LICENSE
 Requires-Dist: pydantic<3,>=2.8
+Requires-Dist: pywebview>=5.0
+Requires-Dist: PyYAML>=6.0
+Provides-Extra: packaging
+Requires-Dist: pyinstaller>=6.0; extra == "packaging"
+Dynamic: license-file

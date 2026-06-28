@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]*.[0-9]*.[0-9]*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install Python dependencies
+        run: pip install -e ".[packaging]"
+
+      - name: Build UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build with PyInstaller
+        run: python -m PyInstaller packaging/pyinstaller/weconduct_preview.spec --noconfirm --clean
+
+      - name: Create portable zip
+        run: |
+          $version = "${{ github.ref_name }}"
+          Compress-Archive -Path dist/WeConduct/* -DestinationPath "WeConduct-$version-portable.zip"
+
+      - name: Create installer
+        run: |
+          $version = "${{ github.ref_name }}"
+          $sourceDir = (Resolve-Path "dist\WeConduct").ToString()
+          $outFile = (Join-Path (Get-Location) "WeConduct-$version-setup.exe")
+          & "C:\Program Files (x86)\NSIS\makensis.exe" `
+            -DVERSION="$version" `
+            -DSOURCE_DIR="$sourceDir" `
+            -DOUTPUT_FILE="$outFile" `
+            packaging/nsis/setup.nsi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            WeConduct-*-portable.zip
+            WeConduct-*-setup.exe
+          generate_release_notes: true
