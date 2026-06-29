@@ -7,6 +7,7 @@ import { useGraphStore } from '@/stores/graphStore'
 import { useDockStore } from '@/stores/dockStore'
 import { useRuntimeStore } from '@/stores/runtimeStore'
 import { useToastStore } from '@/stores/toastStore'
+import { useUpdateStore } from '@/stores/updateStore'
 import { useKeyboard } from '@/composables/useKeyboard'
 import CommandBar from '@/components/commandbar/CommandBar.vue'
 import StatusBar from '@/components/common/StatusBar.vue'
@@ -17,6 +18,7 @@ const compilation = useCompilationStore()
 const graphWs = useGraphWorkspaceStore()
 const graphStore = useGraphStore()
 const toast = useToastStore()
+const updateStore = useUpdateStore()
 
 useKeyboard([
   { key: 'Enter', ctrl: true, handler: async () => {
@@ -56,6 +58,14 @@ function beforeUnload(e: BeforeUnloadEvent) {
 
 onMounted(async () => {
   await workspace.initialize()
+  await updateStore.fetchStatus().catch(() => {})
+  const shouldCheckUpdates = !!(workspace.snapshot?.preferences as any)?.program_settings?.check_updates_on_startup
+  if (shouldCheckUpdates) {
+    const status = await updateStore.checkForUpdates(false).catch(() => null)
+    if (status?.update_available) {
+      window.dispatchEvent(new CustomEvent('weconduct:update-available', { detail: status }))
+    }
+  }
   // Full workspace restore: if project already loaded, sync graph + source
   if (workspace.snapshot?.project?.loaded) {
     await graphWs.loadGraph()

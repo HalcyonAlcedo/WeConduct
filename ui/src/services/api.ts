@@ -28,6 +28,8 @@ import type {
   ExecutionHistoryResponse,
   PreferencesResponse,
   PreferencesUpdateRequest,
+  UpdateCheckRequest,
+  UpdateStatusResponse,
   NodeDraftResponse,
   WebControlConvertRequest,
   WebControlConvertResponse,
@@ -275,6 +277,18 @@ export function fetchPreferences(): Promise<PreferencesResponse> { return reques
 export function postPreferences(body: PreferencesUpdateRequest): Promise<PreferencesResponse> { return request<PreferencesResponse>('/workbench/preferences', { method: 'POST', body: JSON.stringify(body) }) }
 export function postPreferencesPreview(body: { section: string; values: Record<string, unknown> }): Promise<{ section: string; current_values: Record<string, unknown>; proposed_values: Record<string, unknown>; confirmation_required: boolean; high_risk_changes: { field: string; from: unknown; to: unknown; reason: string }[] }> { return request('/workbench/preferences/preview', { method: 'POST', body: JSON.stringify(body) }) }
 export function postPreferencesReset(): Promise<PreferencesResponse> { return request<PreferencesResponse>('/workbench/preferences/reset', { method: 'POST', body: '{}' }) }
+
+// ===== 0.7.2: Updates =====
+export function fetchUpdateStatus(): Promise<UpdateStatusResponse> {
+  return request<UpdateStatusResponse>('/workbench/update/status')
+}
+
+export function postUpdateCheck(body: UpdateCheckRequest): Promise<UpdateStatusResponse> {
+  return request<UpdateStatusResponse>('/workbench/update/check', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
 
 // ===== P13-B: WebControl Converter =====
 export function postConvertWebcontrol(body: WebControlConvertRequest): Promise<WebControlConvertResponse> {

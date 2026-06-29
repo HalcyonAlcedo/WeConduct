@@ -13,6 +13,7 @@ from weconduct.application import (
     HighRiskPreferenceChangeRequiredError,
     PreferencesService,
     FilePreferencesStore,
+    UpdateService,
 )
 
 DEFAULT_WORKSPACE_STATE_PATH = (
@@ -205,6 +206,11 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     "preferences": result,
                 },
             )
+            return
+
+        if self.path == "/api/workbench/update/status":
+            result = self._get_update_service().get_status()
+            self._write_json(HTTPStatus.OK, result)
             return
 
         if self.path == "/api/workbench/recent-projects":
@@ -792,6 +798,19 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     "preferences": result,
                 },
             )
+            return
+
+        if self.path == "/api/workbench/update/check":
+            try:
+                payload = self._read_json_request_body()
+                force = payload.get("force", False)
+                if not isinstance(force, bool):
+                    raise ValueError("field must be a boolean when provided: force")
+                result = self._get_update_service().check_for_updates(force=force)
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
             return
 
         if self.path == "/api/workbench/project/open":
@@ -2027,6 +2046,16 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 preferences_store=FilePreferencesStore(self._resolve_preferences_path())
             )
         return self.server.preferences_service
+
+    def _get_update_service(self) -> UpdateService:
+        if not hasattr(self.server, "update_service"):
+            from weconduct.application.compilation_workbench_service import CURRENT_API_VERSION
+
+            self.server.update_service = UpdateService(
+                current_version=CURRENT_API_VERSION,
+                repository="HalcyonAlcedo/WeConduct",
+            )
+        return self.server.update_service
 
     def _resolve_workspace_state_path(self) -> Path:
         configured_path = getattr(self.server, "workspace_state_path", None)

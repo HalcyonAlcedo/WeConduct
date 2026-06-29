@@ -13,6 +13,7 @@ from .preferences_store import (
     PreferencesStore,
 )
 from .runtime_session_stream import RuntimeSessionStreamBroker
+from .update_service import UpdateService
 from .workspace_state_store import (
     FileWorkspaceStateStore,
     InMemoryWorkspaceStateStore,
@@ -30,6 +31,7 @@ __all__ = [
     "InMemoryPreferencesStore",
     "PreferencesStore",
     "RuntimeSessionStreamBroker",
+    "UpdateService",
     "FileWorkspaceStateStore",
     "InMemoryWorkspaceStateStore",
     "WorkspaceStateStore",

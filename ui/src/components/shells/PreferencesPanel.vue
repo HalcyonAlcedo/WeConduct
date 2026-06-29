@@ -16,7 +16,7 @@ const FIELD_DEFS: Record<string, FieldDef[]> = {
     { key: 'language', label: '语言', type: 'select', options: ['zh-CN', 'en-US', 'ja-JP'] }, { key: 'resource_language', label: '资源语言', type: 'select', options: ['zh-CN', 'en-US'] },
     { key: 'theme', label: '主题', type: 'select', options: ['light', 'dark', 'system'] }, { key: 'default_window_size', label: '默认窗口尺寸', type: 'object', hint: '宽度 × 高度（像素）' },
     { key: 'startup_action', label: '启动行为', type: 'select', options: ['restore_last_workspace'] }, { key: 'default_project_directory', label: '默认项目目录', type: 'text' },
-    { key: 'recent_project_limit', label: '最近项目上限', type: 'number' }, { key: 'preferences_auto_save', label: '自动保存', type: 'bool' }, { key: 'font_scale', label: '字体缩放', type: 'number' },
+    { key: 'recent_project_limit', label: '最近项目上限', type: 'number' }, { key: 'preferences_auto_save', label: '自动保存', type: 'bool' }, { key: 'check_updates_on_startup', label: '启动时检查更新', type: 'bool' }, { key: 'font_scale', label: '字体缩放', type: 'number' },
   ],
   compile: [
     { key: 'default_source_kind', label: '默认源类型', type: 'select', options: ['graph_workspace'] }, { key: 'diagnostic_level', label: '诊断级别', type: 'select', options: ['error', 'warning', 'info', 'debug'] },

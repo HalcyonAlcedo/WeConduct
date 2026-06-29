@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useCompilationStore } from '@/stores/compilationStore'
 import { useThemeStore } from '@/stores/themeStore'
@@ -8,6 +8,7 @@ import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useRuntimeStore } from '@/stores/runtimeStore'
 import { useResourceStore } from '@/stores/resourceStore'
 import { useToastStore } from '@/stores/toastStore'
+import { useUpdateStore } from '@/stores/updateStore'
 import {
   postProjectNew, postProjectOpen, postProjectSave, postProjectSaveAs,
   fetchProject, fetchGraphDocument, fetchRecentProjects, postRecentProjectRemove,
@@ -24,6 +25,7 @@ const graphWs = useGraphWorkspaceStore()
 const runtime = useRuntimeStore()
 const resource = useResourceStore()
 const toast = useToastStore()
+const updateStore = useUpdateStore()
 
 /** Unified post-project-open state refresh: sync all stores */
 async function applyOpenedProject() {
@@ -61,6 +63,29 @@ watch(() => workspace.snapshot?.project?.pending_graph_upgrade, (pending) => {
 }, { immediate: true })
 
 const dialogPath = ref('')
+const defaultReleaseUrl = 'https://github.com/HalcyonAlcedo/WeConduct/releases'
+
+function openReleasePage() {
+  const releaseUrl = updateStore.status?.release_url || defaultReleaseUrl
+  window.open(releaseUrl, '_blank', 'noopener,noreferrer')
+}
+
+function handleUpdateAvailable(event: Event) {
+  const detail = (event as CustomEvent).detail as Record<string, unknown> | null
+  const latestVersion = typeof detail?.latest_version === 'string' ? detail.latest_version : '未知版本'
+  const currentVersion = typeof detail?.current_version === 'string'
+    ? detail.current_version
+    : (workspace.health?.api_version ?? '未知版本')
+  toast.info(`发现新版本 ${latestVersion}`, `当前版本 ${currentVersion}`)
+}
+
+onMounted(() => {
+  window.addEventListener('weconduct:update-available', handleUpdateAvailable as EventListener)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('weconduct:update-available', handleUpdateAvailable as EventListener)
+})
 
 // Expose for keyboard-driven dialogs
 ;(window as any).__openDeleteConfirm = (cb: () => void) => { pendingConfirm.value = cb; openDialog('confirmDelete') }
@@ -248,6 +273,9 @@ async function pickImportFile() {
 }
 
 function openDialog(id: string) { activeDialog.value = id; dialogInput.value = ''; dialogPath.value = ''; importJson.value = ''; closeMenu()
+  if (id === 'updateCheck') {
+    updateStore.checkForUpdates(true).catch(() => {})
+  }
   if (id === 'new') {
     const prefs: any = workspace.snapshot?.preferences || {}
     dialogPath.value = prefs?.program_settings?.default_project_directory || ''
@@ -311,6 +339,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
         <button class="cmd-item" @click="toggleMenu('help')">帮助</button>
         <div v-if="activeMenu === 'help'" class="cmd-dropdown" @mouseleave="closeMenu">
           <button @click="openDialog('about')">关于 WeConduct</button>
+          <button @click="openDialog('updateCheck')">检查更新</button>
           <button @click="openDialog('shortcuts')">键盘快捷键</button>
         </div>
       </div>
@@ -329,7 +358,6 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
 
     <!-- Right -->
     <div class="cmd-right">
-      <button class="theme-btn" title="多语言即将开放" @click="toast.info('多语言即将开放', '当前仅支持简体中文')">EN</button>
       <button class="theme-btn" :title="theme.mode === 'light' ? '切换深色主题' : '切换浅色主题'" @click="theme.toggle()">
         {{ theme.mode === 'light' ? '☀' : '☾' }}
       </button>
@@ -349,6 +377,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
               <template v-else-if="activeDialog === 'save'">保存</template>
               <template v-else-if="activeDialog === 'saveas'">另存为</template>
               <template v-else-if="activeDialog === 'about'">关于 WeConduct</template>
+              <template v-else-if="activeDialog === 'updateCheck'">检查更新</template>
               <template v-else-if="activeDialog === 'importGraph'">导入节点图 JSON</template>
               <template v-else-if="activeDialog === 'confirmDelete'">确认删除</template>
               <template v-else-if="activeDialog === 'shortcuts'">键盘快捷键</template>
@@ -406,9 +435,15 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
             <!-- About -->
             <template v-else-if="activeDialog === 'about'">
               <p><strong>WeConduct</strong></p>
-              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.7.1' }}</p>
+              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.7.2' }}</p>
+              <p class="dlg-meta">更新状态: {{ updateStore.status?.check_status ?? 'idle' }}</p>
+              <p class="dlg-meta">最新版本: {{ updateStore.status?.latest_version ?? '—' }}</p>
+              <p class="dlg-meta">最近检查: {{ updateStore.status?.last_checked_at ?? '—' }}</p>
               <p class="dlg-meta">运行模式: {{ workspace.health?.host_mode ?? '—' }}</p>
               <p class="dlg-meta">工作区会话: {{ workspace.health?.workspace_session_id ?? '—' }}</p>
+              <div class="dlg-actions">
+                <button class="dlg-act-btn" @click="openReleasePage">打开发布页面</button>
+              </div>
               <template v-if="workspace.projectName">
                 <hr class="dlg-hr">
                 <p class="dlg-meta"><strong>项目: {{ workspace.projectName }}</strong></p>
@@ -417,6 +452,19 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
                 <p class="dlg-meta" v-if="workspace.mainGraphPath">主图: {{ workspace.mainGraphPath }}</p>
                 <p class="dlg-meta" v-if="workspace.projectResourcesIndexPath">资源索引: {{ workspace.projectResourcesIndexPath }}</p>
               </template>
+            </template>
+            <template v-else-if="activeDialog === 'updateCheck'">
+              <p class="dlg-meta">当前版本: {{ updateStore.status?.current_version ?? workspace.health?.api_version ?? '—' }}</p>
+              <p class="dlg-meta">最新版本: {{ updateStore.status?.latest_version ?? '—' }}</p>
+              <p class="dlg-meta">状态: {{ updateStore.isChecking ? 'checking' : (updateStore.status?.check_status ?? 'idle') }}</p>
+              <p class="dlg-meta">最近检查: {{ updateStore.status?.last_checked_at ?? '—' }}</p>
+              <p class="dlg-meta" v-if="updateStore.status?.check_error">错误: {{ updateStore.status?.check_error }}</p>
+              <div class="dlg-actions">
+                <button class="dlg-act-btn" @click="updateStore.checkForUpdates(true)" :disabled="updateStore.isChecking">
+                  {{ updateStore.isChecking ? '检查中…' : '重新检查' }}
+                </button>
+                <button class="dlg-act-btn" @click="openReleasePage">打开发布页面</button>
+              </div>
             </template>
             <!-- Confirm Delete -->
             <template v-else-if="activeDialog === 'confirmDelete'">

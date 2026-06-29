@@ -314,6 +314,27 @@ def test_preferences_service_preview_reports_extended_high_risk_security_changes
     ]
 
 
+def test_preferences_service_exposes_check_updates_on_startup_default() -> None:
+    service = PreferencesService(preferences_store=InMemoryPreferencesStore())
+
+    document = service.get_preferences_document()
+
+    assert document["program_settings"]["check_updates_on_startup"] is False
+
+
+def test_preferences_service_can_update_check_updates_on_startup() -> None:
+    store = InMemoryPreferencesStore()
+    service = PreferencesService(preferences_store=store)
+
+    document = service.update_preferences(
+        section="program_settings",
+        values={"check_updates_on_startup": True},
+    )
+
+    assert document["program_settings"]["check_updates_on_startup"] is True
+    assert store.load()["program_settings"]["check_updates_on_startup"] is True
+
+
 def test_file_preferences_store_rejects_missing_version(tmp_path: Path) -> None:
     path = tmp_path / "preferences.json"
     path.write_text(

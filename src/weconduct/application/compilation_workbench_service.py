@@ -66,7 +66,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
-CURRENT_API_VERSION = "0.7.1"
+CURRENT_API_VERSION = "0.7.2"
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
@@ -7397,6 +7397,41 @@ class CompilationWorkbenchService:
         if not isinstance(raw_project, dict):
             raw_project = self._build_initial_workspace_state()["project"]
         project_runtime = self._get_project_runtime()
+        project_file_schema_version = None
+        main_graph_path = None
+        project_resources_index_path = None
+        resource_overrides_path = None
+        project_file_path = project_runtime.get("project_file_path")
+        if isinstance(project_file_path, str) and project_file_path.strip():
+            try:
+                project_payload_wrapper = self._read_project_file(
+                    self._resolve_project_path(project_file_path)
+                )
+            except ValueError:
+                project_payload_wrapper = None
+            if isinstance(project_payload_wrapper, dict):
+                project_payload = project_payload_wrapper.get("project")
+                schema_value = project_payload_wrapper.get("project_file_schema_version")
+                if isinstance(schema_value, int):
+                    project_file_schema_version = schema_value
+                if isinstance(project_payload, dict):
+                    raw_main_graph_path = project_payload.get("main_graph_path")
+                    raw_project_resources_index_path = project_payload.get(
+                        "project_resources_index_path"
+                    )
+                    raw_resource_overrides_path = project_payload.get("resource_overrides_path")
+                    if isinstance(raw_main_graph_path, str) and raw_main_graph_path.strip():
+                        main_graph_path = raw_main_graph_path
+                    if (
+                        isinstance(raw_project_resources_index_path, str)
+                        and raw_project_resources_index_path.strip()
+                    ):
+                        project_resources_index_path = raw_project_resources_index_path
+                    if (
+                        isinstance(raw_resource_overrides_path, str)
+                        and raw_resource_overrides_path.strip()
+                    ):
+                        resource_overrides_path = raw_resource_overrides_path
         recent_projects = self._get_recent_projects()
         last_compile = self._state["last_compile"]
         execution_history = self._get_execution_history()
@@ -7413,6 +7448,10 @@ class CompilationWorkbenchService:
             "main_graph_document_id": raw_project["main_graph_document_id"],
             "resource_registry_revision": raw_project["resource_registry_revision"],
             "project_file_path": project_runtime["project_file_path"],
+            "project_file_schema_version": project_file_schema_version,
+            "main_graph_path": main_graph_path,
+            "project_resources_index_path": project_resources_index_path,
+            "resource_overrides_path": resource_overrides_path,
             "project_file_name": (
                 Path(project_runtime["project_file_path"]).name
                 if project_runtime["project_file_path"] is not None
@@ -14587,6 +14626,7 @@ class CompilationWorkbenchService:
             ),
         }
         return {
+            "project_file_schema_version": LEGACY_PROJECT_FILE_SCHEMA_VERSION,
             "project": normalized_project,
             "resource_registry": self._extract_resource_registry(
                 {"resource_registry": raw_resource_registry}
@@ -14702,6 +14742,7 @@ class CompilationWorkbenchService:
                     break
 
         return {
+            "project_file_schema_version": PROJECT_FILE_SCHEMA_VERSION,
             "project": normalized_project,
             "resource_registry": effective_registry,
             "editor_history": self._extract_editor_history({"editor_history": raw_editor_history}),

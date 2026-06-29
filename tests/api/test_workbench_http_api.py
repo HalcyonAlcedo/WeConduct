@@ -259,6 +259,17 @@ def _start_runtime_echo_server() -> tuple[RuntimeEchoServer, threading.Thread]:
     return server, thread
 
 
+def _request_json(url: str, *, method: str = "GET", payload: dict | None = None) -> dict:
+    data = None
+    headers = {}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(request) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def _start_browser_mock_site_server() -> tuple[BrowserMockSiteServer, threading.Thread]:
     BrowserMockSiteHandler.clicked = False
     BrowserMockSiteHandler.last_form_value = ""
@@ -10600,3 +10611,68 @@ def test_http_host_read_file_rejects_file_outside_allowed_roots(tmp_path: Path) 
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_update_status_endpoint_returns_idle_state(tmp_path: Path) -> None:
+    server, thread = _start_test_server(
+        workspace_state_path=tmp_path / "workspace-state.json",
+        preferences_path=tmp_path / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        payload = _request_json(f"{base_url}/api/workbench/update/status")
+
+        assert payload["current_version"] == "0.7.1"
+        assert payload["check_status"] == "idle"
+        assert payload["update_available"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_update_check_endpoint_returns_service_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from weconduct.application.update_service import UpdateService
+
+    def fake_check(self, *, force: bool) -> dict:
+        assert force is True
+        return {
+            "source": "github_releases",
+            "repository": "example/weconduct",
+            "current_version": "0.7.1",
+            "latest_version": "0.7.2",
+            "update_available": True,
+            "release_name": "0.7.2",
+            "release_url": "https://github.com/example/weconduct/releases/tag/v0.7.2",
+            "published_at": "2026-06-28T11:00:00Z",
+            "release_notes_excerpt": "Body",
+            "last_checked_at": "2026-06-28T11:30:00Z",
+            "check_status": "ok",
+            "check_error": None,
+        }
+
+    monkeypatch.setattr(UpdateService, "check_for_updates", fake_check)
+    server, thread = _start_test_server(
+        workspace_state_path=tmp_path / "workspace-state.json",
+        preferences_path=tmp_path / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        payload = _request_json(
+            f"{base_url}/api/workbench/update/check",
+            method="POST",
+            payload={"force": True},
+        )
+
+        assert payload["latest_version"] == "0.7.2"
+        assert payload["update_available"] is True
+        assert payload["check_status"] == "ok"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

@@ -99,6 +99,7 @@ def build_default_preferences() -> dict:
             "default_project_directory": None,
             "recent_project_limit": 10,
             "preferences_auto_save": True,
+            "check_updates_on_startup": False,
             "font_scale": 100,
         },
         "compile_settings": {

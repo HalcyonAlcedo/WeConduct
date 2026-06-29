@@ -631,6 +631,25 @@ export interface PreferencesResponse {
   preferences: Record<string, unknown>
 }
 
+export interface UpdateStatusResponse {
+  source: string
+  repository: string
+  current_version: string
+  latest_version: string | null
+  update_available: boolean
+  release_name: string | null
+  release_url: string
+  published_at: string | null
+  release_notes_excerpt: string | null
+  last_checked_at: string | null
+  check_status: 'idle' | 'checking' | 'ok' | 'error'
+  check_error: string | null
+}
+
+export interface UpdateCheckRequest {
+  force: boolean
+}
+
 // ===== 0.7-E: Python Runtime =====
 
 export interface PythonRuntimeProfile {

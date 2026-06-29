@@ -23004,6 +23004,27 @@ def test_save_project_writes_split_project_storage_layout(tmp_path) -> None:
     assert payload["project"]["main_graph_path"] == f"{project_path.stem}.data/graphs/workspace.graph.json"
 
 
+def test_workbench_snapshot_exposes_split_project_storage_metadata(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "snapshot-meta.weconduct.json"
+
+    service.create_project(project_name="Snapshot Meta")
+    service.save_project_as(project_path=project_path)
+
+    snapshot = service.get_workbench_snapshot()
+
+    assert snapshot["project"]["project_file_schema_version"] == 2
+    assert snapshot["project"]["main_graph_path"] == f"{project_path.stem}.data/graphs/workspace.graph.json"
+    assert (
+        snapshot["project"]["project_resources_index_path"]
+        == f"{project_path.stem}.data/resources/index.json"
+    )
+    assert (
+        snapshot["project"]["resource_overrides_path"]
+        == f"{project_path.stem}.data/resource-overrides.json"
+    )
+
+
 def test_save_project_writes_project_resources_into_resource_directories(tmp_path) -> None:
     service = CompilationWorkbenchService()
     project_path = tmp_path / "demo.weconduct.json"

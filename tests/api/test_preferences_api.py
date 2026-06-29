@@ -158,3 +158,34 @@ def test_api_supports_preferences_preview_and_high_risk_confirmation(tmp_path: P
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_api_persists_check_updates_on_startup_preference(tmp_path: Path) -> None:
+    server = build_api_server(
+        host='127.0.0.1',
+        port=0,
+        workspace_state_path=tmp_path / 'workspace-state.json',
+        preferences_path=tmp_path / 'preferences.json',
+        ui_dist_path=tmp_path / 'ui-dist',
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f'http://127.0.0.1:{server.server_address[1]}'
+
+        updated = _request_json(
+            f'{base_url}/api/workbench/preferences',
+            method='POST',
+            payload={
+                'section': 'program_settings',
+                'values': {'check_updates_on_startup': True},
+            },
+        )
+
+        assert updated['preferences']['program_settings']['check_updates_on_startup'] is True
+        persisted = _request_json(f'{base_url}/api/workbench/preferences')
+        assert persisted['preferences']['program_settings']['check_updates_on_startup'] is True
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

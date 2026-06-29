@@ -74,4 +74,42 @@ describe('PreferencesPanel', () => {
     expect(snapshot.preferences.security_settings.file_access_allowed_roots).toBe(originalRootsRef)
     expect(snapshot.preferences.security_settings.file_access_allowed_roots).toEqual(['C:\\allowed'])
   })
+
+  it('显示启动时检查更新字段', async () => {
+    const workspace = useWorkspaceStore()
+    workspace.snapshot = {
+      preferences: {
+        program_settings: {
+          language: 'zh-CN',
+          resource_language: 'zh-CN',
+          theme: 'light',
+          default_window_size: { width: 1440, height: 900 },
+          startup_action: 'restore_last_workspace',
+          default_project_directory: null,
+          recent_project_limit: 10,
+          preferences_auto_save: false,
+          check_updates_on_startup: false,
+          font_scale: 100,
+        },
+        compile_settings: {},
+        security_settings: {},
+        python_runtime_settings: {},
+        graph_settings: {},
+        other_settings: {},
+      },
+      graph_workspace: {
+        preferences_state: {},
+      },
+    } as any
+
+    const wrapper = mount(PreferencesPanel, {
+      global: {
+        plugins: [createPinia()],
+      },
+    })
+
+    await nextTick()
+
+    expect(wrapper.text()).toContain('启动时检查更新')
+  })
 })
