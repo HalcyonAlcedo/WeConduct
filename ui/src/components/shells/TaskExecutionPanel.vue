@@ -113,6 +113,10 @@ async function startAndRun() {
     try { execHistory.value = await fetchExecutionHistory() } catch {}
     if (result.success) {
       toast.success('运行完成', result.message)
+    } else if ((result as any).securityBlocked) {
+      toast.error('安全设置不足', result.message)
+      // Auto-open project settings for user to enable security requirements
+      dock.restorePanel('projectSettings')
     } else {
       toast.error('运行失败', result.message)
     }

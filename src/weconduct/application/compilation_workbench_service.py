@@ -41,6 +41,7 @@ from weconduct.contracts import (
     create_initial_summary,
 )
 from weconduct.application.preferences_service import PreferencesService
+from weconduct.application.preferences_store import _normalize_security_settings
 from weconduct.application.legacy_webcontrol_converter import (
     build_conversion_report,
     convert_legacy_webcontrol_project,
@@ -296,6 +297,10 @@ class CompilationWorkbenchService:
         graph_compatibility = self._normalize_graph_compatibility_metadata(
             self._get_graph_document_model()
         )
+        project_settings = deepcopy(self._extract_project_settings(self._state))
+        security_requirement_summary = self._build_project_security_requirement_summary(
+            project_settings=project_settings
+        )
         project_file_path = project_runtime.get("project_file_path")
         project_settings_path = None
         project_settings_exists = False
@@ -305,7 +310,8 @@ class CompilationWorkbenchService:
             ) / "project-settings.json"
             project_settings_exists = project_settings_path.exists()
         return {
-            "project_settings": deepcopy(self._extract_project_settings(self._state)),
+            "project_settings": project_settings,
+            "security_requirement_summary": security_requirement_summary,
             "python_runtime_summary": self._build_project_python_runtime_summary(),
             "state": {
                 "loaded": True,
@@ -348,6 +354,34 @@ class CompilationWorkbenchService:
             project_settings = self._extract_project_settings(current_state)
             project_settings["runtime_defaults"] = normalized_runtime_defaults
             current_state["project_settings"] = self._normalize_project_settings_document(project_settings)
+            graph_document = (
+                deepcopy(current_state.get("graph_document"))
+                if isinstance(current_state.get("graph_document"), dict)
+                else None
+            )
+            if isinstance(graph_document, dict):
+                nodes = graph_document.get("nodes")
+                if isinstance(nodes, list):
+                    for node in nodes:
+                        if not isinstance(node, dict) or node.get("node_kind") != "flow.start":
+                            continue
+                        node_config = (
+                            deepcopy(node.get("node_config"))
+                            if isinstance(node.get("node_config"), dict)
+                            else {}
+                        )
+                        node_config["initial_variables"] = deepcopy(
+                            normalized_runtime_defaults["initial_variables"]
+                        )
+                        node_config["browser_config"] = deepcopy(
+                            normalized_runtime_defaults["browser_config"]
+                        )
+                        node_config["execution_defaults"] = deepcopy(
+                            normalized_runtime_defaults["execution_defaults"]
+                        )
+                        node["node_config"] = node_config
+                        break
+                    current_state["graph_document"] = graph_document
             current_state["project_runtime"] = {
                 **self._extract_project_runtime(current_state),
                 "is_dirty": True,
@@ -663,6 +697,9 @@ class CompilationWorkbenchService:
 
         self._state = self._state_store.mutate(mutation)
         project_document = self.get_project_document()
+        security_requirement_summary = self._build_project_security_requirement_summary(
+            project_settings=project_document["project_settings"]
+        )
         return {
             "status": "loaded",
             "package": {
@@ -678,6 +715,7 @@ class CompilationWorkbenchService:
             "external_binding_summary": self._build_wcrun_external_binding_summary(package_document),
             "runtime_requirement_summary": self._build_wcrun_runtime_requirement_summary(package_document),
             "runtime_readiness_summary": self._build_wcrun_runtime_readiness_summary(package_document),
+            "security_requirement_summary": security_requirement_summary,
             "session_restore_summary": self._build_loaded_package_session_restore_summary(
                 package_document=package_document,
                 package_path=resolved_package_path,
@@ -2317,6 +2355,9 @@ class CompilationWorkbenchService:
         package_runtime_requirement_block = self._build_loaded_package_runtime_requirements_block()
         if package_runtime_requirement_block is not None:
             return package_runtime_requirement_block
+        package_security_block = self._build_loaded_package_security_requirement_block()
+        if package_security_block is not None:
+            return package_security_block
         package_binding_block = self._build_loaded_package_runtime_binding_block()
         if package_binding_block is not None:
             return package_binding_block
@@ -10726,6 +10767,7 @@ class CompilationWorkbenchService:
                 "tags": [],
             },
             "runtime_defaults": self._normalize_runtime_defaults_payload(runtime_defaults),
+            "security_settings": self._build_initial_project_security_settings_document(),
             "python_runtime_profile": python_runtime_profile,
             "packaging": {
                 "default_output_name": default_output_name,
@@ -10903,6 +10945,7 @@ class CompilationWorkbenchService:
         raw_payload = payload if isinstance(payload, dict) else {}
         raw_identity = raw_payload.get("project_identity")
         raw_runtime_defaults = raw_payload.get("runtime_defaults")
+        raw_security_settings = raw_payload.get("security_settings")
         raw_python_runtime_profile = raw_payload.get("python_runtime_profile")
         raw_packaging = raw_payload.get("packaging")
         raw_resource_policy = raw_payload.get("resource_policy")
@@ -10933,6 +10976,7 @@ class CompilationWorkbenchService:
             else (project.get("project_name") if isinstance(project, dict) else "WeConduct Workspace")
         )
         runtime_defaults = self._normalize_runtime_defaults_payload(raw_runtime_defaults)
+        security_settings = self._normalize_project_security_settings(raw_security_settings)
         python_runtime_profile = normalize_python_runtime_profile(
             raw_python_runtime_profile,
             defaults=self._build_default_project_python_runtime_profile(),
@@ -10975,6 +11019,7 @@ class CompilationWorkbenchService:
                 else [],
             },
             "runtime_defaults": runtime_defaults,
+            "security_settings": security_settings,
             "python_runtime_profile": python_runtime_profile,
             "packaging": {
                 "default_output_name": default_output_name,
@@ -11528,6 +11573,107 @@ class CompilationWorkbenchService:
             runtime_settings["python_project_runtime_enabled"] = False
             runtime_settings["python_project_runtime_prepare_error"] = None
         return runtime_settings
+
+    def _build_initial_project_security_settings_document(self) -> dict:
+        preferences = self._preferences_service.get_preferences_document()
+        security_settings = (
+            preferences.get("security_settings")
+            if isinstance(preferences, dict) and isinstance(preferences.get("security_settings"), dict)
+            else {}
+        )
+        return self._normalize_project_security_settings(security_settings)
+
+    def _normalize_project_security_settings(self, payload: dict | None) -> dict:
+        normalized = _normalize_security_settings(payload if isinstance(payload, dict) else {})
+        return {
+            "allow_file_access": bool(normalized.get("allow_file_access", False)),
+            "allow_browser_executor": bool(normalized.get("allow_browser_executor", False)),
+            "allow_browser_screenshots": bool(normalized.get("allow_browser_screenshots", True)),
+            "allow_browser_uploads": bool(normalized.get("allow_browser_uploads", True)),
+            "allow_browser_downloads": bool(normalized.get("allow_browser_downloads", False)),
+            "allow_local_network_access": bool(normalized.get("allow_local_network_access", False)),
+            "allow_remote_network_access": bool(normalized.get("allow_remote_network_access", False)),
+            "allow_python_execution": bool(normalized.get("allow_python_execution", False)),
+            "allow_js_injection": bool(normalized.get("allow_js_injection", False)),
+            "allow_js_evaluation": bool(normalized.get("allow_js_evaluation", False)),
+        }
+
+    def _build_project_security_requirement_summary(self, *, project_settings: dict | None = None) -> dict:
+        effective_project_settings = (
+            deepcopy(project_settings)
+            if isinstance(project_settings, dict)
+            else deepcopy(self._extract_project_settings(self._state))
+        )
+        required_security = self._normalize_project_security_settings(
+            effective_project_settings.get("security_settings")
+            if isinstance(effective_project_settings.get("security_settings"), dict)
+            else {}
+        )
+        preferences = self._preferences_service.get_preferences_document()
+        current_security = _normalize_security_settings(
+            preferences.get("security_settings")
+            if isinstance(preferences, dict) and isinstance(preferences.get("security_settings"), dict)
+            else {}
+        )
+        blocked_entries: list[dict] = []
+        required_overrides: dict[str, bool] = {}
+        labels = {
+            "allow_file_access": "文件访问",
+            "allow_browser_executor": "浏览器执行",
+            "allow_browser_screenshots": "浏览器截图",
+            "allow_browser_uploads": "浏览器上传",
+            "allow_browser_downloads": "浏览器下载",
+            "allow_local_network_access": "本地网络访问",
+            "allow_remote_network_access": "远程网络访问",
+            "allow_python_execution": "Python 运行",
+            "allow_js_injection": "JS 注入",
+            "allow_js_evaluation": "JS 求值",
+        }
+        for field_name, required_value in required_security.items():
+            if not isinstance(required_value, bool) or not required_value:
+                continue
+            current_value = bool(current_security.get(field_name, False))
+            if current_value:
+                continue
+            blocked_entries.append(
+                {
+                    "field": field_name,
+                    "setting_field": f"security_settings.{field_name}",
+                    "display_name": labels.get(field_name, field_name),
+                    "required_value": True,
+                    "current_value": current_value,
+                }
+            )
+            required_overrides[field_name] = True
+        return {
+            "ready": len(blocked_entries) == 0,
+            "blocked_count": len(blocked_entries),
+            "blocked_entries": blocked_entries,
+            "required_security_settings": required_security,
+            "current_security_settings": {
+                key: bool(current_security.get(key, False))
+                for key in required_security.keys()
+            },
+            "required_security_overrides": required_overrides,
+        }
+
+    def enable_project_required_security_settings(self, *, confirm_high_risk: bool = False) -> dict:
+        summary = self._build_project_security_requirement_summary()
+        overrides = (
+            summary.get("required_security_overrides")
+            if isinstance(summary.get("required_security_overrides"), dict)
+            else {}
+        )
+        updated_preferences = self._preferences_service.update_preferences(
+            section="security_settings",
+            values=overrides,
+            confirm_high_risk=confirm_high_risk,
+        )
+        return {
+            "status": "updated",
+            "preferences": updated_preferences,
+            "security_requirement_summary": self._build_project_security_requirement_summary(),
+        }
 
     def _resolve_application_data_root(self) -> Path:
         local_app_data = os.environ.get("LOCALAPPDATA")
@@ -14160,6 +14306,58 @@ class CompilationWorkbenchService:
                 "highest_severity": "error",
                 "entries": entries,
             },
+        }
+
+    def _build_loaded_package_security_requirement_block(self) -> dict | None:
+        project = self._state.get("project")
+        if not isinstance(project, dict) or project.get("source_of_truth") != "wcrun_package":
+            return None
+        summary = self._build_project_security_requirement_summary()
+        blocked_entries = (
+            summary.get("blocked_entries") if isinstance(summary.get("blocked_entries"), list) else []
+        )
+        if not blocked_entries:
+            return None
+        diagnostics = [
+            {
+                "category": "package.security.requirement_blocked",
+                "message": (
+                    "package requires disabled security capability before runtime start: "
+                    f"{entry.get('setting_field')}"
+                ),
+                "severity": "error",
+                "stage": "runtime.prepare",
+                "object_ref": entry.get("setting_field"),
+                "setting_field": entry.get("setting_field"),
+                "required_value": entry.get("required_value"),
+                "current_value": entry.get("current_value"),
+                "display_name": entry.get("display_name"),
+            }
+            for entry in blocked_entries
+            if isinstance(entry, dict)
+        ]
+        return {
+            "status": "failed",
+            "request": {
+                "compilation_id": None,
+                "request_origin": "saved_graph_document",
+                "requested_graph_model_id": self._get_graph_document_model().graph_model_id,
+                "requested_graph_save_revision": self._get_graph_document_meta().get("save_revision"),
+                "requested_graph_saved_at": self._get_graph_document_meta().get("saved_at"),
+                "compile_status": "failed",
+            },
+            "runtime_session": {
+                "session_id": None,
+                "status": "diagnostic_blocked",
+                "execution_supported": False,
+            },
+            "runtime_plan": None,
+            "diagnostics": {
+                "total_count": len(diagnostics),
+                "highest_severity": "error",
+                "entries": diagnostics,
+            },
+            "security_requirement_summary": summary,
         }
 
     def _read_loaded_package_runtime_requirements(self) -> dict | None:

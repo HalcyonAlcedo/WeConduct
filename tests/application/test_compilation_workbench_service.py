@@ -1,4 +1,45 @@
+from pathlib import Path
+
 from weconduct.application import CompilationWorkbenchService
+from weconduct.application.preferences_service import PreferencesService
+from weconduct.application.preferences_store import InMemoryPreferencesStore
+
+
+def _build_minimal_workspace_graph(*, initial_variables: dict | None = None) -> dict:
+    return {
+        "graph_model_id": "graph:workspace",
+        "compilation_id": None,
+        "graph_schema_version": "graph-v1",
+        "nodes": [
+            {
+                "node_id": "node-start",
+                "lowered_kind": "control",
+                "source_anchor_ref": "n-node-start",
+                "expansion_role": "flow.start",
+                "display_name": "流程入口",
+                "node_kind": "flow.start",
+                "position": {"x": 0, "y": 0},
+                "ports": [
+                    {
+                        "port_id": "control-out",
+                        "direction": "output",
+                        "relation_layer": "control",
+                        "semantic_slot": "control.next",
+                    }
+                ],
+                "node_config": {
+                    "initial_variables": initial_variables or {"username": "original-user"},
+                    "browser_config": {"headless": True},
+                    "execution_defaults": {
+                        "default_timeout_ms": 30000,
+                        "default_retry_count": 0,
+                    },
+                },
+            }
+        ],
+        "edges": [],
+        "graph_effective_diagnostic_anchor_refs": [],
+    }
 
 
 def test_workbench_service_project_documents_include_custom_node_graph_documents() -> None:
@@ -138,3 +179,90 @@ def test_workbench_service_returns_compilation_payload() -> None:
     assert result["outcome"].graph_model.nodes[0].source_anchor_ref == "n1"
     assert result["view"]["graph_stats"]["node_count"] == 1
     assert result["view"]["stage_cards"][-1]["stage"] == "emit"
+
+
+def test_update_project_runtime_defaults_writes_back_main_flow_start_projection() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph(initial_variables={"username": "before"}))
+
+    update_result = service.update_project_runtime_defaults(
+        runtime_defaults={
+            "initial_variables": {"username": "after", "token": "abc"},
+            "browser_config": {"headless": False},
+            "execution_defaults": {
+                "default_timeout_ms": 45000,
+                "default_retry_count": 2,
+            },
+        }
+    )
+    graph_document = service.get_graph_document()
+    flow_start = next(node for node in graph_document["graph_model"].nodes if node.node_kind == "flow.start")
+
+    assert update_result["status"] == "updated"
+    assert flow_start.node_config["initial_variables"] == {"username": "after", "token": "abc"}
+    assert flow_start.node_config["browser_config"] == {"headless": False}
+    assert flow_start.node_config["execution_defaults"] == {
+        "default_timeout_ms": 45000,
+        "default_retry_count": 2,
+    }
+
+
+def test_loaded_wcrun_runtime_blocks_when_project_security_requirements_exceed_preferences(
+    tmp_path: Path,
+) -> None:
+    preferences_service = PreferencesService(preferences_store=InMemoryPreferencesStore())
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    graph_payload = _build_minimal_workspace_graph(initial_variables={"username": "before"})
+    service.save_graph_document(graph_payload)
+    project_path = tmp_path / "package-security.weconduct.json"
+    service.save_project_as(project_path=str(project_path))
+    project_settings = service.get_project_settings_document()["project_settings"]
+    project_settings["security_settings"] = {
+        "allow_file_access": True,
+        "allow_browser_executor": True,
+        "allow_python_execution": True,
+    }
+    service.update_project_settings(project_settings=project_settings)
+    build_result = service.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=tmp_path / "package.wcrun",
+    )
+
+    loaded_service = CompilationWorkbenchService(preferences_service=preferences_service)
+    loaded_service.load_project_package(package_path=build_result["package"]["output_path"])
+    runtime_result = loaded_service.start_runtime_session(graph_document_payload=None)
+
+    assert runtime_result["status"] == "failed"
+    assert runtime_result["runtime_session"]["status"] == "diagnostic_blocked"
+    blocked_fields = {entry.get("setting_field") for entry in runtime_result["diagnostics"]["entries"]}
+    assert "security_settings.allow_file_access" in blocked_fields
+    assert "security_settings.allow_browser_executor" in blocked_fields
+    assert "security_settings.allow_python_execution" in blocked_fields
+
+
+def test_project_security_settings_report_blocked_entries_and_can_be_enabled(
+    tmp_path: Path,
+) -> None:
+    preferences_service = PreferencesService(preferences_store=InMemoryPreferencesStore())
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    service.save_graph_document(_build_minimal_workspace_graph(initial_variables={"username": "before"}))
+    project_path = tmp_path / "package-security.weconduct.json"
+    service.save_project_as(project_path=str(project_path))
+    project_settings = service.get_project_settings_document()["project_settings"]
+    project_settings["security_settings"] = {
+        "allow_file_access": True,
+        "allow_browser_executor": True,
+        "allow_python_execution": True,
+    }
+    service.update_project_settings(project_settings=project_settings)
+
+    summary_before = service.get_project_settings_document()["security_requirement_summary"]
+    enable_result = service.enable_project_required_security_settings(confirm_high_risk=True)
+    summary_after = enable_result["security_requirement_summary"]
+
+    assert summary_before["ready"] is False
+    assert summary_before["blocked_count"] >= 1
+    assert enable_result["status"] == "updated"
+    assert summary_after["ready"] is True
+    assert summary_after["blocked_count"] == 0

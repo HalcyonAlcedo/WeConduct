@@ -5,6 +5,7 @@ import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useCompilationStore } from '@/stores/compilationStore'
 import { useRuntimeStore } from '@/stores/runtimeStore'
+import { useDockStore } from '@/stores/dockStore'
 import { useResourceStore } from '@/stores/resourceStore'
 import { useToastStore } from '@/stores/toastStore'
 import type { PackagePreflightResponse } from '@/types/domains/api'
@@ -92,7 +93,7 @@ async function doLoad() {
   if (!packagePath.value) { toast.info('', '请选择 .wcrun 文件'); return }
   loading.value = 'load'
   try {
-    await postPackageLoad(packagePath.value)
+    const result = await postPackageLoad(packagePath.value)
     await workspace.refreshSnapshot()
     compilation.clearSource() // clear stale source BEFORE loading new graph
     await graphWs.loadGraph()
@@ -100,6 +101,13 @@ async function doLoad() {
     runtime.refreshAll()
     resource.refreshAll()
     toast.success('已加载', '工作区已切换为 wcrun_package')
+    const secSummary = (result as any).security_requirement_summary
+    if (secSummary && !secSummary.ready) {
+      const dock = useDockStore()
+      dock.restorePanel('projectSettings')
+      const fields = (secSummary.blocked_entries || []).map((e: any) => e.display_name).join('、')
+      toast.error('安全设置不足', fields ? `当前首选项缺少：${fields}` : '当前首选项安全设置不足以运行该包')
+    }
   } catch (e: any) { toast.error('加载失败', e?.message) }
   finally { loading.value = '' }
 }

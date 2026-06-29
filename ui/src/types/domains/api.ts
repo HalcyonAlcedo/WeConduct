@@ -32,6 +32,8 @@ export interface UiHosting {
   ui_dist_available: boolean
   ui_dist_path: string
   ui_entrypoint: string | null
+  /** 0.7.4: "desktop_shell" | "limited_browser" */
+  ui_mode?: string
 }
 
 export interface SourceTemplate {
@@ -550,7 +552,7 @@ export interface ProjectSettingsState {
   main_graph_compatibility?: GraphCompatibilitySummary
 }
 
-export interface ProjectSettingsResponse { project_settings: ProjectSettings; state: ProjectSettingsState; python_runtime_summary?: PythonRuntimeSummary }
+export interface ProjectSettingsResponse { project_settings: ProjectSettings; state: ProjectSettingsState; python_runtime_summary?: PythonRuntimeSummary; security_requirement_summary?: SecurityRequirementSummary }
 
 export interface RuntimeDefaults {
   initial_variables: Record<string, unknown>; browser_config: Record<string, unknown>; execution_defaults: Record<string, unknown>
@@ -593,6 +595,7 @@ export interface PackageInspectResponse {
 export interface PackageLoadResponse extends PackageInspectResponse {
   session_restore_summary: Record<string, unknown>
   project: Record<string, unknown>; project_settings: ProjectSettings; graph_workspace: Record<string, unknown>
+  security_requirement_summary?: SecurityRequirementSummary
 }
 
 // ===== P12: Node Draft =====
@@ -694,6 +697,31 @@ export interface PythonRuntimeSummary {
   cache_location_mode: string | null
   project_cache_mode: string | null
   package_embed_mode: string | null
+}
+
+// ===== 0.7.4: Security Requirement Summary =====
+
+export interface SecurityRequirementEntry {
+  field: string
+  setting_field: string
+  display_name: string
+  required_value: boolean
+  current_value: boolean
+}
+
+export interface SecurityRequirementSummary {
+  ready: boolean
+  blocked_count: number
+  blocked_entries: SecurityRequirementEntry[]
+  required_security_settings: Record<string, unknown>
+  current_security_settings: Record<string, unknown>
+  required_security_overrides: Record<string, unknown>
+}
+
+export interface SecurityEnableRequiredResponse {
+  status: string
+  preferences: { security_settings: Record<string, unknown> }
+  security_requirement_summary: SecurityRequirementSummary
 }
 
 export interface PythonRuntimeGetResponse {

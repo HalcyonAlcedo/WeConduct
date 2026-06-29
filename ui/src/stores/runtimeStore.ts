@@ -325,7 +325,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
   async function startAndRun(
     graphDocument?: Record<string, unknown>,
     isDirty?: boolean,
-  ): Promise<{ success: boolean; message: string }> {
+  ): Promise<{ success: boolean; message: string; securityBlocked?: boolean }> {
     // Trigger output panel + diagnostics tab
     requestRuntimeTab()
     try {
@@ -333,7 +333,19 @@ export const useRuntimeStore = defineStore('runtime', () => {
       const r = await postRuntimeStart(body)
       if (!r.runtime_session.session_id) {
         setActiveRt(r)
-        return { success: false, message: '无会话 ID' }
+        // Check for security requirement blockage
+        const secSummary = (r as any).security_requirement_summary
+        if (secSummary && !secSummary.ready) {
+          const fields = secSummary.blocked_entries?.map((e: any) => e.display_name).join('、') || ''
+          return { success: false, message: `安全设置不足（${fields}），请在项目设置中一键开启`, securityBlocked: true }
+        }
+        // Check diagnostics for security requirement blocked
+        const diags = (r as any).diagnostics?.entries || []
+        const secDiag = diags.find((d: any) => d.category === 'package.security.requirement_blocked')
+        if (secDiag) {
+          return { success: false, message: `安全设置不足（${secDiag.display_name || '未知项'}），请在项目设置中一键开启`, securityBlocked: true }
+        }
+        return { success: false, message: r.status === 'diagnostic_blocked' ? '启动被阻断，请检查诊断信息' : '无会话 ID' }
       }
       setActiveRt(r)
       await refreshAll()

@@ -56,5 +56,7 @@ def test_preview_packaging_spec_collects_bundled_python_runtime() -> None:
     ).read_text(encoding="utf-8")
 
     assert "bundled_python_home" in spec_text
-    assert 'datas.append((str(bundled_python_home), "bundled-python"))' in spec_text
-    assert 'datas.append((str(bundled_python_source), "."))' not in spec_text
+    assert "_collect_bundled_python_runtime_entries" in spec_text
+    assert 'datas.append((str(bundled_python_home), "bundled-python"))' not in spec_text
+    assert "python313.dll" in spec_text
+    assert "VCRUNTIME140.dll" in spec_text

@@ -2,11 +2,11 @@
 import { ref, reactive, onMounted, computed, watch } from 'vue'
 import { fetchProjectSettings, postProjectSettings, postRuntimeDefaults, postOpenPath, postFileDialog,
   postPythonRuntimeHealthCheck, postPythonRuntimePrepare, postPythonRuntimeRebuild,
-  postPythonRuntimeClear, postPythonRuntimeExportBundle,
+  postPythonRuntimeClear, postPythonRuntimeExportBundle, postSecurityEnableRequired,
 } from '@/services/api'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useToastStore } from '@/stores/toastStore'
-import type { ProjectSettings, ProjectSettingsSnapshot, PythonRuntimeProfile, PythonRuntimeStatus } from '@/types/domains/api'
+import type { ProjectSettings, ProjectSettingsSnapshot, PythonRuntimeProfile, PythonRuntimeStatus, SecurityRequirementSummary } from '@/types/domains/api'
 
 const workspace = useWorkspaceStore()
 const toast = useToastStore()
@@ -28,6 +28,9 @@ const runtimeStatus = reactive<PythonRuntimeStatus>({
   manifest_hash: null, cache_location_mode: null, project_cache_mode: null,
 })
 const actionLoading = ref<string | null>(null)
+
+const secSummary = ref<SecurityRequirementSummary | null>(null)
+const secEnabling = ref(false)
 
 const settings = reactive<ProjectSettings>({
   project_settings_schema_version: 1,
@@ -56,7 +59,7 @@ function loadVars() { variables.splice(0, variables.length); for (const [k, v] o
 function addVar() { variables.push({ key: '', value: '' }) }
 function removeVar(idx: number) { variables.splice(idx, 1); syncVars() }
 
-async function load() { loading.value = true; try { const r = await fetchProjectSettings(); Object.assign(settings, r.project_settings); loadVars(); tags.value = (settings.project_identity as any).tags || []; const pp = (r.project_settings as any).python_runtime_profile; if (pp) Object.assign(pythonProfile, pp); const rs = (r as any).python_runtime_summary; if (rs) Object.assign(runtimeStatus, rs); saveState.value = 'idle' } catch (e: any) { toast.error('加载失败', e?.message) } finally { loading.value = false } }
+async function load() { loading.value = true; try { const r = await fetchProjectSettings(); Object.assign(settings, r.project_settings); loadVars(); tags.value = (settings.project_identity as any).tags || []; const pp = (r.project_settings as any).python_runtime_profile; if (pp) Object.assign(pythonProfile, pp); const rs = (r as any).python_runtime_summary; if (rs) Object.assign(runtimeStatus, rs); secSummary.value = (r as any).security_requirement_summary || null; saveState.value = 'idle' } catch (e: any) { toast.error('加载失败', e?.message) } finally { loading.value = false } }
 
 async function save() { if (isWcrun.value) return; saveState.value = 'saving'; syncVars(); (settings.project_identity as any).tags = [...tags.value]; (settings as any).python_runtime_profile = { ...pythonProfile }; try { const r = await postProjectSettings({ project_settings: { ...settings } as unknown as Record<string, unknown> }); Object.assign(settings, r.project_settings); loadVars(); tags.value = (settings.project_identity as any).tags || []; saveState.value = 'saved'; await workspace.refreshSnapshot(); setTimeout(() => { if (saveState.value === 'saved') saveState.value = 'idle' }, 2000) } catch (e: any) { saveState.value = 'error'; toast.error('保存失败', e?.message) } }
 
@@ -84,7 +87,7 @@ async function pickPythonPath(field: 'custom_python_path' | 'requirements_file_p
     const labels: Record<string, string> = { custom_python_path: '选择 Python 可执行文件', requirements_file_path: '选择 requirements.txt', lock_file_path: '选择锁定文件' }
     const r = await postFileDialog({ mode: 'open_file', title: labels[field] || '选择文件' })
     if (r.status === 'selected' && r.paths.length) (pythonProfile as any)[field] = r.paths[0]
-  } catch (e: any) { if (e?.status === 503) toast.info('', '当前运行环境不支持系统文件选择器') }
+  } catch (e: any) { if (e?.status === 503) toast.info('', workspace.isLimitedBrowser ? '受限浏览器模式：系统文件选择器不可用' : '当前运行环境不支持系统文件选择器') }
 }
 
 async function doHealthCheck() {
@@ -118,6 +121,24 @@ async function doExportBundle() {
   } catch (e: any) { toast.error('导出失败', e?.message) } finally { actionLoading.value = null }
 }
 
+async function enableSecurityRequirements() {
+  secEnabling.value = true
+  try {
+    const r = await postSecurityEnableRequired({ confirm_high_risk: true })
+    if (r.status === 'updated') {
+      toast.success('安全设置已更新', '所有必需的安全选项已开启')
+      secSummary.value = r.security_requirement_summary
+      await workspace.refreshSnapshot()
+    }
+  } catch (e: any) {
+    if (e?.body?.error === 'high_risk_confirmation_required') {
+      toast.info('需要确认', '请在首选项安全设置中手动确认高风险变更')
+    } else {
+      toast.error('开启失败', e?.message)
+    }
+  } finally { secEnabling.value = false }
+}
+
 const NAV: { key: typeof active.value; label: string }[] = [{ key: 'identity', label: '项目信息' }, { key: 'runtime', label: '运行默认值' }, { key: 'packaging', label: '资源与打包' }, { key: 'compile', label: '编译规则' }, { key: 'pythonRuntime', label: 'Python 运行时' }, { key: 'status', label: '状态与诊断' }]
 
 onMounted(load)
@@ -131,6 +152,18 @@ watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) lo
       <button class="psp-open-dir" @click="openProjectDir" :disabled="!st.project_file_path && !st.session_dir" title="打开项目目录">📂 打开目录</button>
     </div>
     <div v-if="isWcrun" class="psp-readonly-banner">📦 .wcrun 包已加载 — 仅运行默认值可编辑，其余为只读</div>
+    <div v-if="secSummary && !secSummary.ready" class="psp-sec-banner">
+      <div class="psp-sec-title">⚠ 安全设置不足 — 当前软件安全设置不足以运行该项目</div>
+      <div class="psp-sec-entries">
+        <div v-for="e in secSummary.blocked_entries" :key="e.field" class="psp-sec-entry">
+          <span>{{ e.display_name }}</span>
+          <span class="psp-sec-req">需要开启</span>
+        </div>
+      </div>
+      <button class="psp-sec-enable-btn" :disabled="secEnabling" @click="enableSecurityRequirements">
+        {{ secEnabling ? '开启中…' : '🔓 一键开启所需安全选项' }}
+      </button>
+    </div>
     <div class="psp-body" v-if="!loading">
       <div class="psp-nav"><button v-for="n in NAV" :key="n.key" :class="['psp-nav-item', { active: active === n.key }]" @click="active = n.key">{{ n.label }}</button></div>
       <div class="psp-content">
@@ -374,4 +407,12 @@ watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) lo
 .psp-pick-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .psp-vars-list { flex: 1; }
 .psp-field-hint { font-size: var(--text-caption); color: var(--text-disabled); margin-top: 4px; padding: 2px 0; }
+.psp-sec-banner { padding: 8px var(--space-md); background: rgba(208,112,96,0.08); border-bottom: 1px solid rgba(208,112,96,0.2); flex-shrink: 0; }
+.psp-sec-title { font-size: var(--text-small); font-weight: 600; color: var(--state-error); margin-bottom: 4px; }
+.psp-sec-entries { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.psp-sec-entry { display: flex; align-items: center; gap: 4px; padding: 1px 8px; background: rgba(208,112,96,0.06); border: 1px solid rgba(208,112,96,0.15); border-radius: var(--radius-sm); font-size: var(--text-caption); color: var(--state-error); }
+.psp-sec-req { color: var(--text-disabled); }
+.psp-sec-enable-btn { padding: 4px 14px; border: 1px solid var(--state-error); border-radius: var(--radius-sm); background: transparent; color: var(--state-error); cursor: pointer; font-size: var(--text-small); font-family: var(--font-ui); }
+.psp-sec-enable-btn:hover:not(:disabled) { background: rgba(208,112,96,0.1); }
+.psp-sec-enable-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

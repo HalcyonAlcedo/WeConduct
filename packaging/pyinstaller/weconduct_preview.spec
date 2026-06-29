@@ -8,11 +8,44 @@ captcha_ocr_source = root / "third_party" / "captcha_ocr"
 icon_path = root / "assets" / "icons" / "weconduct.ico"
 bundled_python_home = Path(getattr(sys, "_base_executable", sys.executable)).resolve().parent
 
+
+def _collect_bundled_python_runtime_entries(base_dir: Path) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
+    if not base_dir.exists():
+        return entries
+    candidate_names = [
+        "python.exe",
+        "pythonw.exe",
+        "python313.dll",
+        "python3.dll",
+        "VCRUNTIME140.dll",
+        "VCRUNTIME140_1.dll",
+        "MSVCP140.dll",
+        "MSVCP140_1.dll",
+        "api-ms-win-crt-conio-l1-1-0.dll",
+        "api-ms-win-crt-convert-l1-1-0.dll",
+        "api-ms-win-crt-environment-l1-1-0.dll",
+        "api-ms-win-crt-filesystem-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-locale-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-process-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "api-ms-win-crt-time-l1-1-0.dll",
+        "api-ms-win-crt-utility-l1-1-0.dll",
+    ]
+    for name in candidate_names:
+        candidate = base_dir / name
+        if candidate.exists() and candidate.is_file():
+            entries.append((str(candidate), "bundled-python"))
+    return entries
+
 datas = [(str(root / "ui" / "dist"), "ui/dist")]
 if captcha_ocr_source.exists():
     datas.append((str(captcha_ocr_source), "captcha_ocr"))
-if bundled_python_home.exists():
-    datas.append((str(bundled_python_home), "bundled-python"))
+datas.extend(_collect_bundled_python_runtime_entries(bundled_python_home))
 
 a = Analysis(
     [str(root / "src" / "weconduct" / "cli" / "main.py")],
