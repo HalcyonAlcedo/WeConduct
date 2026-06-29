@@ -66,7 +66,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
-CURRENT_API_VERSION = "0.7.2"
+CURRENT_API_VERSION = "0.7.3"
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
@@ -164,6 +164,12 @@ NATIVE_FLOW_ROLES = {"action", "transform", "condition"}
 class GraphCompileMappingError(ValueError):
     def __init__(self, diagnostics: list[dict]) -> None:
         super().__init__("graph compile mapping failed")
+        self.diagnostics = diagnostics
+
+
+class ProjectPythonRuntimeExportError(ValueError):
+    def __init__(self, message: str, *, diagnostics: list[dict]) -> None:
+        super().__init__(message)
         self.diagnostics = diagnostics
 
 
@@ -7716,15 +7722,18 @@ class CompilationWorkbenchService:
         self._refresh_state_from_store()
         project_settings = deepcopy(self._extract_project_settings(self._state))
         runtime_state = self._resolve_project_python_runtime_execution(auto_prepare=False)
-        runtime_status = (
-            self._serialize_project_python_runtime_report(runtime_state["report"])
-            if runtime_state is not None
-            else self._build_disabled_project_python_runtime_status()
-        )
+        if runtime_state is not None:
+            report = runtime_state["report"]
+            runtime_status = self._serialize_project_python_runtime_report(report)
+            diagnostics = self._build_project_python_runtime_diagnostics(report)
+        else:
+            report = None
+            runtime_status = self._build_disabled_project_python_runtime_status()
+            diagnostics = []
         return {
             "python_runtime_profile": deepcopy(project_settings["python_runtime_profile"]),
             "runtime_status": runtime_status,
-            "diagnostics": [],
+            "diagnostics": diagnostics,
         }
 
     def health_check_project_python_runtime(self) -> dict:
@@ -7744,11 +7753,14 @@ class CompilationWorkbenchService:
         self._refresh_state_from_store()
         self._assert_project_package_allows_mutation("prepare_project_python_runtime")
         runtime_state = self._require_enabled_project_python_runtime_state()
-        report = self._project_python_runtime_manager.prepare_runtime(
-            runtime_state["profile"],
-            project_id=runtime_state["project_id"],
-            project_storage_root=runtime_state["project_storage_root"],
-        )
+        try:
+            report = self._project_python_runtime_manager.prepare_runtime(
+                runtime_state["profile"],
+                project_id=runtime_state["project_id"],
+                project_storage_root=runtime_state["project_storage_root"],
+            )
+        except ValueError as exc:
+            report = self._build_project_python_runtime_failure_report(runtime_state=runtime_state, message=str(exc))
         return self._build_project_python_runtime_action_result(
             profile=runtime_state["profile"],
             report=report,
@@ -7758,11 +7770,14 @@ class CompilationWorkbenchService:
         self._refresh_state_from_store()
         self._assert_project_package_allows_mutation("rebuild_project_python_runtime")
         runtime_state = self._require_enabled_project_python_runtime_state()
-        report = self._project_python_runtime_manager.rebuild_runtime(
-            runtime_state["profile"],
-            project_id=runtime_state["project_id"],
-            project_storage_root=runtime_state["project_storage_root"],
-        )
+        try:
+            report = self._project_python_runtime_manager.rebuild_runtime(
+                runtime_state["profile"],
+                project_id=runtime_state["project_id"],
+                project_storage_root=runtime_state["project_storage_root"],
+            )
+        except ValueError as exc:
+            report = self._build_project_python_runtime_failure_report(runtime_state=runtime_state, message=str(exc))
         return self._build_project_python_runtime_action_result(
             profile=runtime_state["profile"],
             report=report,
@@ -7791,46 +7806,66 @@ class CompilationWorkbenchService:
         self._refresh_state_from_store()
         self._assert_project_package_allows_mutation("export_project_python_runtime_bundle")
         runtime_state = self._require_enabled_project_python_runtime_state()
-        resolved_output_path = self._resolve_export_path(output_path)
         profile = deepcopy(runtime_state["profile"])
         bundle_mode = (
             package_embed_mode.strip()
             if isinstance(package_embed_mode, str) and package_embed_mode.strip()
             else str(profile.get("package_embed_mode") or "none")
         )
-        exported_bundle = self._project_python_runtime_manager.export_runtime_bundle(
-            profile,
-            project_id=runtime_state["project_id"],
-            project_storage_root=runtime_state["project_storage_root"],
-            package_embed_mode=bundle_mode,
-        )
-        archive_entries = exported_bundle.get("archive_entries", {})
-        normalized_entries = (
-            dict(archive_entries)
-            if isinstance(archive_entries, dict)
-            else {}
-        )
-        self._write_zip_archive(resolved_output_path, normalized_entries)
-        report = self._project_python_runtime_manager.health_check(
-            runtime_state["profile"],
-            project_id=runtime_state["project_id"],
-            project_storage_root=runtime_state["project_storage_root"],
-        )
-        result = self._build_project_python_runtime_action_result(
-            profile=runtime_state["profile"],
-            report=report,
-        )
-        result["status"] = "exported"
-        result["export_bundle"] = {
-            "output_path": str(resolved_output_path),
-            "bundle_mode": bundle_mode,
-            "bundle_root": exported_bundle.get("bundle_root"),
-            "entry_count": len(normalized_entries),
-            "written_bytes": (
-                resolved_output_path.stat().st_size if resolved_output_path.exists() else 0
-            ),
-        }
-        return result
+        try:
+            resolved_output_path = self._resolve_export_path(output_path)
+            exported_bundle = self._project_python_runtime_manager.export_runtime_bundle(
+                profile,
+                project_id=runtime_state["project_id"],
+                project_storage_root=runtime_state["project_storage_root"],
+                package_embed_mode=bundle_mode,
+            )
+            archive_entries = exported_bundle.get("archive_entries", {})
+            normalized_entries = (
+                dict(archive_entries)
+                if isinstance(archive_entries, dict)
+                else {}
+            )
+            self._write_zip_archive(resolved_output_path, normalized_entries)
+            report = self._project_python_runtime_manager.health_check(
+                runtime_state["profile"],
+                project_id=runtime_state["project_id"],
+                project_storage_root=runtime_state["project_storage_root"],
+            )
+            result = self._build_project_python_runtime_action_result(
+                profile=runtime_state["profile"],
+                report=report,
+            )
+            result["status"] = "exported"
+            result["export_bundle"] = {
+                "output_path": str(resolved_output_path),
+                "bundle_mode": bundle_mode,
+                "bundle_root": exported_bundle.get("bundle_root"),
+                "entry_count": len(normalized_entries),
+                "written_bytes": (
+                    resolved_output_path.stat().st_size if resolved_output_path.exists() else 0
+                ),
+            }
+            return result
+        except ValueError as exc:
+            diagnostic = {
+                "diagnostic_id": f"project-python-runtime-export-{uuid.uuid4().hex[:12]}",
+                "stage": "project_python_runtime_export",
+                "category": "project.python_runtime.export_failed",
+                "severity": "error",
+                "message": str(exc),
+                "node_id": None,
+                "resource_id": None,
+                "graph_ref": None,
+                "stage_extension": {
+                    "output_path": str(output_path),
+                    "bundle_mode": bundle_mode,
+                },
+            }
+            raise ProjectPythonRuntimeExportError(
+                str(exc),
+                diagnostics=[diagnostic],
+            ) from exc
 
     def _build_type_compatible_custom_node_graph_input_default(self, input_meta: dict) -> object:
         raw_type = input_meta.get("type")
@@ -11453,6 +11488,12 @@ class CompilationWorkbenchService:
                 if isinstance(python_runtime_settings, dict)
                 else True
             ),
+            "python_blocked_import_modules": (
+                list(python_runtime_settings.get("blocked_import_modules", []))
+                if isinstance(python_runtime_settings, dict)
+                and isinstance(python_runtime_settings.get("blocked_import_modules"), list)
+                else []
+            ),
         }
         project_python_runtime = self._resolve_project_python_runtime_execution()
         if project_python_runtime is not None:
@@ -11561,10 +11602,62 @@ class CompilationWorkbenchService:
         }
 
     def _build_project_python_runtime_action_result(self, *, profile: dict, report: dict) -> dict:
+        diagnostics = self._build_project_python_runtime_diagnostics(report)
         return {
             "python_runtime_profile": deepcopy(profile),
             "runtime_status": self._serialize_project_python_runtime_report(report),
-            "diagnostics": [],
+            "diagnostics": diagnostics,
+        }
+
+    def _build_project_python_runtime_diagnostics(self, report: dict) -> list[dict]:
+        health_status = report.get("health_status")
+        health_message = report.get("health_message")
+        if not isinstance(health_status, str) or health_status == "ready":
+            return []
+        if not isinstance(health_message, str) or not health_message.strip():
+            health_message = f"python runtime health status: {health_status}"
+        severity = "warning" if health_status in {"missing", "stale", "disabled"} else "error"
+        return [
+            {
+                "diagnostic_id": f"project-python-runtime-health-{uuid.uuid4().hex[:12]}",
+                "stage": "project_python_runtime",
+                "category": f"project.python_runtime.{health_status}",
+                "severity": severity,
+                "message": health_message.strip(),
+                "node_id": None,
+                "resource_id": None,
+                "graph_ref": None,
+                "stage_extension": {
+                    "health_status": health_status,
+                    "runtime_root": (
+                        str(report["runtime_root"])
+                        if isinstance(report.get("runtime_root"), Path)
+                        else report.get("runtime_root")
+                    ),
+                    "python_executable": (
+                        str(report["python_executable"])
+                        if isinstance(report.get("python_executable"), Path)
+                        else report.get("python_executable")
+                    ),
+                },
+            }
+        ]
+
+    def _build_project_python_runtime_failure_report(self, *, runtime_state: dict, message: str) -> dict:
+        runtime_root = runtime_state.get("project_storage_root")
+        if not isinstance(runtime_root, Path):
+            runtime_root = self._resolve_application_data_root() / "python-runtimes" / runtime_state["project_id"]
+        return {
+            "runtime_root": runtime_root,
+            "python_executable": Path(sys.executable)
+            if isinstance(sys.executable, str) and sys.executable
+            else Path("python"),
+            "manifest_hash": runtime_state["profile"].get("materialized_runtime_hash") or "unresolved",
+            "cache_location_mode": runtime_state["profile"]["cache_location_mode"],
+            "project_cache_mode": runtime_state["profile"]["project_cache_mode"],
+            "runtime_handle": None,
+            "health_status": "broken",
+            "health_message": message,
         }
 
     def _require_enabled_project_python_runtime_state(self) -> dict:
@@ -11715,6 +11808,7 @@ class CompilationWorkbenchService:
                 "timeout_seconds": "active",
                 "sandbox_mode": "active",
                 "capture_stdout_stderr": "active",
+                "blocked_import_modules": "active",
             },
             "graph_settings": {
                 "auto_sync_mode": "active",
@@ -15305,6 +15399,11 @@ class CompilationWorkbenchService:
             resolved_documents_root = documents_root.resolve()
             if resolved_documents_root not in roots:
                 roots.append(resolved_documents_root)
+        downloads_root = Path.home() / "Downloads"
+        if downloads_root.exists():
+            resolved_downloads_root = downloads_root.resolve()
+            if resolved_downloads_root not in roots:
+                roots.append(resolved_downloads_root)
         return tuple(roots)
 
     @staticmethod

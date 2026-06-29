@@ -81,6 +81,27 @@ def test_python_runtime_manager_prepare_runtime_uses_bundled_python_in_frozen_mo
     assert report["python_executable"].exists() is True
 
 
+def test_python_runtime_manager_prefers_bundled_python_home_directory_in_frozen_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
+    profile = build_default_python_runtime_profile()
+    fake_exe = tmp_path / "dist" / "WeConduct.exe"
+    bundled_dir = fake_exe.parent / "_internal" / "bundled-python"
+    bundled_dir.mkdir(parents=True, exist_ok=True)
+    bundled_python = bundled_dir / "python.exe"
+    bundled_python.write_bytes(b"stub")
+    bundled_zip = bundled_dir / "base_library.zip"
+    bundled_zip.write_bytes(b"zip-stub")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(fake_exe))
+
+    resolved = manager._resolve_base_python_executable(profile)
+
+    assert resolved == bundled_python
+    assert bundled_zip.exists() is True
+
+
 def test_python_runtime_manager_resolves_software_cache_location(tmp_path: Path) -> None:
     manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
     profile = build_default_python_runtime_profile()

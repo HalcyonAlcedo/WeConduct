@@ -1,5 +1,6 @@
 import json
 import mimetypes
+from copy import deepcopy
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,6 +15,11 @@ from weconduct.application import (
     PreferencesService,
     FilePreferencesStore,
     UpdateService,
+)
+from weconduct.application.compilation_workbench_service import (
+    DIAGNOSTIC_SEVERITIES,
+    DIAGNOSTIC_SEVERITY_RANK,
+    ProjectPythonRuntimeExportError,
 )
 
 DEFAULT_WORKSPACE_STATE_PATH = (
@@ -678,6 +684,30 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     output_path=output_path,
                     package_embed_mode=package_embed_mode,
                 )
+            except ProjectPythonRuntimeExportError as exc:
+                self._write_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {
+                        "error": "project_python_runtime_export_failed",
+                        "message": str(exc),
+                        "diagnostics": {
+                            "total_count": len(exc.diagnostics),
+                            "highest_severity": (
+                                max(
+                                    (
+                                        entry.get("severity")
+                                        for entry in exc.diagnostics
+                                        if entry.get("severity") in DIAGNOSTIC_SEVERITIES
+                                    ),
+                                    key=lambda severity: DIAGNOSTIC_SEVERITY_RANK[severity],
+                                    default=None,
+                                )
+                            ),
+                            "entries": deepcopy(exc.diagnostics),
+                        },
+                    },
+                )
+                return
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
                 return

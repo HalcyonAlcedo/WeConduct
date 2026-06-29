@@ -190,48 +190,70 @@ def _build_sample_graph_payload() -> dict[str, Any]:
         "graph_schema_version": "graph-v1",
         "nodes": [
             {
-                "node_id": "node-1",
-                "lowered_kind": "execution",
-                "source_anchor_ref": "n1",
-                "expansion_role": "action:request",
-                "display_name": "HTTP Request",
-                "node_kind": "http.request",
-                "position": {"x": 120, "y": 80},
+                "node_id": "node-start",
+                "lowered_kind": "control",
+                "source_anchor_ref": "n-start",
+                "expansion_role": "flow:start",
+                "display_name": "Flow Start",
+                "node_kind": "flow.start",
+                "position": {"x": -120, "y": 80},
                 "ports": [
                     {
                         "port_id": "out",
                         "direction": "output",
+                        "relation_layer": "control",
+                        "semantic_slot": "out.control",
+                    },
+                    {
+                        "port_id": "out:variables",
+                        "direction": "output",
                         "relation_layer": "data",
-                        "semantic_slot": "out.default",
-                    }
+                        "semantic_slot": "out.variables",
+                    },
                 ],
-                "node_config": {"method": "GET"},
+                "node_config": {
+                    "initial_variables": {},
+                    "browser_config": {
+                        "headless": True,
+                        "slow_mo_ms": 0,
+                    },
+                },
             },
             {
-                "node_id": "node-2",
+                "node_id": "node-1",
                 "lowered_kind": "execution",
-                "source_anchor_ref": "n2",
-                "expansion_role": "transform:map",
-                "display_name": "Map Result",
-                "node_kind": "data.map",
-                "position": {"x": 360, "y": 80},
+                "source_anchor_ref": "n1",
+                "expansion_role": "action:set_variables_batch",
+                "display_name": "Set Variables Batch",
+                "node_kind": "data.set_variables_batch",
+                "position": {"x": 120, "y": 80},
                 "ports": [
                     {
                         "port_id": "in",
                         "direction": "input",
-                        "relation_layer": "data",
-                        "semantic_slot": "in.default",
+                        "relation_layer": "control",
+                        "semantic_slot": "in.control",
+                    },
+                    {
+                        "port_id": "out",
+                        "direction": "output",
+                        "relation_layer": "control",
+                        "semantic_slot": "out.control",
                     }
                 ],
-                "node_config": {"mode": "map"},
+                "node_config": {
+                    "variables": {
+                        "preview_value": 1,
+                    }
+                },
             },
         ],
         "edges": [
             {
-                "edge_id": "edge-1",
-                "relation_layer": "data",
-                "from_node_id": "node-1",
-                "to_node_id": "node-2",
+                "edge_id": "edge-control-1",
+                "relation_layer": "control",
+                "from_node_id": "node-start",
+                "to_node_id": "node-1",
                 "from_port_id": "out",
                 "to_port_id": "in",
             }

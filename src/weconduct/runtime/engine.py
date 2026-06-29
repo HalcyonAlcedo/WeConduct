@@ -2294,7 +2294,9 @@ class RuntimeExecutorRegistry:
             "code": code,
             "variables": _make_python_run_json_safe(context.variables),
             "result_variable": default_variable_name,
-            "allowed_imports": sorted(_PYTHON_ALLOWED_IMPORTS),
+            "blocked_imports": sorted(
+                _resolve_python_blocked_import_modules(self._runtime_settings)
+            ),
         }
         command_timeout = _resolve_int(self._runtime_settings.get("python_timeout_seconds"), default=60)
         if command_timeout <= 0:
@@ -2305,7 +2307,10 @@ class RuntimeExecutorRegistry:
         env["PYTHONUTF8"] = "1"
         env.pop("PYTHONPATH", None)
         try:
-            _validate_python_run_code(code)
+            _validate_python_run_code(
+                code,
+                blocked_imports=_resolve_python_blocked_import_modules(self._runtime_settings),
+            )
             with tempfile.TemporaryDirectory(prefix="weconduct-python-run-") as temp_dir:
                 temp_root = Path(temp_dir)
                 input_path = temp_root / "input.json"
@@ -3025,17 +3030,14 @@ _PYTHON_DANGEROUS_ATTRIBUTES = frozenset(
     }
 )
 
-_PYTHON_ALLOWED_IMPORTS = frozenset(
+_PYTHON_DEFAULT_BLOCKED_IMPORTS = frozenset(
     {
-        "csv",
-        "datetime",
-        "json",
-        "math",
-        "openpyxl",
-        "pathlib",
-        "re",
-        "samplepkg",
-        "statistics",
+        "ctypes",
+        "importlib",
+        "multiprocessing",
+        "os",
+        "socket",
+        "subprocess",
     }
 )
 
@@ -3050,7 +3052,7 @@ def _python_safe_import(
     if level != 0:
         raise ImportError("relative imports are not allowed")
     root_name = str(name or "").split(".", 1)[0]
-    if root_name not in _PYTHON_ALLOWED_IMPORTS:
+    if root_name in _PYTHON_DEFAULT_BLOCKED_IMPORTS:
         raise ImportError(f"import not allowed: {name}")
     return __import__(name, globals_dict, locals_dict, fromlist, level)
 
@@ -3097,14 +3099,14 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-_PYTHON_ALLOWED_IMPORTS = set()
+_PYTHON_BLOCKED_IMPORTS = set()
 
 
 def _python_safe_import(name, globals_dict=None, locals_dict=None, fromlist=(), level=0):
     if level != 0:
         raise ImportError("relative imports are not allowed")
     root_name = str(name or "").split(".", 1)[0]
-    if root_name not in _PYTHON_ALLOWED_IMPORTS:
+    if root_name in _PYTHON_BLOCKED_IMPORTS:
         raise ImportError(f"import not allowed: {name}")
     return __import__(name, globals_dict, locals_dict, fromlist, level)
 
@@ -3159,8 +3161,8 @@ def main() -> int:
     input_path = Path(sys.argv[1])
     output_path = Path(sys.argv[2])
     payload = json.loads(input_path.read_text(encoding="utf-8"))
-    global _PYTHON_ALLOWED_IMPORTS
-    _PYTHON_ALLOWED_IMPORTS = set(payload.get("allowed_imports", ()))
+    global _PYTHON_BLOCKED_IMPORTS
+    _PYTHON_BLOCKED_IMPORTS = set(payload.get("blocked_imports", ()))
     scope = {
         "variables": payload.get("variables", {}),
         "page": None,
@@ -3219,29 +3221,49 @@ _HTTP_METADATA_BLOCKED_IPS = frozenset(
 )
 
 
-def _validate_python_run_code(code: str) -> None:
+def _validate_python_run_code(code: str, *, blocked_imports: set[str] | None = None) -> None:
     try:
         tree = ast.parse(code, mode="exec")
     except SyntaxError as exc:
         raise PythonCodeRejected(f"syntax error: {exc.msg}") from exc
+    effective_blocked_imports = (
+        blocked_imports
+        if blocked_imports is not None
+        else set(_PYTHON_DEFAULT_BLOCKED_IMPORTS)
+    )
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root_name = alias.name.split(".", 1)[0]
-                if root_name not in _PYTHON_ALLOWED_IMPORTS:
+                if root_name in effective_blocked_imports:
                     raise PythonCodeRejected(f"import not allowed: {alias.name}")
             continue
         if isinstance(node, ast.ImportFrom):
             if node.module is None:
                 raise PythonCodeRejected("relative imports are not allowed")
             root_name = node.module.split(".", 1)[0]
-            if root_name not in _PYTHON_ALLOWED_IMPORTS:
+            if root_name in effective_blocked_imports:
                 raise PythonCodeRejected(f"import not allowed: {node.module}")
             continue
         if isinstance(node, ast.Attribute) and node.attr in _PYTHON_DANGEROUS_ATTRIBUTES:
             raise PythonCodeRejected(f"access to attribute is not allowed: {node.attr}")
         if isinstance(node, ast.Name) and node.id in _PYTHON_DANGEROUS_ATTRIBUTES:
             raise PythonCodeRejected(f"access to name is not allowed: {node.id}")
+
+
+def _resolve_python_blocked_import_modules(runtime_settings: dict[str, Any]) -> set[str]:
+    raw_modules = runtime_settings.get("python_blocked_import_modules")
+    if not isinstance(raw_modules, list):
+        return set(_PYTHON_DEFAULT_BLOCKED_IMPORTS)
+    normalized: set[str] = set()
+    for item in raw_modules:
+        if not isinstance(item, str):
+            continue
+        trimmed = item.strip().lower()
+        if not trimmed:
+            continue
+        normalized.add(trimmed.split(".", 1)[0])
+    return normalized
 
 
 def _validate_http_request_url(

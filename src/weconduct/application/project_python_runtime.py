@@ -621,6 +621,7 @@ class ProjectPythonRuntimeManager:
 
         if getattr(sys, "frozen", False):
             bundled_candidates = [
+                Path(sys.executable).resolve(strict=False).parent / "_internal" / "bundled-python" / "python.exe",
                 Path(sys.executable).resolve(strict=False).parent / "_internal" / "python.exe",
                 Path(sys.executable).resolve(strict=False).parent / "python.exe",
             ]

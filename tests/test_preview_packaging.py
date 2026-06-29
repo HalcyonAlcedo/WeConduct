@@ -55,5 +55,6 @@ def test_preview_packaging_spec_collects_bundled_python_runtime() -> None:
         root / "packaging" / "pyinstaller" / "weconduct_preview.spec"
     ).read_text(encoding="utf-8")
 
-    assert "bundled_python_source" in spec_text
-    assert 'datas.append((str(bundled_python_source), "."))' in spec_text
+    assert "bundled_python_home" in spec_text
+    assert 'datas.append((str(bundled_python_home), "bundled-python"))' in spec_text
+    assert 'datas.append((str(bundled_python_source), "."))' not in spec_text

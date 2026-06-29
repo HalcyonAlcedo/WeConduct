@@ -9,7 +9,7 @@ const workspace = useWorkspaceStore()
 const toast = useToastStore()
 const active = ref('general')
 
-interface FieldDef { key: string; label: string; type: 'text' | 'number' | 'bool' | 'select' | 'object' | 'json' | 'directory_list'; options?: string[]; hint?: string }
+interface FieldDef { key: string; label: string; type: 'text' | 'number' | 'bool' | 'select' | 'object' | 'json' | 'directory_list' | 'string_list'; options?: string[]; hint?: string }
 
 const FIELD_DEFS: Record<string, FieldDef[]> = {
   general: [
@@ -54,6 +54,7 @@ const FIELD_DEFS: Record<string, FieldDef[]> = {
     { key: 'default_project_cache_mode', label: '默认项目缓存模式', type: 'select', options: ['full_venv', 'wheelhouse_rebuild'] },
     { key: 'default_requirements_source_mode', label: '默认需求来源模式', type: 'select', options: ['inline', 'requirements_txt', 'lock_file'] },
     { key: 'default_package_embed_mode', label: '默认包嵌入模式', type: 'select', options: ['none', 'wheelhouse_rebuild', 'full_venv'] },
+    { key: 'blocked_import_modules', label: '阻断导入模块', type: 'string_list', hint: '这些模块会在 python.run 中被禁止导入。删除某项后，项目脚本即可导入该模块。' },
   ],
   nodegraph: [
     { key: 'auto_sync_mode', label: '自动同步模式', type: 'select', options: ['responsive'] }, { key: 'show_node_id_on_node', label: '显示节点 ID', type: 'bool' },
@@ -139,6 +140,10 @@ function addDirectoryItem(fieldKey: string, path: string) { const n = path.trim(
 function removeDirectoryItem(fieldKey: string, path: string) { setDirectoryList(fieldKey, getDirectoryList(fieldKey).filter(item => item !== path)) }
 async function pickDirectoryItem(fieldKey: string) { try { const r = await postFileDialog({ mode: 'open_folder', title: '选择目录' }); if (r.status === 'selected' && r.paths.length) addDirectoryItem(fieldKey, r.paths[0]) } catch (e: any) { if (e?.status === 503) toast.info('', '当前运行环境不支持系统目录选择器') } }
 async function pickPythonPath() { try { const r = await postFileDialog({ mode: 'open_file', title: '选择 Python 可执行文件' }); if (r.status === 'selected' && r.paths.length) setField('python_runtime_settings', 'python_executable_path', r.paths[0]) } catch (e: any) { if (e?.status === 503) toast.info('', '当前运行环境不支持系统文件选择器') } }
+function getStringList(fieldKey: string): string[] { const v = getField(currentSection.value, fieldKey); return Array.isArray(v) ? v.filter((x: any) => typeof x === 'string') : [] }
+function addStringListItem(fieldKey: string) { setField(currentSection.value, fieldKey, [...getStringList(fieldKey), '']) }
+function removeStringListItem(fieldKey: string, idx: number) { const n = [...getStringList(fieldKey)]; n.splice(idx, 1); setField(currentSection.value, fieldKey, n) }
+function updateStringListItem(fieldKey: string, idx: number, val: string) { const n = [...getStringList(fieldKey)]; n[idx] = val; setField(currentSection.value, fieldKey, n) }
 
 // Extension display helper: convert string[] to comma-separated display
 function extDisplay(fieldKey: string): string { const v = getField('security_settings', fieldKey); if (Array.isArray(v)) return v.join(', '); return typeof v === 'string' ? v : '' }
@@ -176,6 +181,15 @@ const currentFields = computed(() => FIELD_DEFS[active.value] || [])
           <div v-else-if="f.key === 'python_executable_path'" class="pref-path-row">
             <input type="text" class="pref-input" :value="getField(currentSection, f.key) ?? ''" @input="setField(currentSection, f.key, ($event.target as HTMLInputElement).value)" />
             <button class="pref-btn pref-btn-pick" type="button" @click="pickPythonPath">…</button>
+          </div>
+          <!-- String list editor -->
+          <div v-else-if="f.type === 'string_list'" class="pref-string-list">
+            <div v-for="(item, i) in getStringList(f.key)" :key="i" class="pref-string-item">
+              <input class="pref-input" :value="item" @input="updateStringListItem(f.key, i, ($event.target as HTMLInputElement).value)" placeholder="模块名" />
+              <button class="pref-btn pref-btn-rm" type="button" @click="removeStringListItem(f.key, i)">✕</button>
+            </div>
+            <button class="pref-btn pref-btn-sm" type="button" @click="addStringListItem(f.key)">+ 新增</button>
+            <div v-if="f.hint" class="pref-field-hint">{{ f.hint }}</div>
           </div>
           <!-- Extension fields (display string[] as comma-separated) -->
           <input v-else-if="f.key.includes('extensions')" type="text" class="pref-input" :value="extDisplay(f.key)" @input="setField(currentSection, f.key, ($event.target as HTMLInputElement).value)" />
@@ -249,4 +263,7 @@ select.pref-input { cursor: pointer; }
 .pref-path-row .pref-input { flex: 1; }
 .pref-btn-pick { padding: 2px 8px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-panel); color: var(--text-secondary); cursor: pointer; font-size: var(--text-small); font-family: var(--font-ui); }
 .pref-btn-pick:hover { background: var(--bg-hover); }
+.pref-string-list { width: 100%; }
+.pref-string-item { display: flex; gap: 4px; align-items: center; padding: 2px 0; }
+.pref-string-item .pref-input { flex: 1; }
 </style>

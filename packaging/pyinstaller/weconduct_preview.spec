@@ -6,13 +6,13 @@ import sys
 root = Path(SPECPATH).parents[1]
 captcha_ocr_source = root / "third_party" / "captcha_ocr"
 icon_path = root / "assets" / "icons" / "weconduct.ico"
-bundled_python_source = Path(getattr(sys, "_base_executable", sys.executable)).resolve()
+bundled_python_home = Path(getattr(sys, "_base_executable", sys.executable)).resolve().parent
 
 datas = [(str(root / "ui" / "dist"), "ui/dist")]
 if captcha_ocr_source.exists():
     datas.append((str(captcha_ocr_source), "captcha_ocr"))
-if bundled_python_source.exists():
-    datas.append((str(bundled_python_source), "."))
+if bundled_python_home.exists():
+    datas.append((str(bundled_python_home), "bundled-python"))
 
 a = Analysis(
     [str(root / "src" / "weconduct" / "cli" / "main.py")],

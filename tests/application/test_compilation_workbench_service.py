@@ -27,7 +27,7 @@ def test_workbench_service_project_documents_include_custom_node_graph_documents
 
     documents = service.get_project_documents_document()
     document_ids = {item["document_id"] for item in documents["documents"]}
-    custom_document_id = f"custom_node_graph:{save_result['resource']['resource_id']}"
+    custom_document_id = save_result["resource"]["resource_id"]
 
     assert documents["main_graph_document_id"] == "graph:workspace"
     assert "graph:workspace" in document_ids
@@ -70,7 +70,7 @@ def test_workbench_service_can_load_and_save_custom_node_graph_document() -> Non
     service.save_graph_document(seed_graph_payload)
     save_result = service.save_custom_node_graph_resource(resource_name="表单组件")
     resource_id = save_result["resource"]["resource_id"]
-    document_id = f"custom_node_graph:{resource_id}"
+    document_id = resource_id
 
     loaded_document = service.get_graph_document(document_id=document_id)
 
@@ -90,9 +90,12 @@ def test_workbench_service_can_load_and_save_custom_node_graph_document() -> Non
             "position": {"x": 260, "y": 40},
             "ports": [],
             "node_config": {
-                "name": "accepted",
-                "value_type": "boolean",
-                "required": True,
+                "outputs": {
+                    "accepted": {
+                        "type": "boolean",
+                        "required": True,
+                    }
+                },
             },
         }
     )
@@ -112,15 +115,13 @@ def test_workbench_service_can_create_empty_custom_node_graph_resource() -> None
 
     create_result = service.create_empty_custom_node_graph_resource(resource_name="空白组件")
     resource = create_result["resource"]
-    document = service.get_graph_document(document_id=f"custom_node_graph:{resource['resource_id']}")
+    document = service.get_graph_document(document_id=resource["resource_id"])
 
     assert create_result["status"] == "created"
     assert resource["resource_type"] == "custom_node_graph"
     assert resource["display_name"] == "空白组件"
-    assert resource["source_graph_document"]["graph_model_id"] == (
-        f"custom_node_graph:{resource['resource_id']}"
-    )
-    assert document["graph_model"].graph_model_id == f"custom_node_graph:{resource['resource_id']}"
+    assert resource["source_graph_document"]["graph_model_id"] == resource["resource_id"]
+    assert document["graph_model"].graph_model_id == resource["resource_id"]
     assert document["graph_model"].nodes == []
 
 

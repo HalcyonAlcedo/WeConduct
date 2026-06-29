@@ -141,6 +141,14 @@ def build_default_preferences() -> dict:
             "timeout_seconds": 60,
             "sandbox_mode": "restricted",
             "capture_stdout_stderr": True,
+            "blocked_import_modules": [
+                "ctypes",
+                "importlib",
+                "multiprocessing",
+                "os",
+                "socket",
+                "subprocess",
+            ],
             **build_default_python_runtime_preferences(),
         },
         "graph_settings": {
@@ -337,6 +345,9 @@ def _normalize_python_runtime_settings(settings: Any) -> dict:
     normalized["capture_stdout_stderr"] = bool(
         settings.get("capture_stdout_stderr", defaults["capture_stdout_stderr"])
     )
+    normalized["blocked_import_modules"] = _normalize_python_import_module_list(
+        settings.get("blocked_import_modules", defaults["blocked_import_modules"])
+    )
     normalized.update(normalize_python_runtime_preferences(settings))
     return normalized
 
@@ -368,4 +379,22 @@ def _normalize_extension_list(raw_value: Any) -> list[str]:
             continue
         if trimmed not in normalized:
             normalized.append(trimmed)
+    return normalized
+
+
+def _normalize_python_import_module_list(raw_value: Any) -> list[str]:
+    if not isinstance(raw_value, list):
+        return []
+    normalized: list[str] = []
+    for item in raw_value:
+        if not isinstance(item, str):
+            continue
+        trimmed = item.strip().lower()
+        if not trimmed:
+            continue
+        root_name = trimmed.split(".", 1)[0]
+        if not root_name:
+            continue
+        if root_name not in normalized:
+            normalized.append(root_name)
     return normalized

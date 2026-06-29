@@ -116,6 +116,14 @@ class PreferencesService:
         return current_section, next_section, confirmation_required, high_risk_changes
 
     def _validate_section_update(self, *, section: str, values: dict) -> None:
+        if section == "python_runtime_settings":
+            if "blocked_import_modules" in values:
+                raw_modules = values["blocked_import_modules"]
+                if not isinstance(raw_modules, list):
+                    raise ValueError(
+                        "field must be a JSON string array with non-empty items: blocked_import_modules"
+                    )
+            return
         if section != "security_settings":
             return
         bool_fields = {
