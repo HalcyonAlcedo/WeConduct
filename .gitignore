@@ -38,6 +38,7 @@ coverage.xml
 build/
 dist/
 *.spec
+!packaging/pyinstaller/weconduct_preview.spec
 packaging/nsis/*
 !packaging/nsis/setup.nsi
 

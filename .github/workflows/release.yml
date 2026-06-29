@@ -23,7 +23,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: "24"
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis -y
 
       - name: Install Python dependencies
         run: pip install -e ".[packaging]"
@@ -40,7 +44,12 @@ jobs:
       - name: Create portable zip
         run: |
           $version = "${{ github.ref_name }}"
-          Compress-Archive -Path dist/WeConduct/* -DestinationPath "WeConduct-$version-portable.zip"
+          $portableRoot = Join-Path $env:RUNNER_TEMP "WeConduct-portable"
+          Remove-Item $portableRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $portableRoot | Out-Null
+          Copy-Item dist/WeConduct/* -Destination $portableRoot -Recurse
+          Copy-Item packaging/portable/README_PORTABLE.txt -Destination $portableRoot
+          Compress-Archive -Path "$portableRoot\\*" -DestinationPath "WeConduct-$version-portable.zip"
 
       - name: Create installer
         run: |

@@ -9,7 +9,11 @@ description = "WeConduct Python core"
 requires-python = ">=3.11"
 dependencies = [
   "pydantic>=2.8,<3",
-  "pywebview>=5.0",
+  "playwright>=1.53,<2",
+  "pywebview==6.2.1",
+  "pythonnet==3.0.5",
+  "clr_loader==0.2.10",
+  "openpyxl>=3.1.0",
   "PyYAML>=6.0",
 ]
 

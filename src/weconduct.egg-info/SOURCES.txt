@@ -17,6 +17,7 @@ src/weconduct/application/preferences_store.py
 src/weconduct/application/preview_smoke.py
 src/weconduct/application/project_python_runtime.py
 src/weconduct/application/runtime_session_stream.py
+src/weconduct/application/update_service.py
 src/weconduct/application/workspace_state_store.py
 src/weconduct/builtin_components/__init__.py
 src/weconduct/builtin_components/node_drafts.py
