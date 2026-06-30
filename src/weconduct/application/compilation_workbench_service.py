@@ -624,11 +624,7 @@ class CompilationWorkbenchService:
         )
         package_document["session_dir"] = str(session_dir.resolve())
         graph_payload = package_document["graph_document"]
-        project_settings = self._rewrite_loaded_package_embedded_resource_paths(
-            package_document["project_settings"],
-            package_document=package_document,
-            session_dir=session_dir,
-        )
+        project_settings = deepcopy(package_document["project_settings"])
         self._restore_loaded_package_python_runtime_bundle(
             session_dir=session_dir,
             project_settings=project_settings,
@@ -713,74 +709,6 @@ class CompilationWorkbenchService:
             "project_settings": project_document["project_settings"],
             "graph_workspace": project_document["graph_workspace"],
         }
-
-    def _rewrite_loaded_package_embedded_resource_paths(
-        self,
-        project_settings: dict,
-        *,
-        package_document: dict,
-        session_dir: Path,
-    ) -> dict:
-        normalized_settings = deepcopy(project_settings) if isinstance(project_settings, dict) else {}
-        runtime_defaults = (
-            normalized_settings.get("runtime_defaults")
-            if isinstance(normalized_settings.get("runtime_defaults"), dict)
-            else None
-        )
-        if not isinstance(runtime_defaults, dict):
-            return normalized_settings
-        initial_variables = (
-            runtime_defaults.get("initial_variables")
-            if isinstance(runtime_defaults.get("initial_variables"), dict)
-            else None
-        )
-        if not isinstance(initial_variables, dict):
-            return normalized_settings
-
-        resource_policy = (
-            normalized_settings.get("resource_policy")
-            if isinstance(normalized_settings.get("resource_policy"), dict)
-            else {}
-        )
-        declared_sources = resource_policy.get("embedded_resources")
-        packaged_resources = (
-            package_document.get("resources")
-            if isinstance(package_document.get("resources"), dict)
-            else {}
-        )
-        embedded_entries = (
-            packaged_resources.get("embedded")
-            if isinstance(packaged_resources.get("embedded"), list)
-            else []
-        )
-        if not isinstance(declared_sources, list) or not embedded_entries:
-            return normalized_settings
-
-        rewrite_candidates: dict[str, str] = {}
-        for index, raw_source in enumerate(declared_sources):
-            if not isinstance(raw_source, str) or not raw_source.strip():
-                continue
-            if index >= len(embedded_entries):
-                continue
-            embedded_entry = embedded_entries[index]
-            if not isinstance(embedded_entry, dict):
-                continue
-            archive_path = embedded_entry.get("archive_path")
-            if not isinstance(archive_path, str) or not archive_path.strip():
-                continue
-            materialized_path = (session_dir / archive_path.replace("/", os.sep)).resolve()
-            rewrite_candidates[raw_source.strip()] = str(materialized_path)
-            rewrite_candidates[raw_source.strip().replace("\\", "/")] = str(materialized_path)
-            rewrite_candidates[raw_source.strip().replace("/", "\\")] = str(materialized_path)
-
-        for key, value in list(initial_variables.items()):
-            if not isinstance(value, str) or not value.strip():
-                continue
-            replacement = rewrite_candidates.get(value.strip())
-            if replacement is not None:
-                initial_variables[key] = replacement
-
-        return normalized_settings
 
     def _build_runtime_embedded_resource_path_map(self) -> dict[str, str]:
         project_runtime = self._get_project_runtime()

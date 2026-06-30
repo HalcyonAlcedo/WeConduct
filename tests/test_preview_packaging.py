@@ -58,5 +58,7 @@ def test_preview_packaging_spec_collects_bundled_python_runtime() -> None:
     assert "bundled_python_home" in spec_text
     assert "_collect_bundled_python_runtime_entries" in spec_text
     assert 'datas.append((str(bundled_python_home), "bundled-python"))' not in spec_text
-    assert "python313.dll" in spec_text
-    assert "VCRUNTIME140.dll" in spec_text
+    assert 'base_dir / "Lib" / "venv" / "__init__.py"' in spec_text
+    assert 'base_dir / "Lib" / "ensurepip" / "__init__.py"' in spec_text
+    assert 'file_path.relative_to(base_dir).parent.as_posix()' in spec_text
+    assert 'entries.append((str(file_path), f"bundled-python/{relative_parent}"))' in spec_text

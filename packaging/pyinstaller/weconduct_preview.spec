@@ -13,33 +13,41 @@ def _collect_bundled_python_runtime_entries(base_dir: Path) -> list[tuple[str, s
     entries: list[tuple[str, str]] = []
     if not base_dir.exists():
         return entries
-    candidate_names = [
-        "python.exe",
-        "pythonw.exe",
-        "python313.dll",
-        "python3.dll",
-        "VCRUNTIME140.dll",
-        "VCRUNTIME140_1.dll",
-        "MSVCP140.dll",
-        "MSVCP140_1.dll",
-        "api-ms-win-crt-conio-l1-1-0.dll",
-        "api-ms-win-crt-convert-l1-1-0.dll",
-        "api-ms-win-crt-environment-l1-1-0.dll",
-        "api-ms-win-crt-filesystem-l1-1-0.dll",
-        "api-ms-win-crt-heap-l1-1-0.dll",
-        "api-ms-win-crt-locale-l1-1-0.dll",
-        "api-ms-win-crt-math-l1-1-0.dll",
-        "api-ms-win-crt-process-l1-1-0.dll",
-        "api-ms-win-crt-runtime-l1-1-0.dll",
-        "api-ms-win-crt-stdio-l1-1-0.dll",
-        "api-ms-win-crt-string-l1-1-0.dll",
-        "api-ms-win-crt-time-l1-1-0.dll",
-        "api-ms-win-crt-utility-l1-1-0.dll",
+    required_paths = [
+        base_dir / "python.exe",
+        base_dir / "pythonw.exe",
+        base_dir / "DLLs",
+        base_dir / "Lib" / "venv" / "__init__.py",
+        base_dir / "Lib" / "ensurepip" / "__init__.py",
     ]
-    for name in candidate_names:
-        candidate = base_dir / name
-        if candidate.exists() and candidate.is_file():
-            entries.append((str(candidate), "bundled-python"))
+    missing = [str(path) for path in required_paths if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+            "bundled python runtime source is incomplete: " + ", ".join(missing)
+        )
+    for candidate in base_dir.iterdir():
+        if not candidate.is_file():
+            continue
+        if candidate.suffix.lower() not in {".exe", ".dll"}:
+            continue
+        entries.append((str(candidate), "bundled-python"))
+    for directory_name in ("DLLs", "Lib"):
+        source_dir = base_dir / directory_name
+        if not source_dir.exists():
+            continue
+        for file_path in source_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
+            if directory_name == "Lib" and any(
+                blocked in file_path.parts
+                for blocked in ("site-packages", "__pycache__", "test", "tkinter", "idlelib", "turtledemo")
+            ):
+                continue
+            relative_parent = file_path.relative_to(base_dir).parent.as_posix()
+            entries.append((str(file_path), f"bundled-python/{relative_parent}"))
+    pyvenv_cfg = base_dir / "pyvenv.cfg"
+    if pyvenv_cfg.exists():
+        entries.append((str(pyvenv_cfg), "bundled-python"))
     return entries
 
 datas = [(str(root / "ui" / "dist"), "ui/dist")]

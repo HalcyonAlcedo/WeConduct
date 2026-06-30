@@ -13,6 +13,7 @@ import re
 import ast
 import socket
 import subprocess
+import sys
 import tempfile
 from time import monotonic
 import urllib.error
@@ -2311,6 +2312,9 @@ class RuntimeExecutorRegistry:
                 code,
                 blocked_imports=_resolve_python_blocked_import_modules(self._runtime_settings),
             )
+            child_result = None
+            process = None
+            active_env = dict(env)
             with tempfile.TemporaryDirectory(prefix="weconduct-python-run-") as temp_dir:
                 temp_root = Path(temp_dir)
                 input_path = temp_root / "input.json"
@@ -2321,13 +2325,25 @@ class RuntimeExecutorRegistry:
                 process = subprocess.run(
                     [str(python_executable), str(runner_path), str(input_path), str(output_path)],
                     cwd=str(working_directory) if working_directory is not None else None,
-                    env=env,
+                    env=active_env,
                     capture_output=True,
                     text=True,
                     timeout=command_timeout,
                     check=False,
                 )
-                child_result = self._read_python_run_child_result(output_path)
+                try:
+                    child_result = self._read_python_run_child_result(output_path)
+                except ValueError as exc:
+                    if "python.run child result file missing:" in str(exc):
+                        detail_message = _build_python_run_missing_child_result_message(
+                            base_message=str(exc),
+                            python_executable=python_executable,
+                            process=process,
+                            pythonpath=active_env.get("PYTHONPATH"),
+                            pythonhome=active_env.get("PYTHONHOME"),
+                        )
+                        raise ValueError(detail_message) from exc
+                    raise
         except PythonCodeRejected as exc:
             return {
                 "status": "failed",
@@ -2364,6 +2380,15 @@ class RuntimeExecutorRegistry:
                 "error_code": "python.execution_failed",
                 "message": str(exc),
                 "exception_type": type(exc).__name__,
+                "stdout": "",
+                "stderr": "",
+            }
+        if process is None or child_result is None:
+            return {
+                "status": "failed",
+                "node_id": node["node_id"],
+                "error_code": "python.execution_failed",
+                "message": "python.run did not produce a child process result",
                 "stdout": "",
                 "stderr": "",
             }
@@ -2972,6 +2997,28 @@ def _evaluate_jump_condition(condition: str, variables: dict[str, Any]) -> bool:
         return bool(value)
     except Exception:
         return False
+
+
+def _build_python_run_missing_child_result_message(
+    *,
+    base_message: str,
+    python_executable: Path,
+    process: subprocess.CompletedProcess[str] | None,
+    pythonpath: str | None,
+    pythonhome: str | None = None,
+) -> str:
+    details = [
+        f"python_executable={python_executable}",
+        f"pythonhome={pythonhome or '<none>'}",
+        f"pythonpath={pythonpath or '<none>'}",
+    ]
+    if process is not None:
+        details.append(f"returncode={process.returncode}")
+        stdout = (process.stdout or "").strip()
+        stderr = (process.stderr or "").strip()
+        details.append(f"stdout={stdout or '<empty>'}")
+        details.append(f"stderr={stderr or '<empty>'}")
+    return f"{base_message}; " + "; ".join(details)
 
 
 def _decode_http_body(raw_body: bytes, headers: dict) -> Any:
