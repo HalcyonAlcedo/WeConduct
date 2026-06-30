@@ -360,28 +360,10 @@ class CompilationWorkbenchService:
                 else None
             )
             if isinstance(graph_document, dict):
-                nodes = graph_document.get("nodes")
-                if isinstance(nodes, list):
-                    for node in nodes:
-                        if not isinstance(node, dict) or node.get("node_kind") != "flow.start":
-                            continue
-                        node_config = (
-                            deepcopy(node.get("node_config"))
-                            if isinstance(node.get("node_config"), dict)
-                            else {}
-                        )
-                        node_config["initial_variables"] = deepcopy(
-                            normalized_runtime_defaults["initial_variables"]
-                        )
-                        node_config["browser_config"] = deepcopy(
-                            normalized_runtime_defaults["browser_config"]
-                        )
-                        node_config["execution_defaults"] = deepcopy(
-                            normalized_runtime_defaults["execution_defaults"]
-                        )
-                        node["node_config"] = node_config
-                        break
-                    current_state["graph_document"] = graph_document
+                current_state["graph_document"] = self._project_runtime_defaults_into_main_flow_start(
+                    graph_document_payload=graph_document,
+                    runtime_defaults=normalized_runtime_defaults,
+                )
             current_state["project_runtime"] = {
                 **self._extract_project_runtime(current_state),
                 "is_dirty": True,
@@ -652,6 +634,11 @@ class CompilationWorkbenchService:
             project_settings=project_settings,
         )
         manifest = package_document["manifest"]
+        if isinstance(manifest, dict):
+            runtime_requirements = manifest.get("runtime_requirements")
+            if isinstance(runtime_requirements, dict):
+                project_settings = deepcopy(project_settings)
+                project_settings["runtime_requirements"] = deepcopy(runtime_requirements)
         project_summary = {}
         if isinstance(manifest, dict):
             source_project = manifest.get("source_project")
@@ -10525,6 +10512,17 @@ class CompilationWorkbenchService:
                 if merged_project_settings != state.get("project_settings"):
                     state["project_settings"] = merged_project_settings
                     changed = True
+                projected_graph_document = self._project_runtime_defaults_into_main_flow_start(
+                    graph_document_payload=graph_document_payload,
+                    runtime_defaults=(
+                        merged_project_settings.get("runtime_defaults")
+                        if isinstance(merged_project_settings, dict)
+                        else None
+                    ),
+                )
+                if projected_graph_document != graph_document_payload:
+                    state["graph_document"] = projected_graph_document
+                    changed = True
         normalized_recent_projects = self._extract_recent_projects(state)
         if normalized_recent_projects != state.get("recent_projects"):
             state["recent_projects"] = normalized_recent_projects
@@ -10934,6 +10932,34 @@ class CompilationWorkbenchService:
             },
         }
 
+    def _project_runtime_defaults_into_main_flow_start(
+        self,
+        *,
+        graph_document_payload: dict,
+        runtime_defaults: dict | None,
+    ) -> dict:
+        normalized_runtime_defaults = self._normalize_runtime_defaults_payload(runtime_defaults)
+        projected_graph_document = deepcopy(graph_document_payload)
+        nodes = projected_graph_document.get("nodes")
+        if not isinstance(nodes, list):
+            return projected_graph_document
+        for node in nodes:
+            if not isinstance(node, dict) or node.get("node_kind") != "flow.start":
+                continue
+            node_config = deepcopy(node.get("node_config")) if isinstance(node.get("node_config"), dict) else {}
+            node_config["initial_variables"] = deepcopy(
+                normalized_runtime_defaults["initial_variables"]
+            )
+            node_config["browser_config"] = deepcopy(
+                normalized_runtime_defaults["browser_config"]
+            )
+            node_config["execution_defaults"] = deepcopy(
+                normalized_runtime_defaults["execution_defaults"]
+            )
+            node["node_config"] = node_config
+            break
+        return projected_graph_document
+
     def _normalize_project_settings_document(self, payload: dict | None) -> dict:
         return self._normalize_project_settings_document_for_state(self._state, payload)
 
@@ -10951,6 +10977,7 @@ class CompilationWorkbenchService:
         raw_resource_policy = raw_payload.get("resource_policy")
         raw_compile_profile = raw_payload.get("compile_profile")
         raw_external_resources = raw_payload.get("external_resources")
+        raw_runtime_requirements = raw_payload.get("runtime_requirements")
         if not isinstance(raw_identity, dict):
             raw_identity = {}
         if not isinstance(raw_runtime_defaults, dict):
@@ -10963,6 +10990,8 @@ class CompilationWorkbenchService:
             raw_compile_profile = {}
         if not isinstance(raw_external_resources, list):
             raw_external_resources = []
+        if not isinstance(raw_runtime_requirements, dict):
+            raw_runtime_requirements = {}
 
         project = state.get("project") if isinstance(state, dict) and isinstance(state.get("project"), dict) else {}
         project_id = (
@@ -11056,6 +11085,7 @@ class CompilationWorkbenchService:
                     )
                 ),
             },
+            "runtime_requirements": deepcopy(raw_runtime_requirements),
         }
 
     def _extract_project_settings(self, state: dict | None) -> dict:
@@ -11604,11 +11634,7 @@ class CompilationWorkbenchService:
             if isinstance(project_settings, dict)
             else deepcopy(self._extract_project_settings(self._state))
         )
-        required_security = self._normalize_project_security_settings(
-            effective_project_settings.get("security_settings")
-            if isinstance(effective_project_settings.get("security_settings"), dict)
-            else {}
-        )
+        required_security = self._extract_required_security_settings(effective_project_settings)
         preferences = self._preferences_service.get_preferences_document()
         current_security = _normalize_security_settings(
             preferences.get("security_settings")
@@ -11674,6 +11700,30 @@ class CompilationWorkbenchService:
             "preferences": updated_preferences,
             "security_requirement_summary": self._build_project_security_requirement_summary(),
         }
+
+    def _extract_required_security_settings(self, project_settings: dict) -> dict:
+        runtime_requirements = (
+            project_settings.get("runtime_requirements")
+            if isinstance(project_settings.get("runtime_requirements"), dict)
+            else {}
+        )
+        security_requirements = (
+            runtime_requirements.get("security_requirements")
+            if isinstance(runtime_requirements.get("security_requirements"), dict)
+            else None
+        )
+        if isinstance(security_requirements, dict):
+            normalized = self._normalize_project_security_settings(security_requirements)
+            return {
+                key: bool(value)
+                for key, value in normalized.items()
+                if isinstance(value, bool)
+            }
+        return self._normalize_project_security_settings(
+            project_settings.get("security_settings")
+            if isinstance(project_settings.get("security_settings"), dict)
+            else {}
+        )
 
     def _resolve_application_data_root(self) -> Path:
         local_app_data = os.environ.get("LOCALAPPDATA")
@@ -12935,6 +12985,7 @@ class CompilationWorkbenchService:
         runtime_requirements = self._build_wcrun_runtime_requirements(
             graph_model=graph_model,
             packaged_resources=packaged_resources,
+            project_settings=project_settings,
         )
         graph_entries = self._build_wcrun_graph_index(
             graph_model=graph_model,
@@ -14081,6 +14132,9 @@ class CompilationWorkbenchService:
             if runtime_root.exists():
                 shutil.rmtree(runtime_root, ignore_errors=True)
             shutil.copytree(full_venv_root, runtime_root, dirs_exist_ok=True)
+            self._project_python_runtime_manager.rewrite_portable_full_venv_paths(
+                runtime_root=runtime_root
+            )
             return
         if wheelhouse_root.exists():
             target_wheelhouse_root = runtime_root / "wheelhouse"
@@ -14522,13 +14576,102 @@ class CompilationWorkbenchService:
         *,
         graph_model: GraphModel,
         packaged_resources: dict,
+        project_settings: dict,
     ) -> dict:
         return {
             "minimum_app_version": self._build_workbench_metadata()["api_version"],
             "required_platform": "windows",
             "required_browser": "msedge",
             "requires_captcha_ocr": bool(packaged_resources.get("requires_captcha_ocr", False)),
+            "security_requirements": self._derive_wcrun_security_requirements(
+                graph_model=graph_model,
+                packaged_resources=packaged_resources,
+                project_settings=project_settings,
+            ),
         }
+
+    def _derive_wcrun_security_requirements(
+        self,
+        *,
+        graph_model: GraphModel,
+        packaged_resources: dict,
+        project_settings: dict,
+    ) -> dict:
+        graph_document = graph_model.model_dump(mode="json")
+        required: dict[str, bool] = {}
+
+        def require(field_name: str) -> None:
+            required[field_name] = True
+
+        nodes = graph_document.get("nodes") if isinstance(graph_document, dict) else []
+        if isinstance(nodes, list):
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                node_kind = node.get("node_kind")
+                node_config = node.get("node_config") if isinstance(node.get("node_config"), dict) else {}
+                if isinstance(node_kind, str) and node_kind.startswith("browser."):
+                    require("allow_browser_executor")
+                if node_kind == "browser.set_input_files":
+                    require("allow_browser_uploads")
+                    require("allow_file_access")
+                if node_kind == "python.run":
+                    require("allow_python_execution")
+                if node_kind == "browser.inject_js":
+                    require("allow_js_injection")
+                if node_kind in {"browser.run_js", "browser.evaluate_js"}:
+                    require("allow_js_evaluation")
+                candidate_values = list(node_config.values()) if isinstance(node_config, dict) else []
+                for value in candidate_values:
+                    if isinstance(value, str):
+                        lowered = value.lower()
+                        if lowered.startswith("http://"):
+                            require("allow_remote_network_access")
+                        elif lowered.startswith("https://"):
+                            require("allow_remote_network_access")
+
+        resource_policy = (
+            project_settings.get("resource_policy")
+            if isinstance(project_settings.get("resource_policy"), dict)
+            else {}
+        )
+        embedded_resources = (
+            resource_policy.get("embedded_resources")
+            if isinstance(resource_policy.get("embedded_resources"), list)
+            else []
+        )
+        if embedded_resources:
+            require("allow_file_access")
+
+        python_runtime_profile = (
+            project_settings.get("python_runtime_profile")
+            if isinstance(project_settings.get("python_runtime_profile"), dict)
+            else {}
+        )
+        if bool(python_runtime_profile.get("runtime_enabled", False)):
+            require("allow_python_execution")
+
+        if bool(packaged_resources.get("requires_captcha_ocr", False)):
+            require("allow_file_access")
+
+        runtime_defaults = (
+            project_settings.get("runtime_defaults")
+            if isinstance(project_settings.get("runtime_defaults"), dict)
+            else {}
+        )
+        initial_variables = (
+            runtime_defaults.get("initial_variables")
+            if isinstance(runtime_defaults.get("initial_variables"), dict)
+            else {}
+        )
+        for value in initial_variables.values():
+            if isinstance(value, str):
+                lowered = value.lower()
+                if lowered.startswith("http://") or lowered.startswith("https://"):
+                    require("allow_remote_network_access")
+                    break
+
+        return required
 
     def _build_wcrun_graph_index(
         self,

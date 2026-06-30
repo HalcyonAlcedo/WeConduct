@@ -591,7 +591,16 @@ class ProjectPythonRuntimeManager:
             if not file_path.is_file():
                 continue
             relative_path = file_path.relative_to(runtime_root).as_posix()
+            if relative_path == "venv/pyvenv.cfg":
+                archive_entries[f"full-venv/{relative_path}"] = self._build_portable_pyvenv_cfg().encode(
+                    "utf-8"
+                )
+                continue
             archive_entries[f"full-venv/{relative_path}"] = file_path.read_bytes()
+        for relative_path, file_bytes in self._collect_portable_base_python_bundle(
+            self._resolve_base_python_executable(normalized_profile)
+        ).items():
+            archive_entries[f"full-venv/{relative_path}"] = file_bytes
         return {
             "bundle_root": "full-venv",
             "archive_entries": archive_entries,
@@ -601,6 +610,92 @@ class ProjectPythonRuntimeManager:
         if os.name == "nt":
             return Path("venv") / "Scripts" / "python.exe"
         return Path("venv") / "bin" / "python"
+
+    def _build_portable_pyvenv_cfg(self) -> str:
+        if os.name == "nt":
+            home = r"..\bundled-python"
+            executable = r"..\bundled-python\python.exe"
+            command = r"..\bundled-python\python.exe -m venv .\venv"
+        else:
+            home = "../bundled-python"
+            executable = "../bundled-python/python"
+            command = "../bundled-python/python -m venv ./venv"
+        return (
+            f"home = {home}\n"
+            "include-system-site-packages = false\n"
+            f"version = {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n"
+            f"executable = {executable}\n"
+            f"command = {command}\n"
+        )
+
+    def _collect_portable_base_python_bundle(self, base_python_executable: Path) -> dict[str, bytes]:
+        base_dir = base_python_executable.resolve(strict=False).parent
+        candidate_names = [
+            base_python_executable.name,
+            "pythonw.exe",
+            f"python{sys.version_info.major}{sys.version_info.minor}.dll",
+            "python3.dll",
+            "base_library.zip",
+            "VCRUNTIME140.dll",
+            "VCRUNTIME140_1.dll",
+            "MSVCP140.dll",
+            "MSVCP140_1.dll",
+            "api-ms-win-crt-conio-l1-1-0.dll",
+            "api-ms-win-crt-convert-l1-1-0.dll",
+            "api-ms-win-crt-environment-l1-1-0.dll",
+            "api-ms-win-crt-filesystem-l1-1-0.dll",
+            "api-ms-win-crt-heap-l1-1-0.dll",
+            "api-ms-win-crt-locale-l1-1-0.dll",
+            "api-ms-win-crt-math-l1-1-0.dll",
+            "api-ms-win-crt-process-l1-1-0.dll",
+            "api-ms-win-crt-runtime-l1-1-0.dll",
+            "api-ms-win-crt-stdio-l1-1-0.dll",
+            "api-ms-win-crt-string-l1-1-0.dll",
+            "api-ms-win-crt-time-l1-1-0.dll",
+            "api-ms-win-crt-utility-l1-1-0.dll",
+        ]
+        bundle: dict[str, bytes] = {}
+        for candidate_name in candidate_names:
+            candidate = base_dir / candidate_name
+            if not candidate.exists() or not candidate.is_file():
+                continue
+            bundle[f"bundled-python/{candidate.name}"] = candidate.read_bytes()
+        candidate_directories = ["DLLs", "Lib"]
+        for directory_name in candidate_directories:
+            directory = base_dir / directory_name
+            if not directory.exists() or not directory.is_dir():
+                continue
+            for file_path in directory.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                if directory_name == "Lib" and "site-packages" in file_path.parts:
+                    continue
+                relative_path = file_path.relative_to(base_dir).as_posix()
+                bundle[f"bundled-python/{relative_path}"] = file_path.read_bytes()
+        return bundle
+
+    def rewrite_portable_full_venv_paths(self, *, runtime_root: Path) -> None:
+        venv_root = runtime_root / "venv"
+        pyvenv_cfg = venv_root / "pyvenv.cfg"
+        bundled_python_root = runtime_root / "bundled-python"
+        if not pyvenv_cfg.exists() or not bundled_python_root.exists():
+            return
+        if os.name == "nt":
+            executable_name = "python.exe"
+            command = f"{bundled_python_root / executable_name} -m venv {venv_root}"
+        else:
+            executable_name = "python"
+            command = f"{bundled_python_root / executable_name} -m venv {venv_root}"
+        pyvenv_cfg.write_text(
+            (
+                f"home = {bundled_python_root}\n"
+                "include-system-site-packages = false\n"
+                f"version = {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n"
+                f"executable = {bundled_python_root / executable_name}\n"
+                f"command = {command}\n"
+            ),
+            encoding="utf-8",
+        )
 
     def _resolve_base_python_executable(self, profile: dict) -> Path:
         normalized_profile = normalize_python_runtime_profile(profile)

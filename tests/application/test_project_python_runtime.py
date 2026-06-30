@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import zipfile
 
 import pytest
 
@@ -341,3 +342,37 @@ def test_python_runtime_manager_rejects_wheelhouse_source_path_outside_project_r
             project_storage_root=tmp_path / "project.data",
             runtime_root=tmp_path / "runtime.data",
         )
+
+
+def test_full_venv_export_rewrites_pyvenv_cfg_for_portable_runtime(tmp_path: Path) -> None:
+    manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
+    profile = build_default_python_runtime_profile()
+    profile["runtime_enabled"] = True
+    profile["project_cache_mode"] = "full_venv"
+    profile["package_embed_mode"] = "full_venv"
+    profile["requirements_source_mode"] = "inline"
+    profile["requirements_inline"] = []
+    project_storage_root = tmp_path / "project.data"
+
+    prepared = manager.prepare_runtime(
+        profile,
+        project_id="demo",
+        project_storage_root=project_storage_root,
+    )
+    exported = manager.export_runtime_bundle(
+        profile,
+        project_id="demo",
+        project_storage_root=project_storage_root,
+        package_embed_mode="full_venv",
+    )
+
+    pyvenv_entry = exported["archive_entries"]["full-venv/venv/pyvenv.cfg"].decode("utf-8")
+    python_relative = manager._build_runtime_python_relative_path().as_posix()
+
+    assert "home = ..\\bundled-python" in pyvenv_entry
+    assert "executable = ..\\bundled-python\\python.exe" in pyvenv_entry
+    assert "command = ..\\bundled-python\\python.exe -m venv .\\venv" in pyvenv_entry
+    assert f"full-venv/{python_relative}" in exported["archive_entries"]
+    assert "full-venv/bundled-python/python.exe" in exported["archive_entries"]
+    assert "full-venv/bundled-python/Lib/encodings/__init__.py" in exported["archive_entries"]
+    assert prepared["python_executable"].exists() is True

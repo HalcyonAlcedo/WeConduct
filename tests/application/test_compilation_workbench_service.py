@@ -42,6 +42,134 @@ def _build_minimal_workspace_graph(*, initial_variables: dict | None = None) -> 
     }
 
 
+def _build_runtime_sensitive_workspace_graph() -> dict:
+    return {
+        "graph_model_id": "graph:workspace",
+        "compilation_id": None,
+        "graph_schema_version": "graph-v1",
+        "nodes": [
+            {
+                "node_id": "node-start",
+                "lowered_kind": "control",
+                "source_anchor_ref": "n-node-start",
+                "expansion_role": "flow.start",
+                "display_name": "流程入口",
+                "node_kind": "flow.start",
+                "position": {"x": 0, "y": 0},
+                "ports": [
+                    {
+                        "port_id": "control-out",
+                        "direction": "output",
+                        "relation_layer": "control",
+                        "semantic_slot": "control.next",
+                    }
+                ],
+                "node_config": {
+                    "initial_variables": {"base_url": "https://example.com", "upload_file_path": "input/a.txt"},
+                    "browser_config": {"headless": True},
+                    "execution_defaults": {
+                        "default_timeout_ms": 30000,
+                        "default_retry_count": 0,
+                    },
+                },
+            },
+            {
+                "node_id": "node-browser-goto",
+                "lowered_kind": "execution",
+                "source_anchor_ref": "n-node-browser-goto",
+                "expansion_role": "browser.goto",
+                "display_name": "打开页面",
+                "node_kind": "browser.goto",
+                "position": {"x": 160, "y": 0},
+                "ports": [
+                    {
+                        "port_id": "control-in",
+                        "direction": "input",
+                        "relation_layer": "control",
+                        "semantic_slot": "control.previous",
+                    },
+                    {
+                        "port_id": "control-out",
+                        "direction": "output",
+                        "relation_layer": "control",
+                        "semantic_slot": "control.next",
+                    },
+                ],
+                "node_config": {"url": "${base_url}"},
+            },
+            {
+                "node_id": "node-upload",
+                "lowered_kind": "execution",
+                "source_anchor_ref": "n-node-upload",
+                "expansion_role": "browser.set_input_files",
+                "display_name": "上传文件",
+                "node_kind": "browser.set_input_files",
+                "position": {"x": 320, "y": 0},
+                "ports": [
+                    {
+                        "port_id": "control-in",
+                        "direction": "input",
+                        "relation_layer": "control",
+                        "semantic_slot": "control.previous",
+                    },
+                    {
+                        "port_id": "control-out",
+                        "direction": "output",
+                        "relation_layer": "control",
+                        "semantic_slot": "control.next",
+                    },
+                ],
+                "node_config": {"selector": "#upload", "path": "${upload_file_path}"},
+            },
+            {
+                "node_id": "node-run-python",
+                "lowered_kind": "execution",
+                "source_anchor_ref": "n-node-run-python",
+                "expansion_role": "python.run",
+                "display_name": "运行 Python",
+                "node_kind": "python.run",
+                "position": {"x": 480, "y": 0},
+                "ports": [
+                    {
+                        "port_id": "control-in",
+                        "direction": "input",
+                        "relation_layer": "control",
+                        "semantic_slot": "control.previous",
+                    }
+                ],
+                "node_config": {"code": "print('hello')"},
+            },
+        ],
+        "edges": [
+            {
+                "edge_id": "edge-start-goto",
+                "from_node_id": "node-start",
+                "from_port_id": "control-out",
+                "to_node_id": "node-browser-goto",
+                "to_port_id": "control-in",
+                "relation_layer": "control",
+            },
+            {
+                "edge_id": "edge-goto-upload",
+                "from_node_id": "node-browser-goto",
+                "from_port_id": "control-out",
+                "to_node_id": "node-upload",
+                "to_port_id": "control-in",
+                "relation_layer": "control",
+            },
+            {
+                "edge_id": "edge-upload-python",
+                "from_node_id": "node-upload",
+                "from_port_id": "control-out",
+                "to_node_id": "node-run-python",
+                "to_port_id": "control-in",
+                "relation_layer": "control",
+            },
+        ],
+        "graph_effective_diagnostic_anchor_refs": [],
+    }
+
+
 def test_workbench_service_project_documents_include_custom_node_graph_documents() -> None:
     service = CompilationWorkbenchService()
     graph_payload = {
@@ -207,21 +335,19 @@ def test_update_project_runtime_defaults_writes_back_main_flow_start_projection(
     }
 
 
-def test_loaded_wcrun_runtime_blocks_when_project_security_requirements_exceed_preferences(
+def test_loaded_wcrun_runtime_blocks_when_manifest_security_requirements_exceed_preferences(
     tmp_path: Path,
 ) -> None:
     preferences_service = PreferencesService(preferences_store=InMemoryPreferencesStore())
     service = CompilationWorkbenchService(preferences_service=preferences_service)
-    graph_payload = _build_minimal_workspace_graph(initial_variables={"username": "before"})
+    graph_payload = _build_runtime_sensitive_workspace_graph()
     service.save_graph_document(graph_payload)
     project_path = tmp_path / "package-security.weconduct.json"
     service.save_project_as(project_path=str(project_path))
     project_settings = service.get_project_settings_document()["project_settings"]
-    project_settings["security_settings"] = {
-        "allow_file_access": True,
-        "allow_browser_executor": True,
-        "allow_python_execution": True,
-    }
+    project_settings.pop("security_settings", None)
+    project_settings["python_runtime_profile"]["runtime_enabled"] = True
+    project_settings["resource_policy"]["embedded_resources"] = ["input\\upload-sample.txt"]
     service.update_project_settings(project_settings=project_settings)
     build_result = service.build_project_package(
         mode="wcrun",
@@ -239,6 +365,158 @@ def test_loaded_wcrun_runtime_blocks_when_project_security_requirements_exceed_p
     assert "security_settings.allow_file_access" in blocked_fields
     assert "security_settings.allow_browser_executor" in blocked_fields
     assert "security_settings.allow_python_execution" in blocked_fields
+    load_summary = loaded_service.load_project_package(package_path=build_result["package"]["output_path"])[
+        "security_requirement_summary"
+    ]
+    load_blocked_fields = {
+        entry.get("setting_field")
+        for entry in load_summary.get("blocked_entries", [])
+        if isinstance(entry, dict)
+    }
+    assert load_summary["ready"] is False
+    assert "security_settings.allow_file_access" in load_blocked_fields
+    assert "security_settings.allow_browser_executor" in load_blocked_fields
+    assert "security_settings.allow_python_execution" in load_blocked_fields
+
+
+def test_build_wcrun_manifest_derives_security_requirements_from_graph_and_project_settings(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_runtime_sensitive_workspace_graph())
+    project_path = tmp_path / "derived-security.weconduct.json"
+    service.save_project_as(project_path=str(project_path))
+    project_settings = service.get_project_settings_document()["project_settings"]
+    project_settings.pop("security_settings", None)
+    project_settings["python_runtime_profile"]["runtime_enabled"] = True
+    project_settings["resource_policy"]["embedded_resources"] = ["input\\upload-sample.txt"]
+    service.update_project_settings(project_settings=project_settings)
+
+    build_result = service.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=tmp_path / "derived-security.wcrun",
+    )
+    assert build_result["status"] == "built"
+    inspect_result = service.inspect_project_package(package_path=build_result["package"]["output_path"])
+    runtime_requirements = inspect_result["package"]["manifest"]["runtime_requirements"]
+    security_requirements = runtime_requirements.get("security_requirements")
+
+    assert security_requirements == {
+        "allow_file_access": True,
+        "allow_browser_executor": True,
+        "allow_browser_uploads": True,
+        "allow_remote_network_access": True,
+        "allow_python_execution": True,
+    }
+
+
+def test_load_wcrun_uses_manifest_security_requirements_when_project_settings_do_not_define_them(
+    tmp_path: Path,
+) -> None:
+    preferences_service = PreferencesService(preferences_store=InMemoryPreferencesStore())
+    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    service.save_graph_document(_build_runtime_sensitive_workspace_graph())
+    project_path = tmp_path / "derived-security-load.weconduct.json"
+    service.save_project_as(project_path=str(project_path))
+    project_settings = service.get_project_settings_document()["project_settings"]
+    project_settings.pop("security_settings", None)
+    project_settings["python_runtime_profile"]["runtime_enabled"] = True
+    project_settings["resource_policy"]["embedded_resources"] = ["input\\upload-sample.txt"]
+    service.update_project_settings(project_settings=project_settings)
+
+    build_result = service.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=tmp_path / "derived-security-load.wcrun",
+    )
+
+    loaded_service = CompilationWorkbenchService(preferences_service=preferences_service)
+    load_result = loaded_service.load_project_package(package_path=build_result["package"]["output_path"])
+    summary = load_result["security_requirement_summary"]
+    blocked_fields = {
+        entry.get("setting_field")
+        for entry in summary.get("blocked_entries", [])
+        if isinstance(entry, dict)
+    }
+
+    assert summary["ready"] is False
+    assert "security_settings.allow_file_access" in blocked_fields
+    assert "security_settings.allow_browser_executor" in blocked_fields
+    assert "security_settings.allow_python_execution" in blocked_fields
+    assert summary["required_security_settings"]["allow_browser_uploads"] is True
+
+
+def test_load_project_package_projects_runtime_defaults_back_into_main_flow_start(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph(initial_variables={"username": "before"}))
+    project_path = tmp_path / "package-runtime-defaults.weconduct.json"
+    service.save_project_as(project_path=str(project_path))
+    runtime_defaults = {
+        "initial_variables": {"username": "from_settings", "token": "xyz"},
+        "browser_config": {"headless": False},
+        "execution_defaults": {"default_timeout_ms": 45000, "default_retry_count": 2},
+    }
+    service.update_project_runtime_defaults(runtime_defaults=runtime_defaults)
+    build_result = service.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=tmp_path / "package-runtime-defaults.wcrun",
+    )
+
+    loaded_service = CompilationWorkbenchService()
+    loaded_service.load_project_package(package_path=build_result["package"]["output_path"])
+    graph_document = loaded_service.get_graph_document()
+    flow_start = next(node for node in graph_document["graph_model"].nodes if node.node_kind == "flow.start")
+
+    assert flow_start.node_config["initial_variables"] == runtime_defaults["initial_variables"]
+    assert flow_start.node_config["browser_config"] == runtime_defaults["browser_config"]
+    assert flow_start.node_config["execution_defaults"] == runtime_defaults["execution_defaults"]
+
+
+def test_loaded_wcrun_full_venv_runtime_uses_portable_bundled_python_payload(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph(initial_variables={"username": "before"}))
+    project_path = tmp_path / "portable-fullvenv.weconduct.json"
+    service.save_project_as(project_path=str(project_path))
+    project_settings = service.get_project_settings_document()["project_settings"]
+    python_profile = project_settings["python_runtime_profile"]
+    python_profile["runtime_enabled"] = True
+    python_profile["project_cache_mode"] = "full_venv"
+    python_profile["package_embed_mode"] = "full_venv"
+    python_profile["requirements_source_mode"] = "inline"
+    python_profile["requirements_inline"] = []
+    service.update_project_settings(project_settings=project_settings)
+    prepared = service.prepare_project_python_runtime()
+    assert prepared["runtime_status"]["health_status"] == "ready"
+
+    build_result = service.build_project_package(
+        mode="wcrun",
+        source_of_truth="saved_project_only",
+        output_path=tmp_path / "portable-fullvenv.wcrun",
+    )
+
+    loaded_service = CompilationWorkbenchService()
+    loaded_service.load_project_package(package_path=build_result["package"]["output_path"])
+    settings_document = loaded_service.get_project_settings_document()
+    runtime_summary = settings_document["python_runtime_summary"]
+    session_dir = Path(settings_document["state"]["session_dir"])
+    pyvenv_cfg = (
+        session_dir
+        / "python-runtime"
+        / runtime_summary["manifest_hash"]
+        / "venv"
+        / "pyvenv.cfg"
+    ).read_text(encoding="utf-8")
+    runtime_root = session_dir / "python-runtime" / runtime_summary["manifest_hash"]
+
+    assert runtime_summary["health_status"] == "ready"
+    assert f"home = {runtime_root / 'bundled-python'}" in pyvenv_cfg
+    assert f"executable = {runtime_root / 'bundled-python' / 'python.exe'}" in pyvenv_cfg
 
 
 def test_project_security_settings_report_blocked_entries_and_can_be_enabled(

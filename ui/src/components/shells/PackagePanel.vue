@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { postPackagePreflight, postPackageBuild, fetchPackageInspect, postPackageLoad, postPackageUnload, postPackageBindExternal, postFileDialog } from '@/services/api'
+import { postPackagePreflight, postPackageBuild, fetchPackageInspect, postPackageLoad, postPackageUnload, postPackageBindExternal, postFileDialog, postSecurityEnableRequired } from '@/services/api'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useCompilationStore } from '@/stores/compilationStore'
 import { useRuntimeStore } from '@/stores/runtimeStore'
-import { useDockStore } from '@/stores/dockStore'
 import { useResourceStore } from '@/stores/resourceStore'
 import { useToastStore } from '@/stores/toastStore'
-import type { PackagePreflightResponse } from '@/types/domains/api'
+import type { PackagePreflightResponse, SecurityRequirementSummary } from '@/types/domains/api'
 
 const workspace = useWorkspaceStore()
 const graphWs = useGraphWorkspaceStore()
@@ -25,6 +24,22 @@ const preflightResult = ref<PackagePreflightResponse | null>(null)
 const inspectResult = ref<Record<string, unknown> | null>(null)
 const bindResourceId = ref('')
 const bindValue = ref('')
+
+const secDialog = ref<SecurityRequirementSummary | null>(null)
+const secEnabling = ref(false)
+
+function dismissSecDialog() { secDialog.value = null }
+async function enableSecurityAndClose() {
+  secEnabling.value = true
+  try {
+    await postSecurityEnableRequired({ confirm_high_risk: true })
+    toast.success('已放行该包所需权限')
+    await workspace.refreshSnapshot()
+    secDialog.value = null
+  } catch (e: any) {
+    toast.error('放行失败', e?.message)
+  } finally { secEnabling.value = false }
+}
 
 function resolveDefaultOutputPath() {
   const snapshot = workspace.snapshot as any
@@ -94,6 +109,11 @@ async function doLoad() {
   loading.value = 'load'
   try {
     const result = await postPackageLoad(packagePath.value)
+    // Check security requirements FIRST — before any async ops that could throw and skip this check
+    const secSummary = result.security_requirement_summary
+    if (secSummary && !secSummary.ready) {
+      secDialog.value = secSummary
+    }
     await workspace.refreshSnapshot()
     compilation.clearSource() // clear stale source BEFORE loading new graph
     await graphWs.loadGraph()
@@ -101,13 +121,6 @@ async function doLoad() {
     runtime.refreshAll()
     resource.refreshAll()
     toast.success('已加载', '工作区已切换为 wcrun_package')
-    const secSummary = (result as any).security_requirement_summary
-    if (secSummary && !secSummary.ready) {
-      const dock = useDockStore()
-      dock.restorePanel('projectSettings')
-      const fields = (secSummary.blocked_entries || []).map((e: any) => e.display_name).join('、')
-      toast.error('安全设置不足', fields ? `当前首选项缺少：${fields}` : '当前首选项安全设置不足以运行该包')
-    }
   } catch (e: any) { toast.error('加载失败', e?.message) }
   finally { loading.value = '' }
 }
@@ -206,6 +219,30 @@ const isWcrun = computed(() => (workspace.snapshot as any)?.project_settings?.so
         </div>
     </div>
   </div>
+
+  <!-- Security requirement dialog -->
+  <Teleport to="body">
+    <div v-if="secDialog" class="pkp-sec-overlay" @click.self="dismissSecDialog">
+      <div class="pkp-sec-box">
+        <div class="pkp-sec-hd">运行该包前需要放行安全权限</div>
+        <div class="pkp-sec-body">
+          <p class="pkp-sec-desc">当前软件首选项缺少该包运行所需的权限。你可以先忽略，但运行时可能被安全策略拦截。</p>
+          <div class="pkp-sec-list">
+            <div v-for="e in secDialog.blocked_entries" :key="e.field" class="pkp-sec-item">
+              <span class="pkp-sec-name">{{ e.display_name }}</span>
+              <span class="pkp-sec-val">{{ e.current_value ? '已开启' : '未开启' }} → 需要开启</span>
+            </div>
+          </div>
+        </div>
+        <div class="pkp-sec-ft">
+          <button class="pkp-sec-btn pkp-sec-ignore" @click="dismissSecDialog">忽略</button>
+          <button class="pkp-sec-btn pkp-sec-enable" :disabled="secEnabling" @click="enableSecurityAndClose">
+            {{ secEnabling ? '放行中…' : '一键修改并放行权限' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>
 <style scoped>
 .pkp-root { height: 100%; overflow: hidden; }
@@ -244,4 +281,21 @@ const isWcrun = computed(() => (workspace.snapshot as any)?.project_settings?.so
 .psp-field { display: flex; align-items: center; gap: var(--space-sm); padding: 3px 0; font-size: var(--text-small); margin-bottom: 8px; }
 .psp-field label { width: 80px; flex-shrink: 0; color: var(--text-disabled); }
 .psp-input { flex: 1; padding: 2px 6px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text-primary); font-size: var(--text-small); }
+/* Security requirement dialog */
+.pkp-sec-overlay { position: fixed; inset: 0; z-index: 4000; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; }
+.pkp-sec-box { background: var(--bg-panel); border: 1px solid var(--border-default); border-radius: var(--radius-lg); min-width: 380px; max-width: 480px; box-shadow: var(--shadow-menu); }
+.pkp-sec-hd { padding: 12px 14px; border-bottom: 1px solid var(--border-subtle); font-weight: 600; color: var(--state-error); font-size: var(--text-body); }
+.pkp-sec-body { padding: 12px 14px; }
+.pkp-sec-desc { font-size: var(--text-small); color: var(--text-secondary); margin-bottom: 10px; }
+.pkp-sec-list { display: flex; flex-direction: column; gap: 6px; }
+.pkp-sec-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; background: rgba(208,112,96,0.06); border: 1px solid rgba(208,112,96,0.15); border-radius: var(--radius-sm); }
+.pkp-sec-name { font-size: var(--text-small); font-weight: 500; color: var(--state-error); }
+.pkp-sec-val { font-size: var(--text-caption); color: var(--text-disabled); }
+.pkp-sec-ft { padding: 10px 14px; border-top: 1px solid var(--border-subtle); display: flex; gap: 8px; justify-content: flex-end; }
+.pkp-sec-btn { padding: 4px 16px; border-radius: var(--radius-sm); cursor: pointer; font-size: var(--text-small); font-family: var(--font-ui); }
+.pkp-sec-ignore { border: 1px solid var(--border-default); background: var(--bg-panel); color: var(--text-secondary); }
+.pkp-sec-ignore:hover { background: var(--bg-hover); }
+.pkp-sec-enable { border: 1px solid var(--state-error); background: var(--state-error); color: #fff; }
+.pkp-sec-enable:hover:not(:disabled) { background: #b85d54; }
+.pkp-sec-enable:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>
