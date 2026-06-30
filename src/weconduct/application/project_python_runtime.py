@@ -20,6 +20,18 @@ PYTHON_RUNTIME_PACKAGE_EMBED_MODES = {"none", "wheelhouse_rebuild", "full_venv"}
 PYTHON_RUNTIME_HEALTH_STATUSES = {"unknown", "ready", "missing", "broken", "stale"}
 
 
+def _subprocess_windows_silent_kwargs() -> dict:
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "startupinfo": startupinfo,
+    }
+
+
 def _resolve_project_scoped_path(path_value: str, *, project_storage_root: Path, field_name: str) -> Path:
     candidate = Path(path_value.strip())
     project_root = project_storage_root.resolve()
@@ -244,6 +256,10 @@ class ProjectPythonRuntimeManager:
         base_python_executable = self._resolve_base_python_executable(profile)
         python_relative_path = self._build_runtime_python_relative_path()
         python_executable = runtime_root / python_relative_path
+        if python_executable.exists() and not self._can_launch_python(python_executable):
+            # 已打包的 full_venv 在跨机器/跨会话目录恢复后，pyvenv.cfg 里的绝对路径可能失效。
+            # 优先按 bundled-python 重写 venv 元数据，避免直接清空并重建 venv。
+            self.rewrite_portable_full_venv_paths(runtime_root=runtime_root)
         if not python_executable.exists():
             self._create_virtual_environment(
                 base_python_executable=base_python_executable,
@@ -340,6 +356,30 @@ class ProjectPythonRuntimeManager:
                 health_message="runtime manifest unreadable",
             )
         python_executable = self._read_materialized_python_executable(runtime_root)
+        if python_executable is not None and (
+            not python_executable.exists() or not self._can_launch_python(python_executable)
+        ):
+            self.rewrite_portable_full_venv_paths(runtime_root=runtime_root)
+            python_executable = self._read_materialized_python_executable(runtime_root)
+        if python_executable is not None and (
+            not python_executable.exists() or not self._can_launch_python(python_executable)
+        ):
+            bundled_python = runtime_root / "bundled-python" / (
+                "python.exe" if os.name == "nt" else "python"
+            )
+            if bundled_python.exists() and self._can_launch_python(bundled_python):
+                self._repair_virtual_environment(
+                    base_python_executable=bundled_python,
+                    venv_root=runtime_root / "venv",
+                )
+                _write_runtime_sitecustomize(
+                    _build_runtime_site_packages_root(runtime_root / "venv"),
+                    blocked_sys_paths=_collect_blocked_runtime_sys_paths(
+                        base_python_executable=bundled_python,
+                        venv_root=runtime_root / "venv",
+                    ),
+                )
+                python_executable = self._read_materialized_python_executable(runtime_root)
         handle = self._build_runtime_handle(
             profile=profile,
             project_cache_mode=manifest["project_cache_mode"],
@@ -591,7 +631,16 @@ class ProjectPythonRuntimeManager:
             if not file_path.is_file():
                 continue
             relative_path = file_path.relative_to(runtime_root).as_posix()
+            if relative_path == "venv/pyvenv.cfg":
+                archive_entries[f"full-venv/{relative_path}"] = self._build_portable_pyvenv_cfg_placeholder().encode(
+                    "utf-8"
+                )
+                continue
             archive_entries[f"full-venv/{relative_path}"] = file_path.read_bytes()
+        for relative_path, file_bytes in self._collect_portable_base_python_bundle(
+            self._resolve_base_python_executable(normalized_profile)
+        ).items():
+            archive_entries[f"full-venv/{relative_path}"] = file_bytes
         return {
             "bundle_root": "full-venv",
             "archive_entries": archive_entries,
@@ -601,6 +650,95 @@ class ProjectPythonRuntimeManager:
         if os.name == "nt":
             return Path("venv") / "Scripts" / "python.exe"
         return Path("venv") / "bin" / "python"
+
+    def _build_portable_pyvenv_cfg_placeholder(self) -> str:
+        if os.name == "nt":
+            home = r"__WE_CONDUCT_PORTABLE_BUNDLED_PYTHON__"
+            executable = r"__WE_CONDUCT_PORTABLE_BUNDLED_PYTHON__\python.exe"
+            command = r"__WE_CONDUCT_PORTABLE_BUNDLED_PYTHON__\python.exe -m venv __WE_CONDUCT_PORTABLE_VENV__"
+        else:
+            home = "__WE_CONDUCT_PORTABLE_BUNDLED_PYTHON__"
+            executable = "__WE_CONDUCT_PORTABLE_BUNDLED_PYTHON__/python"
+            command = "__WE_CONDUCT_PORTABLE_BUNDLED_PYTHON__/python -m venv __WE_CONDUCT_PORTABLE_VENV__"
+        return (
+            f"home = {home}\n"
+            "include-system-site-packages = false\n"
+            f"version = {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n"
+            f"executable = {executable}\n"
+            f"command = {command}\n"
+        )
+
+    def _collect_portable_base_python_bundle(self, base_python_executable: Path) -> dict[str, bytes]:
+        base_dir = base_python_executable.resolve(strict=False).parent
+        bundle: dict[str, bytes] = {}
+        for candidate in base_dir.iterdir():
+            if not candidate.is_file():
+                continue
+            if candidate.suffix.lower() not in {".exe", ".dll"} and candidate.name != "pyvenv.cfg":
+                continue
+            bundle[f"bundled-python/{candidate.name}"] = candidate.read_bytes()
+        candidate_directories = ["DLLs", "Lib", "include", "Include", "libs", "Libs"]
+        copied_directories: set[str] = set()
+        for directory_name in candidate_directories:
+            directory = base_dir / directory_name
+            if not directory.exists() or not directory.is_dir():
+                continue
+            normalized_name = directory_name.lower()
+            if normalized_name in copied_directories:
+                continue
+            copied_directories.add(normalized_name)
+            for file_path in directory.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                if normalized_name == "lib" and "site-packages" in file_path.parts:
+                    continue
+                if normalized_name == "lib" and any(
+                    blocked in file_path.parts for blocked in ("test", "tkinter", "idlelib", "turtledemo")
+                ):
+                    continue
+                relative_path = file_path.relative_to(base_dir).as_posix()
+                bundle[f"bundled-python/{relative_path}"] = file_path.read_bytes()
+        return bundle
+
+    def rewrite_portable_full_venv_paths(self, *, runtime_root: Path) -> None:
+        venv_root = runtime_root / "venv"
+        pyvenv_cfg = venv_root / "pyvenv.cfg"
+        bundled_python_root = runtime_root / "bundled-python"
+        if not pyvenv_cfg.exists() or not bundled_python_root.exists():
+            return
+        if os.name == "nt":
+            executable_name = "python.exe"
+            command = f"{bundled_python_root / executable_name} -m venv {venv_root}"
+        else:
+            executable_name = "python"
+            command = f"{bundled_python_root / executable_name} -m venv {venv_root}"
+        pyvenv_cfg.write_text(
+            (
+                f"home = {bundled_python_root}\n"
+                "include-system-site-packages = false\n"
+                f"version = {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n"
+                f"executable = {bundled_python_root / executable_name}\n"
+                f"command = {command}\n"
+            ),
+            encoding="utf-8",
+        )
+
+    def probe_python_executable_launchable(self, python_executable: Path) -> tuple[bool, str | None]:
+        try:
+            result = subprocess.run(
+                [str(python_executable), "--version"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=20,
+                **_subprocess_windows_silent_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, str(exc)
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+            return False, detail
+        return True, None
 
     def _resolve_base_python_executable(self, profile: dict) -> Path:
         normalized_profile = normalize_python_runtime_profile(profile)
@@ -621,13 +759,17 @@ class ProjectPythonRuntimeManager:
 
         if getattr(sys, "frozen", False):
             bundled_candidates = [
-                Path(sys.executable).resolve(strict=False).parent / "_internal" / "bundled-python" / "python.exe",
-                Path(sys.executable).resolve(strict=False).parent / "_internal" / "python.exe",
+                Path(sys.executable).resolve(strict=False).parent / "bundled-python" / "python.exe",
                 Path(sys.executable).resolve(strict=False).parent / "python.exe",
             ]
             meipass = getattr(sys, "_MEIPASS", None)
             if isinstance(meipass, str) and meipass.strip():
-                bundled_candidates.append(Path(meipass).resolve(strict=False) / "python.exe")
+                bundled_candidates.extend(
+                    [
+                        Path(meipass).resolve(strict=False) / "bundled-python" / "python.exe",
+                        Path(meipass).resolve(strict=False) / "python.exe",
+                    ]
+                )
             for candidate in bundled_candidates:
                 if candidate.exists():
                     return candidate
@@ -664,12 +806,36 @@ class ProjectPythonRuntimeManager:
                 text=True,
                 check=False,
                 timeout=180,
+                **_subprocess_windows_silent_kwargs(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ValueError(f"python runtime venv creation failed: {exc}") from exc
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
             raise ValueError(f"python runtime venv creation failed: {detail}")
+
+    def _repair_virtual_environment(self, *, base_python_executable: Path, venv_root: Path) -> None:
+        command = [
+            str(base_python_executable),
+            "-m",
+            "venv",
+            "--upgrade",
+            str(venv_root),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=180,
+                **_subprocess_windows_silent_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError(f"python runtime venv repair failed: {exc}") from exc
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+            raise ValueError(f"python runtime venv repair failed: {detail}")
 
     def _collect_runtime_requirements_lines(
         self,
@@ -831,6 +997,7 @@ class ProjectPythonRuntimeManager:
                 text=True,
                 check=False,
                 timeout=300,
+                **_subprocess_windows_silent_kwargs(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ValueError(f"python runtime dependency install failed: {exc}") from exc
@@ -849,6 +1016,7 @@ class ProjectPythonRuntimeManager:
                 text=True,
                 check=False,
                 timeout=10,
+                **_subprocess_windows_silent_kwargs(),
             )
         except (OSError, subprocess.SubprocessError):
             return False

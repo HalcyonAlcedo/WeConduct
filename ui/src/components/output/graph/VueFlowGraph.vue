@@ -3,6 +3,7 @@ import { computed, ref, markRaw } from 'vue'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
+import { MiniMap } from '@vue-flow/minimap'
 import BaseNode from './nodes/BaseNode.vue'
 import { useGraphStore } from '@/stores/graphStore'
 import { useCompilationStore } from '@/stores/compilationStore'
@@ -10,6 +11,7 @@ import { useCompilationStore } from '@/stores/compilationStore'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
+import '@vue-flow/minimap/dist/style.css'
 
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useDockStore } from '@/stores/dockStore'
@@ -256,6 +258,7 @@ function onViewportChange(vp: { x: number; y: number; zoom: number }) {
       @viewport-change="onViewportChange"
     >
       <Background :gap="16" :size="1" pattern-color="#aaa" />
+      <MiniMap position="bottom-left" :width="160" :height="100" :mask-color="'rgba(0,0,0,0.08)'" />
       <Controls position="bottom-right" />
     </VueFlow>
 

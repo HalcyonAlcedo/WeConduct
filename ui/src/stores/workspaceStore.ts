@@ -35,6 +35,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const compileHistory = computed(() => snapshot.value?.compile_history ?? [])
   const uiHosting = computed(() => snapshot.value?.ui_hosting ?? null)
   const isUiHosted = computed(() => snapshot.value?.ui_hosting?.ui_hosted ?? false)
+  const isLimitedBrowser = computed(() => snapshot.value?.ui_hosting?.ui_mode === 'limited_browser')
   const healthCapabilities = computed(() => health.value?.capabilities ?? null)
   const compileCounter = computed(() => snapshot.value?.workbench?.compile_counter ?? 0)
   // P12: project storage model upgrade fields
@@ -107,6 +108,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     compileHistory,
     uiHosting,
     isUiHosted,
+    isLimitedBrowser,
     healthCapabilities,
     compileCounter,
     projectFileSchemaVersion, mainGraphPath, projectResourcesIndexPath, resourceOverridesPath, isDirectoryProject,

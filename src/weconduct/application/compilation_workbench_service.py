@@ -41,6 +41,7 @@ from weconduct.contracts import (
     create_initial_summary,
 )
 from weconduct.application.preferences_service import PreferencesService
+from weconduct.application.preferences_store import _normalize_security_settings
 from weconduct.application.legacy_webcontrol_converter import (
     build_conversion_report,
     convert_legacy_webcontrol_project,
@@ -66,7 +67,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
-CURRENT_API_VERSION = "0.7.3"
+CURRENT_API_VERSION = "0.7.4"
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
@@ -296,6 +297,10 @@ class CompilationWorkbenchService:
         graph_compatibility = self._normalize_graph_compatibility_metadata(
             self._get_graph_document_model()
         )
+        project_settings = deepcopy(self._extract_project_settings(self._state))
+        security_requirement_summary = self._build_project_security_requirement_summary(
+            project_settings=project_settings
+        )
         project_file_path = project_runtime.get("project_file_path")
         project_settings_path = None
         project_settings_exists = False
@@ -305,7 +310,8 @@ class CompilationWorkbenchService:
             ) / "project-settings.json"
             project_settings_exists = project_settings_path.exists()
         return {
-            "project_settings": deepcopy(self._extract_project_settings(self._state)),
+            "project_settings": project_settings,
+            "security_requirement_summary": security_requirement_summary,
             "python_runtime_summary": self._build_project_python_runtime_summary(),
             "state": {
                 "loaded": True,
@@ -348,6 +354,16 @@ class CompilationWorkbenchService:
             project_settings = self._extract_project_settings(current_state)
             project_settings["runtime_defaults"] = normalized_runtime_defaults
             current_state["project_settings"] = self._normalize_project_settings_document(project_settings)
+            graph_document = (
+                deepcopy(current_state.get("graph_document"))
+                if isinstance(current_state.get("graph_document"), dict)
+                else None
+            )
+            if isinstance(graph_document, dict):
+                current_state["graph_document"] = self._project_runtime_defaults_into_main_flow_start(
+                    graph_document_payload=graph_document,
+                    runtime_defaults=normalized_runtime_defaults,
+                )
             current_state["project_runtime"] = {
                 **self._extract_project_runtime(current_state),
                 "is_dirty": True,
@@ -529,7 +545,48 @@ class CompilationWorkbenchService:
             "graph_count": len(manifest_payload.get("graphs", []))
             if isinstance(manifest_payload.get("graphs"), list)
             else 0,
+            "package_file_size_bytes": resolved_output_path.stat().st_size if resolved_output_path.exists() else 0,
         }
+        package_summary = {
+            "package_identity": deepcopy(
+                manifest_payload.get("package_identity", {})
+                if isinstance(manifest_payload.get("package_identity"), dict)
+                else {}
+            ),
+            "entrypoint": deepcopy(
+                manifest_payload.get("entrypoint", {})
+                if isinstance(manifest_payload.get("entrypoint"), dict)
+                else {}
+            ),
+            "graph_summary": {
+                "graph_count": summary["graph_count"],
+                "embedded_resource_count": summary["embedded_resource_count"],
+                "external_resource_count": summary["external_resource_count"],
+            },
+        }
+        resource_summary = {
+            "embedded_resource_count": summary["embedded_resource_count"],
+            "external_resource_count": summary["external_resource_count"],
+        }
+        dependency_summary = {
+            "builtin_component_count": len(
+                manifest_payload.get("dependencies", {}).get("builtin_components", [])
+            )
+            if isinstance(manifest_payload.get("dependencies"), dict)
+            and isinstance(manifest_payload.get("dependencies", {}).get("builtin_components"), list)
+            else 0,
+            "custom_component_count": len(
+                manifest_payload.get("dependencies", {}).get("custom_components", [])
+            )
+            if isinstance(manifest_payload.get("dependencies"), dict)
+            and isinstance(manifest_payload.get("dependencies", {}).get("custom_components"), list)
+            else 0,
+        }
+        runtime_requirement_summary = deepcopy(
+            manifest_payload.get("runtime_requirements", {})
+            if isinstance(manifest_payload.get("runtime_requirements"), dict)
+            else {}
+        )
         return {
             "status": "built",
             "mode": normalized_mode,
@@ -540,6 +597,7 @@ class CompilationWorkbenchService:
                 "output_path": str(resolved_output_path.resolve()),
                 "project_file_path": str(resolved_project_path.resolve()),
                 "entry_count": len(package_contents),
+                "written_bytes": resolved_output_path.stat().st_size if resolved_output_path.exists() else 0,
             },
             "package_info": {
                 "package_id": manifest_payload.get("package_identity", {}).get("package_id")
@@ -554,6 +612,10 @@ class CompilationWorkbenchService:
                 "built_at": package_info_payload.get("built_at"),
             },
             "summary": summary,
+            "package_summary": package_summary,
+            "resource_summary": resource_summary,
+            "dependency_summary": dependency_summary,
+            "runtime_requirement_summary": runtime_requirement_summary,
             "diagnostics": {
                 "total_count": 0,
                 "highest_severity": None,
@@ -608,16 +670,17 @@ class CompilationWorkbenchService:
         )
         package_document["session_dir"] = str(session_dir.resolve())
         graph_payload = package_document["graph_document"]
-        project_settings = self._rewrite_loaded_package_embedded_resource_paths(
-            package_document["project_settings"],
-            package_document=package_document,
-            session_dir=session_dir,
-        )
+        project_settings = deepcopy(package_document["project_settings"])
         self._restore_loaded_package_python_runtime_bundle(
             session_dir=session_dir,
             project_settings=project_settings,
         )
         manifest = package_document["manifest"]
+        if isinstance(manifest, dict):
+            runtime_requirements = manifest.get("runtime_requirements")
+            if isinstance(runtime_requirements, dict):
+                project_settings = deepcopy(project_settings)
+                project_settings["runtime_requirements"] = deepcopy(runtime_requirements)
         project_summary = {}
         if isinstance(manifest, dict):
             source_project = manifest.get("source_project")
@@ -663,6 +726,9 @@ class CompilationWorkbenchService:
 
         self._state = self._state_store.mutate(mutation)
         project_document = self.get_project_document()
+        security_requirement_summary = self._build_project_security_requirement_summary(
+            project_settings=project_document["project_settings"]
+        )
         return {
             "status": "loaded",
             "package": {
@@ -678,84 +744,33 @@ class CompilationWorkbenchService:
             "external_binding_summary": self._build_wcrun_external_binding_summary(package_document),
             "runtime_requirement_summary": self._build_wcrun_runtime_requirement_summary(package_document),
             "runtime_readiness_summary": self._build_wcrun_runtime_readiness_summary(package_document),
+            "security_requirement_summary": security_requirement_summary,
             "session_restore_summary": self._build_loaded_package_session_restore_summary(
                 package_document=package_document,
                 package_path=resolved_package_path,
                 session_dir=session_dir,
                 project_document=project_document,
             ),
+            "load_result_summary": {
+                "package_path": str(resolved_package_path.resolve()),
+                "session_dir": str(session_dir.resolve()),
+                "source_of_truth": "wcrun_package",
+                "readonly": True,
+                "runtime_ready": bool(
+                    self._build_wcrun_runtime_readiness_summary(package_document).get("ready", False)
+                ),
+                "runtime_blocking_count": int(
+                    self._build_wcrun_runtime_readiness_summary(package_document).get("blocking_count", 0)
+                ),
+                "security_ready": bool(security_requirement_summary.get("ready", False)),
+                "security_blocked_count": int(
+                    security_requirement_summary.get("blocked_count", 0)
+                ),
+            },
             "project": project_document["project"],
             "project_settings": project_document["project_settings"],
             "graph_workspace": project_document["graph_workspace"],
         }
-
-    def _rewrite_loaded_package_embedded_resource_paths(
-        self,
-        project_settings: dict,
-        *,
-        package_document: dict,
-        session_dir: Path,
-    ) -> dict:
-        normalized_settings = deepcopy(project_settings) if isinstance(project_settings, dict) else {}
-        runtime_defaults = (
-            normalized_settings.get("runtime_defaults")
-            if isinstance(normalized_settings.get("runtime_defaults"), dict)
-            else None
-        )
-        if not isinstance(runtime_defaults, dict):
-            return normalized_settings
-        initial_variables = (
-            runtime_defaults.get("initial_variables")
-            if isinstance(runtime_defaults.get("initial_variables"), dict)
-            else None
-        )
-        if not isinstance(initial_variables, dict):
-            return normalized_settings
-
-        resource_policy = (
-            normalized_settings.get("resource_policy")
-            if isinstance(normalized_settings.get("resource_policy"), dict)
-            else {}
-        )
-        declared_sources = resource_policy.get("embedded_resources")
-        packaged_resources = (
-            package_document.get("resources")
-            if isinstance(package_document.get("resources"), dict)
-            else {}
-        )
-        embedded_entries = (
-            packaged_resources.get("embedded")
-            if isinstance(packaged_resources.get("embedded"), list)
-            else []
-        )
-        if not isinstance(declared_sources, list) or not embedded_entries:
-            return normalized_settings
-
-        rewrite_candidates: dict[str, str] = {}
-        for index, raw_source in enumerate(declared_sources):
-            if not isinstance(raw_source, str) or not raw_source.strip():
-                continue
-            if index >= len(embedded_entries):
-                continue
-            embedded_entry = embedded_entries[index]
-            if not isinstance(embedded_entry, dict):
-                continue
-            archive_path = embedded_entry.get("archive_path")
-            if not isinstance(archive_path, str) or not archive_path.strip():
-                continue
-            materialized_path = (session_dir / archive_path.replace("/", os.sep)).resolve()
-            rewrite_candidates[raw_source.strip()] = str(materialized_path)
-            rewrite_candidates[raw_source.strip().replace("\\", "/")] = str(materialized_path)
-            rewrite_candidates[raw_source.strip().replace("/", "\\")] = str(materialized_path)
-
-        for key, value in list(initial_variables.items()):
-            if not isinstance(value, str) or not value.strip():
-                continue
-            replacement = rewrite_candidates.get(value.strip())
-            if replacement is not None:
-                initial_variables[key] = replacement
-
-        return normalized_settings
 
     def _build_runtime_embedded_resource_path_map(self) -> dict[str, str]:
         project_runtime = self._get_project_runtime()
@@ -2317,6 +2332,9 @@ class CompilationWorkbenchService:
         package_runtime_requirement_block = self._build_loaded_package_runtime_requirements_block()
         if package_runtime_requirement_block is not None:
             return package_runtime_requirement_block
+        package_security_block = self._build_loaded_package_security_requirement_block()
+        if package_security_block is not None:
+            return package_security_block
         package_binding_block = self._build_loaded_package_runtime_binding_block()
         if package_binding_block is not None:
             return package_binding_block
@@ -10484,6 +10502,17 @@ class CompilationWorkbenchService:
                 if merged_project_settings != state.get("project_settings"):
                     state["project_settings"] = merged_project_settings
                     changed = True
+                projected_graph_document = self._project_runtime_defaults_into_main_flow_start(
+                    graph_document_payload=graph_document_payload,
+                    runtime_defaults=(
+                        merged_project_settings.get("runtime_defaults")
+                        if isinstance(merged_project_settings, dict)
+                        else None
+                    ),
+                )
+                if projected_graph_document != graph_document_payload:
+                    state["graph_document"] = projected_graph_document
+                    changed = True
         normalized_recent_projects = self._extract_recent_projects(state)
         if normalized_recent_projects != state.get("recent_projects"):
             state["recent_projects"] = normalized_recent_projects
@@ -10726,6 +10755,7 @@ class CompilationWorkbenchService:
                 "tags": [],
             },
             "runtime_defaults": self._normalize_runtime_defaults_payload(runtime_defaults),
+            "security_settings": self._build_initial_project_security_settings_document(),
             "python_runtime_profile": python_runtime_profile,
             "packaging": {
                 "default_output_name": default_output_name,
@@ -10892,6 +10922,34 @@ class CompilationWorkbenchService:
             },
         }
 
+    def _project_runtime_defaults_into_main_flow_start(
+        self,
+        *,
+        graph_document_payload: dict,
+        runtime_defaults: dict | None,
+    ) -> dict:
+        normalized_runtime_defaults = self._normalize_runtime_defaults_payload(runtime_defaults)
+        projected_graph_document = deepcopy(graph_document_payload)
+        nodes = projected_graph_document.get("nodes")
+        if not isinstance(nodes, list):
+            return projected_graph_document
+        for node in nodes:
+            if not isinstance(node, dict) or node.get("node_kind") != "flow.start":
+                continue
+            node_config = deepcopy(node.get("node_config")) if isinstance(node.get("node_config"), dict) else {}
+            node_config["initial_variables"] = deepcopy(
+                normalized_runtime_defaults["initial_variables"]
+            )
+            node_config["browser_config"] = deepcopy(
+                normalized_runtime_defaults["browser_config"]
+            )
+            node_config["execution_defaults"] = deepcopy(
+                normalized_runtime_defaults["execution_defaults"]
+            )
+            node["node_config"] = node_config
+            break
+        return projected_graph_document
+
     def _normalize_project_settings_document(self, payload: dict | None) -> dict:
         return self._normalize_project_settings_document_for_state(self._state, payload)
 
@@ -10903,11 +10961,13 @@ class CompilationWorkbenchService:
         raw_payload = payload if isinstance(payload, dict) else {}
         raw_identity = raw_payload.get("project_identity")
         raw_runtime_defaults = raw_payload.get("runtime_defaults")
+        raw_security_settings = raw_payload.get("security_settings")
         raw_python_runtime_profile = raw_payload.get("python_runtime_profile")
         raw_packaging = raw_payload.get("packaging")
         raw_resource_policy = raw_payload.get("resource_policy")
         raw_compile_profile = raw_payload.get("compile_profile")
         raw_external_resources = raw_payload.get("external_resources")
+        raw_runtime_requirements = raw_payload.get("runtime_requirements")
         if not isinstance(raw_identity, dict):
             raw_identity = {}
         if not isinstance(raw_runtime_defaults, dict):
@@ -10920,6 +10980,8 @@ class CompilationWorkbenchService:
             raw_compile_profile = {}
         if not isinstance(raw_external_resources, list):
             raw_external_resources = []
+        if not isinstance(raw_runtime_requirements, dict):
+            raw_runtime_requirements = {}
 
         project = state.get("project") if isinstance(state, dict) and isinstance(state.get("project"), dict) else {}
         project_id = (
@@ -10933,6 +10995,7 @@ class CompilationWorkbenchService:
             else (project.get("project_name") if isinstance(project, dict) else "WeConduct Workspace")
         )
         runtime_defaults = self._normalize_runtime_defaults_payload(raw_runtime_defaults)
+        security_settings = self._normalize_project_security_settings(raw_security_settings)
         python_runtime_profile = normalize_python_runtime_profile(
             raw_python_runtime_profile,
             defaults=self._build_default_project_python_runtime_profile(),
@@ -10975,6 +11038,7 @@ class CompilationWorkbenchService:
                 else [],
             },
             "runtime_defaults": runtime_defaults,
+            "security_settings": security_settings,
             "python_runtime_profile": python_runtime_profile,
             "packaging": {
                 "default_output_name": default_output_name,
@@ -11011,6 +11075,7 @@ class CompilationWorkbenchService:
                     )
                 ),
             },
+            "runtime_requirements": deepcopy(raw_runtime_requirements),
         }
 
     def _extract_project_settings(self, state: dict | None) -> dict:
@@ -11528,6 +11593,127 @@ class CompilationWorkbenchService:
             runtime_settings["python_project_runtime_enabled"] = False
             runtime_settings["python_project_runtime_prepare_error"] = None
         return runtime_settings
+
+    def _build_initial_project_security_settings_document(self) -> dict:
+        preferences = self._preferences_service.get_preferences_document()
+        security_settings = (
+            preferences.get("security_settings")
+            if isinstance(preferences, dict) and isinstance(preferences.get("security_settings"), dict)
+            else {}
+        )
+        return self._normalize_project_security_settings(security_settings)
+
+    def _normalize_project_security_settings(self, payload: dict | None) -> dict:
+        normalized = _normalize_security_settings(payload if isinstance(payload, dict) else {})
+        return {
+            "allow_file_access": bool(normalized.get("allow_file_access", False)),
+            "allow_browser_executor": bool(normalized.get("allow_browser_executor", False)),
+            "allow_browser_screenshots": bool(normalized.get("allow_browser_screenshots", True)),
+            "allow_browser_uploads": bool(normalized.get("allow_browser_uploads", True)),
+            "allow_browser_downloads": bool(normalized.get("allow_browser_downloads", False)),
+            "allow_local_network_access": bool(normalized.get("allow_local_network_access", False)),
+            "allow_remote_network_access": bool(normalized.get("allow_remote_network_access", False)),
+            "allow_python_execution": bool(normalized.get("allow_python_execution", False)),
+            "allow_js_injection": bool(normalized.get("allow_js_injection", False)),
+            "allow_js_evaluation": bool(normalized.get("allow_js_evaluation", False)),
+        }
+
+    def _build_project_security_requirement_summary(self, *, project_settings: dict | None = None) -> dict:
+        effective_project_settings = (
+            deepcopy(project_settings)
+            if isinstance(project_settings, dict)
+            else deepcopy(self._extract_project_settings(self._state))
+        )
+        required_security = self._extract_required_security_settings(effective_project_settings)
+        preferences = self._preferences_service.get_preferences_document()
+        current_security = _normalize_security_settings(
+            preferences.get("security_settings")
+            if isinstance(preferences, dict) and isinstance(preferences.get("security_settings"), dict)
+            else {}
+        )
+        blocked_entries: list[dict] = []
+        required_overrides: dict[str, bool] = {}
+        labels = {
+            "allow_file_access": "文件访问",
+            "allow_browser_executor": "浏览器执行",
+            "allow_browser_screenshots": "浏览器截图",
+            "allow_browser_uploads": "浏览器上传",
+            "allow_browser_downloads": "浏览器下载",
+            "allow_local_network_access": "本地网络访问",
+            "allow_remote_network_access": "远程网络访问",
+            "allow_python_execution": "Python 运行",
+            "allow_js_injection": "JS 注入",
+            "allow_js_evaluation": "JS 求值",
+        }
+        for field_name, required_value in required_security.items():
+            if not isinstance(required_value, bool) or not required_value:
+                continue
+            current_value = bool(current_security.get(field_name, False))
+            if current_value:
+                continue
+            blocked_entries.append(
+                {
+                    "field": field_name,
+                    "setting_field": f"security_settings.{field_name}",
+                    "display_name": labels.get(field_name, field_name),
+                    "required_value": True,
+                    "current_value": current_value,
+                }
+            )
+            required_overrides[field_name] = True
+        return {
+            "ready": len(blocked_entries) == 0,
+            "blocked_count": len(blocked_entries),
+            "blocked_entries": blocked_entries,
+            "required_security_settings": required_security,
+            "current_security_settings": {
+                key: bool(current_security.get(key, False))
+                for key in required_security.keys()
+            },
+            "required_security_overrides": required_overrides,
+        }
+
+    def enable_project_required_security_settings(self, *, confirm_high_risk: bool = False) -> dict:
+        summary = self._build_project_security_requirement_summary()
+        overrides = (
+            summary.get("required_security_overrides")
+            if isinstance(summary.get("required_security_overrides"), dict)
+            else {}
+        )
+        updated_preferences = self._preferences_service.update_preferences(
+            section="security_settings",
+            values=overrides,
+            confirm_high_risk=confirm_high_risk,
+        )
+        return {
+            "status": "updated",
+            "preferences": updated_preferences,
+            "security_requirement_summary": self._build_project_security_requirement_summary(),
+        }
+
+    def _extract_required_security_settings(self, project_settings: dict) -> dict:
+        runtime_requirements = (
+            project_settings.get("runtime_requirements")
+            if isinstance(project_settings.get("runtime_requirements"), dict)
+            else {}
+        )
+        security_requirements = (
+            runtime_requirements.get("security_requirements")
+            if isinstance(runtime_requirements.get("security_requirements"), dict)
+            else None
+        )
+        if isinstance(security_requirements, dict):
+            normalized = self._normalize_project_security_settings(security_requirements)
+            return {
+                key: bool(value)
+                for key, value in normalized.items()
+                if isinstance(value, bool)
+            }
+        return self._normalize_project_security_settings(
+            project_settings.get("security_settings")
+            if isinstance(project_settings.get("security_settings"), dict)
+            else {}
+        )
 
     def _resolve_application_data_root(self) -> Path:
         local_app_data = os.environ.get("LOCALAPPDATA")
@@ -12789,6 +12975,7 @@ class CompilationWorkbenchService:
         runtime_requirements = self._build_wcrun_runtime_requirements(
             graph_model=graph_model,
             packaged_resources=packaged_resources,
+            project_settings=project_settings,
         )
         graph_entries = self._build_wcrun_graph_index(
             graph_model=graph_model,
@@ -13935,6 +14122,9 @@ class CompilationWorkbenchService:
             if runtime_root.exists():
                 shutil.rmtree(runtime_root, ignore_errors=True)
             shutil.copytree(full_venv_root, runtime_root, dirs_exist_ok=True)
+            self._project_python_runtime_manager.rewrite_portable_full_venv_paths(
+                runtime_root=runtime_root
+            )
             return
         if wheelhouse_root.exists():
             target_wheelhouse_root = runtime_root / "wheelhouse"
@@ -14162,6 +14352,58 @@ class CompilationWorkbenchService:
             },
         }
 
+    def _build_loaded_package_security_requirement_block(self) -> dict | None:
+        project = self._state.get("project")
+        if not isinstance(project, dict) or project.get("source_of_truth") != "wcrun_package":
+            return None
+        summary = self._build_project_security_requirement_summary()
+        blocked_entries = (
+            summary.get("blocked_entries") if isinstance(summary.get("blocked_entries"), list) else []
+        )
+        if not blocked_entries:
+            return None
+        diagnostics = [
+            {
+                "category": "package.security.requirement_blocked",
+                "message": (
+                    "package requires disabled security capability before runtime start: "
+                    f"{entry.get('setting_field')}"
+                ),
+                "severity": "error",
+                "stage": "runtime.prepare",
+                "object_ref": entry.get("setting_field"),
+                "setting_field": entry.get("setting_field"),
+                "required_value": entry.get("required_value"),
+                "current_value": entry.get("current_value"),
+                "display_name": entry.get("display_name"),
+            }
+            for entry in blocked_entries
+            if isinstance(entry, dict)
+        ]
+        return {
+            "status": "failed",
+            "request": {
+                "compilation_id": None,
+                "request_origin": "saved_graph_document",
+                "requested_graph_model_id": self._get_graph_document_model().graph_model_id,
+                "requested_graph_save_revision": self._get_graph_document_meta().get("save_revision"),
+                "requested_graph_saved_at": self._get_graph_document_meta().get("saved_at"),
+                "compile_status": "failed",
+            },
+            "runtime_session": {
+                "session_id": None,
+                "status": "diagnostic_blocked",
+                "execution_supported": False,
+            },
+            "runtime_plan": None,
+            "diagnostics": {
+                "total_count": len(diagnostics),
+                "highest_severity": "error",
+                "entries": diagnostics,
+            },
+            "security_requirement_summary": summary,
+        }
+
     def _read_loaded_package_runtime_requirements(self) -> dict | None:
         project_runtime = self._get_project_runtime()
         session_dir = project_runtime.get("session_dir")
@@ -14324,13 +14566,102 @@ class CompilationWorkbenchService:
         *,
         graph_model: GraphModel,
         packaged_resources: dict,
+        project_settings: dict,
     ) -> dict:
         return {
             "minimum_app_version": self._build_workbench_metadata()["api_version"],
             "required_platform": "windows",
             "required_browser": "msedge",
             "requires_captcha_ocr": bool(packaged_resources.get("requires_captcha_ocr", False)),
+            "security_requirements": self._derive_wcrun_security_requirements(
+                graph_model=graph_model,
+                packaged_resources=packaged_resources,
+                project_settings=project_settings,
+            ),
         }
+
+    def _derive_wcrun_security_requirements(
+        self,
+        *,
+        graph_model: GraphModel,
+        packaged_resources: dict,
+        project_settings: dict,
+    ) -> dict:
+        graph_document = graph_model.model_dump(mode="json")
+        required: dict[str, bool] = {}
+
+        def require(field_name: str) -> None:
+            required[field_name] = True
+
+        nodes = graph_document.get("nodes") if isinstance(graph_document, dict) else []
+        if isinstance(nodes, list):
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                node_kind = node.get("node_kind")
+                node_config = node.get("node_config") if isinstance(node.get("node_config"), dict) else {}
+                if isinstance(node_kind, str) and node_kind.startswith("browser."):
+                    require("allow_browser_executor")
+                if node_kind == "browser.set_input_files":
+                    require("allow_browser_uploads")
+                    require("allow_file_access")
+                if node_kind == "python.run":
+                    require("allow_python_execution")
+                if node_kind == "browser.inject_js":
+                    require("allow_js_injection")
+                if node_kind in {"browser.run_js", "browser.evaluate_js"}:
+                    require("allow_js_evaluation")
+                candidate_values = list(node_config.values()) if isinstance(node_config, dict) else []
+                for value in candidate_values:
+                    if isinstance(value, str):
+                        lowered = value.lower()
+                        if lowered.startswith("http://"):
+                            require("allow_remote_network_access")
+                        elif lowered.startswith("https://"):
+                            require("allow_remote_network_access")
+
+        resource_policy = (
+            project_settings.get("resource_policy")
+            if isinstance(project_settings.get("resource_policy"), dict)
+            else {}
+        )
+        embedded_resources = (
+            resource_policy.get("embedded_resources")
+            if isinstance(resource_policy.get("embedded_resources"), list)
+            else []
+        )
+        if embedded_resources:
+            require("allow_file_access")
+
+        python_runtime_profile = (
+            project_settings.get("python_runtime_profile")
+            if isinstance(project_settings.get("python_runtime_profile"), dict)
+            else {}
+        )
+        if bool(python_runtime_profile.get("runtime_enabled", False)):
+            require("allow_python_execution")
+
+        if bool(packaged_resources.get("requires_captcha_ocr", False)):
+            require("allow_file_access")
+
+        runtime_defaults = (
+            project_settings.get("runtime_defaults")
+            if isinstance(project_settings.get("runtime_defaults"), dict)
+            else {}
+        )
+        initial_variables = (
+            runtime_defaults.get("initial_variables")
+            if isinstance(runtime_defaults.get("initial_variables"), dict)
+            else {}
+        )
+        for value in initial_variables.values():
+            if isinstance(value, str):
+                lowered = value.lower()
+                if lowered.startswith("http://") or lowered.startswith("https://"):
+                    require("allow_remote_network_access")
+                    break
+
+        return required
 
     def _build_wcrun_graph_index(
         self,

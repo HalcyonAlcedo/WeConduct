@@ -28,7 +28,7 @@ onMounted(() => {
   dock.register({ id: 'tasks', title: '任务执行' })
   dock.register({ id: 'preferences', title: '首选项' })
   dock.register({ id: 'projectSettings', title: '项目设置' })
-  dock.register({ id: 'packageManager', title: '.wcrun 打包' })
+  dock.register({ id: 'packageManager', title: '.wcrun 包管理' })
 
   // Default layout
   if (dock.zones.center.panels.length === 0) {

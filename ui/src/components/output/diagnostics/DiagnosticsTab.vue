@@ -102,13 +102,50 @@ function extSummary(ext: Record<string, unknown> | null): string {
 }
 
 // ---- Context menu ----
-const ctxMenu = ref<{ x: number; y: number; text: string; entry?: Diagnostic } | null>(null)
-function onCtxMenu(e: MouseEvent, text: string, entry?: Diagnostic) {
+const ctxMenu = ref<{ x: number; y: number; text: string; entry?: Diagnostic; structured?: unknown } | null>(null)
+function onCtxMenu(e: MouseEvent, text: string, entry?: Diagnostic, structured?: unknown) {
   e.preventDefault()
-  ctxMenu.value = { x: e.clientX, y: e.clientY, text, entry }
+  ctxMenu.value = { x: e.clientX, y: e.clientY, text, entry, structured }
 }
 function closeCtxMenu() { ctxMenu.value = null }
 async function copyToClipboard(text: string) {
+  try { await navigator.clipboard.writeText(text) } catch {}
+  closeCtxMenu()
+}
+function formatStructuredReadable(data: unknown): string {
+  if (Array.isArray(data)) {
+    return data.map((entry, i) => `--- 第 ${i + 1} 条 ---\n${formatEntryStructured(entry)}`).join('\n\n')
+  }
+  return formatEntryStructured(data as Diagnostic)
+}
+
+function formatEntryStructured(entry: Diagnostic): string {
+  const lines: string[] = []
+  if (entry.diagnostic_id) lines.push(`诊断 ID: ${entry.diagnostic_id}`)
+  lines.push(`严重度: ${severityLabel(entry.severity)} (${entry.severity})`)
+  lines.push(`阶段: ${entry.stage}`)
+  lines.push(`分类: ${entry.category}`)
+  lines.push(`信息: ${entry.message}`)
+  if (entry.object_ref) lines.push(`对象引用: ${entry.object_ref}`)
+  if (entry.trace_ref) lines.push(`追踪引用: ${entry.trace_ref}`)
+  if (entry.stage_extension && Object.keys(entry.stage_extension).length) {
+    lines.push('扩展信息:')
+    for (const [k, v] of Object.entries(entry.stage_extension)) {
+      lines.push(`  ${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+    }
+  }
+  if (entry.degraded_extension && Object.keys(entry.degraded_extension).length) {
+    lines.push('降级信息:')
+    for (const [k, v] of Object.entries(entry.degraded_extension)) {
+      lines.push(`  ${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+async function copyStructured() {
+  if (!ctxMenu.value?.structured) return
+  const text = formatStructuredReadable(ctxMenu.value.structured)
   try { await navigator.clipboard.writeText(text) } catch {}
   closeCtxMenu()
 }
@@ -229,7 +266,7 @@ function formatEntryForCopy(entry: Diagnostic): string {
                 class="dt-group-row"
                 :class="{ 'dt-expanded': isExpanded(g) }"
                 @click="toggleExpand(g)"
-                @contextmenu="onCtxMenu($event, formatDiagnosticForCopy(g), groupEntries(g.stage, g.category, g.severity, g.message)[0])"
+                @contextmenu="onCtxMenu($event, formatDiagnosticForCopy(g), groupEntries(g.stage, g.category, g.severity, g.message)[0], groupEntries(g.stage, g.category, g.severity, g.message))"
               >
                 <td class="col-exp">
                   <span class="exp-arrow">{{ isExpanded(g) ? '▾' : '▸' }}</span>
@@ -251,7 +288,7 @@ function formatEntryForCopy(entry: Diagnostic): string {
                       v-for="entry in groupEntries(g.stage, g.category, g.severity, g.message)"
                       :key="entry.diagnostic_id"
                       class="dt-entry"
-                      @contextmenu.stop="onCtxMenu($event, formatEntryForCopy(entry), entry)"
+                      @contextmenu.stop="onCtxMenu($event, formatEntryForCopy(entry), entry, entry)"
                     >
                       <div class="dt-entry-header">
                         <code class="dt-entry-id">{{ entry.diagnostic_id }}</code>
@@ -287,7 +324,8 @@ function formatEntryForCopy(entry: Diagnostic): string {
     <Teleport to="body">
       <div v-if="ctxMenu" class="dt-ctx-overlay" @click="closeCtxMenu" @contextmenu.prevent="closeCtxMenu">
         <div class="dt-ctx-box" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }">
-          <button class="dt-ctx-btn" @click="copyToClipboard(ctxMenu.text)">📋 复制诊断信息</button>
+          <button class="dt-ctx-btn" @click="copyToClipboard(ctxMenu.text)">📋 复制内容</button>
+          <button v-if="ctxMenu.structured" class="dt-ctx-btn" @click="copyStructured()">📋 复制结构化数据</button>
           <button v-if="diagnosticHasNodeRef(ctxMenu.entry)" class="dt-ctx-btn" @click="locateNodeFromDiagnostic(ctxMenu.entry)">📍 定位节点</button>
         </div>
       </div>

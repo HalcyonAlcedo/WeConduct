@@ -227,7 +227,7 @@ async function pickFile(mode: string) {
     const r = await postFileDialog({ mode, title: mode === 'save_file' ? '保存项目文件' : mode === 'open_folder' ? '选择项目目录' : '选择文件' })
     if (r.status === 'selected' && r.paths.length) dialogInput.value = r.paths[0]
   } catch (e: any) {
-    if (e?.status === 503) toast.info('', '当前运行环境不支持系统文件选择器，请手动输入路径')
+    if (e?.status === 503) toast.info('', workspace.isLimitedBrowser ? '受限浏览器模式：系统文件选择器不可用，请手动输入路径' : '当前运行环境不支持系统文件选择器，请手动输入路径')
   }
 }
 
@@ -237,7 +237,7 @@ async function pickFilePath(mode: string) {
     const r = await postFileDialog({ mode, title: '选择项目目录' })
     if (r.status === 'selected' && r.paths.length) dialogPath.value = r.paths[0]
   } catch (e: any) {
-    if (e?.status === 503) toast.info('', '当前运行环境不支持系统文件选择器，请手动输入路径')
+    if (e?.status === 503) toast.info('', workspace.isLimitedBrowser ? '受限浏览器模式：系统文件选择器不可用，请手动输入路径' : '当前运行环境不支持系统文件选择器，请手动输入路径')
   }
 }
 
@@ -267,7 +267,7 @@ async function pickImportFile() {
       toast.info('已加载', `${r.paths[0]} (${file.bytes_read} 字节)`)
     }
   } catch (e: any) {
-    if (e?.status === 503) { toast.info('', '当前环境不支持文件选择器，请手动粘贴 JSON'); return }
+    if (e?.status === 503) { toast.info('', workspace.isLimitedBrowser ? '受限浏览器模式：系统文件选择器不可用，请手动粘贴 JSON' : '当前环境不支持文件选择器，请手动粘贴 JSON'); return }
     if (e?.body?.error) { toast.error('读取失败', e.body.message ?? e.body.error) }
   }
 }
@@ -300,7 +300,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
           <button @click="handleManualGraphUpgrade()">手动升级节点图</button>
           <hr>
           <button @click="dock.restorePanel('projectSettings'); closeMenu()">项目设置</button>
-          <button @click="dock.restorePanel('packageManager'); closeMenu()">.wcrun 打包</button>
+          <button @click="dock.restorePanel('packageManager'); closeMenu()">.wcrun 包管理</button>
           <button @click="openDialog('save')">保存</button>
           <button @click="openDialog('saveas')">另存为</button>
           <hr>
@@ -435,7 +435,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
             <!-- About -->
             <template v-else-if="activeDialog === 'about'">
               <p><strong>WeConduct</strong></p>
-              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.7.3' }}</p>
+              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.7.4' }}</p>
               <p class="dlg-meta">更新状态: {{ updateStore.status?.check_status ?? 'idle' }}</p>
               <p class="dlg-meta">最新版本: {{ updateStore.status?.latest_version ?? '—' }}</p>
               <p class="dlg-meta">最近检查: {{ updateStore.status?.last_checked_at ?? '—' }}</p>

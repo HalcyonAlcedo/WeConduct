@@ -161,6 +161,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 {
                     "project_settings": result["project_settings"],
+                    "security_requirement_summary": result.get("security_requirement_summary"),
                     "python_runtime_summary": result.get("python_runtime_summary"),
                     "state": result["state"],
                 },
@@ -793,6 +794,24 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     resource_id=resource_id,
                     value=value,
                 )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
+        if self.path == "/api/workbench/project/settings/security/enable-required":
+            try:
+                payload = self._read_json_request_body()
+                confirm_high_risk = payload.get("confirm_high_risk", False)
+                if not isinstance(confirm_high_risk, bool):
+                    raise ValueError("field must be a boolean when provided: confirm_high_risk")
+                result = service.enable_project_required_security_settings(
+                    confirm_high_risk=confirm_high_risk,
+                )
+            except HighRiskPreferenceChangeRequiredError as exc:
+                self._write_high_risk_confirmation_required_error(exc)
+                return
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
                 return
@@ -2109,11 +2128,13 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         ui_dist_path = self._resolve_ui_dist_path().resolve()
         index_path = ui_dist_path / "index.html"
         ui_dist_available = index_path.exists()
+        ui_mode = getattr(self.server, "ui_mode", "desktop_shell")
         return {
             "ui_hosted": ui_dist_available,
             "ui_dist_available": ui_dist_available,
             "ui_dist_path": str(ui_dist_path),
             "ui_entrypoint": "/" if ui_dist_available else None,
+            "ui_mode": ui_mode,
         }
 
     def _build_server_bind_metadata(self) -> dict:

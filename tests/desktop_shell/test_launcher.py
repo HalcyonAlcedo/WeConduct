@@ -5,10 +5,14 @@ import urllib.request
 import pytest
 
 from weconduct.desktop_shell.launcher import (
+    DesktopEnvironmentProbeResult,
     DesktopShellDependencyError,
     DesktopShellOptions,
+    launch_limited_browser_session,
     launch_desktop_shell,
+    probe_desktop_environment,
     resolve_default_workspace_state_path,
+    shutdown_limited_browser_session,
 )
 
 
@@ -40,6 +44,16 @@ class FakeWindow:
     def evaluate_js(self, script: str):
         self.evaluate_js_calls.append(script)
         return None
+
+
+def _build_ui_dist(tmp_path: Path) -> Path:
+    ui_dist_path = tmp_path / "ui-dist"
+    ui_dist_path.mkdir(parents=True, exist_ok=True)
+    (ui_dist_path / "index.html").write_text(
+        "<!doctype html><html></html>",
+        encoding="utf-8",
+    )
+    return ui_dist_path
 
 
 def test_launch_desktop_shell_starts_api_and_opens_window(tmp_path: Path) -> None:
@@ -214,3 +228,200 @@ def test_default_workspace_state_path_uses_local_app_data(
         / ""
         / "workspace-state.json"
     )
+
+
+def test_limited_browser_session_reuses_existing_server(tmp_path: Path) -> None:
+    shutdown_limited_browser_session()
+    session = launch_limited_browser_session(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "state" / "workspace-state.json",
+        preferences_path=tmp_path / "state" / "preferences.json",
+        ui_dist_path=_build_ui_dist(tmp_path),
+    )
+    reopened = launch_limited_browser_session(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "state" / "workspace-state.json",
+        preferences_path=tmp_path / "state" / "preferences.json",
+        ui_dist_path=_build_ui_dist(tmp_path),
+    )
+
+    assert reopened.base_url == session.base_url
+    assert reopened.server_id == session.server_id
+    shutdown_limited_browser_session()
+
+
+def test_limited_browser_session_exposes_open_path_provider_without_webview(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    shutdown_limited_browser_session()
+    session = launch_limited_browser_session(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "state" / "workspace-state.json",
+        preferences_path=tmp_path / "state" / "preferences.json",
+        ui_dist_path=_build_ui_dist(tmp_path),
+    )
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    opened_paths: list[str] = []
+
+    monkeypatch.setattr(
+        "weconduct.desktop_shell.launcher.os.startfile",
+        lambda path: opened_paths.append(path),
+    )
+
+    request = urllib.request.Request(
+        f"{session.base_url}/api/host/open-path",
+        data=json.dumps({"path": str(project_dir)}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    assert payload["status"] == "opened"
+    assert opened_paths == [str(project_dir.resolve())]
+    shutdown_limited_browser_session()
+
+
+def test_probe_desktop_environment_returns_missing_runtime_when_checker_reports_missing() -> None:
+    result = probe_desktop_environment(
+        runtime_checker=lambda: (False, "webview2 runtime missing"),
+    )
+
+    assert result.status == "missing_runtime"
+    assert "webview2" in result.message.lower()
+
+
+def test_launch_desktop_shell_returns_limited_prompt_state_when_runtime_missing(
+    tmp_path: Path,
+) -> None:
+    shutdown_limited_browser_session()
+    result = launch_desktop_shell(
+        DesktopShellOptions(
+            workspace_state_path=tmp_path / "state" / "workspace-state.json",
+            preferences_path=tmp_path / "state" / "preferences.json",
+            ui_dist_path=_build_ui_dist(tmp_path),
+        ),
+        webview_module=FakeWebView(),
+        desktop_environment_probe=lambda: DesktopEnvironmentProbeResult(
+            status="missing_runtime",
+            message="missing webview2",
+        ),
+        fallback_prompt_runner=lambda payload: {"action": "dismissed"},
+    )
+
+    assert result["status"] == "desktop_runtime_missing"
+    assert result["desktop_environment"]["status"] == "missing_runtime"
+
+
+def test_missing_runtime_prompt_can_start_limited_mode_and_then_open_program(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    shutdown_limited_browser_session()
+    opened_urls: list[str] = []
+    monkeypatch.setattr(
+        "weconduct.desktop_shell.launcher._open_url_in_default_browser",
+        lambda url: opened_urls.append(url),
+    )
+    prompt_calls: list[dict] = []
+
+    def prompt_runner(payload: dict) -> dict:
+        prompt_calls.append(payload)
+        if len(prompt_calls) == 1:
+            return {"action": "start_limited_browser"}
+        return {"action": "dismissed"}
+
+    first = launch_desktop_shell(
+        DesktopShellOptions(
+            workspace_state_path=tmp_path / "state" / "workspace-state.json",
+            preferences_path=tmp_path / "state" / "preferences.json",
+            ui_dist_path=_build_ui_dist(tmp_path),
+        ),
+        webview_module=FakeWebView(),
+        desktop_environment_probe=lambda: DesktopEnvironmentProbeResult(
+            status="missing_runtime",
+            message="missing webview2",
+        ),
+        fallback_prompt_runner=prompt_runner,
+    )
+    second = launch_desktop_shell(
+        DesktopShellOptions(
+            workspace_state_path=tmp_path / "state" / "workspace-state.json",
+            preferences_path=tmp_path / "state" / "preferences.json",
+            ui_dist_path=_build_ui_dist(tmp_path),
+        ),
+        webview_module=FakeWebView(),
+        desktop_environment_probe=lambda: DesktopEnvironmentProbeResult(
+            status="missing_runtime",
+            message="missing webview2",
+        ),
+        fallback_prompt_runner=prompt_runner,
+    )
+
+    assert first["status"] == "limited_browser_running"
+    assert second["status"] == "limited_browser_running"
+    assert opened_urls == []
+    shutdown_limited_browser_session()
+
+
+def test_missing_runtime_prompt_can_open_program_in_same_launch_cycle(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    shutdown_limited_browser_session()
+    opened_urls: list[str] = []
+    monkeypatch.setattr(
+        "weconduct.desktop_shell.launcher._open_url_in_default_browser",
+        lambda url: opened_urls.append(url),
+    )
+    prompt_calls: list[dict] = []
+
+    def prompt_runner(payload: dict) -> dict:
+        prompt_calls.append(payload)
+        if len(prompt_calls) == 1:
+            assert payload["limited_browser"]["status"] == "stopped"
+            return {"action": "start_limited_browser"}
+        assert payload["limited_browser"]["status"] == "running"
+        assert payload["limited_browser"]["base_url"].startswith("http://127.0.0.1:")
+        return {"action": "open_program"}
+
+    result = launch_desktop_shell(
+        DesktopShellOptions(
+            workspace_state_path=tmp_path / "state" / "workspace-state.json",
+            preferences_path=tmp_path / "state" / "preferences.json",
+            ui_dist_path=_build_ui_dist(tmp_path),
+        ),
+        webview_module=FakeWebView(),
+        desktop_environment_probe=lambda: DesktopEnvironmentProbeResult(
+            status="missing_runtime",
+            message="missing webview2",
+        ),
+        fallback_prompt_runner=prompt_runner,
+    )
+
+    assert len(prompt_calls) == 2
+    assert result["status"] == "limited_browser_opened"
+    assert opened_urls == [result["base_url"]]
+    shutdown_limited_browser_session()
+
+
+def test_limited_browser_session_exposes_mode_metadata(tmp_path: Path) -> None:
+    shutdown_limited_browser_session()
+    session = launch_limited_browser_session(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "state" / "workspace-state.json",
+        preferences_path=tmp_path / "state" / "preferences.json",
+        ui_dist_path=_build_ui_dist(tmp_path),
+    )
+
+    with urllib.request.urlopen(f"{session.base_url}/api/health") as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    assert payload["ui_hosting"]["ui_mode"] == "limited_browser"
+    shutdown_limited_browser_session()

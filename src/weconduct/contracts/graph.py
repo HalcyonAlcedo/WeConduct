@@ -63,9 +63,9 @@ def create_empty_graph_model(graph_model_id: str, compilation_id: str | None) ->
         root_metadata={
             "graph_compatibility": {
                 "graph_data_version": "0.6.2",
-                "built_with_app_version": "0.7.3",
+                "built_with_app_version": "0.7.4",
                 "minimum_loader_app_version": "0.5.2",
-                "last_upgraded_by_app_version": "0.7.3",
+                "last_upgraded_by_app_version": "0.7.4",
                 "upgrade_history": [],
             }
         },

@@ -58,10 +58,16 @@ const sourceLines = computed(() => {
 const productLabel = computed(() => {
   return 'WeConduct'
 })
+
+const limitedBrowserLabel = computed(() => {
+  if (!workspace.isLimitedBrowser) return null
+  return '⚠ 受限浏览器模式 — 缺少 WebView2 Runtime，部分功能不可用'
+})
 </script>
 
 <template>
   <footer class="statusbar" role="contentinfo">
+    <span v-if="limitedBrowserLabel" class="status-limited">{{ limitedBrowserLabel }}</span>
     <span :class="['status-left', statusClass]">{{ statusText }}</span>
     <span class="status-flex"></span>
     <span class="status-item">{{ compileCountLabel }}</span>
@@ -114,6 +120,12 @@ const productLabel = computed(() => {
   font-weight: 700;
   color: var(--accent);
   letter-spacing: 0.02em;
+}
+
+.status-limited {
+  color: var(--state-warning);
+  font-weight: 500;
+  margin-right: var(--space-md);
 }
 
 .status-divider {

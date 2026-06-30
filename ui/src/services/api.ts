@@ -346,4 +346,10 @@ export function postPythonRuntimeExportBundle(body: { output_path: string; packa
   return request<PythonRuntimeExportResponse>('/workbench/project/python-runtime/export-bundle', { method: 'POST', body: JSON.stringify(body) })
 }
 
+// ===== 0.7.4: Security Requirements =====
+
+export function postSecurityEnableRequired(body: { confirm_high_risk: boolean }): Promise<import('@/types/domains/api').SecurityEnableRequiredResponse> {
+  return request('/workbench/project/settings/security/enable-required', { method: 'POST', body: JSON.stringify(body) })
+}
+
 export { ApiError }

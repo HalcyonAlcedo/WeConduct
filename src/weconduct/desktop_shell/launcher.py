@@ -4,7 +4,9 @@ from dataclasses import dataclass
 import os
 import json
 from pathlib import Path
+import uuid
 import sys
+import webbrowser
 from threading import Thread
 from types import ModuleType
 from typing import Any
@@ -26,6 +28,25 @@ class DesktopShellOptions:
     title: str = "WeConduct"
     width: int = 1920
     height: int = 1080
+
+
+@dataclass(frozen=True)
+class LimitedBrowserSession:
+    server_id: str
+    base_url: str
+    workspace_state_path: str
+    preferences_path: str
+    ui_dist_path: str
+
+
+@dataclass(frozen=True)
+class DesktopEnvironmentProbeResult:
+    status: str
+    message: str
+    details: dict[str, Any] | None = None
+
+
+_LIMITED_BROWSER_SESSION_STATE: dict[str, Any] = {}
 
 
 def resolve_default_workspace_state_path() -> Path:
@@ -57,6 +78,8 @@ def launch_desktop_shell(
     options: DesktopShellOptions,
     *,
     webview_module: ModuleType | Any | None = ...,
+    desktop_environment_probe=None,
+    fallback_prompt_runner=None,
 ) -> dict:
     webview = _resolve_webview_module(webview_module)
     workspace_state_path = (
@@ -74,6 +97,95 @@ def launch_desktop_shell(
         if options.ui_dist_path is not None
         else resolve_default_ui_dist_path()
     )
+    probe_runner = desktop_environment_probe or probe_desktop_environment
+    probe_result = probe_runner()
+    if probe_result.status != "ok":
+        prompt_runner = fallback_prompt_runner or _run_missing_runtime_prompt
+        while True:
+            active_session = _LIMITED_BROWSER_SESSION_STATE.get("session")
+            limited_browser_payload = (
+                {
+                    "status": "running",
+                    "base_url": active_session.base_url,
+                }
+                if isinstance(active_session, LimitedBrowserSession)
+                else {
+                    "status": "stopped",
+                    "base_url": None,
+                }
+            )
+            prompt_result = prompt_runner(
+                {
+                    "desktop_environment": {
+                        "status": probe_result.status,
+                        "message": probe_result.message,
+                        "details": probe_result.details or {},
+                    },
+                    "limited_browser": limited_browser_payload,
+                    "workspace_state_path": str(workspace_state_path.resolve()),
+                    "preferences_path": str(preferences_path.resolve()),
+                    "ui_dist_path": str(ui_dist_path.resolve()),
+                }
+            )
+            prompt_action = (
+                prompt_result.get("action")
+                if isinstance(prompt_result, dict)
+                else None
+            )
+            if prompt_action == "start_limited_browser":
+                session = launch_limited_browser_session(
+                    host=options.host,
+                    port=options.port,
+                    workspace_state_path=workspace_state_path,
+                    preferences_path=preferences_path,
+                    ui_dist_path=ui_dist_path,
+                )
+                active_session = session
+                continue
+            if prompt_action == "open_program":
+                if isinstance(active_session, LimitedBrowserSession):
+                    _open_url_in_default_browser(active_session.base_url)
+                    return {
+                        "status": "limited_browser_opened",
+                        "base_url": active_session.base_url,
+                        "desktop_environment": {
+                            "status": probe_result.status,
+                            "message": probe_result.message,
+                            "details": probe_result.details or {},
+                        },
+                        "prompt_result": prompt_result,
+                        "workspace_state_path": active_session.workspace_state_path,
+                        "preferences_path": active_session.preferences_path,
+                        "ui_dist_path": active_session.ui_dist_path,
+                    }
+                break
+            if isinstance(active_session, LimitedBrowserSession):
+                return {
+                    "status": "limited_browser_running",
+                    "base_url": active_session.base_url,
+                    "desktop_environment": {
+                        "status": probe_result.status,
+                        "message": probe_result.message,
+                        "details": probe_result.details or {},
+                    },
+                    "prompt_result": prompt_result,
+                    "workspace_state_path": active_session.workspace_state_path,
+                    "preferences_path": active_session.preferences_path,
+                    "ui_dist_path": active_session.ui_dist_path,
+                }
+            break
+        return {
+            "status": "desktop_runtime_missing",
+            "desktop_environment": {
+                "status": probe_result.status,
+                "message": probe_result.message,
+                "details": probe_result.details or {},
+            },
+            "prompt_result": prompt_result,
+            "workspace_state_path": str(workspace_state_path.resolve()),
+            "preferences_path": str(preferences_path.resolve()),
+            "ui_dist_path": str(ui_dist_path.resolve()),
+        }
     preferred_width, preferred_height = _resolve_preferred_window_size(
         preferences_path,
         fallback_width=options.width,
@@ -86,6 +198,7 @@ def launch_desktop_shell(
         preferences_path=preferences_path,
         ui_dist_path=ui_dist_path,
     )
+    server.ui_mode = "desktop_shell"
     runtime_host, runtime_port = server.server_address
     base_url = f"http://{runtime_host}:{runtime_port}"
     window_ref: dict[str, Any] = {}
@@ -112,6 +225,99 @@ def launch_desktop_shell(
         "preferences_path": str(preferences_path.resolve()),
         "ui_dist_path": str(ui_dist_path.resolve()),
     }
+
+
+def launch_limited_browser_session(
+    *,
+    host: str,
+    port: int,
+    workspace_state_path: Path,
+    preferences_path: Path,
+    ui_dist_path: Path,
+) -> LimitedBrowserSession:
+    active_session = _LIMITED_BROWSER_SESSION_STATE.get("session")
+    active_server = _LIMITED_BROWSER_SESSION_STATE.get("server")
+    active_thread = _LIMITED_BROWSER_SESSION_STATE.get("thread")
+    if (
+        isinstance(active_session, LimitedBrowserSession)
+        and active_server is not None
+        and active_thread is not None
+        and active_thread.is_alive()
+    ):
+        return active_session
+
+    server = build_api_server(
+        host=host,
+        port=port,
+        workspace_state_path=workspace_state_path,
+        preferences_path=preferences_path,
+        ui_dist_path=ui_dist_path,
+    )
+    server.ui_mode = "limited_browser"
+    server.open_path_provider = _build_open_path_provider()
+    runtime_host, runtime_port = server.server_address
+    base_url = f"http://{runtime_host}:{runtime_port}"
+    server_thread = Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    session = LimitedBrowserSession(
+        server_id=f"limited-browser:{uuid.uuid4().hex[:12]}",
+        base_url=base_url,
+        workspace_state_path=str(workspace_state_path.resolve()),
+        preferences_path=str(preferences_path.resolve()),
+        ui_dist_path=str(ui_dist_path.resolve()),
+    )
+    _LIMITED_BROWSER_SESSION_STATE["server"] = server
+    _LIMITED_BROWSER_SESSION_STATE["thread"] = server_thread
+    _LIMITED_BROWSER_SESSION_STATE["session"] = session
+    return session
+
+
+def shutdown_limited_browser_session() -> None:
+    active_server = _LIMITED_BROWSER_SESSION_STATE.pop("server", None)
+    active_thread = _LIMITED_BROWSER_SESSION_STATE.pop("thread", None)
+    _LIMITED_BROWSER_SESSION_STATE.pop("session", None)
+    if active_server is not None:
+        active_server.shutdown()
+        active_server.server_close()
+    if active_thread is not None:
+        active_thread.join(timeout=5)
+
+
+def probe_desktop_environment(*, runtime_checker=None) -> DesktopEnvironmentProbeResult:
+    checker = runtime_checker or _probe_webview2_runtime
+    try:
+        available, message = checker()
+    except Exception as exc:  # noqa: BLE001
+        return DesktopEnvironmentProbeResult(
+            status="probe_failed",
+            message=str(exc) or "desktop environment probe failed",
+            details={"exception_type": type(exc).__name__},
+        )
+    if available:
+        return DesktopEnvironmentProbeResult(
+            status="ok",
+            message=message or "desktop environment ready",
+        )
+    return DesktopEnvironmentProbeResult(
+        status="missing_runtime",
+        message=message or "webview2 runtime missing",
+    )
+
+
+def _probe_webview2_runtime() -> tuple[bool, str]:
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    candidate = Path(program_files_x86) / "Microsoft" / "EdgeWebView" / "Application"
+    if candidate.exists():
+        return True, "webview2 runtime available"
+    return False, "webview2 runtime missing"
+
+
+def _run_missing_runtime_prompt(payload: dict) -> dict:
+    return {"action": "dismissed", "payload": payload}
+
+
+def _open_url_in_default_browser(url: str) -> None:
+    webbrowser.open(url)
 
 
 def _resolve_preferred_window_size(
@@ -211,7 +417,7 @@ def _normalize_file_dialog_paths(selected: Any) -> list[str]:
     return [str(path) for path in selected if path]
 
 
-def _build_open_path_provider(window_ref: dict[str, Any]):
+def _build_open_path_provider(window_ref: dict[str, Any] | None = None):
     def provider(payload: dict) -> dict:
         raw_path = payload.get("path")
         if not isinstance(raw_path, str) or not raw_path.strip():

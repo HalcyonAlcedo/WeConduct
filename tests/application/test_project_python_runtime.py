@@ -1,7 +1,10 @@
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import zipfile
 
 import pytest
 
@@ -39,7 +42,7 @@ def test_python_runtime_manager_resolves_bundled_python_from_frozen_internal_dir
     manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
     profile = build_default_python_runtime_profile()
     fake_exe = tmp_path / "dist" / "WeConduct.exe"
-    bundled_dir = fake_exe.parent / "_internal"
+    bundled_dir = fake_exe.parent / "bundled-python"
     bundled_dir.mkdir(parents=True, exist_ok=True)
     bundled_python = bundled_dir / "python.exe"
     bundled_python.write_bytes(b"stub")
@@ -57,17 +60,14 @@ def test_python_runtime_manager_prepare_runtime_uses_bundled_python_in_frozen_mo
     manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
     profile = build_default_python_runtime_profile()
     fake_exe = tmp_path / "dist" / "WeConduct.exe"
-    bundled_dir = fake_exe.parent / "_internal"
+    bundled_dir = fake_exe.parent / "bundled-python"
     bundled_dir.mkdir(parents=True, exist_ok=True)
     base_executable = Path(sys.executable).resolve()
-    for candidate in (
-        base_executable,
-        base_executable.with_name("python3.dll"),
-        base_executable.with_name(f"python{sys.version_info.major}{sys.version_info.minor}.dll"),
-        base_executable.with_name("base_library.zip"),
-    ):
-        if candidate.exists():
+    for candidate in base_executable.parent.iterdir():
+        if candidate.is_file() and candidate.suffix.lower() in {".exe", ".dll"}:
             (bundled_dir / candidate.name).write_bytes(candidate.read_bytes())
+    shutil.copytree(base_executable.parent / "Lib", bundled_dir / "Lib")
+    shutil.copytree(base_executable.parent / "DLLs", bundled_dir / "DLLs")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(fake_exe))
 
@@ -87,19 +87,96 @@ def test_python_runtime_manager_prefers_bundled_python_home_directory_in_frozen_
     manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
     profile = build_default_python_runtime_profile()
     fake_exe = tmp_path / "dist" / "WeConduct.exe"
-    bundled_dir = fake_exe.parent / "_internal" / "bundled-python"
+    bundled_dir = fake_exe.parent / "bundled-python"
     bundled_dir.mkdir(parents=True, exist_ok=True)
     bundled_python = bundled_dir / "python.exe"
     bundled_python.write_bytes(b"stub")
-    bundled_zip = bundled_dir / "base_library.zip"
-    bundled_zip.write_bytes(b"zip-stub")
+    bundled_lib = bundled_dir / "Lib"
+    bundled_lib.mkdir(parents=True, exist_ok=True)
+    (bundled_lib / "__future__.py").write_text("annotations = 1\n", encoding="utf-8")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(fake_exe))
 
     resolved = manager._resolve_base_python_executable(profile)
 
     assert resolved == bundled_python
-    assert bundled_zip.exists() is True
+    assert bundled_lib.exists() is True
+
+
+def test_python_runtime_manager_collects_complete_bundled_python_home_in_frozen_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
+    profile = build_default_python_runtime_profile()
+    fake_exe = tmp_path / "dist" / "WeConduct.exe"
+    bundled_dir = fake_exe.parent / "bundled-python"
+    bundled_dir.mkdir(parents=True, exist_ok=True)
+    bundled_python = bundled_dir / "python.exe"
+    bundled_python.write_bytes(b"stub")
+    (bundled_dir / "python3.dll").write_bytes(b"dll")
+    (bundled_dir / "python313.dll").write_bytes(b"dll")
+    (bundled_dir / "Lib").mkdir(parents=True, exist_ok=True)
+    (bundled_dir / "Lib" / "__future__.py").write_text("annotations = 1\n", encoding="utf-8")
+    (bundled_dir / "DLLs").mkdir(parents=True, exist_ok=True)
+    (bundled_dir / "DLLs" / "_socket.pyd").write_bytes(b"pyd")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(fake_exe))
+
+    exported = manager._collect_portable_base_python_bundle(
+        manager._resolve_base_python_executable(profile)
+    )
+
+    assert exported["bundled-python/Lib/__future__.py"] == (
+        b"annotations = 1\n".replace(b"\n", os.linesep.encode("utf-8"))
+    )
+    assert exported["bundled-python/DLLs/_socket.pyd"] == b"pyd"
+
+
+def test_full_venv_export_collects_complete_bundled_python_home_from_frozen_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
+    profile = build_default_python_runtime_profile()
+    project_storage_root = tmp_path / "project.data"
+    runtime_root = tmp_path / "runtime.data"
+    venv_python = runtime_root / "venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True, exist_ok=True)
+    venv_python.write_bytes(b"venv-python")
+    pyvenv_cfg = runtime_root / "venv" / "pyvenv.cfg"
+    pyvenv_cfg.write_text("home = stale\n", encoding="utf-8")
+
+    fake_exe = tmp_path / "dist" / "WeConduct.exe"
+    bundled_dir = fake_exe.parent / "bundled-python"
+    bundled_dir.mkdir(parents=True, exist_ok=True)
+    bundled_python = bundled_dir / "python.exe"
+    bundled_python.write_bytes(b"stub")
+    (bundled_dir / "python3.dll").write_bytes(b"dll")
+    (bundled_dir / "python313.dll").write_bytes(b"dll")
+    (bundled_dir / "Lib").mkdir(parents=True, exist_ok=True)
+    (bundled_dir / "Lib" / "__future__.py").write_text("annotations = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(fake_exe))
+    monkeypatch.setattr(
+        manager,
+        "health_check",
+        lambda *args, **kwargs: {
+            "health_status": "ready",
+            "runtime_root": runtime_root,
+            "python_executable": venv_python,
+        },
+    )
+
+    exported = manager.export_runtime_bundle(
+        profile,
+        project_id="demo",
+        project_storage_root=project_storage_root,
+        package_embed_mode="full_venv",
+    )
+
+    assert exported["archive_entries"]["full-venv/bundled-python/Lib/__future__.py"] == (
+        b"annotations = 1\n".replace(b"\n", os.linesep.encode("utf-8"))
+    )
 
 
 def test_python_runtime_manager_resolves_software_cache_location(tmp_path: Path) -> None:
@@ -232,6 +309,29 @@ def test_python_runtime_manager_health_check_reports_broken_when_python_executab
     assert report["health_status"] == "broken"
 
 
+def test_python_runtime_manager_health_check_reports_broken_when_python_executable_is_not_launchable(
+    tmp_path: Path,
+) -> None:
+    manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
+    profile = build_default_python_runtime_profile()
+    prepared = manager.prepare_runtime(
+        profile,
+        project_id="demo",
+        project_storage_root=tmp_path / "project.data",
+    )
+    python_executable = prepared["python_executable"]
+    python_executable.write_text("broken launcher", encoding="utf-8")
+
+    report = manager.health_check(
+        profile,
+        project_id="demo",
+        project_storage_root=tmp_path / "project.data",
+    )
+
+    assert report["health_status"] == "broken"
+    assert "not launchable" in (report["health_message"] or "")
+
+
 def test_python_runtime_manager_health_check_reports_broken_when_manifest_is_invalid_json(tmp_path: Path) -> None:
     manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
     profile = build_default_python_runtime_profile()
@@ -341,3 +441,40 @@ def test_python_runtime_manager_rejects_wheelhouse_source_path_outside_project_r
             project_storage_root=tmp_path / "project.data",
             runtime_root=tmp_path / "runtime.data",
         )
+
+
+def test_full_venv_export_rewrites_pyvenv_cfg_for_portable_runtime(tmp_path: Path) -> None:
+    manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
+    profile = build_default_python_runtime_profile()
+    profile["runtime_enabled"] = True
+    profile["project_cache_mode"] = "full_venv"
+    profile["package_embed_mode"] = "full_venv"
+    profile["requirements_source_mode"] = "inline"
+    profile["requirements_inline"] = []
+    project_storage_root = tmp_path / "project.data"
+
+    prepared = manager.prepare_runtime(
+        profile,
+        project_id="demo",
+        project_storage_root=project_storage_root,
+    )
+    exported = manager.export_runtime_bundle(
+        profile,
+        project_id="demo",
+        project_storage_root=project_storage_root,
+        package_embed_mode="full_venv",
+    )
+
+    pyvenv_entry = exported["archive_entries"]["full-venv/venv/pyvenv.cfg"].decode("utf-8")
+    python_relative = manager._build_runtime_python_relative_path().as_posix()
+
+    assert "home = __WE_CONDUCT_PORTABLE_BUNDLED_PYTHON__" in pyvenv_entry
+    assert "executable = __WE_CONDUCT_PORTABLE_BUNDLED_PYTHON__\\python.exe" in pyvenv_entry
+    assert (
+        "command = __WE_CONDUCT_PORTABLE_BUNDLED_PYTHON__\\python.exe -m venv "
+        "__WE_CONDUCT_PORTABLE_VENV__"
+    ) in pyvenv_entry
+    assert f"full-venv/{python_relative}" in exported["archive_entries"]
+    assert "full-venv/bundled-python/python.exe" in exported["archive_entries"]
+    assert "full-venv/bundled-python/Lib/encodings/__init__.py" in exported["archive_entries"]
+    assert prepared["python_executable"].exists() is True
