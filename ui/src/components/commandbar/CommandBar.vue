@@ -300,7 +300,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
           <button @click="handleManualGraphUpgrade()">手动升级节点图</button>
           <hr>
           <button @click="dock.restorePanel('projectSettings'); closeMenu()">项目设置</button>
-          <button @click="dock.restorePanel('packageManager'); closeMenu()">.wcrun 打包</button>
+          <button @click="dock.restorePanel('packageManager'); closeMenu()">.wcrun 包管理</button>
           <button @click="openDialog('save')">保存</button>
           <button @click="openDialog('saveas')">另存为</button>
           <hr>
@@ -435,7 +435,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
             <!-- About -->
             <template v-else-if="activeDialog === 'about'">
               <p><strong>WeConduct</strong></p>
-              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.7.3' }}</p>
+              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.7.4' }}</p>
               <p class="dlg-meta">更新状态: {{ updateStore.status?.check_status ?? 'idle' }}</p>
               <p class="dlg-meta">最新版本: {{ updateStore.status?.latest_version ?? '—' }}</p>
               <p class="dlg-meta">最近检查: {{ updateStore.status?.last_checked_at ?? '—' }}</p>

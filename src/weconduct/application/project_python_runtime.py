@@ -20,6 +20,18 @@ PYTHON_RUNTIME_PACKAGE_EMBED_MODES = {"none", "wheelhouse_rebuild", "full_venv"}
 PYTHON_RUNTIME_HEALTH_STATUSES = {"unknown", "ready", "missing", "broken", "stale"}
 
 
+def _subprocess_windows_silent_kwargs() -> dict:
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "startupinfo": startupinfo,
+    }
+
+
 def _resolve_project_scoped_path(path_value: str, *, project_storage_root: Path, field_name: str) -> Path:
     candidate = Path(path_value.strip())
     project_root = project_storage_root.resolve()
@@ -719,6 +731,7 @@ class ProjectPythonRuntimeManager:
                 text=True,
                 check=False,
                 timeout=20,
+                **_subprocess_windows_silent_kwargs(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return False, str(exc)
@@ -793,6 +806,7 @@ class ProjectPythonRuntimeManager:
                 text=True,
                 check=False,
                 timeout=180,
+                **_subprocess_windows_silent_kwargs(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ValueError(f"python runtime venv creation failed: {exc}") from exc
@@ -815,6 +829,7 @@ class ProjectPythonRuntimeManager:
                 text=True,
                 check=False,
                 timeout=180,
+                **_subprocess_windows_silent_kwargs(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ValueError(f"python runtime venv repair failed: {exc}") from exc
@@ -982,6 +997,7 @@ class ProjectPythonRuntimeManager:
                 text=True,
                 check=False,
                 timeout=300,
+                **_subprocess_windows_silent_kwargs(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ValueError(f"python runtime dependency install failed: {exc}") from exc
@@ -1000,6 +1016,7 @@ class ProjectPythonRuntimeManager:
                 text=True,
                 check=False,
                 timeout=10,
+                **_subprocess_windows_silent_kwargs(),
             )
         except (OSError, subprocess.SubprocessError):
             return False

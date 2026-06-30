@@ -577,11 +577,19 @@ export interface PackagePreflightResponse {
 }
 
 export interface PackageBuildRequest { output_path?: string; mode?: string; source_of_truth?: string }
-export interface PackageBuildResponse {
+
+export interface PackageBuildResult {
   status: string; output_path?: string
+  package: { output_path?: string; project_file_path?: string; entry_count?: number; written_bytes?: number }
+  package_summary?: { package_identity?: { package_name?: string; package_version?: string; package_id?: string }; entrypoint?: { graph_id?: string; document_role?: string }; graph_summary?: { graph_count?: number; embedded_resource_count?: number; external_resource_count?: number } }
+  resource_summary?: { embedded_resource_count?: number; external_resource_count?: number }
+  dependency_summary?: { builtin_component_count?: number; custom_component_count?: number }
+  runtime_requirement_summary?: Record<string, unknown>
+  diagnostics?: { total_count: number; entries: unknown[] }
   package_info?: { package_id: string; package_version: string; built_at: string }
-  summary?: Record<string, unknown>; diagnostics?: { total_count: number; entries: unknown[] }
 }
+
+export interface PackageBuildResponse extends PackageBuildResult {}
 
 export interface PackageInspectResponse {
   status: string
@@ -592,10 +600,22 @@ export interface PackageInspectResponse {
   package: Record<string, unknown>
 }
 
+export interface LoadResultSummary {
+  package_path: string
+  session_dir: string
+  source_of_truth: string
+  readonly: boolean
+  runtime_ready: boolean
+  runtime_blocking_count: number
+  security_ready: boolean
+  security_blocked_count: number
+}
+
 export interface PackageLoadResponse extends PackageInspectResponse {
   session_restore_summary: Record<string, unknown>
   project: Record<string, unknown>; project_settings: ProjectSettings; graph_workspace: Record<string, unknown>
   security_requirement_summary?: SecurityRequirementSummary
+  load_result_summary?: LoadResultSummary
 }
 
 // ===== P12: Node Draft =====

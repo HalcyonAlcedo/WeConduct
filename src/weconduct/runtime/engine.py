@@ -2330,6 +2330,7 @@ class RuntimeExecutorRegistry:
                     text=True,
                     timeout=command_timeout,
                     check=False,
+                    **_subprocess_windows_silent_kwargs(),
                 )
                 try:
                     child_result = self._read_python_run_child_result(output_path)
@@ -3087,6 +3088,18 @@ _PYTHON_DEFAULT_BLOCKED_IMPORTS = frozenset(
         "subprocess",
     }
 )
+
+
+def _subprocess_windows_silent_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "startupinfo": startupinfo,
+    }
 
 
 def _python_safe_import(

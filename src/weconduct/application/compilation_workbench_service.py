@@ -67,7 +67,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
-CURRENT_API_VERSION = "0.7.3"
+CURRENT_API_VERSION = "0.7.4"
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
@@ -545,7 +545,48 @@ class CompilationWorkbenchService:
             "graph_count": len(manifest_payload.get("graphs", []))
             if isinstance(manifest_payload.get("graphs"), list)
             else 0,
+            "package_file_size_bytes": resolved_output_path.stat().st_size if resolved_output_path.exists() else 0,
         }
+        package_summary = {
+            "package_identity": deepcopy(
+                manifest_payload.get("package_identity", {})
+                if isinstance(manifest_payload.get("package_identity"), dict)
+                else {}
+            ),
+            "entrypoint": deepcopy(
+                manifest_payload.get("entrypoint", {})
+                if isinstance(manifest_payload.get("entrypoint"), dict)
+                else {}
+            ),
+            "graph_summary": {
+                "graph_count": summary["graph_count"],
+                "embedded_resource_count": summary["embedded_resource_count"],
+                "external_resource_count": summary["external_resource_count"],
+            },
+        }
+        resource_summary = {
+            "embedded_resource_count": summary["embedded_resource_count"],
+            "external_resource_count": summary["external_resource_count"],
+        }
+        dependency_summary = {
+            "builtin_component_count": len(
+                manifest_payload.get("dependencies", {}).get("builtin_components", [])
+            )
+            if isinstance(manifest_payload.get("dependencies"), dict)
+            and isinstance(manifest_payload.get("dependencies", {}).get("builtin_components"), list)
+            else 0,
+            "custom_component_count": len(
+                manifest_payload.get("dependencies", {}).get("custom_components", [])
+            )
+            if isinstance(manifest_payload.get("dependencies"), dict)
+            and isinstance(manifest_payload.get("dependencies", {}).get("custom_components"), list)
+            else 0,
+        }
+        runtime_requirement_summary = deepcopy(
+            manifest_payload.get("runtime_requirements", {})
+            if isinstance(manifest_payload.get("runtime_requirements"), dict)
+            else {}
+        )
         return {
             "status": "built",
             "mode": normalized_mode,
@@ -556,6 +597,7 @@ class CompilationWorkbenchService:
                 "output_path": str(resolved_output_path.resolve()),
                 "project_file_path": str(resolved_project_path.resolve()),
                 "entry_count": len(package_contents),
+                "written_bytes": resolved_output_path.stat().st_size if resolved_output_path.exists() else 0,
             },
             "package_info": {
                 "package_id": manifest_payload.get("package_identity", {}).get("package_id")
@@ -570,6 +612,10 @@ class CompilationWorkbenchService:
                 "built_at": package_info_payload.get("built_at"),
             },
             "summary": summary,
+            "package_summary": package_summary,
+            "resource_summary": resource_summary,
+            "dependency_summary": dependency_summary,
+            "runtime_requirement_summary": runtime_requirement_summary,
             "diagnostics": {
                 "total_count": 0,
                 "highest_severity": None,
@@ -705,6 +751,22 @@ class CompilationWorkbenchService:
                 session_dir=session_dir,
                 project_document=project_document,
             ),
+            "load_result_summary": {
+                "package_path": str(resolved_package_path.resolve()),
+                "session_dir": str(session_dir.resolve()),
+                "source_of_truth": "wcrun_package",
+                "readonly": True,
+                "runtime_ready": bool(
+                    self._build_wcrun_runtime_readiness_summary(package_document).get("ready", False)
+                ),
+                "runtime_blocking_count": int(
+                    self._build_wcrun_runtime_readiness_summary(package_document).get("blocking_count", 0)
+                ),
+                "security_ready": bool(security_requirement_summary.get("ready", False)),
+                "security_blocked_count": int(
+                    security_requirement_summary.get("blocked_count", 0)
+                ),
+            },
             "project": project_document["project"],
             "project_settings": project_document["project_settings"],
             "graph_workspace": project_document["graph_workspace"],
