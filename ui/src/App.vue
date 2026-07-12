@@ -23,8 +23,9 @@ const updateStore = useUpdateStore()
 useKeyboard([
   { key: 'Enter', ctrl: true, handler: async () => {
     if (!graphWs.hasGraph) { toast.info('', '当前图为空'); return }
-    if (!compilation.sourceText.trim() && graphWs.graphModel) await graphWs.syncSource()
     const runtime = useRuntimeStore()
+    if (runtime.isRuntimeActive) { toast.info('任务运行中', '请使用终止按钮结束当前任务'); return }
+    if (!compilation.sourceText.trim() && graphWs.graphModel) await graphWs.syncSource()
     const result = await runtime.startAndRun(graphWs.graphModel as Record<string, unknown> | undefined, graphWs.isDirty)
     if (result.success) toast.success('运行完成', result.message)
     else toast.error('运行失败', result.message)

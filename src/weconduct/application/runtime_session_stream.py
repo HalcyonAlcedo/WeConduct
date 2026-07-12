@@ -24,14 +24,19 @@ class RuntimeSessionStreamBroker:
         self._latest_snapshot_by_session_id: dict[str, dict[str, Any]] = {}
 
     def publish_snapshot(self, session_id: str, snapshot: dict[str, Any]) -> None:
-        self._latest_snapshot_by_session_id[session_id] = dict(snapshot)
-        self._publish(session_id, "runtime.snapshot", dict(snapshot))
+        snapshot_payload = dict(snapshot)
+        with self._lock:
+            self._latest_snapshot_by_session_id[session_id] = snapshot_payload
+            subscribers = list(self._subscribers_by_session_id.get(session_id, {}).values())
+            for subscriber in subscribers:
+                subscriber.queue.put(("runtime.snapshot", dict(snapshot_payload)))
 
     def publish_event(self, session_id: str, event_name: str, payload: dict[str, Any]) -> None:
         self._publish(session_id, event_name, dict(payload))
 
     def get_latest_snapshot(self, session_id: str) -> dict[str, Any] | None:
-        snapshot = self._latest_snapshot_by_session_id.get(session_id)
+        with self._lock:
+            snapshot = self._latest_snapshot_by_session_id.get(session_id)
         return dict(snapshot) if isinstance(snapshot, dict) else None
 
     def subscribe(self, session_id: str) -> tuple[str, Queue]:
@@ -60,12 +65,13 @@ class RuntimeSessionStreamBroker:
             subscribers = self._subscribers_by_session_id.pop(session_id, {})
             for subscriber in subscribers.values():
                 subscriber.queue.put(_STOP_EVENT)
+            self._latest_snapshot_by_session_id.pop(session_id, None)
 
     def _publish(self, session_id: str, event_name: str, payload: dict[str, Any]) -> None:
         with self._lock:
             subscribers = list(self._subscribers_by_session_id.get(session_id, {}).values())
-        for subscriber in subscribers:
-            subscriber.queue.put((event_name, payload))
+            for subscriber in subscribers:
+                subscriber.queue.put((event_name, payload))
 
     def iter_events(self, queue: Queue) -> Iterator[tuple[str, dict[str, Any]]]:
         while True:

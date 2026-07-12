@@ -15,12 +15,13 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 from time import monotonic
 import urllib.error
 import urllib.parse
 import urllib.request
 from zipfile import BadZipFile
-from typing import Any
+from typing import Any, Callable
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from playwright.sync_api import Browser, Frame, Page, Playwright, sync_playwright
@@ -29,6 +30,78 @@ from weconduct.runtime.captcha_ocr import (
     CaptchaOcrRuntimeUnavailable,
     create_captcha_ocr_recognizer,
 )
+
+BROWSER_OBSERVATION_RECORD_LIMIT = 500
+
+
+class RuntimeCancellationError(Exception):
+    weconduct_cancelled = True
+
+    def __init__(self, reason: str | None = None) -> None:
+        self.reason = reason or "execution cancelled"
+        super().__init__(self.reason)
+
+
+class CancellationContext:
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._cancelled = False
+        self._reason: str | None = None
+        self._cleanup_callbacks: list[Callable[[], None]] = []
+
+    @property
+    def is_cancelled(self) -> bool:
+        with self._lock:
+            return self._cancelled
+
+    @property
+    def reason(self) -> str | None:
+        with self._lock:
+            return self._reason
+
+    def request_cancel(self, reason: str | None = None) -> bool:
+        callbacks: list[Callable[[], None]] = []
+        with self._lock:
+            if self._cancelled:
+                return False
+            self._cancelled = True
+            self._reason = reason or "execution cancelled"
+            callbacks = self._cleanup_callbacks
+            self._cleanup_callbacks = []
+        for callback in callbacks:
+            _invoke_cleanup(callback)
+        return True
+
+    def register_cleanup(self, callback: Callable[[], None]) -> Callable[[], None]:
+        removed = False
+
+        def unregister() -> None:
+            nonlocal removed
+            with self._lock:
+                if removed:
+                    return
+                removed = True
+                if callback in self._cleanup_callbacks:
+                    self._cleanup_callbacks.remove(callback)
+
+        run_now = False
+        with self._lock:
+            if self._cancelled:
+                run_now = True
+            else:
+                self._cleanup_callbacks.append(callback)
+        if removed:
+            return unregister
+        if run_now:
+            _invoke_cleanup(callback)
+        return unregister
+
+    def raise_if_cancelled(self) -> None:
+        if self.is_cancelled:
+            raise RuntimeCancellationError(self.reason)
+
+    def check(self) -> None:
+        self.raise_if_cancelled()
 
 
 @dataclass
@@ -42,17 +115,32 @@ class RuntimeContext:
     embedded_resource_paths: dict[str, str] = field(default_factory=dict)
     allowed_path_roots: tuple[Path, ...] = field(default_factory=tuple)
     runtime_settings: dict[str, Any] = field(default_factory=dict)
+    cancellation_context: CancellationContext = field(default_factory=CancellationContext)
+    _cleanup_keys: set[str] = field(default_factory=set, init=False, repr=False)
+    _close_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
+
+    def register_cleanup(self, key: str, callback: Callable[[], None]) -> Callable[[], None]:
+        with self._close_lock:
+            if key in self._cleanup_keys:
+                return lambda: None
+            self._cleanup_keys.add(key)
+        unregister_inner = self.cancellation_context.register_cleanup(callback)
+
+        def unregister() -> None:
+            with self._close_lock:
+                self._cleanup_keys.discard(key)
+            unregister_inner()
+
+        return unregister
 
     def close(self) -> None:
-        browser_context = self.browser_runtime.get("browser_context")
-        browser = self.browser_runtime.get("browser")
-        playwright = self.browser_runtime.get("playwright")
-        if browser_context is not None:
-            browser_context.close()
-        if browser is not None:
-            browser.close()
-        if playwright is not None:
-            playwright.stop()
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        _register_browser_runtime_cleanup(self)
+        self.cancellation_context.request_cancel("runtime context closed")
         self.browser_runtime.clear()
 
 
@@ -210,6 +298,7 @@ class RuntimeExecutorRegistry:
         }
 
     def _execute_http_request(self, node: dict, context: RuntimeContext) -> dict:
+        _check_cancellation(context)
         node_config = _node_config(node)
         method = str(_resolve_value(node_config.get("method", "GET"), context)).upper()
         url = _resolve_value(node_config.get("url"), context)
@@ -258,8 +347,15 @@ class RuntimeExecutorRegistry:
                 headers=request_headers,
                 method=method,
             )
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                raw_body = response.read()
+            response = urllib.request.urlopen(request, timeout=timeout)
+            close_response = _make_cleanup_action(response.close)
+            unregister_cleanup = context.cancellation_context.register_cleanup(close_response)
+            try:
+                raw_body = _read_http_response_body(
+                    response=response,
+                    context=context,
+                    timeout_seconds=timeout,
+                )
                 response_headers = {
                     key.lower(): value for key, value in response.headers.items()
                 }
@@ -274,8 +370,21 @@ class RuntimeExecutorRegistry:
                     "body": response_body,
                     "body_text": raw_body.decode("utf-8", errors="replace"),
                 }
+            finally:
+                close_response()
+                unregister_cleanup()
         except urllib.error.HTTPError as exc:
-            raw_body = exc.read()
+            close_response = _make_cleanup_action(exc.close)
+            unregister_cleanup = context.cancellation_context.register_cleanup(close_response)
+            try:
+                raw_body = _read_http_response_body(
+                    response=exc,
+                    context=context,
+                    timeout_seconds=timeout,
+                )
+            finally:
+                close_response()
+                unregister_cleanup()
             result = {
                 "status": "failed",
                 "node_id": node["node_id"],
@@ -288,6 +397,8 @@ class RuntimeExecutorRegistry:
                 "body": _decode_http_body(raw_body, dict(exc.headers.items())),
                 "body_text": raw_body.decode("utf-8", errors="replace"),
             }
+        except RuntimeCancellationError:
+            raise
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             result = {
                 "status": "failed",
@@ -480,7 +591,7 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_wait_for_timeout(self, node: dict, context: RuntimeContext) -> dict:
         timeout_ms = _resolve_int(_resolve_value(_node_config(node).get("timeout"), context), default=0)
-        _require_browser_page(context).wait_for_timeout(timeout_ms)
+        _wait_for_timeout_with_cancellation(_require_browser_page(context), timeout_ms, context)
         return {
             "status": "succeeded",
             "node_id": node["node_id"],
@@ -1077,8 +1188,8 @@ class RuntimeExecutorRegistry:
         try:
             url = _validate_http_request_url(
                 url,
-                allow_local_network_access=_is_local_network_access_allowed(context),
-                allow_remote_network_access=_is_remote_network_access_allowed(context),
+                allow_local_network_access=self._is_local_network_access_allowed(),
+                allow_remote_network_access=self._is_remote_network_access_allowed(),
             )
         except ValueError as exc:
             return _failed_result(node, "runtime.executor_exception", str(exc))
@@ -1087,8 +1198,25 @@ class RuntimeExecutorRegistry:
             return _failed_result(node, "browser.download_path_required", "download path is required")
         path = _resolve_runtime_path(path_value, context)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with urllib.request.urlopen(url.strip()) as response, path.open("wb") as handle:
-            handle.write(response.read())
+        timeout_value = _resolve_value(node_config.get("timeout", 30), context)
+        try:
+            timeout = float(timeout_value)
+        except (TypeError, ValueError):
+            return _failed_result(node, "browser.download_timeout_invalid", "node_config.timeout must be numeric")
+        response = urllib.request.urlopen(url.strip(), timeout=timeout)
+        close_response = _make_cleanup_action(response.close)
+        unregister_cleanup = context.cancellation_context.register_cleanup(close_response)
+        try:
+            with path.open("wb") as handle:
+                _copy_http_response_to_handle(
+                    response=response,
+                    handle=handle,
+                    context=context,
+                    timeout_seconds=timeout,
+                )
+        finally:
+            close_response()
+            unregister_cleanup()
         return {"status": "succeeded", "node_id": node["node_id"], "url": url.strip(), "path": str(path.resolve()), "bytes_written": path.stat().st_size}
 
     def _execute_browser_wait_for_download(self, node: dict, context: RuntimeContext) -> dict:
@@ -2307,11 +2435,14 @@ class RuntimeExecutorRegistry:
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
         env.pop("PYTHONPATH", None)
+        child_stdout = ""
+        child_stderr = ""
         try:
             _validate_python_run_code(
                 code,
                 blocked_imports=_resolve_python_blocked_import_modules(self._runtime_settings),
             )
+            _check_cancellation(context)
             child_result = None
             process = None
             active_env = dict(env)
@@ -2322,29 +2453,42 @@ class RuntimeExecutorRegistry:
                 runner_path = temp_root / "runner.py"
                 input_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
                 runner_path.write_text(_PYTHON_RUN_CHILD_SCRIPT, encoding="utf-8")
-                process = subprocess.run(
+                process = subprocess.Popen(
                     [str(python_executable), str(runner_path), str(input_path), str(output_path)],
                     cwd=str(working_directory) if working_directory is not None else None,
                     env=active_env,
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     text=True,
-                    timeout=command_timeout,
-                    check=False,
                     **_subprocess_windows_silent_kwargs(),
                 )
+                terminate_process = _make_cleanup_action(
+                    lambda: _terminate_process(process)
+                )
+                unregister_cleanup = context.cancellation_context.register_cleanup(terminate_process)
                 try:
-                    child_result = self._read_python_run_child_result(output_path)
-                except ValueError as exc:
-                    if "python.run child result file missing:" in str(exc):
-                        detail_message = _build_python_run_missing_child_result_message(
-                            base_message=str(exc),
-                            python_executable=python_executable,
-                            process=process,
-                            pythonpath=active_env.get("PYTHONPATH"),
-                            pythonhome=active_env.get("PYTHONHOME"),
-                        )
-                        raise ValueError(detail_message) from exc
-                    raise
+                    child_stdout, child_stderr = _communicate_process_with_cancellation(
+                        process=process,
+                        context=context,
+                        timeout_seconds=command_timeout,
+                    )
+                    try:
+                        child_result = self._read_python_run_child_result(output_path)
+                    except ValueError as exc:
+                        if "python.run child result file missing:" in str(exc):
+                            detail_message = _build_python_run_missing_child_result_message(
+                                base_message=str(exc),
+                                python_executable=python_executable,
+                                returncode=process.returncode,
+                                stdout=child_stdout,
+                                stderr=child_stderr,
+                                pythonpath=active_env.get("PYTHONPATH"),
+                                pythonhome=active_env.get("PYTHONHOME"),
+                            )
+                            raise ValueError(detail_message) from exc
+                        raise
+                finally:
+                    unregister_cleanup()
         except PythonCodeRejected as exc:
             return {
                 "status": "failed",
@@ -2355,6 +2499,8 @@ class RuntimeExecutorRegistry:
                 "stdout": "",
                 "stderr": "",
             }
+        except RuntimeCancellationError:
+            raise
         except subprocess.TimeoutExpired:
             return {
                 "status": "failed",
@@ -2393,10 +2539,10 @@ class RuntimeExecutorRegistry:
                 "stdout": "",
                 "stderr": "",
             }
-        child_stdout = child_result.get("stdout", "")
-        child_stderr = child_result.get("stderr", "")
+        child_stdout = child_result.get("stdout", child_stdout)
+        child_stderr = child_result.get("stderr", child_stderr)
         if process.returncode != 0 and child_result.get("status") != "failed":
-            detail = process.stderr.strip() or process.stdout.strip() or f"exit code {process.returncode}"
+            detail = child_stderr.strip() or child_stdout.strip() or f"exit code {process.returncode}"
             return {
                 "status": "failed",
                 "node_id": node["node_id"],
@@ -3004,7 +3150,9 @@ def _build_python_run_missing_child_result_message(
     *,
     base_message: str,
     python_executable: Path,
-    process: subprocess.CompletedProcess[str] | None,
+    returncode: int | None,
+    stdout: str,
+    stderr: str,
     pythonpath: str | None,
     pythonhome: str | None = None,
 ) -> str:
@@ -3013,12 +3161,10 @@ def _build_python_run_missing_child_result_message(
         f"pythonhome={pythonhome or '<none>'}",
         f"pythonpath={pythonpath or '<none>'}",
     ]
-    if process is not None:
-        details.append(f"returncode={process.returncode}")
-        stdout = (process.stdout or "").strip()
-        stderr = (process.stderr or "").strip()
-        details.append(f"stdout={stdout or '<empty>'}")
-        details.append(f"stderr={stderr or '<empty>'}")
+    if returncode is not None:
+        details.append(f"returncode={returncode}")
+        details.append(f"stdout={stdout.strip() or '<empty>'}")
+        details.append(f"stderr={stderr.strip() or '<empty>'}")
     return f"{base_message}; " + "; ".join(details)
 
 
@@ -3100,6 +3246,145 @@ def _subprocess_windows_silent_kwargs() -> dict[str, Any]:
         "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
         "startupinfo": startupinfo,
     }
+
+
+def _invoke_cleanup(callback: Callable[[], None]) -> None:
+    try:
+        callback()
+    except Exception:
+        return
+
+
+def _make_cleanup_action(callback: Callable[[], None]) -> Callable[[], None]:
+    lock = threading.Lock()
+    state = {"done": False}
+
+    def run() -> None:
+        with lock:
+            if state["done"]:
+                return
+            state["done"] = True
+        _invoke_cleanup(callback)
+
+    return run
+
+
+def _register_browser_runtime_cleanup(context: RuntimeContext) -> None:
+    browser_context = context.browser_runtime.get("browser_context")
+    browser = context.browser_runtime.get("browser")
+    playwright = context.browser_runtime.get("playwright")
+    if browser_context is not None:
+        context.register_cleanup(
+            f"browser_context:{id(browser_context)}",
+            _make_cleanup_action(lambda: _close_method(browser_context, "close")),
+        )
+    if browser is not None:
+        context.register_cleanup(
+            f"browser:{id(browser)}",
+            _make_cleanup_action(lambda: _close_method(browser, "close")),
+        )
+    if playwright is not None:
+        context.register_cleanup(
+            f"playwright:{id(playwright)}",
+            _make_cleanup_action(lambda: _close_method(playwright, "stop")),
+        )
+
+
+def _close_method(target: object, method_name: str) -> None:
+    method = getattr(target, method_name, None)
+    if callable(method):
+        method()
+
+
+def _check_cancellation(context: RuntimeContext) -> None:
+    context.cancellation_context.check()
+
+
+def _wait_for_timeout_with_cancellation(page: Page, timeout_ms: int, context: RuntimeContext) -> None:
+    remaining_ms = max(timeout_ms, 0)
+    _check_cancellation(context)
+    while remaining_ms > 0:
+        slice_ms = min(remaining_ms, 50)
+        page.wait_for_timeout(slice_ms)
+        remaining_ms -= slice_ms
+        _check_cancellation(context)
+
+
+def _read_http_response_body(*, response: Any, context: RuntimeContext, timeout_seconds: float) -> bytes:
+    _check_cancellation(context)
+    chunks: list[bytes] = []
+    deadline = monotonic() + max(timeout_seconds, 0.0)
+    while True:
+        _check_cancellation(context)
+        if timeout_seconds > 0 and monotonic() > deadline:
+            raise TimeoutError(f"http request timed out after {timeout_seconds} seconds")
+        chunk = response.read(65536)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def _copy_http_response_to_handle(
+    *,
+    response: Any,
+    handle: Any,
+    context: RuntimeContext,
+    timeout_seconds: float,
+) -> None:
+    _check_cancellation(context)
+    deadline = monotonic() + max(timeout_seconds, 0.0)
+    while True:
+        _check_cancellation(context)
+        if timeout_seconds > 0 and monotonic() > deadline:
+            raise TimeoutError(f"http request timed out after {timeout_seconds} seconds")
+        chunk = response.read(65536)
+        if not chunk:
+            return
+        handle.write(chunk)
+
+
+def _communicate_process_with_cancellation(
+    *,
+    process: subprocess.Popen[str],
+    context: RuntimeContext,
+    timeout_seconds: int,
+) -> tuple[str, str]:
+    started_at = monotonic()
+    poll_timeout = 0.1
+    while True:
+        _check_cancellation(context)
+        remaining_seconds = timeout_seconds - (monotonic() - started_at)
+        if remaining_seconds <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout_seconds)
+        try:
+            return process.communicate(timeout=min(poll_timeout, remaining_seconds))
+        except subprocess.TimeoutExpired:
+            continue
+        except TimeoutError:
+            continue
+
+
+def _terminate_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        try:
+            process.communicate(timeout=0.1)
+        except Exception:
+            pass
+        return
+    process.terminate()
+    try:
+        process.communicate(timeout=0.2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except TimeoutError:
+        pass
+    if process.poll() is None:
+        process.kill()
+        try:
+            process.communicate(timeout=0.2)
+        except Exception:
+            return
 
 
 def _python_safe_import(
@@ -3879,6 +4164,7 @@ def _require_browser_page(context: RuntimeContext) -> Page:
     context.browser_runtime.setdefault("response_records", [])
     context.browser_runtime.setdefault("popup_records", [])
     context.browser_runtime.setdefault("download_records", [])
+    _register_browser_runtime_cleanup(context)
     _ensure_browser_context_handlers(context)
     return page
 
@@ -3900,13 +4186,26 @@ def _resolve_browser_launch_config(value: Any, context: RuntimeContext) -> dict[
     return browser_config
 
 
+def _append_bounded_browser_record(
+    records: list[dict],
+    record: dict,
+    *,
+    limit: int = BROWSER_OBSERVATION_RECORD_LIMIT,
+) -> None:
+    records.append(record)
+    overflow = len(records) - max(limit, 1)
+    if overflow > 0:
+        del records[:overflow]
+
+
 def _ensure_browser_context_handlers(context: RuntimeContext) -> None:
     browser_context = context.browser_runtime.get("browser_context")
     if browser_context is None or context.browser_runtime.get("context_handlers_installed") is True:
         return
 
     def handle_request(request: Any) -> None:
-        context.browser_runtime.setdefault("request_records", []).append(
+        _append_bounded_browser_record(
+            context.browser_runtime.setdefault("request_records", []),
             {
                 "url": request.url,
                 "method": request.method,
@@ -3920,7 +4219,8 @@ def _ensure_browser_context_handlers(context: RuntimeContext) -> None:
             body_text = response.text()
         except Exception:
             body_text = None
-        context.browser_runtime.setdefault("response_records", []).append(
+        _append_bounded_browser_record(
+            context.browser_runtime.setdefault("response_records", []),
             {
                 "url": response.url,
                 "status_code": response.status,
@@ -3936,7 +4236,8 @@ def _ensure_browser_context_handlers(context: RuntimeContext) -> None:
         if suppressed_count > 0:
             context.browser_runtime["suppress_next_page_record"] = suppressed_count - 1
             return
-        context.browser_runtime.setdefault("popup_records", []).append(
+        _append_bounded_browser_record(
+            context.browser_runtime.setdefault("popup_records", []),
             {
                 "page": page,
                 "page_url": page.url,
@@ -3991,7 +4292,8 @@ def _register_browser_page(context: RuntimeContext, page: Page) -> int:
     registered_page_ids = context.browser_runtime.setdefault("download_handler_page_ids", set())
     if id(page) not in registered_page_ids:
         def handle_download(download: Any) -> None:
-            context.browser_runtime.setdefault("download_records", []).append(
+            _append_bounded_browser_record(
+                context.browser_runtime.setdefault("download_records", []),
                 {
                     "download": download,
                     "url": download.url,
@@ -4279,7 +4581,10 @@ def _ensure_dialog_handler(context: RuntimeContext) -> None:
                 dialog.accept(str(config.get("prompt_text", "")))
         except Exception as exc:
             record["error"] = str(exc)
-        context.browser_runtime.setdefault("dialog_records", []).append(record)
+        _append_bounded_browser_record(
+            context.browser_runtime.setdefault("dialog_records", []),
+            record,
+        )
 
     page.on("dialog", handle_dialog)
     context.browser_runtime["dialog_handler_installed"] = True

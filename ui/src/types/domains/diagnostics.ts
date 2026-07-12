@@ -5,7 +5,7 @@
 
 export type DiagnosticSeverity = 'info' | 'warning' | 'degraded' | 'error' | 'fatal'
 
-export type DiagnosticStage = 'parse' | 'bind' | 'validate' | 'normalize' | 'lower' | 'emit'
+export type DiagnosticStage = 'parse' | 'bind' | 'validate' | 'normalize' | 'lower' | 'emit' | 'runtime' | 'debug' | 'workspace' | 'ui'
 
 export interface Diagnostic {
   diagnostic_id: string
@@ -21,6 +21,22 @@ export interface Diagnostic {
 
 export interface DiagnosticCatalog {
   entries: Diagnostic[]
+}
+
+export type ProjectDiagnosticSource = 'compilation' | 'runtime' | 'debug' | 'workspace' | 'ui'
+
+export interface ProjectDiagnostic extends Diagnostic {
+  source: ProjectDiagnosticSource
+  operation: string | null
+  project_id: string | null
+  project_name: string | null
+  fingerprint: string
+  http_status: number | null
+  error_code: string | null
+  raw_details: unknown
+  count: number
+  first_seen_at: string
+  last_seen_at: string
 }
 
 /** API view model — diagnostic group for UI display */

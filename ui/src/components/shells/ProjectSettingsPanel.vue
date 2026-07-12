@@ -40,6 +40,7 @@ const settings = reactive<ProjectSettings>({
   external_resources: [],
   resource_policy: { embedded_resources: [], external_resource_bindings: [] },
   compile_profile: { source_of_truth: 'saved_project_only', inject_project_runtime_defaults_into_main_flow_start: true },
+  debug_profile: { history_retention_limit: 10 },
   python_runtime_profile: { runtime_enabled: false, python_version_spec: '3.13', interpreter_strategy: 'bundled' as const, custom_python_path: null, cache_location_mode: 'software_cache' as const, project_cache_mode: 'wheelhouse_rebuild' as const, requirements_source_mode: 'inline' as const, requirements_inline: [], requirements_file_path: null, lock_file_path: null, index_strategy: 'default' as const, custom_index_url: null, auto_prepare_on_run: true, package_embed_mode: 'wheelhouse_rebuild' as const, materialized_runtime_hash: null, last_health_status: 'unknown' as const, last_health_message: null },
 })
 
@@ -202,6 +203,7 @@ watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) lo
         <template v-else-if="active === 'compile'">
           <div class="psp-field"><label>真值来源</label><select v-model="settings.compile_profile.source_of_truth" class="psp-input" :disabled="sectionReadonly"><option value="saved_project_only">saved_project_only</option></select></div>
           <div class="psp-field"><label>注入运行默认值</label><input type="checkbox" v-model="settings.compile_profile.inject_project_runtime_defaults_into_main_flow_start" :disabled="sectionReadonly" /></div>
+          <div class="psp-field"><label>调试历史保留上限</label><input type="number" v-model.number="settings.debug_profile!.history_retention_limit" class="psp-input" style="width:100px" min="1" :disabled="sectionReadonly" /></div>
         </template>
         <template v-else-if="active === 'pythonRuntime'">
           <!-- Status banner -->

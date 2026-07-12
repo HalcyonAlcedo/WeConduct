@@ -135,6 +135,19 @@ function setCfgVal(key: string, val: unknown) {
   else cfg[key] = val
   workspace.updateNode(selectedNode.value.node_id, { node_config: cfg })
 }
+
+const debuggerCfg = computed(() => {
+  return (selectedNode.value?.node_config?.debugger as Record<string, any>) || {}
+})
+function setDebuggerField(section: string, field: string, val: unknown) {
+  if (!workspace.isGraphEditable || !selectedNode.value) return
+  const cfg = JSON.parse(JSON.stringify(selectedNode.value.node_config || {}))
+  const dbg = (cfg.debugger as Record<string, any>) || {}
+  if (!dbg[section] || typeof dbg[section] !== 'object') dbg[section] = {}
+  ;(dbg[section] as Record<string, any>)[field] = val
+  cfg.debugger = dbg
+  workspace.updateNode(selectedNode.value.node_id, { node_config: cfg })
+}
 function setJsonVal(key: string, raw: string) {
   if (!workspace.isGraphEditable) return; if (!selectedNode.value) return
   try { const val = JSON.parse(raw); const cfg = JSON.parse(JSON.stringify(selectedNode.value.node_config || {}))
@@ -276,6 +289,35 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
           <div class="mep-om-empty" v-if="!objectMapEntries(omf.key).length">当前为空</div>
           <button v-if="workspace.isGraphEditable" class="mep-om-add" @click="addObjectMapKey(omf.key)">+ 新增条目</button>
         </template>
+        <!-- Debugger config -->
+        <div v-if="selectedNode" class="mep-cfg-section">debugger</div>
+        <template v-if="selectedNode">
+          <div class="mep-cfg-row"><label>断点 enabled</label>
+            <input type="checkbox" :checked="!!debuggerCfg.breakpoint?.enabled" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'enabled', ($event.target as HTMLInputElement).checked)" />
+          </div>
+          <div class="mep-cfg-row" v-if="debuggerCfg.breakpoint?.enabled">
+            <label>pause_timing</label>
+            <select class="mep-cfg-input" :value="debuggerCfg.breakpoint?.pause_timing || 'before'" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'pause_timing', ($event.target as HTMLSelectElement).value)">
+              <option value="before">before</option><option value="after">after</option><option value="both">both</option>
+            </select>
+          </div>
+          <div class="mep-cfg-row" v-if="debuggerCfg.breakpoint?.enabled">
+            <label>expression</label>
+            <input :value="debuggerCfg.breakpoint?.expression || ''" class="mep-cfg-input" placeholder="条件表达式" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'expression', ($event.target as HTMLInputElement).value)" />
+          </div>
+          <div class="mep-cfg-row" v-if="debuggerCfg.breakpoint?.enabled">
+            <label>hit_count</label>
+            <input type="number" :value="debuggerCfg.breakpoint?.hit_count ?? 0" class="mep-cfg-input" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'hit_count', Number(($event.target as HTMLInputElement).value))" />
+          </div>
+          <div class="mep-cfg-row" v-if="debuggerCfg.breakpoint?.enabled">
+            <label>once</label>
+            <input type="checkbox" :checked="!!debuggerCfg.breakpoint?.once" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'once', ($event.target as HTMLInputElement).checked)" />
+          </div>
+          <div class="mep-cfg-row"><label>记录帧 enabled</label>
+            <input type="checkbox" :checked="!!debuggerCfg.record_frame?.enabled" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('record_frame', 'enabled', ($event.target as HTMLInputElement).checked)" />
+          </div>
+        </template>
+
         <!-- Extra config -->
         <template v-for="(sec, si) in extraConfigSections" :key="si"><div v-if="sec.section" class="mep-cfg-section">{{ sec.section }}</div>
           <div v-for="f in sec.rows" :key="f.path" class="mep-cfg-row"><label :title="f.path">{{ f.key }}</label>

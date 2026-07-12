@@ -7,6 +7,7 @@ import { ref, computed } from 'vue'
 import { postCompile } from '@/services/api'
 import { useWorkspaceStore } from './workspaceStore'
 import { useToastStore } from './toastStore'
+import { useProjectDiagnosticsStore } from './projectDiagnosticsStore'
 import type { CompileRequestBody, CompileResponse } from '@/types/domains/api'
 import type { CompilationStage, StageStatus } from '@/types/domains/compilation'
 
@@ -133,6 +134,10 @@ export const useCompilationStore = defineStore('compilation', () => {
       }
 
       lastResponse.value = response
+      useProjectDiagnosticsStore().ingestCatalog(response.outcome?.diagnostic_catalog, {
+        source: 'compilation',
+        operation: 'compile',
+      })
 
       const toast = useToastStore()
 
@@ -153,6 +158,14 @@ export const useCompilationStore = defineStore('compilation', () => {
       compilePhase.value = 'failed'
       // Consume enhanced error body from backend
       const body: any = err?.body
+      const diagnostics = useProjectDiagnosticsStore()
+      diagnostics.ingestCatalog(body?.outcome?.diagnostic_catalog ?? body?.diagnostics, {
+        source: 'compilation',
+        operation: 'compile',
+      })
+      if (!body?.outcome?.diagnostic_catalog && !body?.diagnostics?.entries) {
+        diagnostics.ingestApiError(err, { source: 'compilation', operation: 'compile' })
+      }
       if (body) {
         compileError.value = body.message || body.error || 'Compilation failed'
         // Extract stage_cards from error body if present

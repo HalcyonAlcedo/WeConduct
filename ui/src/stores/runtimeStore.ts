@@ -7,10 +7,9 @@ import { ref, computed } from 'vue'
 import {
   fetchRuntimeSessions,
   fetchRuntimeSession,
-  fetchDebugSessions,
-  fetchDebugSession,
   postRuntimeStart,
   postRuntimeRun,
+  postRuntimeAbort,
   getRuntimeStreamUrl,
   buildRuntimeProgressFromSession,
 } from '@/services/api'
@@ -19,32 +18,93 @@ import type {
   RuntimeSessionDetailResponse,
   RuntimeProgress,
   RuntimeStreamSnapshot,
-  DebugSessionSummary,
-  DebugSessionDetailResponse,
 } from '@/types/domains/api'
 import type { Diagnostic } from '@/types/domains/diagnostics'
+import { useProjectDiagnosticsStore } from './projectDiagnosticsStore'
 
 type RuntimeLiveStatus =
   | 'idle'
   | 'connecting'
   | 'streaming'
+  | 'aborting'
+  | 'aborted'
+  | 'settling'
   | 'completed'
   | 'failed'
   | 'disconnected'
   | 'error'
 
 function isTerminalRuntimeStatus(status: unknown): boolean {
-  return status === 'completed' || status === 'failed'
+  return status === 'completed' || status === 'failed' || status === 'aborted'
+}
+
+function getRuntimeSessionStatus(detail: RuntimeSessionDetailResponse | null | undefined) {
+  return detail?.runtime_session?.status ?? detail?.status ?? null
+}
+
+function buildTerminalRunResult(
+  detail: RuntimeSessionDetailResponse,
+  status = getRuntimeSessionStatus(detail),
+): { success: boolean; message: string } | null {
+  const failedNodeCount = detail.node_states?.filter((node: any) => node.node_status === 'failed').length || 0
+  if (status === 'completed') {
+    return {
+      success: failedNodeCount === 0,
+      message: failedNodeCount ? `${failedNodeCount} 节点失败` : `${detail.node_states?.length || 0} 节点完成`,
+    }
+  }
+  if (status === 'failed') {
+    return {
+      success: false,
+      message: failedNodeCount ? `${failedNodeCount} 节点失败` : '运行失败',
+    }
+  }
+  if (status === 'aborted') {
+    return { success: false, message: '运行已终止' }
+  }
+  return null
 }
 
 export const useRuntimeStore = defineStore('runtime', () => {
   const rtSessions = ref<RuntimeSessionSummary[]>([])
-  const dbSessions = ref<DebugSessionSummary[]>([])
   const activeRt = ref<RuntimeSessionDetailResponse | null>(null)
-  const activeDb = ref<DebugSessionDetailResponse | null>(null)
   const runtimeProgress = ref<RuntimeProgress | null>(null)
   const runtimeLiveConnected = ref(false)
   const runtimeLiveStatus = ref<RuntimeLiveStatus>('idle')
+  const isRunStarting = ref(false)
+  const isAbortGuarded = ref(false)
+  let abortGuardTimer: ReturnType<typeof setTimeout> | null = null
+  let cancelRuntimeReconciliation: (() => void) | null = null
+  const activeRuntimeStatus = computed(() => activeRt.value?.runtime_session?.status ?? null)
+  const isRuntimeActive = computed(() =>
+    isRunStarting.value
+      || ['preparing', 'ready', 'running', 'aborting'].includes(activeRuntimeStatus.value ?? '')
+      || ['connecting', 'streaming', 'aborting', 'settling'].includes(runtimeLiveStatus.value)
+  )
+  const canAbortRuntime = computed(() =>
+    isRuntimeActive.value
+      && !isRunStarting.value
+      && !isAbortGuarded.value
+      && runtimeLiveStatus.value !== 'aborting'
+      && runtimeLiveStatus.value !== 'settling'
+      && activeRuntimeStatus.value !== 'aborting'
+      && !!activeRt.value?.runtime_session?.session_id
+  )
+
+  function clearAbortGuard() {
+    if (abortGuardTimer) clearTimeout(abortGuardTimer)
+    abortGuardTimer = null
+    isAbortGuarded.value = false
+  }
+
+  function armAbortGuard() {
+    clearAbortGuard()
+    isAbortGuarded.value = true
+    abortGuardTimer = setTimeout(() => {
+      abortGuardTimer = null
+      isAbortGuarded.value = false
+    }, 600)
+  }
   /** Bump to request OutputPanel to switch to Runtime tab */
   const runtimeTabRequest = ref(0)
   function requestRuntimeTab() { runtimeTabRequest.value++ }
@@ -126,13 +186,18 @@ export const useRuntimeStore = defineStore('runtime', () => {
   let runtimeEventSource: EventSource | null = null
   let subscribedRuntimeSessionId: string | null = null
   let pendingRunResolver: ((result: { success: boolean; message: string }) => void) | null = null
+  let settledRunResult: { success: boolean; message: string } | null = null
 
   function resolvePendingRun(result: { success: boolean; message: string }) {
+    clearAbortGuard()
     if (pendingRunResolver) {
       const resolver = pendingRunResolver
       pendingRunResolver = null
+      settledRunResult = null
       resolver(result)
+      return
     }
+    settledRunResult = result
   }
 
   async function refreshAll() {
@@ -140,42 +205,31 @@ export const useRuntimeStore = defineStore('runtime', () => {
       const r = await fetchRuntimeSessions()
       rtSessions.value = r.sessions
     } catch {}
-    try {
-      const r = await fetchDebugSessions()
-      dbSessions.value = r.sessions
-    } catch {}
   }
 
   async function loadRtDetail(id: string) {
     try {
-      activeRt.value = await fetchRuntimeSession(id)
-      if (activeRt.value) {
-        runtimeProgress.value = buildRuntimeProgressFromSession(activeRt.value)
-      }
-    } catch {}
-  }
-
-  async function loadDbDetail(id: string) {
-    try {
-      activeDb.value = await fetchDebugSession(id)
+      setActiveRt(await fetchRuntimeSession(id))
     } catch {}
   }
 
   function setActiveRt(detail: RuntimeSessionDetailResponse) {
-    activeRt.value = detail
+    const runtimeStatus = getRuntimeSessionStatus(detail)
+    activeRt.value = runtimeStatus ? { ...detail, status: runtimeStatus } : detail
+    const projectDiagnostics = useProjectDiagnosticsStore()
+    projectDiagnostics.ingestCatalog(activeRt.value.diagnostics, { source: 'runtime', operation: 'runtime.session' })
+    projectDiagnostics.ingestCatalog(activeRt.value.diagnostic_events, { source: 'runtime', operation: 'runtime.session' })
     // Only update progress from node_states if there is actual data (avoids overwriting SSE summary)
-    const nodeStates = Array.isArray(detail.node_states) ? detail.node_states : []
+    const nodeStates = Array.isArray(activeRt.value.node_states) ? activeRt.value.node_states : []
     const hasNodeData = nodeStates.length > 0
     if (hasNodeData || !runtimeProgress.value) {
-      runtimeProgress.value = buildRuntimeProgressFromSession(detail)
+      runtimeProgress.value = buildRuntimeProgressFromSession(activeRt.value)
     }
   }
 
-  function setActiveDb(detail: DebugSessionDetailResponse) {
-    activeDb.value = detail
-  }
-
   function unsubscribeRuntimeSession() {
+    cancelRuntimeReconciliation?.()
+    cancelRuntimeReconciliation = null
     if (runtimeEventSource) {
       runtimeEventSource.close()
       runtimeEventSource = null
@@ -190,9 +244,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
   function applyRuntimeSummary(summary: RuntimeProgress) {
     runtimeProgress.value = summary
     runtimeLiveConnected.value = true
-    runtimeLiveStatus.value = isTerminalRuntimeStatus(summary.status)
-      ? (summary.status as RuntimeLiveStatus)
-      : 'streaming'
+    runtimeLiveStatus.value = 'streaming'
   }
 
   /** Incrementally update activeRt.node_states from runtime.node SSE event */
@@ -230,24 +282,11 @@ export const useRuntimeStore = defineStore('runtime', () => {
   }
 
   function applyRuntimeSnapshot(snapshot: RuntimeStreamSnapshot) {
+    const runtimeStatus = getRuntimeSessionStatus(snapshot)
+    if (isTerminalRuntimeStatus(runtimeStatus)) return
     setActiveRt(snapshot)
     runtimeLiveConnected.value = true
-    runtimeLiveStatus.value = isTerminalRuntimeStatus(snapshot.status)
-      ? (snapshot.status as RuntimeLiveStatus)
-      : 'streaming'
-    if (snapshot.status === 'completed') {
-      const failCount = snapshot.node_states?.filter((n: any) => n.node_status === 'failed').length || 0
-      resolvePendingRun({
-        success: failCount === 0,
-        message: failCount ? `${failCount} 节点失败` : `${snapshot.node_states?.length || 0} 节点完成`,
-      })
-    } else if (snapshot.status === 'failed') {
-      const failCount = snapshot.node_states?.filter((n: any) => n.node_status === 'failed').length || 0
-      resolvePendingRun({
-        success: false,
-        message: failCount ? `${failCount} 节点失败` : '运行失败',
-      })
-    }
+    runtimeLiveStatus.value = 'streaming'
   }
 
   function subscribeRuntimeSession(sessionId: string) {
@@ -260,62 +299,126 @@ export const useRuntimeStore = defineStore('runtime', () => {
 
     const eventSource = new EventSource(getRuntimeStreamUrl(sessionId))
     runtimeEventSource = eventSource
+    const isCurrentStream = () => runtimeEventSource === eventSource && subscribedRuntimeSessionId === sessionId
+    let reconcileTimer: ReturnType<typeof setTimeout> | null = null
+    let reconcileInFlight: Promise<void> | null = null
+
+    const cancelReconciliation = () => {
+      if (reconcileTimer) clearTimeout(reconcileTimer)
+      reconcileTimer = null
+    }
+    cancelRuntimeReconciliation = cancelReconciliation
+
+    const scheduleReconciliation = () => {
+      if (!isCurrentStream() || reconcileTimer) return
+      reconcileTimer = setTimeout(() => {
+        reconcileTimer = null
+        void reconcileFromBackend()
+      }, 300)
+    }
+
+    const reconcileFromBackend = async () => {
+      if (!isCurrentStream()) return
+      if (reconcileInFlight) return reconcileInFlight
+      reconcileInFlight = (async () => {
+        try {
+          const latest = await fetchRuntimeSession(sessionId)
+          if (!isCurrentStream()) return
+          setActiveRt(latest)
+          const latestStatus = getRuntimeSessionStatus(latest)
+          if (isTerminalRuntimeStatus(latestStatus)) {
+            runtimeLiveStatus.value = latestStatus as RuntimeLiveStatus
+            const terminalResult = buildTerminalRunResult(latest, latestStatus)
+            unsubscribeRuntimeSession()
+            if (terminalResult) resolvePendingRun(terminalResult)
+            return
+          }
+          scheduleReconciliation()
+        } catch {
+          if (!isCurrentStream()) return
+          runtimeLiveStatus.value = 'error'
+          scheduleReconciliation()
+        }
+      })().finally(() => {
+        reconcileInFlight = null
+      })
+      return reconcileInFlight
+    }
+
+    const requestTerminalReconciliation = () => {
+      if (!isCurrentStream()) return
+      runtimeLiveConnected.value = false
+      runtimeLiveStatus.value = 'settling'
+      cancelReconciliation()
+      void reconcileFromBackend()
+    }
 
     eventSource.addEventListener('runtime.snapshot', ((event: MessageEvent) => {
+      if (!isCurrentStream()) return
       const payload = JSON.parse(event.data) as RuntimeStreamSnapshot
-      applyRuntimeSnapshot(payload)
-      if (isTerminalRuntimeStatus(payload.status)) {
-        unsubscribeRuntimeSession()
-        runtimeLiveStatus.value = payload.status as RuntimeLiveStatus
+      const runtimeStatus = getRuntimeSessionStatus(payload)
+      if (isTerminalRuntimeStatus(runtimeStatus)) {
+        requestTerminalReconciliation()
+        return
       }
+      cancelReconciliation()
+      applyRuntimeSnapshot(payload)
     }) as EventListener)
 
     eventSource.addEventListener('runtime.summary', ((event: MessageEvent) => {
+      if (!isCurrentStream()) return
+      cancelReconciliation()
       const payload = JSON.parse(event.data) as RuntimeProgress
       applyRuntimeSummary(payload)
     }) as EventListener)
 
     eventSource.addEventListener('runtime.node', ((event: MessageEvent) => {
+      if (!isCurrentStream()) return
+      cancelReconciliation()
       const payload = JSON.parse(event.data)
       applyRuntimeNode(payload)
     }) as EventListener)
 
     eventSource.addEventListener('runtime.completed', ((event: MessageEvent) => {
-      const payload = JSON.parse(event.data) as RuntimeStreamSnapshot
-      applyRuntimeSnapshot(payload)
-      unsubscribeRuntimeSession()
-      runtimeLiveStatus.value = 'completed'
+      if (!isCurrentStream()) return
+      JSON.parse(event.data)
+      requestTerminalReconciliation()
     }) as EventListener)
 
     eventSource.addEventListener('runtime.failed', ((event: MessageEvent) => {
-      const payload = JSON.parse(event.data) as RuntimeStreamSnapshot
-      applyRuntimeSnapshot(payload)
-      unsubscribeRuntimeSession()
-      runtimeLiveStatus.value = 'failed'
+      if (!isCurrentStream()) return
+      JSON.parse(event.data)
+      requestTerminalReconciliation()
+    }) as EventListener)
+
+    eventSource.addEventListener('runtime.aborting', ((event: MessageEvent) => {
+      if (!isCurrentStream()) return
+      const payload = JSON.parse(event.data) as { abort_reason?: string }
+      runtimeLiveStatus.value = 'aborting'
+      if (activeRt.value) {
+        activeRt.value = {
+          ...activeRt.value,
+          runtime_session: {
+            ...activeRt.value.runtime_session,
+            status: 'aborting',
+            abort_reason: payload.abort_reason ?? 'user_abort',
+          },
+        }
+      }
+    }) as EventListener)
+
+    eventSource.addEventListener('runtime.aborted', ((event: MessageEvent) => {
+      if (!isCurrentStream()) return
+      JSON.parse(event.data)
+      requestTerminalReconciliation()
     }) as EventListener)
 
     eventSource.onerror = async () => {
+      if (!isCurrentStream()) return
       runtimeLiveConnected.value = false
-      if (runtimeLiveStatus.value === 'completed' || runtimeLiveStatus.value === 'failed') {
-        return
-      }
-      runtimeLiveStatus.value = 'error'
-      if (sessionId) {
-        try {
-          const latest = await fetchRuntimeSession(sessionId)
-          setActiveRt(latest)
-          if (isTerminalRuntimeStatus(latest.status)) {
-            runtimeLiveStatus.value = latest.status as RuntimeLiveStatus
-            unsubscribeRuntimeSession()
-            return
-          }
-          runtimeLiveStatus.value = 'disconnected'
-          resolvePendingRun({ success: false, message: '实时连接中断' })
-        } catch {
-          runtimeLiveStatus.value = 'error'
-          resolvePendingRun({ success: false, message: '实时连接错误' })
-        }
-      }
+      runtimeLiveStatus.value = 'disconnected'
+      cancelReconciliation()
+      await reconcileFromBackend()
     }
   }
 
@@ -326,12 +429,22 @@ export const useRuntimeStore = defineStore('runtime', () => {
     graphDocument?: Record<string, unknown>,
     isDirty?: boolean,
   ): Promise<{ success: boolean; message: string; securityBlocked?: boolean }> {
+    if (isRunStarting.value) {
+      return { success: false, message: '运行正在启动，请稍候' }
+    }
+    if (isRuntimeActive.value) {
+      return { success: false, message: '已有运行中的任务，请先终止或等待完成' }
+    }
+    isRunStarting.value = true
+    clearAbortGuard()
+    settledRunResult = null
     // Trigger output panel + diagnostics tab
     requestRuntimeTab()
     try {
       const body = (graphDocument && isDirty) ? { graph_document: graphDocument } : undefined
       const r = await postRuntimeStart(body)
       if (!r.runtime_session.session_id) {
+        isRunStarting.value = false
         setActiveRt(r)
         // Check for security requirement blockage
         const secSummary = (r as any).security_requirement_summary
@@ -352,13 +465,14 @@ export const useRuntimeStore = defineStore('runtime', () => {
       subscribeRuntimeSession(r.runtime_session.session_id)
       const runAccepted = await postRuntimeRun(r.runtime_session.session_id)
       setActiveRt(runAccepted)
-      if (runAccepted.status === 'completed' || runAccepted.status === 'failed') {
+      isRunStarting.value = false
+      armAbortGuard()
+      const acceptedStatus = getRuntimeSessionStatus(runAccepted)
+      const terminalResult = buildTerminalRunResult(runAccepted, acceptedStatus)
+      if (terminalResult) {
+        clearAbortGuard()
         await refreshAll()
-        const failCount = runAccepted.node_states?.filter((n: any) => n.node_status === 'failed').length || 0
-        return {
-          success: failCount === 0,
-          message: failCount ? `${failCount} 节点失败` : `${runAccepted.node_states?.length || 0} 节点完成`,
-        }
+        return terminalResult
       }
 
       return await new Promise<{ success: boolean; message: string }>((resolve) => {
@@ -366,10 +480,19 @@ export const useRuntimeStore = defineStore('runtime', () => {
           await refreshAll()
           resolve(result)
         }
+        if (settledRunResult) {
+          const result = settledRunResult
+          settledRunResult = null
+          resolvePendingRun(result)
+        }
       })
     } catch (e: any) {
+      isRunStarting.value = false
+      clearAbortGuard()
       pendingRunResolver = null
+      settledRunResult = null
       if (e?.body) setActiveRt(e.body as any)
+      useProjectDiagnosticsStore().ingestApiError(e, { source: 'runtime', operation: 'runtime.start_and_run' })
       return {
         success: false,
         message:
@@ -382,22 +505,60 @@ export const useRuntimeStore = defineStore('runtime', () => {
     }
   }
 
+  async function abortActiveRun(reason = 'user_abort'): Promise<{ success: boolean; message: string }> {
+    const currentRuntime = activeRt.value
+    const sessionId = currentRuntime?.runtime_session?.session_id
+    if (!currentRuntime || !sessionId || !isRuntimeActive.value) {
+      return { success: false, message: '当前没有可终止的运行任务' }
+    }
+    if (!canAbortRuntime.value) {
+      return { success: false, message: isRunStarting.value ? '运行正在启动，请稍候' : '当前暂不可终止' }
+    }
+    runtimeLiveStatus.value = 'aborting'
+    activeRt.value = {
+      ...currentRuntime,
+      runtime_session: {
+        ...currentRuntime.runtime_session,
+        status: 'aborting',
+        abort_reason: reason,
+      },
+    }
+    try {
+      const result = await postRuntimeAbort(sessionId, reason)
+      setActiveRt(result)
+      if (result.runtime_session.status === 'aborted') {
+        runtimeLiveStatus.value = 'aborted'
+        unsubscribeRuntimeSession()
+        resolvePendingRun({ success: false, message: '运行已终止' })
+      }
+      await refreshAll()
+      return {
+        success: result.runtime_session.status === 'aborted',
+        message: result.runtime_session.status === 'aborted' ? '运行已终止' : '正在终止运行任务',
+      }
+    } catch (error: any) {
+      runtimeLiveStatus.value = 'error'
+      useProjectDiagnosticsStore().ingestApiError(error, { source: 'runtime', operation: 'runtime.abort' })
+      return { success: false, message: error?.body?.message || error?.message || '终止失败' }
+    }
+  }
+
   return {
     rtSessions,
-    dbSessions,
     activeRt,
-    activeDb,
     runtimeProgress,
     runtimeLiveConnected,
     runtimeLiveStatus,
+    isRunStarting,
+    isRuntimeActive,
+    canAbortRuntime,
     refreshAll,
     loadRtDetail,
-    loadDbDetail,
     setActiveRt,
-    setActiveDb,
     subscribeRuntimeSession,
     unsubscribeRuntimeSession,
     startAndRun,
+    abortActiveRun,
     runtimeTabRequest,
     requestRuntimeTab,
     runtimeDiagnosticGroups,

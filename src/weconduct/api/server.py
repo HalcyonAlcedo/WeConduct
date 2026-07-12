@@ -5,6 +5,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import secrets
+from threading import Condition, RLock
+from typing import Callable, TypeVar
 from urllib.parse import parse_qs, unquote, urlparse
 
 from weconduct.application import (
@@ -27,6 +29,11 @@ DEFAULT_WORKSPACE_STATE_PATH = (
 )
 DEFAULT_PREFERENCES_PATH = Path(__file__).resolve().parents[3] / ".weconduct" / "preferences.json"
 DEFAULT_UI_DIST_PATH = Path(__file__).resolve().parents[3] / "ui" / "dist"
+DebugActionResult = TypeVar("DebugActionResult")
+
+
+class ApiServerClosingError(ValueError):
+    pass
 
 
 def _sanitize_path_for_error(path: str) -> str:
@@ -46,6 +53,43 @@ def _is_path_under_root(path: Path, root: Path) -> bool:
 
 class WeConductApiServer(ThreadingHTTPServer):
     allow_reuse_address = True
+    daemon_threads = True
+    block_on_close = False
+
+    def __init__(self, *args, **kwargs) -> None:
+        self._service_lock = RLock()
+        self._debug_action_condition = Condition(RLock())
+        self._active_debug_action_count = 0
+        self._closing = False
+        super().__init__(*args, **kwargs)
+
+    def execute_debug_action(
+        self,
+        action: Callable[[], DebugActionResult],
+    ) -> DebugActionResult:
+        with self._debug_action_condition:
+            if self._closing:
+                raise ApiServerClosingError("API server is closing")
+            self._active_debug_action_count += 1
+        try:
+            return action()
+        finally:
+            with self._debug_action_condition:
+                self._active_debug_action_count -= 1
+                if self._active_debug_action_count == 0:
+                    self._debug_action_condition.notify_all()
+
+    def server_close(self) -> None:
+        try:
+            with self._debug_action_condition:
+                self._closing = True
+                while self._active_debug_action_count > 0:
+                    self._debug_action_condition.wait()
+            service = getattr(self, "workbench_service", None)
+            if isinstance(service, CompilationWorkbenchService):
+                service.shutdown_debug_sessions()
+        finally:
+            super().server_close()
 
 
 class WeConductApiHandler(BaseHTTPRequestHandler):
@@ -319,6 +363,74 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if request_path == "/api/workbench/debug/history":
+            result = service.list_debug_history_sessions()
+            self._write_json(
+                HTTPStatus.OK,
+                result,
+            )
+            return
+
+        if request_path.startswith("/api/workbench/debug/history/"):
+            session_id = request_path.removeprefix("/api/workbench/debug/history/")
+            if session_id and "/" not in session_id:
+                try:
+                    result = service.open_debug_history_session(session_id=session_id)
+                except ValueError as exc:
+                    self._write_invalid_request_error(exc)
+                    return
+                self._write_json(HTTPStatus.OK, result)
+                return
+
+        if request_path.startswith("/api/workbench/debug/") and request_path.endswith("/events"):
+            session_id = request_path.removeprefix("/api/workbench/debug/").removesuffix("/events")
+            if session_id and "/" not in session_id:
+                try:
+                    result = service.list_debug_session_events(session_id=session_id)
+                except ValueError as exc:
+                    self._write_invalid_request_error(exc)
+                    return
+                self._write_json(HTTPStatus.OK, result)
+                return
+
+        if request_path.startswith("/api/workbench/debug/projection/live/"):
+            session_id = request_path.removeprefix("/api/workbench/debug/projection/live/")
+            if session_id and "/" not in session_id:
+                try:
+                    result = service.get_debug_live_projection(session_id=session_id)
+                except ValueError as exc:
+                    self._write_invalid_request_error(exc)
+                    return
+                self._write_json(HTTPStatus.OK, result)
+                return
+
+        if request_path.startswith("/api/workbench/debug/projection/history/"):
+            session_id = request_path.removeprefix("/api/workbench/debug/projection/history/")
+            if session_id and "/" not in session_id:
+                try:
+                    event_index = None
+                    keyframe_id = None
+                    raw_event_indexes = query_params.get("event_index")
+                    if raw_event_indexes:
+                        event_index = int(raw_event_indexes[0])
+                        if event_index < 0:
+                            raise ValueError("event_index must be a non-negative integer")
+                    raw_keyframe_ids = query_params.get("keyframe_id")
+                    if raw_keyframe_ids:
+                        keyframe_id = raw_keyframe_ids[0].strip()
+                        if not keyframe_id:
+                            raise ValueError("keyframe_id must be a non-empty string")
+                    result = service.get_debug_history_projection(
+                        session_id=session_id,
+                        event_index=event_index,
+                        keyframe_id=keyframe_id,
+                    )
+                except (TypeError, ValueError) as exc:
+                    self._write_invalid_request_error(exc)
+                    return
+                self._write_json(HTTPStatus.OK, result)
+                return
+
         if self.path.startswith("/api/workbench/runtime/") and self.command == "GET":
             session_id = self.path.removeprefix("/api/workbench/runtime/")
             if session_id.endswith("/stream"):
@@ -540,6 +652,35 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             self._write_json(status_code, response_payload)
             return
 
+        if self.path.startswith("/api/workbench/runtime/") and self.path.endswith("/abort"):
+            try:
+                session_id = self.path.removeprefix("/api/workbench/runtime/").removesuffix("/abort")
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid runtime session path")
+                payload = self._read_json_request_body()
+                reason = payload.get("reason")
+                if not isinstance(reason, str) or not reason.strip():
+                    raise ValueError("field must be a non-empty string: reason")
+                result = service.abort_runtime_session(
+                    session_id=session_id,
+                    reason=reason,
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            status_code = (
+                HTTPStatus.OK
+                if result["status"] in {
+                    "aborting",
+                    "aborted",
+                    "completed",
+                    "failed",
+                }
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._write_json(status_code, result)
+            return
+
         if self.path == "/api/workbench/debug/prepare":
             try:
                 payload = self._read_optional_json_request_body()
@@ -556,13 +697,212 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         if self.path == "/api/workbench/debug/start":
             try:
                 payload = self._read_optional_json_request_body()
-                result = service.start_debug_session(
-                    self._extract_optional_graph_document_payload(payload)
+                result = self.server.execute_debug_action(
+                    lambda: service.start_debug_session_async(
+                        self._extract_optional_graph_document_payload(payload)
+                    )
                 )
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
                 return
-            status_code = HTTPStatus.OK if result["status"] == "started" else HTTPStatus.BAD_REQUEST
+            status_code = (
+                HTTPStatus.OK
+                if result["status"] in {"started", "running", "paused", "completed", "failed", "aborted", "incomplete"}
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._write_json(status_code, result)
+            return
+
+        if self.path.startswith("/api/workbench/debug/") and self.path.endswith("/continue"):
+            try:
+                session_id = self.path.removeprefix("/api/workbench/debug/").removesuffix("/continue")
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid debug session path")
+                self._read_optional_json_request_body()
+                result = self.server.execute_debug_action(
+                    lambda: service.continue_debug_session_async(session_id=session_id)
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            status_code = (
+                HTTPStatus.OK
+                if result["status"] in {"accepted", "running", "paused", "completed", "failed", "aborted", "incomplete"}
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._write_json(status_code, result)
+            return
+
+        if self.path.startswith("/api/workbench/debug/") and self.path.endswith("/pause"):
+            try:
+                session_id = self.path.removeprefix("/api/workbench/debug/").removesuffix("/pause")
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid debug session path")
+                payload = self._read_json_request_body()
+                node_id = payload.get("node_id")
+                reason = payload.get("reason")
+                if node_id is not None and (not isinstance(node_id, str) or not node_id.strip()):
+                    raise ValueError("field must be a non-empty string when provided: node_id")
+                if not isinstance(reason, str) or not reason.strip():
+                    raise ValueError("field must be a non-empty string: reason")
+                result = self.server.execute_debug_action(
+                    lambda: service.request_debug_pause(
+                        session_id=session_id,
+                        node_id=node_id,
+                        reason=reason,
+                    )
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            status_code = (
+                HTTPStatus.OK
+                if result["status"] in {"accepted", "paused", "completed", "failed", "aborted", "incomplete"}
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._write_json(status_code, result)
+            return
+
+        if self.path.startswith("/api/workbench/debug/") and self.path.endswith("/variables/apply"):
+            try:
+                session_id = (
+                    self.path.removeprefix("/api/workbench/debug/").removesuffix("/variables/apply")
+                )
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid debug session path")
+                payload = self._read_json_request_body()
+                updates = payload.get("updates")
+                apply_mode = payload.get("apply_mode", "staged")
+                if not isinstance(updates, dict):
+                    raise ValueError("field must be a JSON object: updates")
+                if not isinstance(apply_mode, str):
+                    raise ValueError("field must be a string when provided: apply_mode")
+                result = self.server.execute_debug_action(
+                    lambda: service.apply_debug_session_variables(
+                        session_id=session_id,
+                        updates=updates,
+                        apply_mode=apply_mode,
+                    )
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            status_code = HTTPStatus.OK if result["status"] == "updated" else HTTPStatus.BAD_REQUEST
+            self._write_json(status_code, result)
+            return
+
+        if self.path.startswith("/api/workbench/debug/") and self.path.endswith("/debugger-config/apply"):
+            try:
+                session_id = (
+                    self.path.removeprefix("/api/workbench/debug/")
+                    .removesuffix("/debugger-config/apply")
+                )
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid debug session path")
+                payload = self._read_json_request_body()
+                node_id = payload.get("node_id")
+                debugger_config = payload.get("debugger")
+                if not isinstance(node_id, str) or not node_id.strip():
+                    raise ValueError("field must be a non-empty string: node_id")
+                if not isinstance(debugger_config, dict):
+                    raise ValueError("field must be a JSON object: debugger")
+                result = self.server.execute_debug_action(
+                    lambda: service.update_debug_session_node_debugger(
+                        session_id=session_id,
+                        node_id=node_id,
+                        debugger_config=debugger_config,
+                    )
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            status_code = HTTPStatus.OK if result["status"] == "updated" else HTTPStatus.BAD_REQUEST
+            self._write_json(status_code, result)
+            return
+
+        if self.path.startswith("/api/workbench/debug/") and self.path.endswith("/step-over"):
+            try:
+                session_id = self.path.removeprefix("/api/workbench/debug/").removesuffix("/step-over")
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid debug session path")
+                self._read_optional_json_request_body()
+                result = self.server.execute_debug_action(
+                    lambda: service.step_over_debug_session_async(session_id=session_id)
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            status_code = (
+                HTTPStatus.OK
+                if result["status"] in {"accepted", "stepping", "paused", "completed", "failed", "aborted", "incomplete"}
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._write_json(status_code, result)
+            return
+
+        if self.path.startswith("/api/workbench/debug/") and self.path.endswith("/step-into"):
+            try:
+                session_id = self.path.removeprefix("/api/workbench/debug/").removesuffix("/step-into")
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid debug session path")
+                self._read_optional_json_request_body()
+                result = self.server.execute_debug_action(
+                    lambda: service.step_into_debug_session_async(session_id=session_id)
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            status_code = (
+                HTTPStatus.OK
+                if result["status"] in {"accepted", "stepping", "paused", "completed", "failed", "aborted", "incomplete"}
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._write_json(status_code, result)
+            return
+
+        if self.path.startswith("/api/workbench/debug/") and self.path.endswith("/step-out"):
+            try:
+                session_id = self.path.removeprefix("/api/workbench/debug/").removesuffix("/step-out")
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid debug session path")
+                self._read_optional_json_request_body()
+                result = self.server.execute_debug_action(
+                    lambda: service.step_out_debug_session_async(session_id=session_id)
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            status_code = (
+                HTTPStatus.OK
+                if result["status"] in {"accepted", "stepping", "paused", "completed", "failed", "aborted", "incomplete"}
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._write_json(status_code, result)
+            return
+
+        if self.path.startswith("/api/workbench/debug/") and self.path.endswith("/abort"):
+            try:
+                session_id = self.path.removeprefix("/api/workbench/debug/").removesuffix("/abort")
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid debug session path")
+                payload = self._read_json_request_body()
+                reason = payload.get("reason")
+                if not isinstance(reason, str) or not reason.strip():
+                    raise ValueError("field must be a non-empty string: reason")
+                result = self.server.execute_debug_action(
+                    lambda: service.abort_debug_session(
+                        session_id=session_id,
+                        reason=reason,
+                    )
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            status_code = (
+                HTTPStatus.OK
+                if result["status"] in {"accepted", "aborted", "completed", "failed", "incomplete"}
+                else HTTPStatus.BAD_REQUEST
+            )
             self._write_json(status_code, result)
             return
 
@@ -1538,6 +1878,9 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         recovery_action = getattr(exc, "recovery_action", None)
         if recovery_action is not None:
             payload["recovery_action"] = recovery_action
+        details = getattr(exc, "details", None)
+        if isinstance(details, dict):
+            payload["details"] = details
         self._write_json(
             HTTPStatus.BAD_REQUEST,
             payload,
@@ -1657,6 +2000,12 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             "error": error_code,
             "message": message,
             "details": details,
+            "runtime_session": result.get("runtime_session"),
+            "runtime_plan": result.get("runtime_plan"),
+            "node_states": result.get("node_states", []),
+            "event_log": result.get("event_log", []),
+            "diagnostics": diagnostics,
+            "result": result_payload if isinstance(result_payload, dict) else result.get("result"),
         }
 
     def _serialize_request(self, request) -> dict:
@@ -2015,7 +2364,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             if event_name == "runtime.snapshot":
                 continue
             self._write_sse_event(event_name, payload)
-            if event_name in {"runtime.completed", "runtime.failed"}:
+            if event_name in {"runtime.completed", "runtime.failed", "runtime.aborted"}:
                 break
 
     def _write_sse_event(self, event_name: str, payload: dict) -> None:
@@ -2082,19 +2431,21 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             raise ValueError("field must be a string: source_text")
 
     def _get_service(self) -> CompilationWorkbenchService:
-        if not hasattr(self.server, "workbench_service"):
-            self.server.workbench_service = CompilationWorkbenchService(
-                state_store=FileWorkspaceStateStore(self._resolve_workspace_state_path()),
-                preferences_service=self._get_preferences_service(),
-            )
-        return self.server.workbench_service
+        with self.server._service_lock:
+            if not hasattr(self.server, "workbench_service"):
+                self.server.workbench_service = CompilationWorkbenchService(
+                    state_store=FileWorkspaceStateStore(self._resolve_workspace_state_path()),
+                    preferences_service=self._get_preferences_service(),
+                )
+            return self.server.workbench_service
 
     def _get_preferences_service(self) -> PreferencesService:
-        if not hasattr(self.server, "preferences_service"):
-            self.server.preferences_service = PreferencesService(
-                preferences_store=FilePreferencesStore(self._resolve_preferences_path())
-            )
-        return self.server.preferences_service
+        with self.server._service_lock:
+            if not hasattr(self.server, "preferences_service"):
+                self.server.preferences_service = PreferencesService(
+                    preferences_store=FilePreferencesStore(self._resolve_preferences_path())
+                )
+            return self.server.preferences_service
 
     def _get_update_service(self) -> UpdateService:
         if not hasattr(self.server, "update_service"):

@@ -9,6 +9,7 @@ import { useRuntimeStore } from '@/stores/runtimeStore'
 import { useResourceStore } from '@/stores/resourceStore'
 import { useToastStore } from '@/stores/toastStore'
 import { useUpdateStore } from '@/stores/updateStore'
+import { useDebugStore } from '@/stores/debugStore'
 import {
   postProjectNew, postProjectOpen, postProjectSave, postProjectSaveAs,
   fetchProject, fetchGraphDocument, fetchRecentProjects, postRecentProjectRemove,
@@ -26,6 +27,7 @@ const runtime = useRuntimeStore()
 const resource = useResourceStore()
 const toast = useToastStore()
 const updateStore = useUpdateStore()
+const debugStore = useDebugStore()
 
 /** Unified post-project-open state refresh: sync all stores */
 async function applyOpenedProject() {
@@ -36,6 +38,7 @@ async function applyOpenedProject() {
   // Explicit sync (not just 800ms watcher delay)
   if (graphWs.graphModel) await graphWs.syncSource()
   runtime.refreshAll()
+  await debugStore.refreshSessions().catch(() => {})
   resource.refreshAll()
   await graphWs.refreshGraphDocuments()
       const upgrade = workspace.snapshot?.project?.pending_graph_upgrade
@@ -102,6 +105,7 @@ async function doNew() {
     graphWs.reset()
     await workspace.refreshSnapshot()
     runtime.refreshAll()
+    await debugStore.refreshSessions().catch(() => {})
     resource.refreshAll()
     await graphWs.refreshGraphDocuments()
         const upgrade = workspace.snapshot?.project?.pending_graph_upgrade
@@ -202,6 +206,7 @@ const connectionDotClass = computed(() => {
 })
 
 async function handleOneClickRun() {
+  if (debugStore.isDebugActive) { toast.info('调试进行中', '请先中止调试会话再运行'); return }
   // Ensure source is synced from graph first
   if (!compilation.sourceText.trim() && graphWs.graphModel) {
     await graphWs.syncSource()
@@ -219,6 +224,17 @@ async function handleOneClickRun() {
   } else {
     toast.error('运行失败', result.message)
   }
+}
+
+async function handleRuntimeCommand() {
+  if (runtime.isRunStarting) return
+  if (!runtime.isRuntimeActive) {
+    await handleOneClickRun()
+    return
+  }
+  const result = await runtime.abortActiveRun()
+  if (result.success) toast.success('运行已终止')
+  else if (runtime.runtimeLiveStatus !== 'aborting') toast.error('终止失败', result.message)
 }
 
 /** Open native file dialog and set path into dialogInput */
@@ -331,7 +347,9 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
       <div class="cmd-menu-item" @mouseenter="activeMenu !== null ? activeMenu = 'compile' : null">
         <button class="cmd-item" @click="toggleMenu('compile')">编译</button>
         <div v-if="activeMenu === 'compile'" class="cmd-dropdown" @mouseleave="closeMenu">
-          <button @click="handleOneClickRun(); closeMenu()">运行 Ctrl+Enter</button>
+          <button :disabled="debugStore.isDebugActive && !runtime.isRuntimeActive" @click="handleRuntimeCommand(); closeMenu()">
+            {{ runtime.isRuntimeActive ? '终止运行' : '运行 Ctrl+Enter' }}
+          </button>
           <button @click="dock.restorePanel('preferences'); closeMenu()">编译选项</button>
         </div>
       </div>
@@ -347,9 +365,9 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
 
     <!-- Toolbar Area -->
     <div class="cmd-toolbar" role="toolbar" aria-label="工具栏">
-      <button class="tb-btn primary" :disabled="!graphWs.hasGraph" title="运行 (Ctrl+Enter)" @click="handleOneClickRun()">
-        <span class="tb-icon">▶</span>
-        运行
+      <button :class="['tb-btn', runtime.isRuntimeActive && !runtime.isRunStarting ? 'danger' : 'primary']" :disabled="runtime.isRunStarting || (runtime.isRuntimeActive ? !runtime.canAbortRuntime : (!graphWs.hasGraph || debugStore.isDebugActive))" :title="runtime.isRunStarting ? '正在启动' : runtime.isRuntimeActive ? '终止运行' : '运行 (Ctrl+Enter)'" @click="handleRuntimeCommand()">
+        <span class="tb-icon">{{ runtime.isRunStarting ? '…' : runtime.isRuntimeActive ? '■' : '▶' }}</span>
+        {{ runtime.isRunStarting ? '启动中' : runtime.runtimeLiveStatus === 'aborting' ? '终止中' : runtime.runtimeLiveStatus === 'settling' ? '确认中' : runtime.isRuntimeActive ? '终止' : '运行' }}
       </button>
       <span class="tb-brand">WeConduct</span>
       <span class="tb-divider"></span>
@@ -435,7 +453,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
             <!-- About -->
             <template v-else-if="activeDialog === 'about'">
               <p><strong>WeConduct</strong></p>
-              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.7.4' }}</p>
+              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.8.0' }}</p>
               <p class="dlg-meta">更新状态: {{ updateStore.status?.check_status ?? 'idle' }}</p>
               <p class="dlg-meta">最新版本: {{ updateStore.status?.latest_version ?? '—' }}</p>
               <p class="dlg-meta">最近检查: {{ updateStore.status?.last_checked_at ?? '—' }}</p>
@@ -544,6 +562,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
 .tb-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .tb-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .tb-btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.tb-btn.danger { min-width: 72px; background: var(--state-error); color: #fff; border-color: var(--state-error); }
 
 .tb-icon { font-size: 10px; }
 .tb-divider { width: 1px; height: 20px; background: var(--border-default); }

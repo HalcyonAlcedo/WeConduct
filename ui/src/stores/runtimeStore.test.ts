@@ -8,6 +8,7 @@ const apiMocks = vi.hoisted(() => ({
   fetchDebugSession: vi.fn(),
   postRuntimeStart: vi.fn(),
   postRuntimeRun: vi.fn(),
+  postRuntimeAbort: vi.fn(),
   getRuntimeStreamUrl: vi.fn((sessionId: string) => `/api/workbench/runtime/${sessionId}/stream`),
   buildRuntimeProgressFromSession: vi.fn((detail: any) => {
     const nodeStates = Array.isArray(detail?.node_states) ? detail.node_states : []
@@ -36,6 +37,7 @@ vi.mock('@/services/api', () => ({
   fetchDebugSession: apiMocks.fetchDebugSession,
   postRuntimeStart: apiMocks.postRuntimeStart,
   postRuntimeRun: apiMocks.postRuntimeRun,
+  postRuntimeAbort: apiMocks.postRuntimeAbort,
   getRuntimeStreamUrl: apiMocks.getRuntimeStreamUrl,
   buildRuntimeProgressFromSession: apiMocks.buildRuntimeProgressFromSession,
 }))
@@ -152,6 +154,7 @@ describe('runtimeStore', () => {
 
     apiMocks.postRuntimeStart.mockResolvedValue(startedSession)
     apiMocks.postRuntimeRun.mockResolvedValue(acceptedSession)
+    apiMocks.fetchRuntimeSession.mockResolvedValue(completedSnapshot)
 
     const { useRuntimeStore } = await import('./runtimeStore')
     const store = useRuntimeStore()
@@ -200,9 +203,331 @@ describe('runtimeStore', () => {
     const result = await runPromise
 
     expect(result).toEqual({ success: true, message: '2 节点完成' })
+    expect(apiMocks.fetchRuntimeSession).toHaveBeenCalledWith('rt-1')
     expect(store.activeRt?.status).toBe('completed')
     expect(store.runtimeProgress?.percent).toBe(100)
     expect(store.runtimeLiveStatus).toBe('completed')
     expect(MockEventSource.instances[0].closed).toBe(true)
+  })
+
+  it('resolves a run from the nested terminal status after the SSE connection closes', async () => {
+    const startedSession = {
+      status: 'started',
+      request: {},
+      runtime_session: { session_id: 'rt-eof-1', status: 'ready', execution_supported: true },
+      runtime_plan: null,
+      node_states: [],
+      event_log: [],
+      result: null,
+    }
+    const acceptedSession = {
+      ...startedSession,
+      status: 'accepted',
+      runtime_session: { ...startedSession.runtime_session, status: 'running' },
+    }
+    const completedDetail = {
+      request: {},
+      runtime_session: { ...startedSession.runtime_session, status: 'completed' },
+      runtime_plan: null,
+      node_states: [
+        { node_id: 'node-start', node_status: 'completed' },
+        { node_id: 'node-end', node_status: 'completed' },
+      ],
+      event_log: [{ event_kind: 'session.completed' }],
+      result: { status: 'succeeded' },
+    }
+    apiMocks.postRuntimeStart.mockResolvedValue(startedSession)
+    apiMocks.postRuntimeRun.mockResolvedValue(acceptedSession)
+    apiMocks.fetchRuntimeSession.mockResolvedValue(completedDetail)
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    const runPromise = store.startAndRun({ graph_model_id: 'graph:workspace' }, true)
+
+    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    await vi.waitFor(() => expect(apiMocks.postRuntimeRun).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await MockEventSource.instances[0].onerror?.(new Event('error'))
+
+    const result = await Promise.race([
+      runPromise,
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 50)),
+    ])
+
+    expect(result).toEqual({ success: true, message: '2 节点完成' })
+    expect(store.activeRt?.runtime_session.status).toBe('completed')
+    expect(store.runtimeLiveStatus).toBe('completed')
+  })
+
+  it('keeps a run pending when the stream disconnects before the backend reaches a terminal state', async () => {
+    const startedSession = {
+      status: 'started', request: {},
+      runtime_session: { session_id: 'rt-reconnect-1', status: 'ready', execution_supported: true },
+      runtime_plan: null, node_states: [], event_log: [], result: null,
+    }
+    const runningSession = {
+      ...startedSession,
+      status: 'accepted',
+      runtime_session: { ...startedSession.runtime_session, status: 'running' },
+    }
+    const completedSnapshot = {
+      ...runningSession,
+      status: 'completed',
+      session_id: 'rt-reconnect-1',
+      runtime_session: { ...runningSession.runtime_session, status: 'completed' },
+      node_states: [{ node_id: 'node-a', node_status: 'completed' }],
+      result: { status: 'succeeded' },
+    }
+    apiMocks.postRuntimeStart.mockResolvedValue(startedSession)
+    apiMocks.postRuntimeRun.mockResolvedValue(runningSession)
+    apiMocks.fetchRuntimeSession.mockResolvedValue(runningSession)
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    const runPromise = store.startAndRun({ graph_model_id: 'graph:workspace' }, true)
+
+    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await MockEventSource.instances[0].onerror?.(new Event('error'))
+
+    const disconnectedResult = await Promise.race([
+      runPromise,
+      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 30)),
+    ])
+    expect(disconnectedResult).toBe('pending')
+    expect(store.runtimeLiveStatus).toBe('disconnected')
+
+    apiMocks.fetchRuntimeSession.mockResolvedValue(completedSnapshot)
+    MockEventSource.instances[0].emit('runtime.completed', completedSnapshot)
+    await expect(runPromise).resolves.toEqual({ success: true, message: '1 节点完成' })
+  })
+
+  it('reconciles a stale local failed status with the completed backend detail', async () => {
+    const startedSession = {
+      status: 'started', request: {},
+      runtime_session: { session_id: 'rt-stale-failed', status: 'ready', execution_supported: true },
+      runtime_plan: null, node_states: [], event_log: [], result: null,
+    }
+    const runningSession = {
+      ...startedSession,
+      status: 'accepted',
+      runtime_session: { ...startedSession.runtime_session, status: 'running' },
+    }
+    const completedDetail = {
+      request: {},
+      runtime_session: { ...runningSession.runtime_session, status: 'completed' },
+      runtime_plan: null,
+      node_states: [{ node_id: 'node-a', node_status: 'completed' }],
+      event_log: [{ event_kind: 'session.completed' }],
+      result: { status: 'succeeded' },
+    }
+    apiMocks.postRuntimeStart.mockResolvedValue(startedSession)
+    apiMocks.postRuntimeRun.mockResolvedValue(runningSession)
+    apiMocks.fetchRuntimeSession.mockResolvedValue(completedDetail)
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    const runPromise = store.startAndRun({ graph_model_id: 'graph:workspace' }, true)
+
+    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    MockEventSource.instances[0].emit('runtime.summary', {
+      session_id: 'rt-stale-failed', status: 'failed', total_node_count: 1,
+      completed_node_count: 0, failed_node_count: 1, running_node_count: 0,
+      pending_node_count: 0, percent: 100, event_count: 1,
+    })
+    await MockEventSource.instances[0].onerror?.(new Event('error'))
+
+    await expect(runPromise).resolves.toEqual({ success: true, message: '1 节点完成' })
+    expect(store.runtimeLiveStatus).toBe('completed')
+    expect(store.activeRt?.runtime_session.status).toBe('completed')
+  })
+
+  it('uses the backend detail instead of a failed terminal SSE payload', async () => {
+    const startedSession = {
+      status: 'started', request: {},
+      runtime_session: { session_id: 'rt-terminal-authority', status: 'ready', execution_supported: true },
+      runtime_plan: null, node_states: [], event_log: [], result: null,
+    }
+    const runningSession = {
+      ...startedSession,
+      status: 'accepted',
+      runtime_session: { ...startedSession.runtime_session, status: 'running' },
+    }
+    const completedDetail = {
+      request: {},
+      runtime_session: { ...runningSession.runtime_session, status: 'completed' },
+      runtime_plan: null,
+      node_states: [{ node_id: 'node-a', node_status: 'completed' }],
+      event_log: [{ event_kind: 'session.completed' }],
+      result: { status: 'succeeded' },
+    }
+    apiMocks.postRuntimeStart.mockResolvedValue(startedSession)
+    apiMocks.postRuntimeRun.mockResolvedValue(runningSession)
+    apiMocks.fetchRuntimeSession.mockResolvedValue(completedDetail)
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    const runPromise = store.startAndRun({ graph_model_id: 'graph:workspace' }, true)
+
+    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    MockEventSource.instances[0].emit('runtime.failed', {
+      status: 'failed', session_id: 'rt-terminal-authority', request: {},
+      runtime_session: { ...runningSession.runtime_session, status: 'failed' },
+      runtime_plan: null,
+      node_states: [{ node_id: 'node-a', node_status: 'failed' }],
+      event_log: [{ event_kind: 'session.failed' }],
+      result: { status: 'failed', failure_reason: 'stale-stream-payload' },
+    })
+
+    await expect(runPromise).resolves.toEqual({ success: true, message: '1 节点完成' })
+    expect(apiMocks.fetchRuntimeSession).toHaveBeenCalledWith('rt-terminal-authority')
+    expect(store.runtimeLiveStatus).toBe('completed')
+  })
+
+  it('locks runtime commands while the start request is in flight', async () => {
+    let resolveStart!: (value: unknown) => void
+    apiMocks.postRuntimeStart.mockReturnValue(new Promise((resolve) => { resolveStart = resolve }))
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    void store.startAndRun({ graph_model_id: 'graph:workspace' }, true)
+
+    expect(store.isRunStarting).toBe(true)
+    expect(store.canAbortRuntime).toBe(false)
+    const duplicate = await store.startAndRun({ graph_model_id: 'graph:workspace' }, true)
+
+    expect(duplicate).toEqual({ success: false, message: '运行正在启动，请稍候' })
+    expect(apiMocks.postRuntimeStart).toHaveBeenCalledTimes(1)
+    expect(apiMocks.postRuntimeAbort).not.toHaveBeenCalled()
+    resolveStart({
+      status: 'diagnostic_blocked', request: {},
+      runtime_session: { session_id: null, status: 'failed', execution_supported: false },
+      runtime_plan: null, node_states: [], event_log: [], result: null,
+    })
+  })
+
+  it('retains a backend terminal result that arrives before the run response', async () => {
+    const startedSession = {
+      status: 'started', request: {},
+      runtime_session: { session_id: 'rt-early-terminal', status: 'ready', execution_supported: true },
+      runtime_plan: null, node_states: [], event_log: [], result: null,
+    }
+    const runningSession = {
+      ...startedSession,
+      status: 'accepted',
+      runtime_session: { ...startedSession.runtime_session, status: 'running' },
+    }
+    const completedDetail = {
+      request: {},
+      runtime_session: { ...runningSession.runtime_session, status: 'completed' },
+      runtime_plan: null,
+      node_states: [{ node_id: 'node-a', node_status: 'completed' }],
+      event_log: [{ event_kind: 'session.completed' }],
+      result: { status: 'succeeded' },
+    }
+    let resolveRun!: (value: unknown) => void
+    apiMocks.postRuntimeStart.mockResolvedValue(startedSession)
+    apiMocks.postRuntimeRun.mockReturnValue(new Promise((resolve) => { resolveRun = resolve }))
+    apiMocks.fetchRuntimeSession.mockResolvedValue(completedDetail)
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    const runPromise = store.startAndRun({ graph_model_id: 'graph:workspace' }, true)
+
+    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    MockEventSource.instances[0].emit('runtime.completed', {
+      ...completedDetail,
+      session_id: 'rt-early-terminal',
+      status: 'completed',
+    })
+    await vi.waitFor(() => expect(apiMocks.fetchRuntimeSession).toHaveBeenCalledWith('rt-early-terminal'))
+    resolveRun(runningSession)
+
+    const result = await Promise.race([
+      runPromise,
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 50)),
+    ])
+    expect(result).toEqual({ success: true, message: '1 节点完成' })
+  })
+
+  it('ignores terminal events emitted by a superseded runtime stream', async () => {
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+
+    store.subscribeRuntimeSession('rt-old')
+    store.subscribeRuntimeSession('rt-current')
+    const [oldStream, currentStream] = MockEventSource.instances
+
+    oldStream.emit('runtime.failed', {
+      status: 'failed',
+      session_id: 'rt-old',
+      request: {},
+      runtime_session: { session_id: 'rt-old', status: 'failed', execution_supported: true },
+      runtime_plan: null,
+      node_states: [{ node_id: 'node-old', node_status: 'failed' }],
+      event_log: [{ event_kind: 'session.failed' }],
+      result: { status: 'failed' },
+    })
+
+    expect(store.runtimeLiveStatus).toBe('connecting')
+    expect(store.activeRt).toBeNull()
+    expect(currentStream.closed).toBe(false)
+  })
+
+  it('aborts the active runtime session and exposes stable active states', async () => {
+    const runningSession = {
+      status: 'accepted',
+      request: {},
+      runtime_session: { session_id: 'rt-abort-1', status: 'running', execution_supported: true },
+      runtime_plan: null,
+      node_states: [{ node_id: 'node-a', node_status: 'running' }],
+      event_log: [],
+      result: null,
+    }
+    const abortedSession = {
+      ...runningSession,
+      status: 'aborted',
+      runtime_session: {
+        ...runningSession.runtime_session,
+        status: 'aborted',
+        abort_reason: 'user_abort',
+        aborted_at: '2026-07-11T00:00:00+00:00',
+      },
+      node_states: [{ node_id: 'node-a', node_status: 'aborted' }],
+    }
+    apiMocks.postRuntimeAbort.mockResolvedValue(abortedSession)
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    store.setActiveRt(runningSession as any)
+
+    expect(store.isRuntimeActive).toBe(true)
+    expect(store.canAbortRuntime).toBe(true)
+
+    const result = await store.abortActiveRun()
+
+    expect(apiMocks.postRuntimeAbort).toHaveBeenCalledWith('rt-abort-1', 'user_abort')
+    expect(result).toEqual({ success: true, message: '运行已终止' })
+    expect(store.runtimeLiveStatus).toBe('aborted')
+    expect(store.isRuntimeActive).toBe(false)
+    expect(store.canAbortRuntime).toBe(false)
+  })
+
+  it('rejects duplicate start while a runtime session is active', async () => {
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    store.setActiveRt({
+      status: 'accepted', request: {},
+      runtime_session: { session_id: 'rt-active', status: 'running', execution_supported: true },
+      runtime_plan: null, node_states: [], event_log: [], result: null,
+    } as any)
+
+    const result = await store.startAndRun({ graph_model_id: 'graph:workspace' }, true)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已有运行中的任务')
+    expect(apiMocks.postRuntimeStart).not.toHaveBeenCalled()
   })
 })

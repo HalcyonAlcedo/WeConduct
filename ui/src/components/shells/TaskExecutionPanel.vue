@@ -5,11 +5,10 @@ import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useRuntimeStore } from '@/stores/runtimeStore'
 import { useDockStore } from '@/stores/dockStore'
+import { useDebugStore } from '@/stores/debugStore'
 import {
-  postRuntimePrepare, postRuntimeStart, postRuntimeRun,
   fetchRuntimeSession,
-  postDebugPrepare, postDebugStart,
-  fetchDebugSession, fetchExecutionHistory,
+  fetchExecutionHistory,
 } from '@/services/api'
 import type { ExecutionHistoryResponse } from '@/types/domains/api'
 
@@ -17,6 +16,7 @@ const toast = useToastStore()
 const workspace = useWorkspaceStore()
 const graphWs = useGraphWorkspaceStore()
 const runtime = useRuntimeStore()
+const debugStore = useDebugStore()
 const loading = ref('')
 const execHistory = ref<ExecutionHistoryResponse | null>(null)
 
@@ -27,76 +27,34 @@ function graphBody() {
   return { graph_document: graphWs.graphModel as unknown as Record<string, unknown> }
 }
 
-onMounted(async () => { await runtime.refreshAll(); try { execHistory.value = await fetchExecutionHistory() } catch {} })
+onMounted(async () => {
+  await runtime.refreshAll()
+  await debugStore.refreshSessions().catch(() => {})
+  try { execHistory.value = await fetchExecutionHistory() } catch {}
+})
 
-async function rtPrepare() {
-  if (!graphWs.hasGraph) { toast.info('', '当前图为空，无法执行'); return }
-  loading.value='rt-prepare'; try { await postRuntimePrepare(graphBody()); toast.success('Runtime 已就绪'); await runtime.refreshAll() } catch(e:any){
-    const msg = e?.body?.message || e?.body?.error || e?.message
-    toast.error('准备失败', msg)
-    if (e?.body) runtime.setActiveRt(e.body)
-  } finally {loading.value=''}
-}
-async function rtStart() {
-  if (!graphWs.hasGraph) { toast.info('', '当前图为空，无法执行'); return }
-  loading.value='rt-start'; try {
-    const r = await postRuntimeStart(graphBody())
-    runtime.setActiveRt(r); toast.success('已启动', r.runtime_session.session_id ?? '')
-    await runtime.refreshAll()
-  } catch(e: any) {
-    if (e?.body) {
-      runtime.setActiveRt(e.body)
-      const body = e.body
-      const diagMsg = body.details?.primary_diagnostic?.message || body.message
-      if (body.error === 'diagnostic_blocked') {
-        const entries = body.diagnostics?.entries || []
-        const nodeIds = [...new Set(entries.map((d: any) => d?.stage_extension?.graph_ref?.node_id).filter(Boolean))]
-        toast.error('启动受阻：组件已禁用', nodeIds.length ? `节点: ${nodeIds.join(', ')}` : diagMsg || '请检查资源管理')
-      } else {
-        toast.error('启动失败', diagMsg || body.error || e?.message)
-      }
-    } else {
-      toast.error('启动失败', e?.message)
-    }
-  } finally {loading.value=''}
-}
-async function rtRun(id: string) {
-  loading.value='rt-run'
-  try {
-    runtime.subscribeRuntimeSession(id)
-    const r = await postRuntimeRun(id)
-    runtime.setActiveRt(r)
-    if (r.status === 'completed' || r.status === 'failed') {
-      toast.success('执行完成', r.status)
-    }
-  } catch(e:any){
-    if (e?.body) {
-      runtime.setActiveRt(e.body)
-      const msg = e.body.details?.primary_diagnostic?.message || e.body.message || e.body.error
-      toast.error('执行失败', msg || e?.message)
-    } else { toast.error('执行失败', e?.message) }
-  } finally {loading.value=''}
-}
 async function rtDetail(id: string) { try { const r = await fetchRuntimeSession(id); runtime.setActiveRt(r) } catch(e:any){toast.error('查询失败',e?.message)} }
-async function dbPrepare() {
-  if (!graphWs.hasGraph) { toast.info('', '当前图为空，无法调试'); return }
-  loading.value='db-prepare'; try { await postDebugPrepare(graphBody()); toast.success('Debug 已就绪'); await runtime.refreshAll() } catch(e:any){toast.error('准备失败',e?.message)} finally {loading.value=''}
-}
 async function dbStart() {
   if (!graphWs.hasGraph) { toast.info('', '当前图为空，无法调试'); return }
-  loading.value='db-start'; try {
-    const r = await postDebugStart(graphBody())
-    runtime.setActiveDb(r); toast.success('已启动', r.debug_session.session_id ?? '')
-    await runtime.refreshAll()
-  } catch(e:any){
-    if (e?.body) {
-      runtime.setActiveDb(e.body)
-      const msg = e.body.details?.primary_diagnostic?.message || e.body.message || e.body.error
-      toast.error('启动失败', msg || e?.message)
-    } else { toast.error('启动失败', e?.message) }
-  } finally {loading.value=''}
+  loading.value='db-start'
+  const r = await debugStore.startDebugSession(graphBody())
+  if (r.phase === 'started') {
+    toast.success('已启动', r.sessionId ?? '')
+  } else if (r.phase === 'started_with_sync_warning') {
+    toast.success('已启动', r.sessionId ?? '')
+    toast.error('面板同步失败', r.syncError ?? '')
+  } else {
+    toast.error('启动失败', r.startError ?? '')
+  }
+  loading.value=''
 }
-async function dbDetail(id: string) { try { const r = await fetchDebugSession(id); runtime.setActiveDb(r) } catch(e:any){toast.error('查询失败',e?.message)} }
+async function dbDetail(id: string) {
+  try {
+    await debugStore.loadActiveSession(id)
+    await debugStore.loadProjection(id, 'live')
+    await debugStore.loadEvents(id)
+  } catch (e: any) { toast.error('查询失败', e?.message) }
+}
 
 async function startAndRun() {
   if (!graphWs.hasGraph) { toast.info('', '当前图为空，无法执行'); return }
@@ -125,24 +83,32 @@ async function startAndRun() {
   }
   finally { loading.value = '' }
 }
+
+async function abortRun() {
+  loading.value = 'runtime-abort'
+  const result = await runtime.abortActiveRun()
+  if (result.success) toast.success('运行已终止')
+  else if (runtime.runtimeLiveStatus !== 'aborting') toast.error('终止失败', result.message)
+  try { execHistory.value = await fetchExecutionHistory() } catch {}
+  loading.value = ''
+}
 </script>
 
 <template>
   <div class="tep">
     <div class="tep-bar">
-      <button class="tep-btn" @click="rtPrepare" :disabled="!!loading">Runtime Prepare</button>
-      <button class="tep-btn" @click="rtStart" :disabled="!!loading">Runtime Start</button>
-      <button class="tep-btn" @click="dbPrepare" :disabled="!!loading">Debug Prepare</button>
-      <button class="tep-btn" @click="dbStart" :disabled="!!loading">Debug Start</button>
-      <span class="tep-sep">|</span>
-      <button class="tep-btn primary" @click="startAndRun" :disabled="!!loading">▶ 一键运行</button>
-      <span v-if="loading" class="tep-loading">{{ loading }}</span>
+      <button class="tep-btn" @click="dbStart" :disabled="!!loading || debugStore.isDebugActive || runtime.isRuntimeActive">Debug Start</button>
+      <button v-if="runtime.isRuntimeActive" class="tep-btn danger" @click="abortRun" :disabled="runtime.isRunStarting || !runtime.canAbortRuntime || runtime.runtimeLiveStatus === 'aborting'">
+        {{ runtime.isRunStarting ? '… 正在启动' : runtime.runtimeLiveStatus === 'settling' ? '… 正在确认' : runtime.runtimeLiveStatus === 'aborting' ? '■ 正在终止' : '■ 终止' }}
+      </button>
+      <button v-else class="tep-btn primary" @click="startAndRun" :disabled="!!loading || debugStore.isDebugActive">▶ 运行</button>
+      <span v-if="loading && loading !== 'runtime-abort'" class="tep-loading">{{ loading }}</span>
     </div>
 
     <!-- Live Progress -->
     <div v-if="runtime.runtimeProgress && runtime.runtimeProgress.total_node_count > 0" class="tep-progress">
       <div class="tep-pg-bar-wrap">
-        <div class="tep-pg-bar" :style="{ width: (runtime.runtimeProgress.percent ?? 0) + '%' }" :class="{ done: runtime.runtimeLiveStatus === 'completed', fail: runtime.runtimeLiveStatus === 'failed' }"></div>
+        <div class="tep-pg-bar" :style="{ width: (runtime.runtimeProgress.percent ?? 0) + '%' }" :class="{ done: runtime.runtimeLiveStatus === 'completed', fail: ['failed', 'aborted'].includes(runtime.runtimeLiveStatus) }"></div>
       </div>
       <div class="tep-pg-info">
         <span>{{ runtime.runtimeProgress.percent ?? 0 }}%</span>
@@ -154,6 +120,9 @@ async function startAndRun() {
       <div class="tep-pg-live">
         <span v-if="runtime.runtimeLiveStatus === 'connecting'" class="connecting">⏳ 正在连接…</span>
         <span v-else-if="runtime.runtimeLiveStatus === 'streaming'" class="streaming">⟳ 实时同步中</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'aborting'" class="fail">■ 正在终止</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'aborted'" class="fail">■ 已终止</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'settling'" class="connecting">正在确认运行结果</span>
         <span v-else-if="runtime.runtimeLiveStatus === 'completed'" class="done">✓ 运行完成</span>
         <span v-else-if="runtime.runtimeLiveStatus === 'failed'" class="fail">✕ 运行失败</span>
         <span v-else-if="runtime.runtimeLiveStatus === 'disconnected'" class="disconnected">⚠ 实时连接中断（数据已保留）</span>
@@ -169,11 +138,10 @@ async function startAndRun() {
           <span :class="['tep-st', s.status === 'completed' ? 'ok' : s.status === 'failed' ? 'fail' : '']">{{ s.status }}</span>
           <span class="tep-sid">{{ s.session_id.slice(0,12) }}</span>
           <button class="tep-sm" @click="rtDetail(s.session_id)">详</button>
-          <button v-if="s.status !== 'completed'" class="tep-sm" @click="rtRun(s.session_id)">▶</button>
         </div>
         <div v-if="runtime.activeRt" class="tep-detail">
           <strong>{{ runtime.activeRt.runtime_session.session_id }}</strong>
-          <div>状态: {{ runtime.activeRt.status }}</div>
+          <div>状态: {{ runtime.activeRt.runtime_session.status }}</div>
           <div v-if="runtime.activeRt.runtime_plan">节点: {{ runtime.activeRt.runtime_plan.node_count }}</div>
           <div v-if="runtime.activeRt.event_log?.length">事件: {{ runtime.activeRt.event_log.length }} 条</div>
           <div v-if="runtime.activeRt.node_states?.length">节点状态: {{ runtime.activeRt.node_states.length }} 个</div>
@@ -181,17 +149,18 @@ async function startAndRun() {
       </div>
 
       <div class="tep-col">
-        <h4>Debug 会话 ({{ runtime.dbSessions.length }})</h4>
-        <div v-if="!runtime.dbSessions.length" class="tep-empty">暂无</div>
-        <div v-for="s in runtime.dbSessions" :key="s.session_id" class="tep-row">
-          <span :class="['tep-st', s.status === 'ready' ? 'ok' : '']">{{ s.status }}</span>
+        <h4>Debug 会话 ({{ debugStore.sessions.length }})</h4>
+        <div v-if="!debugStore.sessions.length" class="tep-empty">暂无</div>
+        <div v-for="s in debugStore.sessions" :key="s.session_id" class="tep-row">
+          <span :class="['tep-st', s.status === 'completed' ? 'ok' : ['failed','cancelled','aborted','incomplete'].includes(s.status) ? 'fail' : '']">{{ s.status }}</span>
           <span class="tep-sid">{{ s.session_id.slice(0,12) }}</span>
           <button class="tep-sm" @click="dbDetail(s.session_id)">详</button>
         </div>
-        <div v-if="runtime.activeDb" class="tep-detail">
-          <strong>{{ runtime.activeDb.debug_session.session_id }}</strong>
-          <div>阶段: {{ runtime.activeDb.stage_timeline?.length ?? 0 }}</div>
-          <div v-if="runtime.activeDb.object_index">对象: {{ runtime.activeDb.object_index.nodes.length }}N / {{ runtime.activeDb.object_index.edges.length }}E</div>
+        <div v-if="debugStore.activeSession" class="tep-detail">
+          <strong>{{ debugStore.activeSession.debug_session.session_id }}</strong>
+          <div>状态: {{ debugStore.activeSession.debug_session.status }}</div>
+          <div>阶段: {{ debugStore.activeSession.stage_timeline?.length ?? 0 }}</div>
+          <div v-if="debugStore.activeSession.object_index">对象: {{ debugStore.activeSession.object_index.nodes.length }}N / {{ debugStore.activeSession.object_index.edges.length }}E</div>
         </div>
       </div>
     </div>
@@ -228,6 +197,7 @@ async function startAndRun() {
 .tep-btn:disabled { opacity: 0.5; }
 .tep-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .tep-btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.tep-btn.danger { min-width: 86px; background: var(--state-error); color: #fff; border-color: var(--state-error); }
 .tep-sep { color: var(--border-default); font-size: var(--text-small); }
 .tep-loading { color: var(--text-disabled); }
 .tep-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-md); margin-bottom: var(--space-md); }
@@ -238,7 +208,7 @@ async function startAndRun() {
 .tep-st.ok { color: var(--state-success); }
 .tep-st.fail { color: var(--state-error); }
 .tep-sid { font-family: var(--font-mono); font-size: var(--text-caption); color: var(--text-disabled); }
-.tep-sm { padding: 0 4px; border: 1px solid var(--border-subtle); background: transparent; color: var(--text-secondary); cursor: pointer; border-radius: 2px; font-size: var(--text-caption); }
+.tep-sm { padding: 0 4px; border: 1px solid var(--border-subtle); background: transparent; color: var(--text-secondary); cursor: pointer; border-radius: var(--radius-sm); font-size: var(--text-caption); font-family: var(--font-ui); }
 .tep-detail { margin-top: var(--space-xs); padding: var(--space-xs); background: var(--bg-input); border-radius: var(--radius-sm); }
 .tep-detail strong { font-size: var(--text-caption); color: var(--text-primary); }
 .tep-summary { color: var(--text-disabled); margin-bottom: var(--space-xs); }

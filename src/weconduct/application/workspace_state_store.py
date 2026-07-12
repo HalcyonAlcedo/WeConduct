@@ -5,7 +5,9 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import threading
+from time import sleep
 from typing import Protocol
+import uuid
 
 WORKSPACE_STATE_VERSION = 1
 
@@ -77,12 +79,28 @@ class FileWorkspaceStateStore:
     def _save_unlocked(self, state: dict) -> None:
         self._validate_state(state)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self._path.with_suffix(f"{self._path.suffix}.tmp")
+        temp_path = self._path.with_name(
+            f"{self._path.name}.{uuid.uuid4().hex}.tmp"
+        )
         temp_path.write_text(
             json.dumps(state, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        temp_path.replace(self._path)
+        try:
+            for attempt in range(5):
+                try:
+                    temp_path.replace(self._path)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    sleep(0.01 * (2**attempt))
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except PermissionError:
+                    pass
 
     def _acquire_path_lock(self) -> threading.RLock:
         path_key = str(self._path.resolve())

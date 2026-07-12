@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** Dock Layout: left/center/right/bottom zones — always rendered.
  *  Empty zones act as thin drop targets. Zones auto-create on first panel drop. */
-import { ref, computed } from 'vue'
+import { ref, computed, onBeforeUnmount } from 'vue'
 import { useDockStore } from '@/stores/dockStore'
 import type { DockZone } from '@/stores/dockStore'
 
@@ -13,7 +13,26 @@ const leftHas = computed(() => dock.zones.left.panels.length > 0)
 const rightHas = computed(() => dock.zones.right.panels.length > 0)
 const bottomHas = computed(() => dock.zones.bottom.panels.length > 0)
 
+function getRenderableActivePanelId(zone: DockZone) {
+  const zoneState = dock.zones[zone]
+  if (zoneState.activePanelId && zoneState.panels.some(panel => panel.id === zoneState.activePanelId)) {
+    return zoneState.activePanelId
+  }
+  return zoneState.panels[0]?.id ?? null
+}
+
+const leftRenderableActivePanelId = computed(() => getRenderableActivePanelId('left'))
+const centerRenderableActivePanelId = computed(() => getRenderableActivePanelId('center'))
+const rightRenderableActivePanelId = computed(() => getRenderableActivePanelId('right'))
+const bottomRenderableActivePanelId = computed(() => getRenderableActivePanelId('bottom'))
+
+let resizeAbort: AbortController | null = null
+
 function startResize(edge: 'left' | 'right' | 'bottom', e: MouseEvent) {
+  resizeAbort?.abort()
+  resizeAbort = new AbortController()
+  const { signal } = resizeAbort
+
   resizing.value = edge; e.preventDefault()
   const startX = e.clientX; const startY = e.clientY
   const startLW = dock.leftWidth; const startRW = dock.rightWidth; const startBH = dock.bottomHeight
@@ -30,12 +49,15 @@ function startResize(edge: 'left' | 'right' | 'bottom', e: MouseEvent) {
   }
   function onUp() {
     resizing.value = null
-    document.removeEventListener('mousemove', onMove)
-    document.removeEventListener('mouseup', onUp)
+    resizeAbort?.abort()
   }
-  document.addEventListener('mousemove', onMove)
-  document.addEventListener('mouseup', onUp)
+  document.addEventListener('mousemove', onMove, { signal })
+  document.addEventListener('mouseup', onUp, { signal })
 }
+
+onBeforeUnmount(() => {
+  resizeAbort?.abort()
+})
 
 function onDragOverZone(zone: DockZone, e: DragEvent) { e.preventDefault(); dock.setDropZone(zone) }
 function onDragLeaveZone() { dock.setDropZone(null) }
@@ -84,17 +106,17 @@ function toggleMaximize(panelId: string) {
         <template v-if="leftHas">
           <div class="dl-zone-tabs">
             <button v-for="p in dock.zones.left.panels" :key="p.id"
-              :class="['dl-tab', { active: dock.zones.left.activePanelId === p.id }]"
+              :class="['dl-tab', { active: leftRenderableActivePanelId === p.id }]"
               draggable="true" @click="dock.activatePanel(p.id)"
               @dragstart="onPanelDragStart(p.id)" @dragend="onPanelDragEnd"
             >{{ p.title }}</button>
             <span class="dl-tab-actions">
-              <button class="dl-tab-btn" title="最大化" @click="toggleMaximize(dock.zones.left.activePanelId!)">□</button>
-              <button class="dl-tab-btn" title="关闭" @click="dock.closePanel(dock.zones.left.activePanelId!)">✕</button>
+              <button class="dl-tab-btn" title="最大化" :disabled="!leftRenderableActivePanelId" @click="leftRenderableActivePanelId && toggleMaximize(leftRenderableActivePanelId)">□</button>
+              <button class="dl-tab-btn" title="关闭" :disabled="!leftRenderableActivePanelId" @click="leftRenderableActivePanelId && dock.closePanel(leftRenderableActivePanelId)">✕</button>
             </span>
           </div>
           <div class="dl-zone-body">
-            <slot :name="dock.zones.left.activePanelId ?? ''" :zone="'left'" />
+            <slot :name="leftRenderableActivePanelId ?? ''" :zone="'left'" />
           </div>
         </template>
       </div>
@@ -112,17 +134,17 @@ function toggleMaximize(panelId: string) {
       >
         <div class="dl-zone-tabs" v-if="dock.zones.center.panels.length > 0">
           <button v-for="p in dock.zones.center.panels" :key="p.id"
-            :class="['dl-tab', { active: dock.zones.center.activePanelId === p.id }]"
+            :class="['dl-tab', { active: centerRenderableActivePanelId === p.id }]"
             draggable="true" @click="dock.activatePanel(p.id)"
             @dragstart="onPanelDragStart(p.id)" @dragend="onPanelDragEnd"
           >{{ p.title }}</button>
           <span class="dl-tab-actions">
-            <button class="dl-tab-btn" title="最大化" @click="toggleMaximize(dock.zones.center.activePanelId!)">□</button>
-            <button class="dl-tab-btn" title="关闭" @click="dock.closePanel(dock.zones.center.activePanelId!)">✕</button>
+            <button class="dl-tab-btn" title="最大化" :disabled="!centerRenderableActivePanelId" @click="centerRenderableActivePanelId && toggleMaximize(centerRenderableActivePanelId)">□</button>
+            <button class="dl-tab-btn" title="关闭" :disabled="!centerRenderableActivePanelId" @click="centerRenderableActivePanelId && dock.closePanel(centerRenderableActivePanelId)">✕</button>
           </span>
         </div>
         <div class="dl-zone-body">
-          <slot :name="dock.zones.center.activePanelId ?? ''" :zone="'center'" />
+          <slot :name="centerRenderableActivePanelId ?? ''" :zone="'center'" />
           <div v-if="dock.zones.center.panels.length === 0 && dock.visiblePanels.length > 0" class="dl-hint">
             拖拽面板到此处或从「视图」菜单添加
           </div>
@@ -148,17 +170,17 @@ function toggleMaximize(panelId: string) {
         <template v-if="rightHas">
           <div class="dl-zone-tabs">
             <button v-for="p in dock.zones.right.panels" :key="p.id"
-              :class="['dl-tab', { active: dock.zones.right.activePanelId === p.id }]"
+              :class="['dl-tab', { active: rightRenderableActivePanelId === p.id }]"
               draggable="true" @click="dock.activatePanel(p.id)"
               @dragstart="onPanelDragStart(p.id)" @dragend="onPanelDragEnd"
             >{{ p.title }}</button>
             <span class="dl-tab-actions">
-              <button class="dl-tab-btn" title="最大化" @click="toggleMaximize(dock.zones.right.activePanelId!)">□</button>
-              <button class="dl-tab-btn" title="关闭" @click="dock.closePanel(dock.zones.right.activePanelId!)">✕</button>
+              <button class="dl-tab-btn" title="最大化" :disabled="!rightRenderableActivePanelId" @click="rightRenderableActivePanelId && toggleMaximize(rightRenderableActivePanelId)">□</button>
+              <button class="dl-tab-btn" title="关闭" :disabled="!rightRenderableActivePanelId" @click="rightRenderableActivePanelId && dock.closePanel(rightRenderableActivePanelId)">✕</button>
             </span>
           </div>
           <div class="dl-zone-body">
-            <slot :name="dock.zones.right.activePanelId ?? ''" :zone="'right'" />
+            <slot :name="rightRenderableActivePanelId ?? ''" :zone="'right'" />
           </div>
         </template>
       </div>
@@ -183,17 +205,17 @@ function toggleMaximize(panelId: string) {
       <template v-if="bottomHas">
         <div class="dl-zone-tabs">
           <button v-for="p in dock.zones.bottom.panels" :key="p.id"
-            :class="['dl-tab', { active: dock.zones.bottom.activePanelId === p.id }]"
+            :class="['dl-tab', { active: bottomRenderableActivePanelId === p.id }]"
             draggable="true" @click="dock.activatePanel(p.id)"
             @dragstart="onPanelDragStart(p.id)" @dragend="onPanelDragEnd"
           >{{ p.title }}</button>
           <span class="dl-tab-actions">
-            <button class="dl-tab-btn" title="最大化" @click="toggleMaximize(dock.zones.bottom.activePanelId!)">□</button>
-            <button class="dl-tab-btn" title="关闭" @click="dock.closePanel(dock.zones.bottom.activePanelId!)">✕</button>
+            <button class="dl-tab-btn" title="最大化" :disabled="!bottomRenderableActivePanelId" @click="bottomRenderableActivePanelId && toggleMaximize(bottomRenderableActivePanelId)">□</button>
+            <button class="dl-tab-btn" title="关闭" :disabled="!bottomRenderableActivePanelId" @click="bottomRenderableActivePanelId && dock.closePanel(bottomRenderableActivePanelId)">✕</button>
           </span>
         </div>
         <div class="dl-zone-body">
-          <slot :name="dock.zones.bottom.activePanelId ?? ''" :zone="'bottom'" />
+          <slot :name="bottomRenderableActivePanelId ?? ''" :zone="'bottom'" />
         </div>
       </template>
     </div>

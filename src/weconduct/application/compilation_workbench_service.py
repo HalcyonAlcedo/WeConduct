@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from copy import deepcopy
 import hashlib
@@ -8,8 +9,8 @@ import platform
 import shutil
 import sys
 import tempfile
-from time import perf_counter
-from threading import Lock, Thread
+from time import perf_counter, sleep
+from threading import Event, Lock, Thread, get_ident
 import uuid
 import zipfile
 
@@ -29,7 +30,7 @@ from weconduct.runtime.captcha_ocr import (
     create_captcha_ocr_recognizer,
 )
 from weconduct.runtime import RuntimeContext, RuntimeExecutorRegistry, execute_runtime_node
-from weconduct.runtime.engine import _safe_eval_expression
+from weconduct.runtime.engine import CancellationContext, _safe_eval_expression
 from weconduct.contracts import (
     CompilationOutcome,
     CompilationRequest,
@@ -51,6 +52,12 @@ from weconduct.application.project_python_runtime import (
     build_default_python_runtime_profile,
     normalize_python_runtime_profile,
 )
+from weconduct.application.debug_controller import DebugController
+from weconduct.application.debug_session_history import DebugSessionHistoryStore
+from weconduct.application.execution_core import ExecutionCore
+from weconduct.application.graph_runtime_projection import GraphRuntimeProjectionBuilder
+from weconduct.contracts.debugger import DEBUG_SESSION_ACTIVE_STATUSES
+from weconduct.contracts.debugger import DEBUG_SESSION_TERMINAL_STATUSES
 from weconduct.packaging.msgpack_codec import packb
 from weconduct.packaging.msgpack_codec import unpackb
 from weconduct.application.runtime_session_stream import RuntimeSessionStreamBroker
@@ -67,7 +74,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
-CURRENT_API_VERSION = "0.7.4"
+CURRENT_API_VERSION = "0.8.0"
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
@@ -99,7 +106,11 @@ PROJECT_SETTINGS_SCHEMA_VERSION = 2
 RESOURCE_EXPORT_SCHEMA_VERSION = 1
 MAX_EDITOR_HISTORY_DEPTH = 100
 MAX_RUNTIME_SESSION_HISTORY = 20
+MAX_RUNTIME_LIVE_SESSION_DOCUMENTS = 5
+RUNTIME_ABORT_SETTLE_TIMEOUT_SECONDS = 0.1
 MAX_DEBUG_SESSION_HISTORY = 20
+MAX_DEBUG_SESSION_HISTORY_LIMIT = 100
+MAX_DEBUG_LIVE_SESSION_DOCUMENTS = 2
 MAX_RUNTIME_EXECUTION_STEPS = 1000
 MAX_COMPONENT_CALL_DEPTH = 8
 GRAPH_COMPATIBILITY_BASELINE_VERSION = "0.5.2"
@@ -201,6 +212,26 @@ class ProjectPackageReadOnlyError(ValueError):
         self.recovery_action = "update_runtime_defaults_only"
 
 
+@dataclass(frozen=True)
+class PreparationResult:
+    kind: str
+    status: str
+    request: dict
+    graph_model: GraphModel
+    prepared_graph_model: GraphModel | None
+    compile_result: dict | None
+    runtime_plan: dict | None
+    object_index: dict | None
+    diagnostics: dict | list[dict] | None
+    primary_diagnostic: dict | None
+    security_requirement_summary: dict | None
+    stage_timeline: list[dict] | None = None
+    runtime_preview: dict | None = None
+    runtime_preview_summary: dict | None = None
+    message: str | None = None
+    details: dict | None = None
+
+
 class CompilationWorkbenchService:
     def __init__(
         self,
@@ -218,17 +249,29 @@ class CompilationWorkbenchService:
         )
         self._runtime_execution_lock = Lock()
         self._runtime_execution_threads: dict[str, Thread] = {}
+        self._runtime_cancellation_contexts: dict[str, CancellationContext] = {}
+        self._debug_execution_lock = Lock()
+        self._debug_execution_threads: dict[str, Thread] = {}
+        self._debug_execution_resume_events: dict[str, Event] = {}
+        self._debug_runtime_contexts: dict[str, RuntimeContext] = {}
+        self._debug_runtime_context_owner_thread_ids: dict[str, int] = {}
+        self._debug_control_flags: dict[str, dict] = {}
         self._suppress_dirty_workspace_recovery = False
         self._allow_dirty_workspace_recovery_conversion = True
         loaded_state = self._state_store.load()
         state, changed = self._normalize_workspace_state(loaded_state)
+        state, recovered_execution_changed = self._invalidate_recovered_execution_sessions(state)
+        if recovered_execution_changed:
+            changed = True
         state, restored_pending_graph_upgrade = self._restore_startup_pending_graph_upgrade(state)
         if restored_pending_graph_upgrade:
             changed = True
         if changed:
             state = self._state_store.mutate(
                 lambda current: self._restore_startup_pending_graph_upgrade(
-                    self._normalize_workspace_state(current)[0]
+                    self._invalidate_recovered_execution_sessions(
+                        self._normalize_workspace_state(current)[0]
+                    )[0]
                 )[0]
             )
         self._state = state
@@ -1094,6 +1137,7 @@ class CompilationWorkbenchService:
         position: dict | None = None,
     ) -> dict:
         self._refresh_state_from_store()
+        self._assert_no_active_debug_session_mutation("build_graph_node_draft")
         if not isinstance(resource_key, str) or not resource_key.strip():
             raise ValueError("resource_key must be a non-empty string")
         normalized_resource_key = resource_key.strip()
@@ -1194,7 +1238,10 @@ class CompilationWorkbenchService:
 
     def get_runtime_session(self, *, session_id: str) -> dict:
         self._refresh_state_from_store()
-        session = self._find_runtime_session(session_id)
+        session = self._apply_runtime_transient_status(
+            session_id=session_id,
+            session=self._find_runtime_session(session_id),
+        )
         response = dict(session)
         response["node_states"] = self._decorate_runtime_node_states_for_display(
             session.get("node_states", [])
@@ -1207,28 +1254,77 @@ class CompilationWorkbenchService:
         return {
             "sessions": [
                 {
-                    "session_id": item["runtime_session"]["session_id"],
-                    "status": item["runtime_session"]["status"],
+                    "session_id": visible_item["runtime_session"]["session_id"],
+                    "status": visible_item["runtime_session"]["status"],
                     "graph_model_id": item["runtime_plan"]["graph_model_id"],
-                    "started_at": item["runtime_session"]["started_at"],
-                    "completed_at": item["runtime_session"].get("completed_at"),
-                    "completed_node_count": item["runtime_session"].get("completed_node_count", 0),
-                    "failed_node_count": item["runtime_session"].get("failed_node_count", 0),
+                    "started_at": visible_item["runtime_session"]["started_at"],
+                    "completed_at": visible_item["runtime_session"].get("completed_at"),
+                    "completed_node_count": visible_item["runtime_session"].get("completed_node_count", 0),
+                    "failed_node_count": visible_item["runtime_session"].get("failed_node_count", 0),
                     "event_count": item.get("execution_summary", {}).get("event_count", 0),
                     "latest_event_kind": item.get("execution_summary", {}).get("latest_event_kind"),
                 }
                 for item in sessions
+                for visible_item in [
+                    self._apply_runtime_transient_status(
+                        session_id=item["runtime_session"]["session_id"],
+                        session=item,
+                    )
+                ]
             ]
+        }
+
+    def _apply_runtime_transient_status(self, *, session_id: str, session: dict) -> dict:
+        runtime_session = session.get("runtime_session")
+        if (
+            isinstance(runtime_session, dict)
+            and runtime_session.get("status") in {"completed", "failed", "aborted"}
+        ):
+            return session
+        with self._runtime_execution_lock:
+            worker = self._runtime_execution_threads.get(session_id)
+            cancellation_context = self._runtime_cancellation_contexts.get(session_id)
+        if (
+            worker is None
+            or not worker.is_alive()
+            or cancellation_context is None
+            or not cancellation_context.is_cancelled
+        ):
+            return session
+        return {
+            **session,
+            "runtime_session": {
+                **session["runtime_session"],
+                "status": "aborting",
+                "abort_reason": cancellation_context.reason,
+            },
         }
 
     def get_debug_session(self, *, session_id: str) -> dict:
         self._refresh_state_from_store()
         session = self._find_debug_session(session_id)
-        return dict(session)
+        response_payload = dict(session)
+        debug_session = (
+            dict(response_payload.get("debug_session", {}))
+            if isinstance(response_payload.get("debug_session"), dict)
+            else {}
+        )
+        debug_session["can_step_out"] = isinstance(
+            debug_session.get("pending_component_pause"),
+            dict,
+        )
+        response_payload["debug_session"] = debug_session
+        if "status" not in response_payload:
+            response_payload["status"] = debug_session.get("status")
+        return response_payload
 
     def list_debug_sessions(self) -> dict:
         self._refresh_state_from_store()
-        sessions = self._get_debug_sessions()
+        sessions = [
+            item
+            for item in self._get_debug_sessions()
+            if item.get("debug_session", {}).get("status") in DEBUG_SESSION_ACTIVE_STATUSES
+        ]
         return {
             "sessions": [
                 {
@@ -1236,7 +1332,6 @@ class CompilationWorkbenchService:
                     "status": item["debug_session"]["status"],
                     "graph_model_id": item["object_index"]["graph_model_id"],
                     "started_at": item["debug_session"]["started_at"],
-                    "prepared_at": item["debug_session"].get("prepared_at"),
                     "scheduler_mode": item.get("runtime_preview_summary", {}).get("scheduler_mode"),
                     "queued_node_count": item.get("runtime_preview_summary", {}).get("queued_node_count", 0),
                     "current_node_id": item.get("runtime_preview_summary", {}).get("current_node_id"),
@@ -1244,6 +1339,1261 @@ class CompilationWorkbenchService:
                 for item in sessions
             ]
         }
+
+    def _launch_debug_execution_thread(self, *, session_id: str) -> bool:
+        with self._debug_execution_lock:
+            existing_thread = self._debug_execution_threads.get(session_id)
+            if existing_thread is not None and existing_thread.is_alive():
+                return False
+            resume_event = Event()
+            self._debug_execution_resume_events[session_id] = resume_event
+
+            def runner() -> None:
+                try:
+                    while True:
+                        result = self._run_debug_session_sync(session_id=session_id)
+                        debug_session = (
+                            result.get("debug_session")
+                            if isinstance(result.get("debug_session"), dict)
+                            else {}
+                        )
+                        status = debug_session.get("status")
+                        if status in DEBUG_SESSION_TERMINAL_STATUSES:
+                            break
+                        if status != "paused":
+                            break
+                        resume_event.wait()
+                        resume_event.clear()
+                except Exception as exc:
+                    self._mark_debug_worker_failed(session_id=session_id, error=exc)
+                finally:
+                    with self._debug_execution_lock:
+                        self._debug_execution_threads.pop(session_id, None)
+                        self._debug_execution_resume_events.pop(session_id, None)
+
+            thread = Thread(
+                target=runner,
+                daemon=True,
+                name=f"debug-{session_id}",
+            )
+            self._debug_execution_threads[session_id] = thread
+            try:
+                thread.start()
+            except Exception:
+                self._debug_execution_threads.pop(session_id, None)
+                self._debug_execution_resume_events.pop(session_id, None)
+                return False
+            return True
+
+    def shutdown_debug_sessions(
+        self,
+        *,
+        reason: str = "application_shutdown",
+        timeout_seconds: float = 5.0,
+    ) -> None:
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("debug shutdown reason must be a non-empty string")
+        if timeout_seconds < 0:
+            raise ValueError("debug shutdown timeout_seconds must be non-negative")
+
+        self._refresh_state_from_store()
+        active_session_ids = [
+            item["debug_session"]["session_id"]
+            for item in self._get_debug_sessions()
+            if item.get("debug_session", {}).get("status") in DEBUG_SESSION_ACTIVE_STATUSES
+        ]
+        for session_id in active_session_ids:
+            try:
+                self.abort_debug_session(
+                    session_id=session_id,
+                    reason=reason.strip(),
+                    settle_timeout_ms=0,
+                )
+            except ValueError:
+                current_session = self.get_debug_session(session_id=session_id)
+                current_status = current_session.get("debug_session", {}).get("status")
+                if current_status not in DEBUG_SESSION_TERMINAL_STATUSES:
+                    raise
+
+        deadline = perf_counter() + timeout_seconds
+        with self._debug_execution_lock:
+            workers = list(self._debug_execution_threads.values())
+        for worker in workers:
+            remaining_seconds = max(deadline - perf_counter(), 0.0)
+            worker.join(timeout=remaining_seconds)
+        with self._debug_execution_lock:
+            alive_session_ids = [
+                session_id
+                for session_id, worker in self._debug_execution_threads.items()
+                if worker.is_alive()
+            ]
+        if alive_session_ids:
+            raise TimeoutError(
+                "debug workers did not stop before shutdown timeout: "
+                + ", ".join(sorted(alive_session_ids))
+            )
+
+    def _mark_debug_worker_failed(self, *, session_id: str, error: Exception) -> None:
+        try:
+            session_document = deepcopy(self._find_debug_session(session_id))
+        except ValueError:
+            self._release_debug_runtime_context(session_id)
+            return
+        debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        if debug_session.get("status") in DEBUG_SESSION_TERMINAL_STATUSES:
+            self._release_debug_runtime_context(session_id)
+            return
+        completed_at = datetime.now(timezone.utc).isoformat()
+        session_document["debug_session"] = {
+            **debug_session,
+            "status": "failed",
+            "completed_at": completed_at,
+            "paused_reason": "debug_worker_failed",
+            "last_control_action": "worker_failed",
+        }
+        diagnostic_links = (
+            list(session_document.get("diagnostic_links", []))
+            if isinstance(session_document.get("diagnostic_links"), list)
+            else []
+        )
+        diagnostic_links.append(
+            {
+                "diagnostic_id": f"debug:{session_id}:worker_failed",
+                "category": "debug.worker_failed",
+                "severity": "error",
+                "message": str(error) or error.__class__.__name__,
+                "graph_ref": None,
+            }
+        )
+        session_document["diagnostic_links"] = diagnostic_links
+        try:
+            self._replace_debug_session_document(
+                session_document,
+                persist_history=False,
+            )
+        finally:
+            self._release_debug_runtime_context(session_id)
+
+    def _signal_debug_execution_thread(self, session_id: str) -> bool:
+        with self._debug_execution_lock:
+            thread = self._debug_execution_threads.get(session_id)
+            resume_event = self._debug_execution_resume_events.get(session_id)
+            if thread is None or not thread.is_alive() or resume_event is None:
+                return False
+            resume_event.set()
+            return True
+
+    def _await_debug_execution_settle(
+        self,
+        *,
+        session_id: str,
+        settle_timeout_ms: int = 75,
+        accepted_status: str = "accepted",
+        terminal_only: bool = False,
+    ) -> dict:
+        deadline = perf_counter() + max(settle_timeout_ms, 0) / 1000
+        while True:
+            session_document = self.get_debug_session(session_id=session_id)
+            session_status = (
+                session_document.get("debug_session", {}).get("status")
+                if isinstance(session_document.get("debug_session"), dict)
+                else None
+            )
+            with self._debug_execution_lock:
+                thread = self._debug_execution_threads.get(session_id)
+                is_alive = thread is not None and thread.is_alive()
+            terminal_settled = (
+                session_status in DEBUG_SESSION_TERMINAL_STATUSES and not is_alive
+            )
+            if (not terminal_only and session_status == "paused") or terminal_settled:
+                return {
+                    **session_document,
+                    "status": session_status,
+                }
+            if perf_counter() >= deadline:
+                break
+            sleep(0.005)
+        return {
+            **session_document,
+            "status": accepted_status,
+        }
+
+    def _await_debug_execution_result(self, *, session_id: str) -> dict:
+        while True:
+            session_document = self.get_debug_session(session_id=session_id)
+            session_status = (
+                session_document.get("debug_session", {}).get("status")
+                if isinstance(session_document.get("debug_session"), dict)
+                else None
+            )
+            with self._debug_execution_lock:
+                thread = self._debug_execution_threads.get(session_id)
+                is_alive = thread is not None and thread.is_alive()
+            if session_status == "paused" or (
+                session_status in DEBUG_SESSION_TERMINAL_STATUSES and not is_alive
+            ):
+                return {
+                    **session_document,
+                    "status": session_status,
+                }
+            if not is_alive:
+                raise RuntimeError(
+                    f"debug execution worker exited before session settled: {session_id}"
+                )
+            sleep(0.005)
+
+    def _get_debug_control_flags(self, session_id: str) -> dict:
+        with self._debug_execution_lock:
+            return self._debug_control_flags.setdefault(
+                session_id,
+                {
+                    "pause_requested": False,
+                    "pause_reason": None,
+                    "abort_requested": False,
+                    "abort_reason": None,
+                },
+            )
+
+    def _reset_debug_pause_request(self, session_id: str) -> None:
+        flags = self._get_debug_control_flags(session_id)
+        flags["pause_requested"] = False
+        flags["pause_reason"] = None
+
+    def _clear_debug_control_flags(self, session_id: str) -> None:
+        with self._debug_execution_lock:
+            self._debug_control_flags.pop(session_id, None)
+
+    def _release_debug_runtime_context(self, session_id: str) -> None:
+        runtime_context = self._debug_runtime_contexts.get(session_id)
+        try:
+            if isinstance(runtime_context, RuntimeContext):
+                runtime_context.close()
+        finally:
+            self._debug_runtime_contexts.pop(session_id, None)
+            self._debug_runtime_context_owner_thread_ids.pop(session_id, None)
+            self._clear_debug_control_flags(session_id)
+
+    def list_debug_history_sessions(self) -> dict:
+        self._refresh_state_from_store()
+        debug_sessions = self._get_debug_history_store().list_session_summaries()
+        return {
+            "summary": {
+                "debug_session_count": len(debug_sessions),
+                "debug_status_counts": self._build_execution_status_counts(debug_sessions),
+            },
+            "sessions": list(debug_sessions),
+        }
+
+    def open_debug_history_session(self, *, session_id: str) -> dict:
+        self._refresh_state_from_store()
+        history_payload = self._get_debug_history_store().load_session_payload(session_id)
+        if isinstance(history_payload, dict):
+            return {
+                "source": "history_store",
+                "session_id": session_id,
+                "session": history_payload,
+            }
+        raise ValueError(f"debug history session not found: {session_id}")
+
+    def list_debug_session_events(self, *, session_id: str) -> dict:
+        self._refresh_state_from_store()
+        history_payload = self._get_debug_history_store().load_session_payload(session_id)
+        if not isinstance(history_payload, dict):
+            raise ValueError(f"debug history session not found: {session_id}")
+        events = (
+            list(history_payload.get("events", []))
+            if isinstance(history_payload.get("events"), list)
+            else []
+        )
+        keyframes = (
+            history_payload.get("keyframes")
+            if isinstance(history_payload.get("keyframes"), list)
+            else []
+        )
+        keyframe_id_by_event_id = {
+            item.get("event_id"): item.get("keyframe_id")
+            for item in keyframes
+            if isinstance(item, dict)
+            and isinstance(item.get("event_id"), str)
+            and isinstance(item.get("keyframe_id"), str)
+        }
+        keyframe_id_by_event_index = {
+            item.get("event_index"): item.get("keyframe_id")
+            for item in keyframes
+            if isinstance(item, dict)
+            and isinstance(item.get("event_index"), int)
+            and isinstance(item.get("keyframe_id"), str)
+        }
+        events = [
+            {
+                **event,
+                **(
+                    {"keyframe_id": keyframe_id}
+                    if isinstance(
+                        keyframe_id := (
+                            keyframe_id_by_event_id.get(event.get("event_id"))
+                            or keyframe_id_by_event_index.get(event.get("event_index"))
+                        ),
+                        str,
+                    )
+                    else {}
+                ),
+            }
+            for event in events
+            if isinstance(event, dict)
+        ]
+        return {
+            "session_id": session_id,
+            "source": "history_store",
+            "total_count": len(events),
+            "events": events,
+        }
+
+    def get_debug_live_projection(self, *, session_id: str) -> dict:
+        self._refresh_state_from_store()
+        session = self._find_debug_session(session_id)
+        preview = session.get("runtime_preview")
+        if not isinstance(preview, dict):
+            preview = {}
+        debug_session = (
+            session.get("debug_session")
+            if isinstance(session.get("debug_session"), dict)
+            else {}
+        )
+        history_payload = self._get_debug_history_store().load_session_payload(session_id)
+        if not isinstance(history_payload, dict):
+            history_payload = {}
+        debug_events = (
+            history_payload.get("events")
+            if isinstance(history_payload.get("events"), list)
+            else []
+        )
+        projection_builder = GraphRuntimeProjectionBuilder()
+        projection = projection_builder.build_live_from_snapshot(
+            preview=preview,
+            events=debug_events,
+            paused=debug_session.get("status") == "paused",
+        )
+        return {
+            "session_id": session_id,
+            "source": "active_session",
+            "projection": projection,
+        }
+
+    def get_debug_history_projection(
+        self,
+        *,
+        session_id: str,
+        event_index: int | None = None,
+        keyframe_id: str | None = None,
+    ) -> dict:
+        if event_index is not None and keyframe_id is not None:
+            raise ValueError("event_index and keyframe_id cannot be used together")
+        self._refresh_state_from_store()
+        history_payload = self._get_debug_history_store().load_session_payload(session_id)
+        if not isinstance(history_payload, dict):
+            raise ValueError(f"debug history session not found: {session_id}")
+        keyframes = (
+            history_payload.get("keyframes")
+            if isinstance(history_payload.get("keyframes"), list)
+            else []
+        )
+        indexed_keyframes = [
+            item
+            for item in keyframes
+            if isinstance(item, dict) and isinstance(item.get("event_index"), int)
+        ]
+        events = (
+            history_payload.get("events")
+            if isinstance(history_payload.get("events"), list)
+            else []
+        )
+        if event_index is not None and event_index >= len(events):
+            raise ValueError(f"debug history event not found: {event_index}")
+        selected_keyframe: dict | None = None
+        if keyframe_id is not None:
+            selected_keyframe = next(
+                (
+                    item
+                    for item in indexed_keyframes
+                    if item.get("keyframe_id") == keyframe_id
+                ),
+                None,
+            )
+            if selected_keyframe is None:
+                raise ValueError(f"debug history keyframe not found: {keyframe_id}")
+        elif event_index is None:
+            if indexed_keyframes:
+                selected_keyframe = max(
+                    indexed_keyframes,
+                    key=lambda item: int(item["event_index"]),
+                )
+            elif keyframes and isinstance(keyframes[-1], dict):
+                selected_keyframe = keyframes[-1]
+        else:
+            candidates = [
+                item
+                for item in indexed_keyframes
+                if int(item["event_index"]) <= event_index
+            ]
+            if candidates:
+                selected_keyframe = max(
+                    candidates,
+                    key=lambda item: int(item["event_index"]),
+                )
+            elif indexed_keyframes:
+                raise ValueError(
+                    f"debug history keyframe not found at or before event index: {event_index}"
+                )
+            elif keyframes and isinstance(keyframes[-1], dict):
+                selected_keyframe = keyframes[-1]
+        if selected_keyframe is None:
+            selected_keyframe = {
+                "runtime_preview": history_payload.get("runtime_preview", {}),
+                "variable_snapshot": history_payload.get("variable_snapshot", {}),
+            }
+        selected_event_index = event_index if event_index is not None else selected_keyframe.get("event_index")
+        if not isinstance(selected_event_index, int):
+            selected_event_index = len(events) - 1 if isinstance(events, list) and events else 0
+        preview = selected_keyframe.get("runtime_preview")
+        if not isinstance(preview, dict):
+            preview = {}
+        selected_event = (
+            events[selected_event_index]
+            if 0 <= selected_event_index < len(events)
+            and isinstance(events[selected_event_index], dict)
+            else None
+        )
+        selected_marker = selected_event if event_index is not None else selected_keyframe
+        selected_event_kind = selected_marker.get("event_kind")
+        selected_reason = selected_marker.get("reason")
+        debug_session = (
+            history_payload.get("debug_session")
+            if isinstance(history_payload.get("debug_session"), dict)
+            else {}
+        )
+        has_pause_marker_semantics = selected_event_kind is not None or selected_reason is not None
+        paused = selected_event_kind in {"breakpoint.hit", "debug.paused"} or selected_reason in {
+            "breakpoint_hit",
+            "condition_evaluation_error",
+            "exception_raised",
+            "manual_pause",
+            "step_completed",
+        } or (not has_pause_marker_semantics and debug_session.get("status") == "paused")
+        projection_builder = GraphRuntimeProjectionBuilder()
+        projection = projection_builder.build_history_from_snapshot(
+            preview=preview,
+            events=events,
+            paused=paused,
+            event_index=selected_event_index,
+            keyframe_id=(
+                selected_keyframe.get("keyframe_id")
+                if isinstance(selected_keyframe.get("keyframe_id"), str)
+                else None
+            ),
+        )
+        return {
+            "session_id": session_id,
+            "source": "history_store",
+            "projection": projection,
+            "runtime_preview": deepcopy(preview),
+            "variable_snapshot": deepcopy(
+                selected_keyframe.get("variable_snapshot", {})
+                if isinstance(selected_keyframe.get("variable_snapshot"), dict)
+                else {}
+            ),
+        }
+
+    def continue_debug_session(self, *, session_id: str) -> dict:
+        self._refresh_state_from_store()
+        previous_session_document = self._find_debug_session(session_id)
+        self._ensure_debug_session_not_terminal(previous_session_document)
+        self._ensure_debug_continue_allowed(previous_session_document)
+        previous_debug_session = (
+            previous_session_document.get("debug_session")
+            if isinstance(previous_session_document.get("debug_session"), dict)
+            else {}
+        )
+        previous_debug_events = (
+            list(previous_session_document.get("debug_events", []))
+            if isinstance(previous_session_document.get("debug_events"), list)
+            else []
+        )
+        resumed_node_id = None
+        for item in reversed(previous_debug_events):
+            if isinstance(item, dict) and item.get("event_kind") == "debug.paused":
+                node_id = item.get("node_id")
+                if isinstance(node_id, str) and node_id.strip():
+                    resumed_node_id = node_id
+                break
+        session_document = deepcopy(previous_session_document)
+        previous_debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        action_decision = DebugController(
+            session_snapshot=previous_session_document
+        ).request_action(previous_session_document, "continue")
+        session_document["debug_session"] = {
+            **previous_debug_session,
+            **action_decision["session_patch"],
+        }
+        debug_events = (
+            list(session_document.get("debug_events", []))
+            if isinstance(session_document.get("debug_events"), list)
+            else []
+        )
+        if isinstance(resumed_node_id, str) and resumed_node_id.strip():
+            debug_events.append(
+                self._normalize_debug_event(
+                    session_document=session_document,
+                    event={
+                        "event_kind": "debug.resumed",
+                        "node_id": resumed_node_id,
+                        "reason": "continue",
+                    },
+                    event_index=len(debug_events),
+                )
+            )
+        if debug_events:
+            session_document["debug_events"] = debug_events
+        self._replace_debug_session_document(session_document)
+        if self._signal_debug_execution_thread(session_id):
+            return self._await_debug_execution_result(session_id=session_id)
+        owner_thread_id = self._debug_runtime_context_owner_thread_ids.get(session_id)
+        if owner_thread_id is not None and owner_thread_id != get_ident():
+            self._replace_debug_session_document(previous_session_document)
+            raise ValueError(
+                "debug execution worker is unavailable for the active runtime context"
+            )
+        return self._run_debug_session_sync(session_id=session_id)
+
+    def continue_debug_session_async(
+        self,
+        *,
+        session_id: str,
+        settle_timeout_ms: int = 75,
+    ) -> dict:
+        self._refresh_state_from_store()
+        previous_session_document = self._find_debug_session(session_id)
+        self._ensure_debug_session_not_terminal(previous_session_document)
+        self._ensure_debug_continue_allowed(previous_session_document)
+        previous_debug_session = (
+            previous_session_document.get("debug_session")
+            if isinstance(previous_session_document.get("debug_session"), dict)
+            else {}
+        )
+        previous_debug_events = (
+            list(previous_session_document.get("debug_events", []))
+            if isinstance(previous_session_document.get("debug_events"), list)
+            else []
+        )
+        resumed_node_id = None
+        for item in reversed(previous_debug_events):
+            if isinstance(item, dict) and item.get("event_kind") == "debug.paused":
+                node_id = item.get("node_id")
+                if isinstance(node_id, str) and node_id.strip():
+                    resumed_node_id = node_id
+                break
+        session_document = deepcopy(previous_session_document)
+        previous_debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        action_decision = DebugController(
+            session_snapshot=previous_session_document
+        ).request_action(previous_session_document, "continue")
+        session_document["debug_session"] = {
+            **previous_debug_session,
+            **action_decision["session_patch"],
+        }
+        debug_events = (
+            list(session_document.get("debug_events", []))
+            if isinstance(session_document.get("debug_events"), list)
+            else []
+        )
+        if isinstance(resumed_node_id, str) and resumed_node_id.strip():
+            debug_events.append(
+                self._normalize_debug_event(
+                    session_document=session_document,
+                    event={
+                        "event_kind": "debug.resumed",
+                        "node_id": resumed_node_id,
+                        "reason": "continue",
+                    },
+                    event_index=len(debug_events),
+                )
+            )
+        if debug_events:
+            session_document["debug_events"] = debug_events
+        self._reset_debug_pause_request(session_id)
+        self._replace_debug_session_document(session_document)
+        if not self._signal_debug_execution_thread(session_id):
+            try:
+                if session_id in self._debug_runtime_contexts:
+                    raise ValueError(
+                        "debug execution worker is unavailable for the active runtime context"
+                    )
+                if not self._launch_debug_execution_thread(session_id=session_id):
+                    raise ValueError("debug execution worker could not be started")
+            except Exception:
+                self._replace_debug_session_document(previous_session_document)
+                raise
+        return self._await_debug_execution_settle(
+            session_id=session_id,
+            settle_timeout_ms=settle_timeout_ms,
+        )
+
+    def apply_debug_session_variables(
+        self,
+        *,
+        session_id: str,
+        updates: dict,
+        apply_mode: str = "staged",
+    ) -> dict:
+        self._refresh_state_from_store()
+        session_document = self._find_debug_session(session_id)
+        controller = DebugController(session_snapshot=session_document)
+        variable_decision = controller.apply_variable_updates(
+            session=session_document,
+            updates=updates,
+            apply_mode=apply_mode,
+        )
+        normalized_apply_mode = variable_decision["session_patch"]["variable_apply_mode"]
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            sessions = self._extract_debug_sessions(current_state)
+            updated_sessions: list[dict] = []
+            found = False
+            pending_overrides_holder: dict[str, object] | None = None
+            for item in sessions:
+                debug_session = item.get("debug_session")
+                if (
+                    isinstance(debug_session, dict)
+                    and debug_session.get("session_id") == session_id
+                ):
+                    found = True
+                    updated_item = deepcopy(item)
+                    next_snapshot = deepcopy(variable_decision["variable_snapshot"])
+                    updated_item["variable_snapshot"] = next_snapshot
+                    updated_item["variable_changes"] = deepcopy(
+                        variable_decision["variable_changes"]
+                    )
+                    updated_item["debug_session"] = {
+                        **updated_item["debug_session"],
+                        **deepcopy(variable_decision["session_patch"]),
+                    }
+                    pending_overrides = updated_item["debug_session"].get(
+                        "pending_variable_overrides"
+                    )
+                    pending_overrides_holder = (
+                        deepcopy(pending_overrides)
+                        if isinstance(pending_overrides, dict)
+                        else {}
+                    )
+                    updated_sessions.append(updated_item)
+                    continue
+                updated_sessions.append(item)
+            if not found:
+                raise ValueError(f"debug session not found: {session_id}")
+            current_state["debug_sessions"] = updated_sessions[:MAX_DEBUG_LIVE_SESSION_DOCUMENTS]
+            execution_history = self._extract_execution_history(current_state)
+            updated_history: list[dict] = []
+            for entry in execution_history["debug_sessions"]:
+                if isinstance(entry, dict) and entry.get("session_id") == session_id:
+                    updated_history.append(
+                        {
+                            **entry,
+                            "variable_apply_mode": normalized_apply_mode,
+                            "has_pending_variable_overrides": bool(pending_overrides_holder),
+                        }
+                    )
+                    continue
+                updated_history.append(entry)
+            execution_history["debug_sessions"] = updated_history[:MAX_DEBUG_SESSION_HISTORY]
+            current_state["execution_history"] = execution_history
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        variable_event = self._build_debug_session_context_event(
+            session_id=session_id,
+            event_kind="debug.variables_applied",
+            extra_fields={
+                "apply_mode": normalized_apply_mode,
+                "updates": deepcopy(updates),
+            },
+        )
+        session_document = self._append_debug_session_event(
+            session_id=session_id,
+            event=variable_event,
+        )
+        session_document = self._append_debug_session_keyframe(
+            session_id=session_id,
+            keyframe=self._build_debug_keyframe(
+                session_document=session_document,
+                event=variable_event,
+            ),
+        )
+        return {
+            **session_document,
+            "status": "updated",
+            "variable_snapshot": deepcopy(session_document.get("variable_snapshot", {})),
+            "variable_descriptors": deepcopy(
+                session_document.get("variable_descriptors", {})
+            ),
+            "variable_changes": deepcopy(session_document.get("variable_changes", {})),
+        }
+
+    def update_debug_session_node_debugger(
+        self,
+        *,
+        session_id: str,
+        node_id: str,
+        debugger_config: dict,
+    ) -> dict:
+        if not isinstance(node_id, str) or not node_id.strip():
+            raise ValueError("field must be a non-empty string: node_id")
+        if not isinstance(debugger_config, dict):
+            raise ValueError("field must be a JSON object: debugger")
+
+        breakpoint_config = debugger_config.get("breakpoint", {})
+        record_frame_config = debugger_config.get("record_frame", {})
+        if not isinstance(breakpoint_config, dict):
+            raise ValueError("field must be a JSON object: debugger.breakpoint")
+        if not isinstance(record_frame_config, dict):
+            raise ValueError("field must be a JSON object: debugger.record_frame")
+        pause_timing = breakpoint_config.get("pause_timing", "before")
+        if pause_timing not in {"before", "after", "both"}:
+            raise ValueError("debugger.breakpoint.pause_timing must be before, after, or both")
+        hit_count = breakpoint_config.get("hit_count", 0)
+        if isinstance(hit_count, bool) or not isinstance(hit_count, int) or hit_count < 0:
+            raise ValueError("debugger.breakpoint.hit_count must be a non-negative integer")
+        for field_name, field_value in (
+            ("debugger.breakpoint.enabled", breakpoint_config.get("enabled", False)),
+            ("debugger.breakpoint.once", breakpoint_config.get("once", False)),
+            ("debugger.record_frame.enabled", record_frame_config.get("enabled", False)),
+        ):
+            if not isinstance(field_value, bool):
+                raise ValueError(f"{field_name} must be a boolean")
+
+        normalized_debugger = deepcopy(debugger_config)
+        normalized_debugger["breakpoint"] = {
+            **deepcopy(breakpoint_config),
+            "enabled": breakpoint_config.get("enabled", False),
+            "pause_timing": pause_timing,
+            "hit_count": hit_count,
+            "once": breakpoint_config.get("once", False),
+        }
+        normalized_debugger["record_frame"] = {
+            **deepcopy(record_frame_config),
+            "enabled": record_frame_config.get("enabled", False),
+        }
+
+        self._refresh_state_from_store()
+        session_document = deepcopy(self._find_debug_session(session_id))
+        debug_session = session_document.get("debug_session", {})
+        if not isinstance(debug_session, dict) or debug_session.get("status") != "paused":
+            raise ValueError("debug node debugger updates require a paused debug session")
+        runtime_plan = session_document.get("runtime_plan")
+        executable_nodes = (
+            runtime_plan.get("executable_nodes")
+            if isinstance(runtime_plan, dict)
+            else None
+        )
+        if not isinstance(executable_nodes, list):
+            raise ValueError(f"debug session runtime plan missing: {session_id}")
+        executable_node = next(
+            (
+                item
+                for item in executable_nodes
+                if isinstance(item, dict) and item.get("node_id") == node_id
+            ),
+            None,
+        )
+        if executable_node is None:
+            raise ValueError(f"debug session node not found: {node_id}")
+        executable_node["node_config"] = {
+            **(
+                deepcopy(executable_node.get("node_config"))
+                if isinstance(executable_node.get("node_config"), dict)
+                else {}
+            ),
+            "debugger": normalized_debugger,
+        }
+        session_document["debug_session"] = {
+            **debug_session,
+            "last_control_action": "node_debugger_updated",
+        }
+        self._replace_debug_session_document(session_document)
+        update_event = self._build_debug_session_context_event(
+            session_id=session_id,
+            event_kind="debug.node_debugger_updated",
+            extra_fields={
+                "node_id": node_id,
+                "debugger": deepcopy(normalized_debugger),
+            },
+        )
+        session_document = self._append_debug_session_event(
+            session_id=session_id,
+            event=update_event,
+        )
+        return {
+            **session_document,
+            "status": "updated",
+            "node_id": node_id,
+            "debugger": deepcopy(normalized_debugger),
+        }
+
+    def record_debug_breakpoint_hit(
+        self,
+        *,
+        session_id: str,
+        node_id: str,
+        instance_path: list[str],
+        pause_timing: str,
+        iteration_stack: list[str],
+    ) -> dict:
+        controller = self._build_debug_controller_for_session(session_id)
+        event = controller.build_breakpoint_hit_event(
+            node_id=node_id,
+            instance_path=instance_path,
+            pause_timing=pause_timing,
+            iteration_stack=iteration_stack,
+        )
+        session_document = self._append_debug_session_event(
+            session_id=session_id,
+            event=event,
+        )
+        session_document = self._append_debug_session_keyframe(
+            session_id=session_id,
+            keyframe=self._build_debug_keyframe(
+                session_document=session_document,
+                event=event,
+            ),
+        )
+        return {
+            "status": "recorded",
+            "session_id": session_id,
+            "event": event,
+            "debug_session": deepcopy(session_document.get("debug_session", {})),
+        }
+
+    def request_debug_pause(
+        self,
+        *,
+        session_id: str,
+        node_id: str | None,
+        reason: str,
+        settle_timeout_ms: int = 75,
+    ) -> dict:
+        self._refresh_state_from_store()
+        session_document = deepcopy(self._find_debug_session(session_id))
+        self._ensure_debug_pause_allowed(session_document)
+        with self._debug_execution_lock:
+            running_thread = self._debug_execution_threads.get(session_id)
+            is_alive = running_thread is not None and running_thread.is_alive()
+            if is_alive:
+                flags = self._debug_control_flags.setdefault(
+                    session_id,
+                    {
+                        "pause_requested": False,
+                        "pause_reason": None,
+                        "abort_requested": False,
+                        "abort_reason": None,
+                    },
+                )
+                flags["pause_requested"] = True
+                flags["pause_reason"] = reason
+        if is_alive:
+            return self._await_debug_execution_settle(
+                session_id=session_id,
+                settle_timeout_ms=settle_timeout_ms,
+                accepted_status="accepted",
+            )
+        raise ValueError("debug pause requires an active execution thread")
+
+    def abort_debug_session(
+        self,
+        *,
+        session_id: str,
+        reason: str,
+        settle_timeout_ms: int = 75,
+    ) -> dict:
+        self._refresh_state_from_store()
+        session_document = deepcopy(self._find_debug_session(session_id))
+        self._ensure_debug_action_allowed(
+            session_document,
+            action="abort",
+            action_label="abort",
+        )
+        with self._debug_execution_lock:
+            running_thread = self._debug_execution_threads.get(session_id)
+            is_alive = running_thread is not None and running_thread.is_alive()
+            if is_alive:
+                flags = self._debug_control_flags.setdefault(
+                    session_id,
+                    {
+                        "pause_requested": False,
+                        "pause_reason": None,
+                        "abort_requested": False,
+                        "abort_reason": None,
+                    },
+                )
+                flags["abort_requested"] = True
+                flags["abort_reason"] = reason
+        if is_alive:
+            self._signal_debug_execution_thread(session_id)
+            return self._await_debug_execution_settle(
+                session_id=session_id,
+                settle_timeout_ms=settle_timeout_ms,
+                accepted_status="accepted",
+                terminal_only=True,
+            )
+        debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        completed_at = datetime.now(timezone.utc).isoformat()
+        debug_events = (
+            list(session_document.get("debug_events", []))
+            if isinstance(session_document.get("debug_events"), list)
+            else []
+        )
+        current_node = (
+            session_document.get("runtime_preview", {}).get("current_node")
+            if isinstance(session_document.get("runtime_preview"), dict)
+            and isinstance(session_document.get("runtime_preview", {}).get("current_node"), dict)
+            else {}
+        )
+        current_node_id = current_node.get("node_id") if isinstance(current_node.get("node_id"), str) else None
+        abort_event = self._normalize_debug_event(
+            session_document=session_document,
+            event={
+                "event_kind": "debug.aborted",
+                "node_id": current_node_id,
+                "reason": reason,
+                "recorded_at": completed_at,
+            },
+            event_index=len(debug_events),
+        )
+        debug_events.append(abort_event)
+        session_document["debug_events"] = debug_events
+        session_document["debug_session"] = {
+            **debug_session,
+            "status": "aborted",
+            "completed_at": completed_at,
+            "paused_reason": reason,
+            "last_control_action": "abort",
+            "pending_component_pause": None,
+        }
+        self._replace_debug_session_document(session_document)
+        session_document = self._append_debug_session_keyframe(
+            session_id=session_id,
+            keyframe=self._build_debug_keyframe(
+                session_document=session_document,
+                event=abort_event,
+            ),
+        )
+        self._release_debug_runtime_context(session_id)
+        return {
+            "status": "aborted",
+            **session_document,
+        }
+
+    def _resolve_debug_runtime_context(
+        self,
+        *,
+        session_id: str,
+        node_id: str | None,
+        instance_path: list[str] | None,
+        iteration_stack: list[str] | None,
+    ) -> tuple[str, list[str], list[str]]:
+        session_document = self._find_debug_session(session_id)
+        runtime_preview = (
+            session_document.get("runtime_preview")
+            if isinstance(session_document.get("runtime_preview"), dict)
+            else {}
+        )
+        current_node = (
+            runtime_preview.get("current_node")
+            if isinstance(runtime_preview.get("current_node"), dict)
+            else {}
+        )
+        runtime_plan = (
+            session_document.get("runtime_plan")
+            if isinstance(session_document.get("runtime_plan"), dict)
+            else {}
+        )
+        executable_nodes = (
+            runtime_plan.get("executable_nodes")
+            if isinstance(runtime_plan.get("executable_nodes"), list)
+            else []
+        )
+        fallback_node = executable_nodes[0] if executable_nodes and isinstance(executable_nodes[0], dict) else {}
+
+        resolved_node_id = node_id if isinstance(node_id, str) and node_id.strip() else None
+        if resolved_node_id is None:
+            current_node_id = current_node.get("node_id")
+            if isinstance(current_node_id, str) and current_node_id.strip():
+                resolved_node_id = current_node_id.strip()
+        if resolved_node_id is None:
+            fallback_node_id = fallback_node.get("node_id")
+            if isinstance(fallback_node_id, str) and fallback_node_id.strip():
+                resolved_node_id = fallback_node_id.strip()
+        if resolved_node_id is None:
+            raise ValueError(f"debug session current node unavailable: {session_id}")
+
+        resolved_instance_path = (
+            [item for item in instance_path if isinstance(item, str) and item.strip()]
+            if isinstance(instance_path, list)
+            else []
+        )
+        if not resolved_instance_path:
+            graph_model_id = current_node.get("graph_model_id")
+            if isinstance(graph_model_id, str) and graph_model_id.strip():
+                resolved_instance_path = [graph_model_id.strip(), resolved_node_id]
+            else:
+                fallback_graph_model_id = runtime_plan.get("graph_model_id")
+                if isinstance(fallback_graph_model_id, str) and fallback_graph_model_id.strip():
+                    resolved_instance_path = [fallback_graph_model_id.strip(), resolved_node_id]
+                else:
+                    resolved_instance_path = [resolved_node_id]
+
+        resolved_iteration_stack = (
+            [item for item in iteration_stack if isinstance(item, str)]
+            if isinstance(iteration_stack, list)
+            else []
+        )
+        if not resolved_iteration_stack and isinstance(current_node.get("iteration_stack"), list):
+            resolved_iteration_stack = [
+                item for item in current_node.get("iteration_stack", []) if isinstance(item, str)
+            ]
+
+        return resolved_node_id, resolved_instance_path, resolved_iteration_stack
+
+    def _build_debug_session_context_event(
+        self,
+        *,
+        session_id: str,
+        event_kind: str,
+        node_id: str | None = None,
+        instance_path: list[str] | None = None,
+        iteration_stack: list[str] | None = None,
+        extra_fields: dict | None = None,
+    ) -> dict:
+        resolved_node_id, resolved_instance_path, resolved_iteration_stack = (
+            self._resolve_debug_runtime_context(
+                session_id=session_id,
+                node_id=node_id,
+                instance_path=instance_path,
+                iteration_stack=iteration_stack,
+            )
+        )
+        event = {
+            "event_kind": event_kind,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "session_id": session_id,
+            "node_id": resolved_node_id,
+            "instance_path": resolved_instance_path,
+            "iteration_stack": resolved_iteration_stack,
+        }
+        if isinstance(extra_fields, dict):
+            event.update(deepcopy(extra_fields))
+        return event
+
+    def step_over_debug_session(self, *, session_id: str) -> dict:
+        return self._step_debug_session(session_id=session_id, step_mode="step_over")
+
+    def step_into_debug_session(self, *, session_id: str) -> dict:
+        return self._step_debug_session(session_id=session_id, step_mode="step_into")
+
+    def step_out_debug_session(self, *, session_id: str) -> dict:
+        return self._step_debug_session(session_id=session_id, step_mode="step_out")
+
+    def _step_debug_session(self, *, session_id: str, step_mode: str) -> dict:
+        self._refresh_state_from_store()
+        session_document = deepcopy(self._find_debug_session(session_id))
+        previous_session_document = deepcopy(session_document)
+        self._ensure_debug_session_not_terminal(session_document)
+        self._ensure_debug_step_allowed(session_document)
+        previous_debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        action_decision = DebugController(
+            session_snapshot=session_document
+        ).request_action(session_document, step_mode)
+        session_document["debug_session"] = {
+            **previous_debug_session,
+            **action_decision["session_patch"],
+        }
+        self._replace_debug_session_document(session_document)
+        self._append_debug_session_event(
+            session_id=session_id,
+            event=self._build_debug_session_context_event(
+                session_id=session_id,
+                event_kind="debug.step",
+                extra_fields={"step_mode": step_mode},
+            ),
+        )
+        if self._signal_debug_execution_thread(session_id):
+            return self._await_debug_execution_result(session_id=session_id)
+        owner_thread_id = self._debug_runtime_context_owner_thread_ids.get(session_id)
+        if owner_thread_id is not None and owner_thread_id != get_ident():
+            self._replace_debug_session_document(previous_session_document)
+            raise ValueError(
+                "debug execution worker is unavailable for the active runtime context"
+            )
+        return self._run_debug_session_sync(session_id=session_id)
+
+    def _step_debug_session_async(
+        self,
+        *,
+        session_id: str,
+        step_mode: str,
+        settle_timeout_ms: int = 75,
+    ) -> dict:
+        self._refresh_state_from_store()
+        session_document = deepcopy(self._find_debug_session(session_id))
+        previous_session_document = deepcopy(session_document)
+        self._ensure_debug_session_not_terminal(session_document)
+        self._ensure_debug_step_allowed(session_document)
+        previous_debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        action_decision = DebugController(
+            session_snapshot=session_document
+        ).request_action(session_document, step_mode)
+        session_document["debug_session"] = {
+            **previous_debug_session,
+            **action_decision["session_patch"],
+        }
+        self._reset_debug_pause_request(session_id)
+        self._replace_debug_session_document(session_document)
+        self._append_debug_session_event(
+            session_id=session_id,
+            event=self._build_debug_session_context_event(
+                session_id=session_id,
+                event_kind="debug.step",
+                extra_fields={"step_mode": step_mode},
+            ),
+        )
+        if not self._signal_debug_execution_thread(session_id):
+            try:
+                if session_id in self._debug_runtime_contexts:
+                    raise ValueError(
+                        "debug execution worker is unavailable for the active runtime context"
+                    )
+                if not self._launch_debug_execution_thread(session_id=session_id):
+                    raise ValueError("debug execution worker could not be started")
+            except Exception:
+                self._replace_debug_session_document(previous_session_document)
+                raise
+        return self._await_debug_execution_settle(
+            session_id=session_id,
+            settle_timeout_ms=settle_timeout_ms,
+        )
+
+    def step_over_debug_session_async(
+        self,
+        *,
+        session_id: str,
+        settle_timeout_ms: int = 75,
+    ) -> dict:
+        return self._step_debug_session_async(
+            session_id=session_id,
+            step_mode="step_over",
+            settle_timeout_ms=settle_timeout_ms,
+        )
+
+    def step_into_debug_session_async(
+        self,
+        *,
+        session_id: str,
+        settle_timeout_ms: int = 75,
+    ) -> dict:
+        return self._step_debug_session_async(
+            session_id=session_id,
+            step_mode="step_into",
+            settle_timeout_ms=settle_timeout_ms,
+        )
+
+    def step_out_debug_session_async(
+        self,
+        *,
+        session_id: str,
+        settle_timeout_ms: int = 75,
+    ) -> dict:
+        return self._step_debug_session_async(
+            session_id=session_id,
+            step_mode="step_out",
+            settle_timeout_ms=settle_timeout_ms,
+        )
+
+    def _ensure_debug_session_not_terminal(self, session_document: dict) -> None:
+        debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        status = debug_session.get("status")
+        if status in DEBUG_SESSION_TERMINAL_STATUSES:
+            raise ValueError(f"debug session already in terminal status: {status}")
+
+    def _ensure_debug_action_allowed(
+        self,
+        session_document: dict,
+        *,
+        action: str,
+        action_label: str,
+    ) -> None:
+        debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        status = debug_session.get("status")
+        try:
+            DebugController(session_snapshot=session_document).request_action(
+                session_document,
+                action,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"debug {action_label} is not allowed for session status: {status}"
+            ) from exc
+
+    def _ensure_debug_pause_allowed(self, session_document: dict) -> None:
+        self._ensure_debug_action_allowed(
+            session_document,
+            action="pause",
+            action_label="pause",
+        )
+
+    def _ensure_debug_continue_allowed(self, session_document: dict) -> None:
+        self._ensure_debug_action_allowed(
+            session_document,
+            action="continue",
+            action_label="continue",
+        )
+
+    def _ensure_debug_step_allowed(self, session_document: dict) -> None:
+        self._ensure_debug_action_allowed(
+            session_document,
+            action="step_over",
+            action_label="step",
+        )
 
     def create_project(
         self,
@@ -2329,51 +3679,14 @@ class CompilationWorkbenchService:
         }
 
     def start_runtime_session(self, graph_document_payload: dict | None) -> dict:
-        package_runtime_requirement_block = self._build_loaded_package_runtime_requirements_block()
-        if package_runtime_requirement_block is not None:
-            return package_runtime_requirement_block
-        package_security_block = self._build_loaded_package_security_requirement_block()
-        if package_security_block is not None:
-            return package_security_block
-        package_binding_block = self._build_loaded_package_runtime_binding_block()
-        if package_binding_block is not None:
-            return package_binding_block
-        graph_model, request_meta = self._resolve_graph_document_request(graph_document_payload)
-        compile_result = self._compile_graph_document_transient(
-            graph_model,
-            compilation_id_prefix="runtime",
-        )
-        if compile_result["status"] != "succeeded" or compile_result["outcome"].graph_model is None:
-            return {
-                "status": "failed",
-                "request": {
-                    "compilation_id": compile_result["request"]["compilation_id"],
-                    "request_origin": request_meta["request_origin"],
-                    "requested_graph_model_id": request_meta["requested_graph_model_id"],
-                    "requested_graph_save_revision": request_meta["requested_graph_save_revision"],
-                    "requested_graph_saved_at": request_meta["requested_graph_saved_at"],
-                    "compile_status": compile_result["status"],
-                },
-                "runtime_session": {
-                    "session_id": None,
-                    "status": "diagnostic_blocked",
-                    "execution_supported": False,
-                },
-                "runtime_plan": None,
-                "diagnostics": self._build_compilation_diagnostics_summary(compile_result),
-            }
-        runtime_plan = self._build_runtime_plan(compile_result["outcome"].graph_model)
+        preparation = self._prepare_runtime_execution(graph_document_payload)
+        if preparation.status != "ready" or preparation.runtime_plan is None:
+            return self._build_runtime_start_failure_response(preparation)
+        runtime_plan = preparation.runtime_plan
         session_id = f"runtime-session-{uuid.uuid4().hex[:12]}"
         started_at = datetime.now(timezone.utc).isoformat()
         session_document = {
-            "request": {
-                "compilation_id": compile_result["request"]["compilation_id"],
-                "request_origin": request_meta["request_origin"],
-                "requested_graph_model_id": request_meta["requested_graph_model_id"],
-                "requested_graph_save_revision": request_meta["requested_graph_save_revision"],
-                "requested_graph_saved_at": request_meta["requested_graph_saved_at"],
-                "compile_status": compile_result["status"],
-            },
+            "request": preparation.request,
             "runtime_session": {
                 "session_id": session_id,
                 "status": "running",
@@ -2445,7 +3758,7 @@ class CompilationWorkbenchService:
                     session_document["node_states"]
                 ),
             },
-            "diagnostics": self._build_compilation_diagnostics_summary(compile_result),
+            "diagnostics": preparation.diagnostics,
         }
 
     def run_runtime_session(self, *, session_id: str) -> dict:
@@ -2454,7 +3767,7 @@ class CompilationWorkbenchService:
     def start_runtime_session_execution(self, *, session_id: str) -> dict:
         self._refresh_state_from_store()
         existing_session = self._find_runtime_session(session_id)
-        if existing_session["runtime_session"]["status"] in {"completed", "failed"}:
+        if existing_session["runtime_session"]["status"] in {"completed", "failed", "aborted"}:
             return {
                 "status": existing_session["runtime_session"]["status"],
                 **existing_session,
@@ -2466,6 +3779,7 @@ class CompilationWorkbenchService:
                     "status": "accepted",
                     **existing_session,
                 }
+            self._runtime_cancellation_contexts[session_id] = CancellationContext()
             thread = Thread(
                 target=self._run_runtime_session_sync,
                 kwargs={"session_id": session_id},
@@ -2473,17 +3787,183 @@ class CompilationWorkbenchService:
                 name=f"runtime-{session_id}",
             )
             self._runtime_execution_threads[session_id] = thread
-            thread.start()
+            try:
+                thread.start()
+            except Exception:
+                self._runtime_execution_threads.pop(session_id, None)
+                self._runtime_cancellation_contexts.pop(session_id, None)
+                raise
         refreshed = self.get_runtime_session(session_id=session_id)
         return {
             "status": "accepted",
             **refreshed,
         }
 
+    def abort_runtime_session(self, *, session_id: str, reason: str) -> dict:
+        normalized_reason = reason.strip() if isinstance(reason, str) else ""
+        if not normalized_reason:
+            raise ValueError("field must be a non-empty string: reason")
+
+        with self._runtime_execution_lock:
+            worker = self._runtime_execution_threads.get(session_id)
+            cancellation_context = self._runtime_cancellation_contexts.get(session_id)
+
+        if worker is not None and worker.is_alive() and cancellation_context is not None:
+            requested_at = datetime.now(timezone.utc).isoformat()
+            if cancellation_context.request_cancel(normalized_reason):
+                self._runtime_stream_broker.publish_event(
+                    session_id,
+                    "runtime.aborting",
+                    {
+                        "session_id": session_id,
+                        "status": "aborting",
+                        "abort_reason": normalized_reason,
+                        "requested_at": requested_at,
+                    },
+                )
+            worker.join(timeout=RUNTIME_ABORT_SETTLE_TIMEOUT_SECONDS)
+            if worker.is_alive():
+                return self._abort_runtime_session_without_worker(
+                    session_id=session_id,
+                    reason=cancellation_context.reason or normalized_reason,
+                )
+            return {
+                "status": "aborted",
+                **self.get_runtime_session(session_id=session_id),
+            }
+
+        self._refresh_state_from_store()
+        session = self._find_runtime_session(session_id)
+        status = session["runtime_session"]["status"]
+        if status in {"completed", "failed", "aborted"}:
+            return {"status": status, **session}
+        return self._abort_runtime_session_without_worker(
+            session_id=session_id,
+            reason=normalized_reason,
+        )
+
+    def _abort_runtime_session_without_worker(self, *, session_id: str, reason: str) -> dict:
+        aborted_at = datetime.now(timezone.utc).isoformat()
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            sessions = self._extract_runtime_sessions(current_state)
+            target_index = next(
+                (
+                    index
+                    for index, item in enumerate(sessions)
+                    if item["runtime_session"]["session_id"] == session_id
+                ),
+                None,
+            )
+            if target_index is None:
+                raise ValueError(f"runtime session not found: {session_id}")
+            session = dict(sessions[target_index])
+            runtime_session = {
+                **session["runtime_session"],
+                "status": "aborted",
+                "completed_at": aborted_at,
+                "aborted_at": aborted_at,
+                "abort_reason": reason,
+            }
+            node_states = [
+                {
+                    **item,
+                    "node_status": (
+                        "aborted"
+                        if item.get("node_status") in {"pending", "running"}
+                        else item.get("node_status")
+                    ),
+                    "completed_at": (
+                        aborted_at
+                        if item.get("node_status") in {"pending", "running"}
+                        else item.get("completed_at")
+                    ),
+                }
+                for item in session["node_states"]
+            ]
+            event_log = [
+                *session["event_log"],
+                {
+                    "event_kind": "session.aborting",
+                    "recorded_at": aborted_at,
+                    "session_id": session_id,
+                    "abort_reason": reason,
+                },
+                {
+                    "event_kind": "session.aborted",
+                    "recorded_at": aborted_at,
+                    "session_id": session_id,
+                    "abort_reason": reason,
+                },
+            ]
+            result = {
+                "status": "aborted",
+                "completed_node_ids": [],
+                "failed_node_ids": [],
+                "skipped_node_ids": [item["node_id"] for item in node_states],
+                "unreachable_node_ids": [],
+                "finished_at": aborted_at,
+                "outputs": {},
+                "variables": {},
+                "abort_reason": reason,
+            }
+            sessions[target_index] = {
+                **session,
+                "runtime_session": runtime_session,
+                "node_states": node_states,
+                "event_log": event_log,
+                "execution_summary": self._build_runtime_execution_summary(
+                    runtime_session=runtime_session,
+                    node_states=node_states,
+                    event_log=event_log,
+                    diagnostic_events=session.get("diagnostic_events", []),
+                    result=result,
+                ),
+                "result": result,
+            }
+            current_state["runtime_sessions"] = sessions
+            execution_history = self._extract_execution_history(current_state)
+            execution_history["runtime_runs"] = [
+                item
+                for item in execution_history["runtime_runs"]
+                if item.get("session_id") != session_id
+            ]
+            execution_history["runtime_runs"].insert(
+                0,
+                {
+                    "session_id": session_id,
+                    "status": "aborted",
+                    "graph_model_id": session["runtime_plan"]["graph_model_id"],
+                    "started_at": runtime_session["started_at"],
+                    "completed_at": aborted_at,
+                    "completed_node_count": runtime_session.get("completed_node_count", 0),
+                    "failed_node_count": runtime_session.get("failed_node_count", 0),
+                    "abort_reason": reason,
+                },
+            )
+            execution_history["runtime_runs"] = execution_history["runtime_runs"][
+                :MAX_RUNTIME_SESSION_HISTORY
+            ]
+            current_state["execution_history"] = execution_history
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        session_document = self.get_runtime_session(session_id=session_id)
+        terminal_payload = self._build_runtime_stream_terminal_payload(
+            session_id=session_id,
+            session_document=session_document,
+        )
+        self._runtime_stream_broker.publish_event(session_id, "runtime.aborting", terminal_payload)
+        self._runtime_stream_broker.publish_snapshot(session_id, terminal_payload)
+        self._runtime_stream_broker.publish_event(session_id, "runtime.aborted", terminal_payload)
+        self._runtime_stream_broker.close_session(session_id)
+        return {"status": "aborted", **session_document}
+
     def _run_runtime_session_sync(self, *, session_id: str) -> dict:
         self._refresh_state_from_store()
         existing_session = self._find_runtime_session(session_id)
-        if existing_session["runtime_session"]["status"] in {"completed", "failed"}:
+        if existing_session["runtime_session"]["status"] in {"completed", "failed", "aborted"}:
             return {
                 "status": existing_session["runtime_session"]["status"],
                 **existing_session,
@@ -2506,12 +3986,18 @@ class CompilationWorkbenchService:
             completed_node_ids: list[str] = []
             failed_node_ids: list[str] = []
             runtime_execution_settings = self._build_runtime_execution_settings()
+            with self._runtime_execution_lock:
+                cancellation_context = self._runtime_cancellation_contexts.setdefault(
+                    session_id,
+                    CancellationContext(),
+                )
             runtime_context = RuntimeContext(
                 project_directory=self._resolve_runtime_project_directory(),
                 workspace_root=self._resolve_runtime_workspace_root(),
                 embedded_resource_paths=self._build_runtime_embedded_resource_path_map(),
                 allowed_path_roots=self._build_runtime_allowed_path_roots(),
                 runtime_settings=deepcopy(runtime_execution_settings),
+                cancellation_context=cancellation_context,
             )
             runtime_context.flow_runtime["graph_root_metadata"] = deepcopy(
                 session["runtime_plan"].get("root_metadata", {})
@@ -2614,10 +4100,16 @@ class CompilationWorkbenchService:
                     source_port_id: str | None,
                     repeat_mode_value: bool,
                 ) -> None:
-                    for edge in control_edges_by_source.get(source_node_id, []):
-                        if source_port_id is not None and edge.get("from_port_id") not in {None, source_port_id}:
-                            continue
-                        queue_control_edge(edge, repeat_mode_value=repeat_mode_value)
+                    ExecutionCore.queue_control_edges(
+                        control_edges_by_source=control_edges_by_source,
+                        source_node_id=source_node_id,
+                        source_port_id=source_port_id,
+                        repeat_mode=repeat_mode_value,
+                        enqueue=lambda edge, repeat: queue_control_edge(
+                            edge,
+                            repeat_mode_value=repeat,
+                        ),
+                    )
 
                 if scheduler_mode == "flow_graph":
                     for entry_node_id in session["runtime_plan"].get("entry_node_ids", []):
@@ -2633,41 +4125,14 @@ class CompilationWorkbenchService:
                                 event_log=event_log,
                                 session_id=session_id,
                             )
-                    next_entry = pending_node_entries.pop(0) if pending_node_entries else None
-                    if isinstance(next_entry, dict):
-                        dispatched_node_index = next_entry.get("node_index")
-                        if isinstance(dispatched_node_index, int) and 0 <= dispatched_node_index < len(executable_nodes):
-                            dispatched_node = executable_nodes[dispatched_node_index]
-                            dispatched_at = datetime.now(timezone.utc).isoformat()
-                            event_log.append(
-                                {
-                                    "event_kind": "token.dispatched",
-                                    "recorded_at": dispatched_at,
-                                    "session_id": session_id,
-                                    "node_id": dispatched_node["node_id"],
-                                    "node_kind": dispatched_node.get("node_kind"),
-                                    "repeat_mode": bool(next_entry.get("repeat_mode")),
-                                }
-                            )
-                            event_log.append(
-                                {
-                                    "event_kind": "node.ready",
-                                    "recorded_at": dispatched_at,
-                                    "session_id": session_id,
-                                    "node_id": dispatched_node["node_id"],
-                                    "node_kind": dispatched_node.get("node_kind"),
-                                }
-                            )
-                    program_counter = (
-                        int(next_entry["node_index"])
-                        if isinstance(next_entry, dict)
-                        else -1
+                    cursor = ExecutionCore.dispatch_next_token(
+                        pending_node_entries=pending_node_entries,
+                        executable_nodes=executable_nodes,
+                        event_log=event_log,
+                        session_id=session_id,
                     )
-                    repeat_mode = (
-                        bool(next_entry.get("repeat_mode"))
-                        if isinstance(next_entry, dict)
-                        else False
-                    )
+                    program_counter = cursor.program_counter
+                    repeat_mode = cursor.repeat_mode
                 else:
                     program_counter = 0
                     repeat_mode = False
@@ -2685,41 +4150,14 @@ class CompilationWorkbenchService:
                         and repeat_mode is not True
                         and node_state["node_id"] in executed_node_ids
                     ):
-                        next_entry = pending_node_entries.pop(0) if pending_node_entries else None
-                        if isinstance(next_entry, dict):
-                            dispatched_node_index = next_entry.get("node_index")
-                            if isinstance(dispatched_node_index, int) and 0 <= dispatched_node_index < len(executable_nodes):
-                                dispatched_node = executable_nodes[dispatched_node_index]
-                                dispatched_at = datetime.now(timezone.utc).isoformat()
-                                event_log.append(
-                                    {
-                                        "event_kind": "token.dispatched",
-                                        "recorded_at": dispatched_at,
-                                        "session_id": session_id,
-                                        "node_id": dispatched_node["node_id"],
-                                        "node_kind": dispatched_node.get("node_kind"),
-                                        "repeat_mode": bool(next_entry.get("repeat_mode")),
-                                    }
-                                )
-                                event_log.append(
-                                    {
-                                        "event_kind": "node.ready",
-                                        "recorded_at": dispatched_at,
-                                        "session_id": session_id,
-                                        "node_id": dispatched_node["node_id"],
-                                        "node_kind": dispatched_node.get("node_kind"),
-                                    }
-                                )
-                        program_counter = (
-                            int(next_entry["node_index"])
-                            if isinstance(next_entry, dict)
-                            else -1
+                        cursor = ExecutionCore.dispatch_next_token(
+                            pending_node_entries=pending_node_entries,
+                            executable_nodes=executable_nodes,
+                            event_log=event_log,
+                            session_id=session_id,
                         )
-                        repeat_mode = (
-                            bool(next_entry.get("repeat_mode"))
-                            if isinstance(next_entry, dict)
-                            else False
-                        )
+                        program_counter = cursor.program_counter
+                        repeat_mode = cursor.repeat_mode
                         continue
                     if scheduler_mode == "flow_graph":
                         executed_node_ids.add(node_state["node_id"])
@@ -2811,23 +4249,45 @@ class CompilationWorkbenchService:
                         )
                         break
                     completed_at = datetime.now(timezone.utc).isoformat()
-                    try:
-                        self._inject_runtime_data_edge_inputs(
-                            executable_node=executable_node,
-                            runtime_context=runtime_context,
-                            data_edges_by_target=data_edges_by_target,
-                        )
-                        node_output = self._execute_runtime_plan_node(
-                            executable_node=executable_node,
-                            runtime_context=runtime_context,
-                            executor_registry=executor_registry,
-                        )
-                    except Exception as exc:
-                        node_output = self._build_runtime_executor_exception_output(
-                            executable_node=executable_node,
-                            exc=exc,
-                        )
+                    node_output = ExecutionCore.execute_node(
+                        owner=self,
+                        executable_node=executable_node,
+                        runtime_context=runtime_context,
+                        data_edges_by_target=data_edges_by_target,
+                        executor_registry=executor_registry,
+                    )
                     node_state["output"] = node_output
+                    if (
+                        isinstance(node_output, dict)
+                        and node_output.get("status") == "cancelled"
+                    ):
+                        completed_at = datetime.now(timezone.utc).isoformat()
+                        session_status = "aborted"
+                        abort_reason = (
+                            runtime_context.cancellation_context.reason
+                            or node_output.get("reason")
+                            or "execution cancelled"
+                        )
+                        node_state["node_status"] = "aborted"
+                        node_state["completed_at"] = completed_at
+                        event_log.extend(
+                            [
+                                {
+                                    "event_kind": "session.aborting",
+                                    "recorded_at": completed_at,
+                                    "session_id": session_id,
+                                    "abort_reason": abort_reason,
+                                },
+                                {
+                                    "event_kind": "node.aborted",
+                                    "recorded_at": completed_at,
+                                    "session_id": session_id,
+                                    "node_id": node_state["node_id"],
+                                    "abort_reason": abort_reason,
+                                },
+                            ]
+                        )
+                        break
                     if (
                         isinstance(node_output, dict)
                         and node_output.get("status") == "failed"
@@ -2930,6 +4390,9 @@ class CompilationWorkbenchService:
                                 allow_propagation=False,
                             )
                             execution_step_count += loop_result.get("execution_step_count", 0)
+                            if loop_result["status"] == "aborted":
+                                session_status = "aborted"
+                                break
                             if loop_result["status"] == "failed":
                                 session_status = "failed"
                                 failure_reason = loop_result["failure_reason"]
@@ -3110,41 +4573,14 @@ class CompilationWorkbenchService:
                                 source_port_id=None,
                                 repeat_mode_value=repeat_mode,
                             )
-                        next_entry = pending_node_entries.pop(0) if pending_node_entries else None
-                        if isinstance(next_entry, dict):
-                            dispatched_node_index = next_entry.get("node_index")
-                            if isinstance(dispatched_node_index, int) and 0 <= dispatched_node_index < len(executable_nodes):
-                                dispatched_node = executable_nodes[dispatched_node_index]
-                                dispatched_at = datetime.now(timezone.utc).isoformat()
-                                event_log.append(
-                                    {
-                                        "event_kind": "token.dispatched",
-                                        "recorded_at": dispatched_at,
-                                        "session_id": session_id,
-                                        "node_id": dispatched_node["node_id"],
-                                        "node_kind": dispatched_node.get("node_kind"),
-                                        "repeat_mode": bool(next_entry.get("repeat_mode")),
-                                    }
-                                )
-                                event_log.append(
-                                    {
-                                        "event_kind": "node.ready",
-                                        "recorded_at": dispatched_at,
-                                        "session_id": session_id,
-                                        "node_id": dispatched_node["node_id"],
-                                        "node_kind": dispatched_node.get("node_kind"),
-                                    }
-                                )
-                        program_counter = (
-                            int(next_entry["node_index"])
-                            if isinstance(next_entry, dict)
-                            else -1
+                        cursor = ExecutionCore.dispatch_next_token(
+                            pending_node_entries=pending_node_entries,
+                            executable_nodes=executable_nodes,
+                            event_log=event_log,
+                            session_id=session_id,
                         )
-                        repeat_mode = (
-                            bool(next_entry.get("repeat_mode"))
-                            if isinstance(next_entry, dict)
-                            else False
-                        )
+                        program_counter = cursor.program_counter
+                        repeat_mode = cursor.repeat_mode
                         continue
                     if node_kind == "control.foreach":
                         loop_body_index, loop_exit_index = self._resolve_runtime_foreach_targets(
@@ -3171,6 +4607,9 @@ class CompilationWorkbenchService:
                             allow_propagation=False,
                         )
                         execution_step_count += loop_result.get("execution_step_count", 0)
+                        if loop_result["status"] == "aborted":
+                            session_status = "aborted"
+                            break
                         if loop_result["status"] == "failed":
                             session_status = "failed"
                             failure_reason = loop_result["failure_reason"]
@@ -3219,6 +4658,9 @@ class CompilationWorkbenchService:
             runtime_session["completed_at"] = completed_at
             runtime_session["completed_node_count"] = len(completed_node_ids)
             runtime_session["failed_node_count"] = len(failed_node_ids)
+            if session_status == "aborted":
+                runtime_session["abort_reason"] = runtime_context.cancellation_context.reason
+                runtime_session["aborted_at"] = completed_at
             skipped_node_ids = [
                 item["node_id"]
                 for item in node_states
@@ -3242,7 +4684,7 @@ class CompilationWorkbenchService:
                         "node_kind": skipped_node.get("node_kind")
                         if isinstance(skipped_node, dict)
                         else None,
-                        "reason": "unreachable",
+                        "reason": "aborted" if session_status == "aborted" else "unreachable",
                     }
                 )
             unreachable_node_ids = (
@@ -3251,7 +4693,13 @@ class CompilationWorkbenchService:
                 else []
             )
             result = {
-                "status": "succeeded" if session_status == "completed" else "failed",
+                "status": (
+                    "succeeded"
+                    if session_status == "completed"
+                    else "aborted"
+                    if session_status == "aborted"
+                    else "failed"
+                ),
                 "completed_node_ids": completed_node_ids,
                 "failed_node_ids": failed_node_ids,
                 "skipped_node_ids": skipped_node_ids,
@@ -3260,7 +4708,17 @@ class CompilationWorkbenchService:
                 "outputs": dict(runtime_context.node_outputs),
                 "variables": dict(runtime_context.variables),
             }
-            if failure_reason is not None:
+            if session_status == "aborted":
+                result["abort_reason"] = runtime_session.get("abort_reason")
+                event_log.append(
+                    {
+                        "event_kind": "session.aborted",
+                        "recorded_at": completed_at,
+                        "session_id": session_id,
+                        "abort_reason": runtime_session.get("abort_reason"),
+                    }
+                )
+            elif failure_reason is not None:
                 result["failure_reason"] = failure_reason
                 event_log.append(
                     {
@@ -3339,7 +4797,65 @@ class CompilationWorkbenchService:
             return current_state
 
         try:
-            self._state = self._state_store.mutate(mutation)
+            execution_state = mutation(self._state_store.load())
+
+            def merge_runtime_execution(current: dict | None) -> dict:
+                current_state, _ = self._normalize_workspace_state(current)
+                executed_sessions = self._extract_runtime_sessions(execution_state)
+                executed_session = next(
+                    (
+                        item
+                        for item in executed_sessions
+                        if item["runtime_session"]["session_id"] == session_id
+                    ),
+                    None,
+                )
+                if executed_session is None:
+                    raise ValueError(f"runtime session not found after execution: {session_id}")
+                current_sessions = self._extract_runtime_sessions(current_state)
+                current_session = next(
+                    (
+                        item
+                        for item in current_sessions
+                        if item["runtime_session"]["session_id"] == session_id
+                    ),
+                    None,
+                )
+                if (
+                    isinstance(current_session, dict)
+                    and current_session["runtime_session"].get("status") == "aborted"
+                ):
+                    return current_state
+                current_sessions = [
+                    item
+                    for item in current_sessions
+                    if item["runtime_session"]["session_id"] != session_id
+                ]
+                current_sessions.insert(0, executed_session)
+                current_state["runtime_sessions"] = current_sessions[:MAX_RUNTIME_LIVE_SESSION_DOCUMENTS]
+
+                executed_history = self._extract_execution_history(execution_state)
+                executed_run = next(
+                    (
+                        item
+                        for item in executed_history["runtime_runs"]
+                        if item.get("session_id") == session_id
+                    ),
+                    None,
+                )
+                current_history = self._extract_execution_history(current_state)
+                current_history["runtime_runs"] = [
+                    item
+                    for item in current_history["runtime_runs"]
+                    if item.get("session_id") != session_id
+                ]
+                if executed_run is not None:
+                    current_history["runtime_runs"].insert(0, executed_run)
+                current_history["runtime_runs"] = current_history["runtime_runs"][:MAX_RUNTIME_SESSION_HISTORY]
+                current_state["execution_history"] = current_history
+                return current_state
+
+            self._state = self._state_store.mutate(merge_runtime_execution)
             session_document = self.get_runtime_session(session_id=session_id)
             self._runtime_stream_broker.publish_snapshot(
                 session_id,
@@ -3351,6 +4867,8 @@ class CompilationWorkbenchService:
             terminal_event_name = (
                 "runtime.completed"
                 if session_document["runtime_session"]["status"] == "completed"
+                else "runtime.aborted"
+                if session_document["runtime_session"]["status"] == "aborted"
                 else "runtime.failed"
             )
             self._runtime_stream_broker.publish_event(
@@ -3368,6 +4886,7 @@ class CompilationWorkbenchService:
         finally:
             with self._runtime_execution_lock:
                 self._runtime_execution_threads.pop(session_id, None)
+                self._runtime_cancellation_contexts.pop(session_id, None)
             self._runtime_stream_broker.close_session(session_id)
 
     def _execute_runtime_plan_node(
@@ -4073,6 +5592,19 @@ class CompilationWorkbenchService:
             component_call_stack=next_call_stack,
             share_parent_variables=share_parent_variables,
         )
+        if component_result.get("status") == "paused":
+            result = {
+                "status": "paused",
+                "node_id": executable_node["node_id"],
+                "message": component_result.get("message", "component execution paused"),
+                "pause_reason": component_result.get("pause_reason", "breakpoint_hit"),
+                "current_node": deepcopy(component_result.get("current_node")),
+                "debug_events": deepcopy(component_result.get("debug_events", [])),
+                "component_result": component_result,
+                "component_call_stack": component_result.get("component_call_stack", next_call_stack),
+            }
+            runtime_context.node_outputs[executable_node["node_id"]] = result
+            return result
         if component_result.get("status") != "succeeded":
             result = {
                 "status": "failed",
@@ -4179,10 +5711,14 @@ class CompilationWorkbenchService:
                 embedded_resource_paths=dict(parent_runtime_context.embedded_resource_paths),
                 allowed_path_roots=tuple(parent_runtime_context.allowed_path_roots),
                 runtime_settings=deepcopy(parent_runtime_context.runtime_settings),
+                cancellation_context=parent_runtime_context.cancellation_context,
             )
             child_context.browser_runtime = parent_runtime_context.browser_runtime
         child_context.variables.update(inputs)
         child_context.flow_runtime["component_call_stack"] = list(component_call_stack)
+        debug_runtime = parent_runtime_context.flow_runtime.get("debug_runtime")
+        if isinstance(debug_runtime, dict):
+            child_context.flow_runtime["debug_runtime"] = deepcopy(debug_runtime)
         completed_node_ids: list[str] = []
         failed_node_ids: list[str] = []
         event_log: list[dict] = []
@@ -4363,6 +5899,85 @@ class CompilationWorkbenchService:
                         else False
                     )
                     continue
+                debugger_config = (
+                    executable_node.get("node_config", {}).get("debugger")
+                    if isinstance(executable_node.get("node_config"), dict)
+                    else {}
+                )
+                breakpoint_config = (
+                    debugger_config.get("breakpoint")
+                    if isinstance(debugger_config, dict) and isinstance(debugger_config.get("breakpoint"), dict)
+                    else {}
+                )
+                debug_runtime = (
+                    child_context.flow_runtime.get("debug_runtime")
+                    if isinstance(child_context.flow_runtime.get("debug_runtime"), dict)
+                    else {}
+                )
+                debug_session_id = (
+                    debug_runtime.get("session_id")
+                    if isinstance(debug_runtime.get("session_id"), str)
+                    else None
+                )
+                debug_step_mode = (
+                    debug_runtime.get("step_mode")
+                    if isinstance(debug_runtime.get("step_mode"), str)
+                    else None
+                )
+                pending_component_pause = (
+                    debug_runtime.get("pending_component_pause")
+                    if isinstance(debug_runtime.get("pending_component_pause"), dict)
+                    else None
+                )
+                should_pause_before_breakpoint = (
+                    debug_session_id is not None
+                    and bool(breakpoint_config.get("enabled"))
+                    and breakpoint_config.get("pause_timing") in {"before", "both"}
+                    and debug_step_mode != "step_over"
+                )
+                if should_pause_before_breakpoint:
+                    should_skip_once = (
+                        isinstance(pending_component_pause, dict)
+                        and pending_component_pause.get("graph_model_id") == runtime_plan.get("graph_model_id")
+                        and pending_component_pause.get("node_id") == executable_node["node_id"]
+                        and pending_component_pause.get("pause_timing") == "before"
+                    )
+                    if should_skip_once:
+                        debug_runtime.pop("pending_component_pause", None)
+                    else:
+                        controller = self._build_debug_controller_for_session(debug_session_id)
+                        breakpoint_event = controller.build_breakpoint_hit_event(
+                            node_id=executable_node["node_id"],
+                            instance_path=[runtime_plan.get("graph_model_id"), executable_node["node_id"]],
+                            pause_timing="before",
+                            iteration_stack=self._build_debug_iteration_stack(
+                                runtime_context=child_context,
+                                node_id=executable_node["node_id"],
+                            ),
+                        )
+                        pause_event = {
+                            "event_kind": "debug.paused",
+                            "node_id": executable_node["node_id"],
+                            "reason": "breakpoint_hit",
+                        }
+                        return {
+                            "status": "paused",
+                            "pause_reason": "breakpoint_hit",
+                            "message": "component execution paused at internal breakpoint",
+                            "current_node": {
+                                "node_id": executable_node["node_id"],
+                                "node_kind": executable_node.get("node_kind"),
+                                "repeat_mode": repeat_mode,
+                                "graph_model_id": runtime_plan.get("graph_model_id"),
+                                "component_call_stack": list(component_call_stack),
+                            },
+                            "debug_events": [breakpoint_event, pause_event],
+                            "executed_node_ids": completed_node_ids,
+                            "failed_node_ids": failed_node_ids,
+                            "outputs": dict(child_context.node_outputs),
+                            "variables": dict(child_context.variables),
+                            "component_call_stack": component_call_stack,
+                        }
                 if component_scheduler_mode == "flow_graph":
                     executed_node_ids.add(node_state["node_id"])
                 started_at = datetime.now(timezone.utc).isoformat()
@@ -4447,6 +6062,52 @@ class CompilationWorkbenchService:
                 )
                 completed_at = datetime.now(timezone.utc).isoformat()
                 node_state["output"] = node_output
+                if isinstance(node_output, dict) and node_output.get("status") == "paused":
+                    if component_scheduler_mode == "flow_graph":
+                        executed_node_ids.discard(node_state["node_id"])
+                    node_state["node_status"] = "pending"
+                    node_state["started_at"] = None
+                    node_state["input_snapshot"] = None
+                    node_state["output"] = None
+                    paused_variables = (
+                        node_output.get("component_result", {}).get("variables")
+                        if isinstance(node_output.get("component_result"), dict)
+                        else node_output.get("variables")
+                    )
+                    if isinstance(paused_variables, dict):
+                        child_context.variables.update(deepcopy(paused_variables))
+                    return {
+                        "status": "paused",
+                        "pause_reason": node_output.get("pause_reason", "breakpoint_hit"),
+                        "message": node_output.get("message", "component execution paused"),
+                        "current_node": deepcopy(node_output.get("current_node"))
+                        if isinstance(node_output.get("current_node"), dict)
+                        else None,
+                        "debug_events": deepcopy(node_output.get("debug_events", []))
+                        if isinstance(node_output.get("debug_events"), list)
+                        else [],
+                        "executed_node_ids": completed_node_ids,
+                        "failed_node_ids": failed_node_ids,
+                        "outputs": dict(child_context.node_outputs),
+                        "variables": dict(child_context.variables),
+                        "component_call_stack": node_output.get(
+                            "component_call_stack",
+                            component_call_stack,
+                        ),
+                    }
+                if isinstance(node_output, dict) and node_output.get("status") == "cancelled":
+                    node_state["node_status"] = "aborted"
+                    node_state["completed_at"] = completed_at
+                    return {
+                        "status": "cancelled",
+                        "reason": node_output.get("reason"),
+                        "component_call_stack": component_call_stack,
+                        "executed_node_ids": completed_node_ids,
+                        "failed_node_ids": failed_node_ids,
+                        "outputs": dict(child_context.node_outputs),
+                        "variables": dict(child_context.variables),
+                        "event_log": event_log,
+                    }
                 if isinstance(node_output, dict) and node_output.get("status") == "failed":
                     failed_node_ids.append(node_state["node_id"])
                     node_state["node_status"] = "failed"
@@ -4503,6 +6164,46 @@ class CompilationWorkbenchService:
                         "node_id": node_state["node_id"],
                     }
                 )
+                should_pause_after_breakpoint = (
+                    debug_session_id is not None
+                    and bool(breakpoint_config.get("enabled"))
+                    and breakpoint_config.get("pause_timing") in {"after", "both"}
+                    and debug_step_mode != "step_over"
+                )
+                if should_pause_after_breakpoint:
+                    controller = self._build_debug_controller_for_session(debug_session_id)
+                    breakpoint_event = controller.build_breakpoint_hit_event(
+                        node_id=executable_node["node_id"],
+                        instance_path=[runtime_plan.get("graph_model_id"), executable_node["node_id"]],
+                        pause_timing="after",
+                        iteration_stack=self._build_debug_iteration_stack(
+                            runtime_context=child_context,
+                            node_id=executable_node["node_id"],
+                        ),
+                    )
+                    pause_event = {
+                        "event_kind": "debug.paused",
+                        "node_id": executable_node["node_id"],
+                        "reason": "breakpoint_hit",
+                    }
+                    return {
+                        "status": "paused",
+                        "pause_reason": "breakpoint_hit",
+                        "message": "component execution paused after internal breakpoint",
+                        "current_node": {
+                            "node_id": executable_node["node_id"],
+                            "node_kind": executable_node.get("node_kind"),
+                            "repeat_mode": repeat_mode,
+                            "graph_model_id": runtime_plan.get("graph_model_id"),
+                            "component_call_stack": list(component_call_stack),
+                        },
+                        "debug_events": [breakpoint_event, pause_event],
+                        "executed_node_ids": completed_node_ids,
+                        "failed_node_ids": failed_node_ids,
+                        "outputs": dict(child_context.node_outputs),
+                        "variables": dict(child_context.variables),
+                        "component_call_stack": component_call_stack,
+                    }
                 next_program_counter = program_counter + 1
                 node_kind = executable_node.get("node_kind")
                 if component_scheduler_mode == "flow_graph":
@@ -4531,6 +6232,16 @@ class CompilationWorkbenchService:
                             allow_propagation=False,
                         )
                         execution_step_count += loop_result.get("execution_step_count", 0)
+                        if loop_result["status"] == "aborted":
+                            return {
+                                "status": "cancelled",
+                                "reason": loop_result.get("abort_reason"),
+                                "executed_node_ids": completed_node_ids,
+                                "failed_node_ids": failed_node_ids,
+                                "outputs": dict(child_context.node_outputs),
+                                "variables": dict(child_context.variables),
+                                "component_call_stack": component_call_stack,
+                            }
                         if loop_result["status"] == "failed":
                             return {
                                 "status": "failed",
@@ -4775,6 +6486,16 @@ class CompilationWorkbenchService:
                         allow_propagation=False,
                     )
                     execution_step_count += loop_result.get("execution_step_count", 0)
+                    if loop_result["status"] == "aborted":
+                        return {
+                            "status": "cancelled",
+                            "reason": loop_result.get("abort_reason"),
+                            "executed_node_ids": completed_node_ids,
+                            "failed_node_ids": failed_node_ids,
+                            "outputs": dict(child_context.node_outputs),
+                            "variables": dict(child_context.variables),
+                            "component_call_stack": component_call_stack,
+                        }
                     if loop_result["status"] == "failed":
                         return {
                             "status": "failed",
@@ -4889,6 +6610,46 @@ class CompilationWorkbenchService:
             return []
         return [item for item in call_stack if isinstance(item, str)]
 
+    def _build_debug_iteration_stack(
+        self,
+        *,
+        runtime_context: RuntimeContext,
+        node_id: str | None = None,
+    ) -> list[str]:
+        flow_runtime = runtime_context.flow_runtime if isinstance(runtime_context.flow_runtime, dict) else {}
+        iteration_by_node_id = (
+            flow_runtime.get("loop_iteration_by_node_id")
+            if isinstance(flow_runtime.get("loop_iteration_by_node_id"), dict)
+            else {}
+        )
+        entries: list[str] = []
+        for loop_node_id, iteration_index in iteration_by_node_id.items():
+            if not isinstance(loop_node_id, str) or not loop_node_id.strip():
+                continue
+            if not isinstance(iteration_index, int) or iteration_index < 1:
+                continue
+            entries.append(f"{loop_node_id}:{iteration_index}")
+        entries.sort()
+        return entries
+
+    def _extract_debug_flow_runtime_snapshot(self, runtime_context: RuntimeContext) -> dict:
+        flow_runtime = runtime_context.flow_runtime if isinstance(runtime_context.flow_runtime, dict) else {}
+        loop_iteration_by_node_id = (
+            flow_runtime.get("loop_iteration_by_node_id")
+            if isinstance(flow_runtime.get("loop_iteration_by_node_id"), dict)
+            else {}
+        )
+        return {
+            "loop_iteration_by_node_id": {
+                node_id: int(iteration_index)
+                for node_id, iteration_index in loop_iteration_by_node_id.items()
+                if isinstance(node_id, str)
+                and node_id.strip()
+                and isinstance(iteration_index, int)
+                and iteration_index >= 0
+            }
+        }
+
     def _resolve_component_inputs(
         self,
         inputs: dict,
@@ -4984,11 +6745,23 @@ class CompilationWorkbenchService:
         body_execution_step_count = 0
         implicit_exit_index: int | None = None
         for item_index, item_value in enumerate(items):
+            if runtime_context.cancellation_context.is_cancelled:
+                return {
+                    "status": "aborted",
+                    "abort_reason": runtime_context.cancellation_context.reason,
+                    "execution_step_count": body_execution_step_count,
+                }
             runtime_context.variables[item_var] = item_value
             runtime_context.variables[index_var] = item_index
             current_body_index = loop_body_index
             visited_body_node_ids: set[str] = set()
             while current_body_index is not None:
+                if runtime_context.cancellation_context.is_cancelled:
+                    return {
+                        "status": "aborted",
+                        "abort_reason": runtime_context.cancellation_context.reason,
+                        "execution_step_count": body_execution_step_count,
+                    }
                 if body_execution_step_count >= max_execution_steps:
                     return {
                         "status": "failed",
@@ -5023,12 +6796,26 @@ class CompilationWorkbenchService:
                         executor_registry=executor_registry,
                     )
                 except Exception as exc:
+                    if getattr(exc, "weconduct_cancelled", False):
+                        return {
+                            "status": "aborted",
+                            "abort_reason": getattr(exc, "reason", None),
+                            "execution_step_count": body_execution_step_count,
+                        }
                     body_output = self._build_runtime_executor_exception_output(
                         executable_node=body_node,
                         exc=exc,
                     )
                 completed_at = datetime.now(timezone.utc).isoformat()
                 body_state["output"] = body_output
+                if isinstance(body_output, dict) and body_output.get("status") == "cancelled":
+                    body_state["node_status"] = "aborted"
+                    body_state["completed_at"] = completed_at
+                    return {
+                        "status": "aborted",
+                        "abort_reason": body_output.get("reason"),
+                        "execution_step_count": body_execution_step_count,
+                    }
                 if isinstance(body_output, dict) and body_output.get("status") == "failed":
                     body_state["node_status"] = "failed"
                     body_state["completed_at"] = completed_at
@@ -5090,7 +6877,7 @@ class CompilationWorkbenchService:
                         allow_propagation=True,
                     )
                     body_execution_step_count += nested_result.get("execution_step_count", 0)
-                    if nested_result["status"] == "failed":
+                    if nested_result["status"] in {"failed", "aborted"}:
                         return nested_result
                     body_state["output"] = {
                         **body_output,
@@ -5294,6 +7081,7 @@ class CompilationWorkbenchService:
         session_id: str | None = None,
         source_node_id: str | None = None,
         source_port_id: str | None = None,
+        iteration_stack: list[str] | None = None,
     ) -> None:
         if not (0 <= node_index < len(executable_nodes)):
             return
@@ -5306,6 +7094,7 @@ class CompilationWorkbenchService:
             {
                 "node_index": node_index,
                 "repeat_mode": repeat_mode,
+                "iteration_stack": list(iteration_stack) if isinstance(iteration_stack, list) else [],
             }
         )
         if event_log is not None:
@@ -6011,6 +7800,7 @@ class CompilationWorkbenchService:
         executable_nodes: list[dict],
         event_log: list[dict] | None = None,
         session_id: str | None = None,
+        iteration_stack: list[str] | None = None,
     ) -> None:
         target_node_id = edge.get("to_node_id")
         if not isinstance(target_node_id, str):
@@ -6038,6 +7828,7 @@ class CompilationWorkbenchService:
                     source_port_id=edge.get("from_port_id")
                     if isinstance(edge.get("from_port_id"), str)
                     else None,
+                    iteration_stack=iteration_stack,
                 )
                 return
             self._enqueue_runtime_flow_graph_node(
@@ -6055,6 +7846,7 @@ class CompilationWorkbenchService:
                 source_port_id=edge.get("from_port_id")
                 if isinstance(edge.get("from_port_id"), str)
                 else None,
+                iteration_stack=iteration_stack,
             )
             return
         if target_node_kind == "control.while":
@@ -6075,6 +7867,7 @@ class CompilationWorkbenchService:
                     source_port_id=edge.get("from_port_id")
                     if isinstance(edge.get("from_port_id"), str)
                     else None,
+                    iteration_stack=iteration_stack,
                 )
                 return
             else:
@@ -6094,11 +7887,12 @@ class CompilationWorkbenchService:
                     source_port_id=edge.get("from_port_id")
                     if isinstance(edge.get("from_port_id"), str)
                     else None,
+                    iteration_stack=iteration_stack,
                 )
                 return
         target_node = executable_nodes[target_node_index]
         required_tokens = self._resolve_runtime_wait_all_tokens(executable_node=target_node)
-        if not required_tokens and target_node_kind != "control.join":
+        if not required_tokens and target_node_kind not in {"control.join", "control.retry"}:
             required_tokens = self._resolve_runtime_parallel_fork_join_tokens(
                 incoming_control_edges=control_edges_by_target.get(target_node_id, []),
                 control_edges_by_source=control_edges_by_source,
@@ -6187,6 +7981,7 @@ class CompilationWorkbenchService:
             source_port_id=edge.get("from_port_id")
             if isinstance(edge.get("from_port_id"), str)
             else None,
+            iteration_stack=iteration_stack,
         )
 
     def _queue_runtime_control_edges(
@@ -6207,6 +8002,7 @@ class CompilationWorkbenchService:
         event_log: list[dict] | None = None,
         session_id: str | None = None,
         source_node: dict | None = None,
+        iteration_stack: list[str] | None = None,
     ) -> None:
         for edge in self._resolve_runtime_edge_target_ports(
             source_node_id=source_node_id,
@@ -6228,13 +8024,21 @@ class CompilationWorkbenchService:
                 executable_nodes=executable_nodes,
                 event_log=event_log,
                 session_id=session_id,
+                iteration_stack=iteration_stack,
             )
 
     def _evaluate_runtime_control_condition(self, node_config: dict, runtime_context: RuntimeContext) -> bool:
         expression = node_config.get("expression")
         if isinstance(expression, str) and expression.strip():
+            normalized_expression = expression.strip()
+            if (
+                normalized_expression.startswith("${")
+                and normalized_expression.endswith("}")
+                and len(normalized_expression) > 3
+            ):
+                normalized_expression = normalized_expression[2:-1].strip()
             try:
-                return bool(_safe_eval_expression(expression.strip(), runtime_context.variables))
+                return bool(_safe_eval_expression(normalized_expression, runtime_context.variables))
             except Exception:
                 return False
         condition = node_config.get("condition")
@@ -6459,6 +8263,7 @@ class CompilationWorkbenchService:
             runtime_context,
         )
         selected_port_id = "loop" if loop_selected else "done"
+        iteration_stack: list[str] | None = None
         if loop_selected:
             iteration_by_node_id = runtime_context.flow_runtime.setdefault(
                 "loop_iteration_by_node_id",
@@ -6469,6 +8274,10 @@ class CompilationWorkbenchService:
                 runtime_context.flow_runtime["loop_iteration_by_node_id"] = iteration_by_node_id
             iteration_index = int(iteration_by_node_id.get(executable_node["node_id"], 0)) + 1
             iteration_by_node_id[executable_node["node_id"]] = iteration_index
+            iteration_stack = self._build_debug_iteration_stack(
+                runtime_context=runtime_context,
+                node_id=executable_node["node_id"],
+            )
             if event_log is not None:
                 event_log.append(
                     {
@@ -6495,6 +8304,7 @@ class CompilationWorkbenchService:
             event_log=event_log,
             session_id=session_id,
             source_node=executable_node,
+            iteration_stack=iteration_stack,
         )
 
     def _queue_runtime_retry_successors(
@@ -6679,6 +8489,7 @@ class CompilationWorkbenchService:
     ) -> dict:
         self._refresh_state_from_store()
         self._assert_project_package_allows_mutation("save_graph_document")
+        self._assert_no_active_debug_session_mutation("save_graph_document")
         payload_document_id = graph_document_payload.get("document_id")
         if payload_document_id is not None:
             graph_document_payload = dict(graph_document_payload)
@@ -6829,142 +8640,85 @@ class CompilationWorkbenchService:
         }
         return compile_result
 
-    def prepare_runtime_session(self, graph_document_payload: dict | None) -> dict:
-        graph_model, request_meta = self._resolve_graph_document_request(graph_document_payload)
-        compile_result = self._compile_graph_document_transient(
-            graph_model,
-            compilation_id_prefix="runtime",
-        )
-        runtime_status = "ready" if compile_result["status"] == "succeeded" else "failed"
-        runtime_plan = (
-            self._build_runtime_plan(compile_result["outcome"].graph_model)
-            if compile_result["outcome"].graph_model is not None
-            and compile_result["status"] == "succeeded"
-            else None
-        )
-        return {
-            "status": runtime_status,
-            "request": {
-                "compilation_id": compile_result["request"]["compilation_id"],
-                "request_origin": request_meta["request_origin"],
-                "requested_graph_model_id": request_meta["requested_graph_model_id"],
-                "requested_graph_save_revision": request_meta["requested_graph_save_revision"],
-                "requested_graph_saved_at": request_meta["requested_graph_saved_at"],
-                "compile_status": compile_result["status"],
-            },
-            "runtime_session": {
-                "session_id": f"runtime-session-{uuid.uuid4().hex[:12]}",
-                "status": "prepared" if runtime_status == "ready" else "diagnostic_blocked",
-                "execution_supported": False,
-                "debug_snapshot": self._build_runtime_debug_snapshot(
-                    scheduler_mode=runtime_plan.get("scheduler_mode") if isinstance(runtime_plan, dict) else None,
-                    pending_node_entries=[],
-                    queued_node_ids=set(),
-                    executed_node_ids_in_order=[],
-                    join_state_by_node_id={},
-                    retry_state_by_node_id={},
-                    executable_nodes=runtime_plan.get("executable_nodes", []) if isinstance(runtime_plan, dict) else [],
-                    current_program_counter=None,
-                    current_repeat_mode=False,
-                ),
-            },
-            "runtime_plan": runtime_plan,
-            "diagnostics": self._build_compilation_diagnostics_summary(compile_result),
-        }
+    def _prepare_execution(
+        self,
+        *,
+        kind: str,
+        graph_document_payload: dict | None,
+    ) -> PreparationResult:
+        if kind not in {"runtime", "debug"}:
+            raise ValueError(f"unsupported preparation kind: {kind}")
 
-    def prepare_debug_session(self, graph_document_payload: dict | None) -> dict:
-        graph_model, request_meta = self._resolve_graph_document_request(graph_document_payload)
-        compile_result = self._compile_graph_document_transient(
-            graph_model,
-            compilation_id_prefix="debug",
+        blocking_response = None
+        shared_blockers = (
+            self._build_loaded_package_runtime_requirements_block(),
+            self._build_loaded_package_security_requirement_block(),
+            self._build_loaded_package_runtime_binding_block(),
         )
-        debug_graph_model = compile_result["outcome"].graph_model or graph_model
-        debug_status = "ready" if compile_result["status"] == "succeeded" else "failed"
-        runtime_preview_plan = (
-            self._build_runtime_plan(debug_graph_model)
-            if compile_result["outcome"].graph_model is not None
-            and compile_result["status"] == "succeeded"
-            else None
+        session_blocker = (
+            self._build_runtime_session_conflict_block()
+            if kind == "runtime"
+            else self._build_debug_session_conflict_block()
         )
-        return {
-            "status": debug_status,
-            "request": {
-                "compilation_id": compile_result["request"]["compilation_id"],
-                "request_origin": request_meta["request_origin"],
-                "requested_graph_model_id": request_meta["requested_graph_model_id"],
-                "requested_graph_save_revision": request_meta["requested_graph_save_revision"],
-                "requested_graph_saved_at": request_meta["requested_graph_saved_at"],
-                "compile_status": compile_result["status"],
-            },
-            "debug_session": {
-                "session_id": f"debug-session-{uuid.uuid4().hex[:12]}",
-                "status": "prepared" if debug_status == "ready" else "diagnostic_blocked",
-                "resume_supported": False,
-                "breakpoint_slots": [],
-            },
-            "stage_timeline": [
-                {
-                    "stage": stage.stage,
-                    "status": stage.status,
-                    "diagnostic_count": stage.diagnostic_count,
-                }
-                for stage in compile_result["outcome"].compilation_summary.stage_outcomes
-            ],
-            "object_index": self._build_debug_object_index(debug_graph_model),
-            "diagnostic_links": self._build_debug_diagnostic_links(compile_result),
-            "runtime_preview": self._build_runtime_debug_snapshot(
-                scheduler_mode=(
-                    runtime_preview_plan.get("scheduler_mode")
-                    if isinstance(runtime_preview_plan, dict)
-                    else None
-                ),
-                pending_node_entries=[],
-                queued_node_ids=set(),
-                executed_node_ids_in_order=[],
-                join_state_by_node_id={},
-                retry_state_by_node_id={},
-                executable_nodes=(
-                    runtime_preview_plan.get("executable_nodes", [])
-                    if isinstance(runtime_preview_plan, dict)
-                    else []
-                ),
-                current_program_counter=None,
-                current_repeat_mode=False,
-            ),
-            "runtime_preview_summary": self._build_runtime_preview_summary(
-                self._build_runtime_debug_snapshot(
-                    scheduler_mode=(
-                        runtime_preview_plan.get("scheduler_mode")
-                        if isinstance(runtime_preview_plan, dict)
-                        else None
-                    ),
-                    pending_node_entries=[],
-                    queued_node_ids=set(),
-                    executed_node_ids_in_order=[],
-                    join_state_by_node_id={},
-                    retry_state_by_node_id={},
-                    executable_nodes=(
-                        runtime_preview_plan.get("executable_nodes", [])
-                        if isinstance(runtime_preview_plan, dict)
-                        else []
-                    ),
-                    current_program_counter=None,
-                    current_repeat_mode=False,
-                )
-            ),
-        }
+        for candidate in (*shared_blockers, session_blocker):
+            if candidate is not None:
+                blocking_response = candidate
+                break
 
-    def start_debug_session(self, graph_document_payload: dict | None) -> dict:
+        if blocking_response is not None:
+            if kind == "debug" and "runtime_session" in blocking_response:
+                blocking_response = self._adapt_runtime_block_for_debug(blocking_response)
+            graph_model = self._get_graph_document_model()
+            request = dict(blocking_response.get("request", {}))
+            diagnostics = blocking_response.get("diagnostics")
+            diagnostic_links = blocking_response.get("diagnostic_links")
+            if diagnostics is None and isinstance(diagnostic_links, list):
+                diagnostics = diagnostic_links
+            details = dict(blocking_response.get("details", {}))
+            details["response_payload"] = deepcopy(blocking_response)
+            return PreparationResult(
+                kind=kind,
+                status="failed",
+                request=request,
+                graph_model=graph_model,
+                prepared_graph_model=None,
+                compile_result=None,
+                runtime_plan=None,
+                object_index=blocking_response.get("object_index"),
+                diagnostics=diagnostics,
+                primary_diagnostic=details.get("primary_diagnostic"),
+                security_requirement_summary=(
+                    blocking_response.get("security_requirement_summary")
+                    or self._build_project_security_requirement_summary()
+                ),
+                stage_timeline=blocking_response.get("stage_timeline"),
+                runtime_preview=blocking_response.get("runtime_preview"),
+                runtime_preview_summary=blocking_response.get("runtime_preview_summary"),
+                message=blocking_response.get("message"),
+                details=details,
+            )
+
         graph_model, request_meta = self._resolve_graph_document_request(graph_document_payload)
         compile_result = self._compile_graph_document_transient(
             graph_model,
-            compilation_id_prefix="debug",
+            compilation_id_prefix=kind,
         )
-        debug_graph_model = compile_result["outcome"].graph_model or graph_model
-        runtime_preview_plan = (
-            self._build_runtime_plan(debug_graph_model)
-            if compile_result["outcome"].graph_model is not None
-            and compile_result["status"] == "succeeded"
+        prepared_graph_model = compile_result["outcome"].graph_model
+        effective_graph_model = prepared_graph_model or graph_model
+        request = {
+            "compilation_id": compile_result["request"]["compilation_id"],
+            "request_origin": request_meta["request_origin"],
+            "requested_graph_model_id": request_meta["requested_graph_model_id"],
+            "requested_graph_save_revision": request_meta["requested_graph_save_revision"],
+            "requested_graph_saved_at": request_meta["requested_graph_saved_at"],
+            "compile_status": compile_result["status"],
+        }
+        succeeded = compile_result["status"] == "succeeded" and prepared_graph_model is not None
+        runtime_plan = self._build_runtime_plan(effective_graph_model) if succeeded else None
+        diagnostics = self._build_compilation_diagnostics_summary(compile_result)
+        primary_diagnostic = (
+            dict(compile_result.get("view", {}).get("primary_diagnostic"))
+            if isinstance(compile_result.get("view", {}).get("primary_diagnostic"), dict)
             else None
         )
         stage_timeline = [
@@ -6975,61 +8729,204 @@ class CompilationWorkbenchService:
             }
             for stage in compile_result["outcome"].compilation_summary.stage_outcomes
         ]
-        object_index = self._build_debug_object_index(debug_graph_model)
-        diagnostic_links = self._build_debug_diagnostic_links(compile_result)
-        if compile_result["status"] != "succeeded":
+        runtime_preview = None
+        runtime_preview_summary = None
+        object_index = None
+        message = None
+        details = None
+        if kind == "debug":
+            object_index = self._build_debug_object_index(effective_graph_model)
+            runtime_preview = self._build_runtime_debug_snapshot(
+                scheduler_mode=runtime_plan.get("scheduler_mode") if isinstance(runtime_plan, dict) else None,
+                pending_node_entries=[],
+                queued_node_ids=set(),
+                executed_node_ids_in_order=[],
+                join_state_by_node_id={},
+                retry_state_by_node_id={},
+                executable_nodes=runtime_plan.get("executable_nodes", []) if isinstance(runtime_plan, dict) else [],
+                current_program_counter=None,
+                current_repeat_mode=False,
+            )
+            runtime_preview_summary = self._build_runtime_preview_summary(runtime_preview)
+            if not succeeded:
+                message, details = self._build_debug_failure_details_from_compile_result(compile_result)
+                primary_diagnostic = details.get("primary_diagnostic")
+
+        return PreparationResult(
+            kind=kind,
+            status="ready" if succeeded else "failed",
+            request=request,
+            graph_model=graph_model,
+            prepared_graph_model=prepared_graph_model,
+            compile_result=compile_result,
+            runtime_plan=runtime_plan,
+            object_index=object_index,
+            diagnostics=diagnostics,
+            primary_diagnostic=primary_diagnostic,
+            security_requirement_summary=self._build_project_security_requirement_summary(),
+            stage_timeline=stage_timeline,
+            runtime_preview=runtime_preview,
+            runtime_preview_summary=runtime_preview_summary,
+            message=message,
+            details=details,
+        )
+
+    def _prepare_runtime_execution(
+        self,
+        graph_document_payload: dict | None,
+    ) -> PreparationResult:
+        return self._prepare_execution(
+            kind="runtime",
+            graph_document_payload=graph_document_payload,
+        )
+
+    def _prepare_debug_execution(
+        self,
+        graph_document_payload: dict | None,
+    ) -> PreparationResult:
+        return self._prepare_execution(
+            kind="debug",
+            graph_document_payload=graph_document_payload,
+        )
+
+    def _build_runtime_start_failure_response(
+        self,
+        preparation: PreparationResult,
+    ) -> dict:
+        raw_response = (
+            preparation.details.get("response_payload")
+            if isinstance(preparation.details, dict)
+            else None
+        )
+        if isinstance(raw_response, dict):
+            return deepcopy(raw_response)
+        return {
+            "status": "failed",
+            "request": preparation.request,
+            "runtime_session": {
+                "session_id": None,
+                "status": "diagnostic_blocked",
+                "execution_supported": False,
+            },
+            "runtime_plan": None,
+            "node_states": [],
+            "event_log": [],
+            "result": None,
+            "diagnostics": preparation.diagnostics,
+        }
+
+    def _adapt_runtime_block_for_debug(self, response: dict) -> dict:
+        adapted = deepcopy(response)
+        adapted.pop("runtime_session", None)
+        diagnostics = adapted.get("diagnostics")
+        if not isinstance(diagnostics, dict) or not isinstance(diagnostics.get("entries"), list):
+            return adapted
+        entries = diagnostics["entries"]
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("stage") == "runtime.prepare":
+                entry["stage"] = "debug.prepare"
+        primary = next((entry for entry in entries if isinstance(entry, dict)), None)
+        if primary is None:
+            return adapted
+        adapted["message"] = primary.get("message")
+        adapted["details"] = {
+            "primary_diagnostic": {
+                key: primary.get(key)
+                for key in ("stage", "category", "severity", "message")
+            },
+            "diagnostic_summary": {
+                "total_count": diagnostics.get("total_count", len(entries)),
+                "highest_severity": diagnostics.get("highest_severity"),
+            },
+        }
+        return adapted
+
+    def prepare_runtime_session(self, graph_document_payload: dict | None) -> dict:
+        preparation = self._prepare_runtime_execution(graph_document_payload)
+        return {
+            "status": preparation.status,
+            "request": preparation.request,
+            "runtime_plan": preparation.runtime_plan,
+            "diagnostics": preparation.diagnostics,
+        }
+
+    def prepare_debug_session(self, graph_document_payload: dict | None) -> dict:
+        preparation = self._prepare_debug_execution(graph_document_payload)
+        raw_response = (
+            preparation.details.get("response_payload")
+            if isinstance(preparation.details, dict)
+            else None
+        )
+        if isinstance(raw_response, dict):
+            return deepcopy(raw_response)
+        diagnostic_links = (
+            self._build_debug_diagnostic_links(preparation.compile_result)
+            if isinstance(preparation.compile_result, dict)
+            else self._build_debug_diagnostic_links_from_diagnostics(preparation.diagnostics)
+        )
+        response_payload = {
+            "status": preparation.status,
+            "request": preparation.request,
+            "stage_timeline": preparation.stage_timeline or [],
+            "object_index": preparation.object_index,
+            "diagnostic_links": diagnostic_links,
+            "runtime_preview": preparation.runtime_preview,
+            "runtime_preview_summary": preparation.runtime_preview_summary,
+        }
+        if preparation.status != "ready":
+            response_payload["message"] = preparation.message
+            response_payload["details"] = preparation.details
+        return response_payload
+
+    def _build_started_debug_session_result(self, graph_document_payload: dict | None) -> dict:
+        preparation = self._prepare_debug_execution(graph_document_payload)
+        raw_response = (
+            preparation.details.get("response_payload")
+            if isinstance(preparation.details, dict)
+            else None
+        )
+        if isinstance(raw_response, dict):
+            return deepcopy(raw_response)
+        diagnostic_links = (
+            self._build_debug_diagnostic_links(preparation.compile_result)
+            if isinstance(preparation.compile_result, dict)
+            else self._build_debug_diagnostic_links_from_diagnostics(preparation.diagnostics)
+        )
+        if preparation.status != "ready" or preparation.runtime_plan is None:
             return {
                 "status": "failed",
-                "request": {
-                    "compilation_id": compile_result["request"]["compilation_id"],
-                    "request_origin": request_meta["request_origin"],
-                    "requested_graph_model_id": request_meta["requested_graph_model_id"],
-                    "requested_graph_save_revision": request_meta["requested_graph_save_revision"],
-                    "requested_graph_saved_at": request_meta["requested_graph_saved_at"],
-                    "compile_status": compile_result["status"],
-                },
-                "debug_session": {
-                    "session_id": None,
-                    "status": "diagnostic_blocked",
-                    "resume_supported": False,
-                    "breakpoint_slots": [],
-                },
-                "stage_timeline": stage_timeline,
-                "object_index": object_index,
+                "message": preparation.message,
+                "details": preparation.details,
+                "request": preparation.request,
+                "stage_timeline": preparation.stage_timeline or [],
+                "object_index": preparation.object_index,
                 "diagnostic_links": diagnostic_links,
-                "runtime_preview": self._build_runtime_debug_snapshot(
-                    scheduler_mode=None,
-                    pending_node_entries=[],
-                    queued_node_ids=set(),
-                    executed_node_ids_in_order=[],
-                    join_state_by_node_id={},
-                    retry_state_by_node_id={},
-                    executable_nodes=[],
-                    current_program_counter=None,
-                    current_repeat_mode=False,
-                ),
+                "runtime_preview": preparation.runtime_preview,
             }
 
-        prepared_at = datetime.now(timezone.utc).isoformat()
+        debug_graph_model = preparation.prepared_graph_model or preparation.graph_model
+        runtime_preview_plan = preparation.runtime_plan
+        started_at = datetime.now(timezone.utc).isoformat()
         session_document = {
-            "request": {
-                "compilation_id": compile_result["request"]["compilation_id"],
-                "request_origin": request_meta["request_origin"],
-                "requested_graph_model_id": request_meta["requested_graph_model_id"],
-                "requested_graph_save_revision": request_meta["requested_graph_save_revision"],
-                "requested_graph_saved_at": request_meta["requested_graph_saved_at"],
-                "compile_status": compile_result["status"],
-            },
+            "request": preparation.request,
             "debug_session": {
                 "session_id": f"debug-session-{uuid.uuid4().hex[:12]}",
-                "status": "prepared",
+                "status": "preparing",
                 "resume_supported": False,
                 "breakpoint_slots": [],
-                "started_at": prepared_at,
-                "prepared_at": prepared_at,
+                "started_at": started_at,
+                "step_mode": None,
+                "paused_reason": None,
+                "last_control_action": None,
+                "step_sequence": 0,
+                "variable_apply_mode": self._get_debug_variable_apply_mode(),
+                "pending_variable_overrides": {},
+                "last_breakpoint_frame_identity": None,
+                "last_record_frame_identity": None,
             },
-            "stage_timeline": stage_timeline,
-            "object_index": object_index,
+            "stage_timeline": preparation.stage_timeline or [],
+            "object_index": preparation.object_index,
+            "runtime_plan": runtime_preview_plan,
             "diagnostic_links": diagnostic_links,
             "runtime_preview": self._build_runtime_debug_snapshot(
                 scheduler_mode=(
@@ -7050,14 +8947,400 @@ class CompilationWorkbenchService:
                 current_program_counter=None,
                 current_repeat_mode=False,
             ),
+            "variable_snapshot": self._build_debug_variable_snapshot(debug_graph_model),
+            "variable_descriptors": self._build_debug_variable_descriptors(debug_graph_model),
+            "variable_changes": {},
+            "debug_events": [],
+            "debug_keyframes": [],
+            "debug_snapshots": [],
         }
+        if isinstance(session_document.get("runtime_preview"), dict):
+            initial_current_node = self._build_initial_debug_current_node(runtime_preview_plan)
+            if isinstance(initial_current_node, dict):
+                session_document["runtime_preview"]["current_node"] = initial_current_node
         session_document["runtime_preview_summary"] = self._build_runtime_preview_summary(
             session_document["runtime_preview"]
         )
-        self._remember_debug_session(session_document)
         return {
             "status": "started",
             **session_document,
+        }
+
+    def start_debug_session(self, graph_document_payload: dict | None) -> dict:
+        start_result = self._build_started_debug_session_result(graph_document_payload)
+        if start_result["status"] != "started":
+            return start_result
+        session_document = {
+            key: deepcopy(value)
+            for key, value in start_result.items()
+            if key != "status"
+        }
+        self._remember_debug_session(session_document)
+        self._persist_debug_history_session_document(session_document)
+        run_result = self._run_debug_session_sync(
+            session_id=session_document["debug_session"]["session_id"]
+        )
+        return {
+            **run_result,
+            "status": "started",
+        }
+
+    def start_debug_session_async(
+        self,
+        graph_document_payload: dict | None,
+        *,
+        settle_timeout_ms: int = 75,
+    ) -> dict:
+        start_result = self._build_started_debug_session_result(graph_document_payload)
+        if start_result["status"] != "started":
+            return start_result
+        session_document = {
+            key: deepcopy(value)
+            for key, value in start_result.items()
+            if key != "status"
+        }
+        self._remember_debug_session(session_document)
+        self._persist_debug_history_session_document(session_document)
+        session_id = session_document["debug_session"]["session_id"]
+        if not self._launch_debug_execution_thread(session_id=session_id):
+            completed_at = datetime.now(timezone.utc).isoformat()
+            session_document["debug_session"] = {
+                **session_document["debug_session"],
+                "status": "failed",
+                "completed_at": completed_at,
+                "paused_reason": "debug_worker_start_failed",
+                "last_control_action": "start_failed",
+            }
+            self._replace_debug_session_document(session_document)
+            return {
+                "status": "failed",
+                **session_document,
+            }
+        settled = self._await_debug_execution_settle(
+            session_id=session_id,
+            settle_timeout_ms=settle_timeout_ms,
+            accepted_status="started",
+        )
+        if settled.get("status") == "paused" or settled.get("status") in DEBUG_SESSION_TERMINAL_STATUSES:
+            return {
+                "status": "started",
+                **{k: v for k, v in settled.items() if k != "status"},
+            }
+        return settled
+
+    def _build_initial_debug_current_node(self, runtime_plan: dict | None) -> dict | None:
+        if not isinstance(runtime_plan, dict):
+            return None
+        executable_nodes = (
+            runtime_plan.get("executable_nodes")
+            if isinstance(runtime_plan.get("executable_nodes"), list)
+            else []
+        )
+        if not executable_nodes or not isinstance(executable_nodes[0], dict):
+            return None
+        first_node = executable_nodes[0]
+        node_id = first_node.get("node_id")
+        if not isinstance(node_id, str) or not node_id.strip():
+            return None
+        return {
+            "node_id": node_id,
+            "node_kind": first_node.get("node_kind"),
+            "repeat_mode": False,
+            "graph_model_id": runtime_plan.get("graph_model_id"),
+            "iteration_stack": [],
+        }
+
+    def _build_debug_variable_snapshot(self, graph_model: GraphModel) -> dict:
+        for node in graph_model.nodes:
+            if node.node_kind != "flow.start":
+                continue
+            node_config = node.node_config if isinstance(node.node_config, dict) else {}
+            initial_variables = node_config.get("initial_variables")
+            if isinstance(initial_variables, dict):
+                return deepcopy(initial_variables)
+            break
+        return {}
+
+    def _build_debug_variable_descriptors(self, graph_model: GraphModel) -> dict:
+        snapshot = self._build_debug_variable_snapshot(graph_model)
+        return {
+            name: {
+                "name": name,
+                "value_type": self._describe_debug_variable_value_type(value),
+                "scope": "global",
+                "editable": True,
+                "origin": "flow.start.initial_variables",
+                "nullable": value is None,
+            }
+            for name, value in snapshot.items()
+            if isinstance(name, str)
+        }
+
+    @staticmethod
+    def _describe_debug_variable_value_type(value: object) -> str:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, int):
+            return "integer"
+        if isinstance(value, float):
+            return "number"
+        if isinstance(value, str):
+            return "string"
+        if isinstance(value, list):
+            return "array"
+        if isinstance(value, dict):
+            return "object"
+        return "object"
+
+    def _get_debug_variable_apply_mode(self) -> str:
+        preferences = self._preferences_service.get_preferences_document()
+        python_runtime_settings = preferences.get("python_runtime_settings")
+        if not isinstance(python_runtime_settings, dict):
+            return "immediate"
+        apply_mode = python_runtime_settings.get("variable_apply_mode", "immediate")
+        return apply_mode if apply_mode in {"staged", "immediate"} else "immediate"
+
+    def _build_runtime_session_conflict_block(self) -> dict | None:
+        active_runtime_statuses = {"running"}
+        active_runtime_session = next(
+            (
+                item
+                for item in self._get_runtime_sessions()
+                if item.get("runtime_session", {}).get("status") in active_runtime_statuses
+            ),
+            None,
+        )
+        active_debug_session = next(
+            (
+                item
+                for item in self._get_debug_sessions()
+                if item.get("debug_session", {}).get("status") in DEBUG_SESSION_ACTIVE_STATUSES
+            ),
+            None,
+        )
+        if active_runtime_session is None and active_debug_session is None:
+            return None
+
+        graph_model = self._get_graph_document_model()
+        graph_document_meta = self._get_graph_document_meta()
+        conflicting_kind = "runtime_session" if active_runtime_session is not None else "debug_session"
+        conflicting_session = active_runtime_session or active_debug_session or {}
+        conflicting_session_meta = conflicting_session.get(conflicting_kind, {})
+        diagnostics = [
+            {
+                "diagnostic_id": f"runtime-session-conflict-{uuid.uuid4().hex[:12]}",
+                "stage": "runtime.prepare",
+                "severity": "error",
+                "category": "debug.session_conflict",
+                "message": "runtime session conflicts with another active execution session",
+                "object_ref": conflicting_session_meta.get("session_id"),
+                "trace_ref": None,
+                "stage_extension": {
+                    "graph_ref": {"graph_model_id": graph_model.graph_model_id},
+                    "conflicting_session_kind": conflicting_kind,
+                    "conflicting_session_id": conflicting_session_meta.get("session_id"),
+                    "conflicting_status": conflicting_session_meta.get("status"),
+                },
+            }
+        ]
+        return {
+            "status": "failed",
+            "request": {
+                "compilation_id": None,
+                "request_origin": "saved_graph_document",
+                "requested_graph_model_id": graph_model.graph_model_id,
+                "requested_graph_save_revision": graph_document_meta.get("save_revision"),
+                "requested_graph_saved_at": graph_document_meta.get("saved_at"),
+                "compile_status": "failed",
+            },
+            "runtime_session": {
+                "session_id": None,
+                "status": "diagnostic_blocked",
+                "execution_supported": False,
+            },
+            "runtime_plan": None,
+            "diagnostics": {
+                "entries": diagnostics,
+                "total_count": len(diagnostics),
+                "highest_severity": "error",
+                "severity_counts": {"error": len(diagnostics)},
+                "summary": {
+                    "total_count": len(diagnostics),
+                    "highest_severity": "error",
+                    "severity_counts": {"error": len(diagnostics)},
+                },
+            },
+        }
+
+    def _build_debug_session_conflict_block(self) -> dict | None:
+        active_runtime_statuses = {"running"}
+        active_runtime_session = next(
+            (
+                item
+                for item in self._get_runtime_sessions()
+                if item.get("runtime_session", {}).get("status") in active_runtime_statuses
+            ),
+            None,
+        )
+        active_debug_session = next(
+            (
+                item
+                for item in self._get_debug_sessions()
+                if item.get("debug_session", {}).get("status") in DEBUG_SESSION_ACTIVE_STATUSES
+            ),
+            None,
+        )
+        if active_runtime_session is None and active_debug_session is None:
+            return None
+
+        graph_model = self._get_graph_document_model()
+        graph_document_meta = self._get_graph_document_meta()
+        conflicting_kind = "runtime_session" if active_runtime_session is not None else "debug_session"
+        conflicting_session = active_runtime_session or active_debug_session or {}
+        conflicting_session_meta = conflicting_session.get(conflicting_kind, {})
+        diagnostics = [
+            {
+                "diagnostic_id": f"debug-session-conflict-{uuid.uuid4().hex[:12]}",
+                "stage": "debug.prepare",
+                "severity": "error",
+                "category": "debug.session_conflict",
+                "message": "debug session conflicts with another active execution session",
+                "object_ref": conflicting_session_meta.get("session_id"),
+                "trace_ref": None,
+                "stage_extension": {
+                    "graph_ref": {"graph_model_id": graph_model.graph_model_id},
+                    "conflicting_session_kind": conflicting_kind,
+                    "conflicting_session_id": conflicting_session_meta.get("session_id"),
+                    "conflicting_status": conflicting_session_meta.get("status"),
+                },
+            }
+        ]
+        primary_diagnostic = {
+            "stage": diagnostics[0]["stage"],
+            "category": diagnostics[0]["category"],
+            "severity": diagnostics[0]["severity"],
+            "message": diagnostics[0]["message"],
+        }
+        return {
+            "status": "failed",
+            "message": diagnostics[0]["message"],
+            "details": {
+                "primary_diagnostic": primary_diagnostic,
+                "diagnostic_summary": {
+                    "total_count": len(diagnostics),
+                    "highest_severity": diagnostics[0]["severity"],
+                },
+                "stage_overview": None,
+            },
+            "request": {
+                "compilation_id": None,
+                "request_origin": "saved_graph_document",
+                "requested_graph_model_id": graph_model.graph_model_id,
+                "requested_graph_save_revision": graph_document_meta.get("save_revision"),
+                "requested_graph_saved_at": graph_document_meta.get("saved_at"),
+                "compile_status": "failed",
+            },
+            "stage_timeline": [],
+            "object_index": self._build_debug_object_index(graph_model),
+            "diagnostic_links": diagnostics,
+            "runtime_preview": self._build_runtime_debug_snapshot(
+                scheduler_mode=None,
+                pending_node_entries=[],
+                queued_node_ids=set(),
+                executed_node_ids_in_order=[],
+                join_state_by_node_id={},
+                retry_state_by_node_id={},
+                executable_nodes=[],
+                current_program_counter=None,
+                current_repeat_mode=False,
+            ),
+            "runtime_preview_summary": self._build_runtime_preview_summary(None),
+        }
+
+    def _build_debug_failure_details_from_compile_result(
+        self,
+        compile_result: dict,
+    ) -> tuple[str | None, dict]:
+        view = compile_result.get("view", {}) if isinstance(compile_result.get("view"), dict) else {}
+        primary_diagnostic = (
+            dict(view.get("primary_diagnostic"))
+            if isinstance(view.get("primary_diagnostic"), dict)
+            else None
+        )
+        diagnostic_summary = (
+            dict(view.get("diagnostic_summary"))
+            if isinstance(view.get("diagnostic_summary"), dict)
+            else None
+        )
+        stage_overview = (
+            dict(view.get("stage_overview"))
+            if isinstance(view.get("stage_overview"), dict)
+            else None
+        )
+        if self._is_non_user_facing_debug_diagnostic(primary_diagnostic):
+            fallback_diagnostic = self._select_user_facing_debug_diagnostic_from_compile_result(
+                compile_result
+            )
+            if isinstance(fallback_diagnostic, dict):
+                primary_diagnostic = fallback_diagnostic
+        message = None
+        if isinstance(primary_diagnostic, dict):
+            primary_message = primary_diagnostic.get("message")
+            if isinstance(primary_message, str) and primary_message.strip():
+                message = primary_message
+        return (
+            message,
+            {
+                "primary_diagnostic": primary_diagnostic,
+                "diagnostic_summary": diagnostic_summary,
+                "stage_overview": stage_overview,
+            },
+        )
+
+    def _is_non_user_facing_debug_diagnostic(self, diagnostic: dict | None) -> bool:
+        if not isinstance(diagnostic, dict):
+            return False
+        category = diagnostic.get("category")
+        severity = diagnostic.get("severity")
+        message = diagnostic.get("message")
+        return (
+            category == "parse.completed"
+            and severity == "info"
+            and message == "parsed source document"
+        )
+
+    def _select_user_facing_debug_diagnostic_from_compile_result(
+        self,
+        compile_result: dict,
+    ) -> dict | None:
+        outcome = compile_result.get("outcome")
+        diagnostics = (
+            outcome.diagnostic_catalog.entries
+            if isinstance(outcome, CompilationOutcome)
+            and isinstance(outcome.diagnostic_catalog, DiagnosticCatalog)
+            else []
+        )
+        substantive = [
+            entry
+            for entry in diagnostics
+            if not self._is_non_user_facing_debug_diagnostic(
+                {
+                    "category": entry.category,
+                    "severity": entry.severity,
+                    "message": entry.message,
+                }
+            )
+        ]
+        if not substantive:
+            return None
+        selected = max(substantive, key=lambda entry: DIAGNOSTIC_SEVERITY_RANK[entry.severity])
+        return {
+            "stage": selected.stage,
+            "category": selected.category,
+            "severity": selected.severity,
+            "message": selected.message,
         }
 
     def compile_source(
@@ -8541,6 +10824,29 @@ class CompilationWorkbenchService:
         project = self._state.get("project")
         if isinstance(project, dict) and project.get("source_of_truth") == "wcrun_package":
             raise ProjectPackageReadOnlyError(operation=operation)
+
+    def _assert_no_active_debug_session_mutation(self, operation: str) -> None:
+        active_session = next(
+            (
+                item
+                for item in self._get_debug_sessions()
+                if item.get("debug_session", {}).get("status") in DEBUG_SESSION_ACTIVE_STATUSES
+            ),
+            None,
+        )
+        if active_session is None:
+            return
+        debug_session = (
+            active_session.get("debug_session")
+            if isinstance(active_session.get("debug_session"), dict)
+            else {}
+        )
+        session_id = debug_session.get("session_id")
+        status = debug_session.get("status")
+        raise ValueError(
+            "graph mutation blocked while debug session is active: "
+            f"operation={operation}, session_id={session_id}, status={status}"
+        )
 
     def _persist_graph_document(
         self,
@@ -10569,6 +12875,154 @@ class CompilationWorkbenchService:
             changed = True
         return state, changed
 
+    def _invalidate_recovered_execution_sessions(self, state: dict) -> tuple[dict, bool]:
+        if not isinstance(self._state_store, FileWorkspaceStateStore):
+            return state, False
+
+        changed = False
+        recovered_at = datetime.now(timezone.utc).isoformat()
+
+        runtime_sessions = self._extract_runtime_sessions(state)
+        stale_runtime_session_ids: set[str] = set()
+        next_runtime_sessions: list[dict] = []
+        for item in runtime_sessions:
+            runtime_session = item.get("runtime_session")
+            if not isinstance(runtime_session, dict) or runtime_session.get("status") != "running":
+                next_runtime_sessions.append(item)
+                continue
+            stale_runtime_session_ids.add(str(runtime_session.get("session_id")))
+            updated_item = deepcopy(item)
+            updated_runtime_session = dict(updated_item.get("runtime_session", {}))
+            updated_runtime_session["status"] = "failed"
+            updated_runtime_session["completed_at"] = recovered_at
+            updated_item["runtime_session"] = updated_runtime_session
+            event_log = (
+                list(updated_item.get("event_log", []))
+                if isinstance(updated_item.get("event_log"), list)
+                else []
+            )
+            event_log.append(
+                {
+                    "event_kind": "session.recovered_as_incomplete",
+                    "recorded_at": recovered_at,
+                    "session_id": updated_runtime_session.get("session_id"),
+                    "reason": "service_restarted",
+                }
+            )
+            updated_item["event_log"] = event_log
+            execution_summary = (
+                dict(updated_item.get("execution_summary", {}))
+                if isinstance(updated_item.get("execution_summary"), dict)
+                else {}
+            )
+            execution_summary["status"] = "failed"
+            execution_summary["event_count"] = len(event_log)
+            updated_item["execution_summary"] = execution_summary
+            updated_item["result"] = {
+                "status": "failed",
+                "failure_reason": "runtime session was interrupted because the application restarted",
+                "interrupted": True,
+            }
+            next_runtime_sessions.append(updated_item)
+            changed = True
+        if stale_runtime_session_ids:
+            state["runtime_sessions"] = next_runtime_sessions[:MAX_RUNTIME_LIVE_SESSION_DOCUMENTS]
+
+        debug_sessions = self._extract_debug_sessions(state)
+        stale_debug_session_ids: set[str] = set()
+        next_debug_sessions: list[dict] = []
+        for item in debug_sessions:
+            debug_session = item.get("debug_session")
+            if (
+                not isinstance(debug_session, dict)
+                or debug_session.get("status") not in DEBUG_SESSION_ACTIVE_STATUSES
+            ):
+                next_debug_sessions.append(item)
+                continue
+            stale_debug_session_ids.add(str(debug_session.get("session_id")))
+            updated_item = deepcopy(item)
+            updated_debug_session = dict(updated_item.get("debug_session", {}))
+            updated_debug_session["status"] = "incomplete"
+            updated_debug_session["completed_at"] = recovered_at
+            updated_debug_session["paused_reason"] = "service_restarted"
+            updated_debug_session["last_control_action"] = "service_restarted"
+            updated_item["debug_session"] = updated_debug_session
+            debug_events = (
+                list(updated_item.get("debug_events", []))
+                if isinstance(updated_item.get("debug_events"), list)
+                else []
+            )
+            debug_events.append(
+                self._normalize_debug_event(
+                    session_document=updated_item,
+                    event={
+                    "event_kind": "debug.session_recovered_as_incomplete",
+                    "recorded_at": recovered_at,
+                    "session_id": updated_debug_session.get("session_id"),
+                    "reason": "service_restarted",
+                    },
+                    event_index=len(debug_events),
+                )
+            )
+            updated_item["debug_events"] = debug_events
+            next_debug_sessions.append(updated_item)
+            changed = True
+        if stale_debug_session_ids:
+            state["debug_sessions"] = next_debug_sessions[:MAX_DEBUG_LIVE_SESSION_DOCUMENTS]
+
+        if stale_runtime_session_ids or stale_debug_session_ids:
+            execution_history = self._extract_execution_history(state)
+            runtime_runs = (
+                list(execution_history.get("runtime_runs", []))
+                if isinstance(execution_history.get("runtime_runs"), list)
+                else []
+            )
+            debug_history = (
+                list(execution_history.get("debug_sessions", []))
+                if isinstance(execution_history.get("debug_sessions"), list)
+                else []
+            )
+            runtime_history_changed = False
+            next_runtime_runs: list[dict] = []
+            for entry in runtime_runs:
+                if not isinstance(entry, dict) or str(entry.get("session_id")) not in stale_runtime_session_ids:
+                    next_runtime_runs.append(entry)
+                    continue
+                next_runtime_runs.append(
+                    {
+                        **entry,
+                        "status": "failed",
+                        "completed_at": recovered_at,
+                        "last_error": "service_restarted",
+                    }
+                )
+                runtime_history_changed = True
+            debug_history_changed = False
+            next_debug_history: list[dict] = []
+            for entry in debug_history:
+                if not isinstance(entry, dict) or str(entry.get("session_id")) not in stale_debug_session_ids:
+                    next_debug_history.append(entry)
+                    continue
+                next_debug_history.append(
+                    {
+                        **entry,
+                        "status": "incomplete",
+                        "completed_at": recovered_at,
+                        "paused_reason": "service_restarted",
+                        "last_control_action": "service_restarted",
+                    }
+                )
+                debug_history_changed = True
+            if runtime_history_changed or debug_history_changed:
+                state["execution_history"] = {
+                    **execution_history,
+                    "runtime_runs": next_runtime_runs,
+                    "debug_sessions": next_debug_history,
+                }
+                changed = True
+
+        return state, changed
+
     def _restore_startup_pending_graph_upgrade(self, state: dict) -> tuple[dict, bool]:
         existing_pending_graph_upgrade = self._extract_pending_graph_upgrade(state)
         if existing_pending_graph_upgrade is not None:
@@ -10756,6 +13210,7 @@ class CompilationWorkbenchService:
             },
             "runtime_defaults": self._normalize_runtime_defaults_payload(runtime_defaults),
             "security_settings": self._build_initial_project_security_settings_document(),
+            "debug_profile": self._build_initial_project_debug_profile_document(),
             "python_runtime_profile": python_runtime_profile,
             "packaging": {
                 "default_output_name": default_output_name,
@@ -10773,6 +13228,26 @@ class CompilationWorkbenchService:
                 "source_of_truth": "saved_project_only",
                 "inject_project_runtime_defaults_into_main_flow_start": True,
             },
+        }
+
+    def _build_initial_project_debug_profile_document(self) -> dict:
+        return {
+            "history_retention_limit": 10,
+        }
+
+    def _normalize_project_debug_profile(self, payload: dict | None) -> dict:
+        raw_payload = payload if isinstance(payload, dict) else {}
+        raw_limit = raw_payload.get("history_retention_limit", 10)
+        try:
+            history_retention_limit = int(raw_limit)
+        except (TypeError, ValueError):
+            history_retention_limit = 10
+        history_retention_limit = max(
+            1,
+            min(MAX_DEBUG_SESSION_HISTORY_LIMIT, history_retention_limit),
+        )
+        return {
+            "history_retention_limit": history_retention_limit,
         }
 
     def _build_default_project_python_runtime_profile(self) -> dict:
@@ -10962,6 +13437,7 @@ class CompilationWorkbenchService:
         raw_identity = raw_payload.get("project_identity")
         raw_runtime_defaults = raw_payload.get("runtime_defaults")
         raw_security_settings = raw_payload.get("security_settings")
+        raw_debug_profile = raw_payload.get("debug_profile")
         raw_python_runtime_profile = raw_payload.get("python_runtime_profile")
         raw_packaging = raw_payload.get("packaging")
         raw_resource_policy = raw_payload.get("resource_policy")
@@ -10996,6 +13472,7 @@ class CompilationWorkbenchService:
         )
         runtime_defaults = self._normalize_runtime_defaults_payload(raw_runtime_defaults)
         security_settings = self._normalize_project_security_settings(raw_security_settings)
+        debug_profile = self._normalize_project_debug_profile(raw_debug_profile)
         python_runtime_profile = normalize_python_runtime_profile(
             raw_python_runtime_profile,
             defaults=self._build_default_project_python_runtime_profile(),
@@ -11039,6 +13516,7 @@ class CompilationWorkbenchService:
             },
             "runtime_defaults": runtime_defaults,
             "security_settings": security_settings,
+            "debug_profile": debug_profile,
             "python_runtime_profile": python_runtime_profile,
             "packaging": {
                 "default_output_name": default_output_name,
@@ -11101,6 +13579,21 @@ class CompilationWorkbenchService:
         merged_document = deepcopy(base_document)
         merged_document.update(deepcopy(raw_settings))
         return self._normalize_project_settings_document_for_state(state, merged_document)
+
+    def _get_debug_history_retention_limit(self, state: dict | None = None) -> int:
+        effective_state = state if isinstance(state, dict) else self._state
+        project_settings = self._extract_project_settings(effective_state)
+        debug_profile = (
+            project_settings.get("debug_profile")
+            if isinstance(project_settings.get("debug_profile"), dict)
+            else {}
+        )
+        raw_limit = debug_profile.get("history_retention_limit", 10)
+        try:
+            history_retention_limit = int(raw_limit)
+        except (TypeError, ValueError):
+            history_retention_limit = 10
+        return max(1, min(MAX_DEBUG_SESSION_HISTORY_LIMIT, history_retention_limit))
 
     def _extract_pending_recovery(self, state: dict | None) -> dict | None:
         raw_pending = state.get("pending_recovery") if isinstance(state, dict) else None
@@ -11994,6 +14487,7 @@ class CompilationWorkbenchService:
                 "timeout_seconds": "active",
                 "sandbox_mode": "active",
                 "capture_stdout_stderr": "active",
+                "variable_apply_mode": "active",
                 "blocked_import_modules": "active",
             },
             "graph_settings": {
@@ -16092,7 +18586,7 @@ class CompilationWorkbenchService:
             current_state, _ = self._normalize_workspace_state(state)
             sessions = self._extract_runtime_sessions(current_state)
             sessions.insert(0, session_document)
-            current_state["runtime_sessions"] = sessions[:MAX_RUNTIME_SESSION_HISTORY]
+            current_state["runtime_sessions"] = sessions[:MAX_RUNTIME_LIVE_SESSION_DOCUMENTS]
             return current_state
 
         self._state = self._state_store.mutate(mutation)
@@ -16102,7 +18596,7 @@ class CompilationWorkbenchService:
             current_state, _ = self._normalize_workspace_state(state)
             sessions = self._extract_debug_sessions(current_state)
             sessions.insert(0, session_document)
-            current_state["debug_sessions"] = sessions[:MAX_DEBUG_SESSION_HISTORY]
+            current_state["debug_sessions"] = sessions[:MAX_DEBUG_LIVE_SESSION_DOCUMENTS]
             execution_history = self._extract_execution_history(current_state)
             execution_history["debug_sessions"].insert(
                 0,
@@ -16111,7 +18605,6 @@ class CompilationWorkbenchService:
                     "status": session_document["debug_session"]["status"],
                     "graph_model_id": session_document["object_index"]["graph_model_id"],
                     "started_at": session_document["debug_session"]["started_at"],
-                    "prepared_at": session_document["debug_session"].get("prepared_at"),
                 },
             )
             execution_history["debug_sessions"] = execution_history["debug_sessions"][
@@ -16121,6 +18614,366 @@ class CompilationWorkbenchService:
             return current_state
 
         self._state = self._state_store.mutate(mutation)
+
+    def _replace_debug_session_document(
+        self,
+        session_document: dict,
+        *,
+        persist_history: bool = True,
+    ) -> None:
+        session_id = session_document["debug_session"]["session_id"]
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            sessions = self._extract_debug_sessions(current_state)
+            updated_sessions: list[dict] = []
+            found = False
+            for item in sessions:
+                debug_session = item.get("debug_session")
+                if (
+                    isinstance(debug_session, dict)
+                    and debug_session.get("session_id") == session_id
+                ):
+                    found = True
+                    updated_sessions.append(deepcopy(session_document))
+                    continue
+                updated_sessions.append(item)
+            if not found:
+                raise ValueError(f"debug session not found: {session_id}")
+            current_state["debug_sessions"] = updated_sessions[:MAX_DEBUG_LIVE_SESSION_DOCUMENTS]
+            execution_history = self._extract_execution_history(current_state)
+            updated_history: list[dict] = []
+            for entry in execution_history["debug_sessions"]:
+                if isinstance(entry, dict) and entry.get("session_id") == session_id:
+                    updated_history.append(
+                        {
+                            **entry,
+                            "status": session_document["debug_session"].get("status"),
+                            "started_at": session_document["debug_session"].get("started_at"),
+                            "paused_reason": session_document["debug_session"].get("paused_reason"),
+                            "last_control_action": session_document["debug_session"].get(
+                                "last_control_action"
+                            ),
+                        }
+                    )
+                    continue
+                updated_history.append(entry)
+            execution_history["debug_sessions"] = updated_history[:MAX_DEBUG_SESSION_HISTORY]
+            current_state["execution_history"] = execution_history
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        if persist_history:
+            self._persist_debug_history_session_document(session_document)
+
+    def _normalize_debug_event(
+        self,
+        *,
+        session_document: dict,
+        event: dict,
+        event_index: int,
+    ) -> dict:
+        debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        session_id = str(debug_session.get("session_id") or "debug-session")
+        runtime_preview = (
+            session_document.get("runtime_preview")
+            if isinstance(session_document.get("runtime_preview"), dict)
+            else {}
+        )
+        current_node = (
+            runtime_preview.get("current_node")
+            if isinstance(runtime_preview.get("current_node"), dict)
+            else {}
+        )
+        node_id = event.get("node_id")
+        if not isinstance(node_id, str) or not node_id.strip():
+            node_id = current_node.get("node_id")
+        instance_path = event.get("instance_path")
+        if not isinstance(instance_path, list):
+            graph_model_id = current_node.get("graph_model_id")
+            if not isinstance(graph_model_id, str) or not graph_model_id.strip():
+                object_index = session_document.get("object_index")
+                graph_model_id = (
+                    object_index.get("graph_model_id")
+                    if isinstance(object_index, dict)
+                    else None
+                )
+            instance_path = [
+                item
+                for item in (graph_model_id, node_id)
+                if isinstance(item, str) and item.strip()
+            ]
+        iteration_stack = event.get("iteration_stack")
+        if not isinstance(iteration_stack, list):
+            iteration_stack = (
+                list(current_node.get("iteration_stack"))
+                if isinstance(current_node.get("iteration_stack"), list)
+                else []
+            )
+        return {
+            **deepcopy(event),
+            "event_id": event.get("event_id")
+            if isinstance(event.get("event_id"), str) and event.get("event_id").strip()
+            else f"{session_id}:event:{event_index:08d}",
+            "event_index": event_index,
+            "recorded_at": event.get("recorded_at")
+            if isinstance(event.get("recorded_at"), str) and event.get("recorded_at").strip()
+            else datetime.now(timezone.utc).isoformat(),
+            "session_id": session_id,
+            "instance_path": list(instance_path),
+            "iteration_stack": list(iteration_stack),
+        }
+
+    def _append_debug_session_event(self, *, session_id: str, event: dict) -> dict:
+        updated_session_holder: dict[str, dict] = {}
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            sessions = self._extract_debug_sessions(current_state)
+            updated_sessions: list[dict] = []
+            found = False
+            for item in sessions:
+                debug_session = item.get("debug_session")
+                if (
+                    isinstance(debug_session, dict)
+                    and debug_session.get("session_id") == session_id
+                ):
+                    found = True
+                    updated_item = deepcopy(item)
+                    debug_events = (
+                        list(updated_item.get("debug_events", []))
+                        if isinstance(updated_item.get("debug_events"), list)
+                        else []
+                    )
+                    normalized_event = self._normalize_debug_event(
+                        session_document=updated_item,
+                        event=event,
+                        event_index=len(debug_events),
+                    )
+                    event.clear()
+                    event.update(deepcopy(normalized_event))
+                    debug_events.append(normalized_event)
+                    updated_item["debug_events"] = debug_events
+                    controller = DebugController(session_snapshot=updated_item)
+                    event_patch = controller.apply_event(
+                        session=updated_item,
+                        event=normalized_event,
+                    )
+                    updated_item["debug_session"] = {
+                        **updated_item["debug_session"],
+                        **event_patch,
+                    }
+                    updated_session_holder["value"] = deepcopy(updated_item)
+                    updated_sessions.append(updated_item)
+                    continue
+                updated_sessions.append(item)
+            if not found:
+                raise ValueError(f"debug session not found: {session_id}")
+            current_state["debug_sessions"] = updated_sessions[:MAX_DEBUG_LIVE_SESSION_DOCUMENTS]
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        session_document = updated_session_holder["value"]
+        self._persist_debug_history_session_document(session_document)
+        return session_document
+
+    def _build_debug_controller_for_session(self, session_id: str) -> DebugController:
+        session_document = self._find_debug_session(session_id)
+        return DebugController(session_snapshot=session_document)
+
+    def _evaluate_debug_breakpoint_gate(
+        self,
+        *,
+        breakpoint_config: dict,
+        runtime_context: RuntimeContext,
+        debug_session_state: dict,
+        node_id: str,
+        node_kind: str | None,
+        session_id: str,
+        instance_path: list[str],
+        pause_timing: str,
+    ) -> dict:
+        controller = DebugController(
+            session_snapshot={"debug_session": deepcopy(debug_session_state)}
+        )
+        gate = controller.evaluate_breakpoint_gate(
+            session={"debug_session": debug_session_state},
+            breakpoint_config=breakpoint_config,
+            runtime_variables=runtime_context.variables,
+            node_id=node_id,
+            node_kind=node_kind,
+            session_id=session_id,
+            instance_path=instance_path,
+            pause_timing=pause_timing,
+        )
+        session_patch = gate.pop("session_patch")
+        debug_session_state.update(session_patch)
+        return gate
+
+    def _persist_debug_history_session_document(self, session_document: dict) -> None:
+        try:
+            history_store = self._get_debug_history_store()
+        except ValueError:
+            return
+        history_store.persist_session_document(session_document)
+
+    def _build_debug_keyframe(
+        self,
+        *,
+        session_document: dict,
+        event: dict,
+        variable_snapshot: dict | None = None,
+        runtime_preview: dict | None = None,
+        runtime_preview_summary: dict | None = None,
+    ) -> dict:
+        event_id = event.get("event_id")
+        keyframe_id = f"{event_id}:keyframe" if isinstance(event_id, str) else None
+        event_kind = event.get("event_kind")
+        frame_identity = event.get("frame_identity")
+        if not isinstance(frame_identity, str) or not frame_identity.strip():
+            frame_identity = event_id if isinstance(event_id, str) else None
+        snapshot_id = (
+            f"{event_id}:snapshot"
+            if isinstance(event_id, str)
+            and event_kind in {"breakpoint.hit", "record_frame.hit", "debug.paused"}
+            else None
+        )
+        request = session_document.get("request") if isinstance(session_document.get("request"), dict) else {}
+        object_index = session_document.get("object_index") if isinstance(session_document.get("object_index"), dict) else {}
+        node_id = event.get("node_id")
+        indexed_nodes = object_index.get("nodes") if isinstance(object_index.get("nodes"), list) else []
+        indexed_node = next(
+            (item for item in indexed_nodes if isinstance(item, dict) and item.get("node_id") == node_id),
+            None,
+        )
+        node_output_snapshot = deepcopy(event.get("node_output_snapshot"))
+        output_state = (
+            "not_executed"
+            if event.get("pause_timing") == "before"
+            else "captured"
+            if "node_output_snapshot" in event
+            else "unavailable"
+        )
+        return {
+            "keyframe_id": keyframe_id,
+            "snapshot_id": snapshot_id,
+            "event_id": event.get("event_id"),
+            "event_index": event.get("event_index"),
+            "session_id": event.get("session_id"),
+            "instance_path": (
+                list(event.get("instance_path"))
+                if isinstance(event.get("instance_path"), list)
+                else []
+            ),
+            "event_kind": event_kind,
+            "frame_identity": frame_identity,
+            "node_id": event.get("node_id"),
+            "node_kind": indexed_node.get("node_kind") if isinstance(indexed_node, dict) else None,
+            "pause_timing": event.get("pause_timing"),
+            "reason": event.get("reason"),
+            "recorded_at": event.get("recorded_at") or datetime.now(timezone.utc).isoformat(),
+            "iteration_stack": (
+                list(event.get("iteration_stack"))
+                if isinstance(event.get("iteration_stack"), list)
+                else []
+            ),
+            "variable_snapshot": deepcopy(
+                variable_snapshot
+                if isinstance(variable_snapshot, dict)
+                else session_document.get("variable_snapshot", {})
+            ),
+            "variable_descriptors": deepcopy(
+                session_document.get("variable_descriptors", {})
+                if isinstance(session_document.get("variable_descriptors"), dict)
+                else {}
+            ),
+            "graph_model_id": object_index.get("graph_model_id"),
+            "graph_revision": request.get("requested_graph_save_revision"),
+            "compilation_id": request.get("compilation_id"),
+            "breakpoint_ordinal": event.get("breakpoint_hit_ordinal_in_session"),
+            "record_frame_ordinal": event.get("record_frame_ordinal_in_session"),
+            "node_input_snapshot": deepcopy(event.get("node_input_snapshot")),
+            "node_output_snapshot": node_output_snapshot,
+            "output_state": output_state,
+            "runtime_preview": deepcopy(
+                runtime_preview
+                if isinstance(runtime_preview, dict)
+                else session_document.get("runtime_preview", {})
+            ),
+            "runtime_preview_summary": deepcopy(
+                runtime_preview_summary
+                if isinstance(runtime_preview_summary, dict)
+                else session_document.get("runtime_preview_summary", {})
+            ),
+        }
+
+    def _append_debug_session_keyframe(
+        self,
+        *,
+        session_id: str,
+        keyframe: dict,
+    ) -> dict:
+        updated_session_holder: dict[str, dict] = {}
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            sessions = self._extract_debug_sessions(current_state)
+            updated_sessions: list[dict] = []
+            found = False
+            for item in sessions:
+                debug_session = item.get("debug_session")
+                if (
+                    isinstance(debug_session, dict)
+                    and debug_session.get("session_id") == session_id
+                ):
+                    found = True
+                    updated_item = deepcopy(item)
+                    keyframes = (
+                        list(updated_item.get("debug_keyframes", []))
+                        if isinstance(updated_item.get("debug_keyframes"), list)
+                        else []
+                    )
+                    keyframes.append(deepcopy(keyframe))
+                    updated_item["debug_keyframes"] = keyframes
+                    snapshot_id = keyframe.get("snapshot_id")
+                    if isinstance(snapshot_id, str):
+                        snapshots = (
+                            list(updated_item.get("debug_snapshots", []))
+                            if isinstance(updated_item.get("debug_snapshots"), list)
+                            else []
+                        )
+                        snapshots.append(deepcopy(keyframe))
+                        updated_item["debug_snapshots"] = snapshots
+                    updated_session_holder["value"] = deepcopy(updated_item)
+                    updated_sessions.append(updated_item)
+                    continue
+                updated_sessions.append(item)
+            if not found:
+                raise ValueError(f"debug session not found: {session_id}")
+            current_state["debug_sessions"] = updated_sessions[:MAX_DEBUG_LIVE_SESSION_DOCUMENTS]
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        session_document = updated_session_holder["value"]
+        self._persist_debug_history_session_document(session_document)
+        return session_document
+
+    def _get_debug_history_store(self) -> DebugSessionHistoryStore:
+        project_runtime = self._extract_project_runtime(self._state)
+        project_file_path = project_runtime.get("project_file_path")
+        if isinstance(project_file_path, str) and project_file_path.strip():
+            history_root = self._resolve_project_storage_root(Path(project_file_path))
+        else:
+            history_root = self._resolve_application_data_root() / "workspace-debug-history"
+        history_root.mkdir(parents=True, exist_ok=True)
+        return DebugSessionHistoryStore(
+            project_root=history_root,
+            retention_limit=self._get_debug_history_retention_limit(self._state),
+        )
 
     def _get_runtime_sessions(self) -> list[dict]:
         return self._extract_runtime_sessions(self._state)
@@ -16153,6 +19006,1260 @@ class CompilationWorkbenchService:
             if item["debug_session"]["session_id"] == session_id:
                 return item
         raise ValueError(f"debug session not found: {session_id}")
+
+    def _run_debug_session_sync(self, *, session_id: str) -> dict:
+        self._refresh_state_from_store()
+        session_document = deepcopy(self._find_debug_session(session_id))
+        debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        if debug_session.get("status") in DEBUG_SESSION_TERMINAL_STATUSES:
+            return {
+                "status": debug_session.get("status"),
+                **session_document,
+            }
+        runtime_plan = (
+            session_document.get("runtime_plan")
+            if isinstance(session_document.get("runtime_plan"), dict)
+            else None
+        )
+        if runtime_plan is None:
+            raise ValueError(f"debug session runtime plan missing: {session_id}")
+
+        runtime_execution_settings = self._build_runtime_execution_settings()
+        runtime_context = self._debug_runtime_contexts.get(session_id)
+        if not isinstance(runtime_context, RuntimeContext):
+            runtime_context = RuntimeContext(
+                project_directory=self._resolve_runtime_project_directory(),
+                workspace_root=self._resolve_runtime_workspace_root(),
+                embedded_resource_paths=self._build_runtime_embedded_resource_path_map(),
+                allowed_path_roots=self._build_runtime_allowed_path_roots(),
+                runtime_settings=deepcopy(runtime_execution_settings),
+            )
+            self._debug_runtime_contexts[session_id] = runtime_context
+            self._debug_runtime_context_owner_thread_ids[session_id] = get_ident()
+        runtime_context.flow_runtime["graph_root_metadata"] = deepcopy(
+            runtime_plan.get("root_metadata", {})
+        )
+        variable_snapshot = (
+            session_document.get("variable_snapshot")
+            if isinstance(session_document.get("variable_snapshot"), dict)
+            else {}
+        )
+        runtime_context.variables.update(deepcopy(variable_snapshot))
+        persisted_flow_runtime = (
+            debug_session.get("flow_runtime_snapshot")
+            if isinstance(debug_session.get("flow_runtime_snapshot"), dict)
+            else {}
+        )
+        if isinstance(persisted_flow_runtime.get("loop_iteration_by_node_id"), dict):
+            runtime_context.flow_runtime["loop_iteration_by_node_id"] = deepcopy(
+                persisted_flow_runtime["loop_iteration_by_node_id"]
+            )
+        debug_control_flags = self._get_debug_control_flags(session_id)
+        executor_registry = RuntimeExecutorRegistry(runtime_settings=runtime_execution_settings)
+        controller = self._build_debug_controller_for_session(session_id)
+        pending_component_pause = (
+            debug_session.get("pending_component_pause")
+            if isinstance(debug_session.get("pending_component_pause"), dict)
+            else None
+        )
+        step_mode = (
+            debug_session.get("step_mode")
+            if isinstance(debug_session.get("step_mode"), str)
+            and debug_session.get("step_mode") in {"step_over", "step_into", "step_out"}
+            else None
+        )
+        step_budget = 1 if step_mode in {"step_over", "step_into"} else None
+        stepped_node_count = 0
+        runtime_context.flow_runtime["debug_runtime"] = {
+            "session_id": session_id,
+            "step_mode": step_mode,
+            "pending_component_pause": deepcopy(pending_component_pause),
+        }
+
+        executable_nodes = [dict(item) for item in runtime_plan.get("executable_nodes", [])]
+        node_states = [
+            {
+                "node_id": node["node_id"],
+                "node_status": "pending",
+                "started_at": None,
+                "completed_at": None,
+                "input_snapshot": None,
+                "output": None,
+                "error": None,
+            }
+            for node in executable_nodes
+        ]
+        node_index_by_id = {item["node_id"]: index for index, item in enumerate(executable_nodes)}
+        data_edges_by_target = self._build_runtime_data_edges_by_target(
+            runtime_plan.get("relation_edges", [])
+        )
+        control_edges_by_source: dict[str, list[dict]] = {}
+        for edge in runtime_plan.get("relation_edges", []):
+            if edge.get("relation_layer") != "control":
+                continue
+            source_id = edge.get("from_node_id")
+            if isinstance(source_id, str):
+                control_edges_by_source.setdefault(source_id, []).append(dict(edge))
+        join_state_by_node_id: dict[str, dict[str, object]] = {}
+        retry_state_by_node_id: dict[str, dict[str, object]] = {}
+        pending_node_entries: list[dict[str, object]] = []
+        queued_node_ids: set[str] = set()
+        executed_node_ids: set[str] = set()
+        executed_node_ids_in_order: list[str] = []
+        control_edges_by_target = self._build_runtime_relation_edges_by_target(
+            relation_edges=runtime_plan.get("relation_edges", []),
+            relation_layer="control",
+        )
+        node_kind_by_id = {
+            item["node_id"]: item.get("node_kind") for item in executable_nodes
+        }
+        debug_events = (
+            list(session_document.get("debug_events", []))
+            if isinstance(session_document.get("debug_events"), list)
+            else []
+        )
+        runtime_preview = (
+            session_document.get("runtime_preview")
+            if isinstance(session_document.get("runtime_preview"), dict)
+            else {}
+        )
+        (
+            pending_node_entries,
+            queued_node_ids,
+            join_state_by_node_id,
+            retry_state_by_node_id,
+        ) = self._restore_runtime_debug_snapshot(
+            snapshot=runtime_preview,
+            executable_nodes=executable_nodes,
+        )
+        preview_executed_node_ids = (
+            runtime_preview.get("executed_node_ids")
+            if isinstance(runtime_preview.get("executed_node_ids"), list)
+            else []
+        )
+        for node_id in preview_executed_node_ids:
+            if isinstance(node_id, str) and node_id in node_index_by_id:
+                executed_node_ids.add(node_id)
+                executed_node_ids_in_order.append(node_id)
+                node_states[node_index_by_id[node_id]]["node_status"] = "completed"
+        preview_current_node = (
+            runtime_preview.get("current_node")
+            if isinstance(runtime_preview.get("current_node"), dict)
+            else {}
+        )
+        resume_node_id = (
+            preview_current_node.get("node_id")
+            if isinstance(preview_current_node.get("node_id"), str)
+            else None
+        )
+        if isinstance(pending_component_pause, dict):
+            pending_outer_node_id = pending_component_pause.get("outer_node_id")
+            if isinstance(pending_outer_node_id, str) and pending_outer_node_id.strip():
+                resume_node_id = pending_outer_node_id
+        preview_repeat_mode = bool(preview_current_node.get("repeat_mode")) if preview_current_node else False
+        active_iteration_stack = (
+            list(preview_current_node.get("iteration_stack"))
+            if isinstance(preview_current_node.get("iteration_stack"), list)
+            else []
+        )
+        resume_skip_breakpoint_once = (
+            deepcopy(debug_session.get("resume_skip_breakpoint_once"))
+            if isinstance(debug_session.get("resume_skip_breakpoint_once"), dict)
+            else None
+        )
+        exception_skip_node_once = (
+            debug_session.get("exception_skip_node_once")
+            if isinstance(debug_session.get("exception_skip_node_once"), str)
+            and debug_session.get("exception_skip_node_once").strip()
+            else None
+        )
+        resume_from_pending_queue = bool(debug_session.get("resume_from_pending_queue"))
+        resume_cursor = (
+            deepcopy(debug_session.get("resume_cursor"))
+            if isinstance(debug_session.get("resume_cursor"), dict)
+            else None
+        )
+        keep_runtime_context = False
+
+        def append_debug_event(event: dict) -> None:
+            normalized_event = self._normalize_debug_event(
+                session_document=session_document,
+                event=event,
+                event_index=len(debug_events),
+            )
+            event.clear()
+            event.update(deepcopy(normalized_event))
+            debug_events.append(normalized_event)
+            session_document["debug_events"] = debug_events
+            event_kind = event.get("event_kind")
+            if event_kind == "breakpoint.hit":
+                session_document["debug_session"] = {
+                    **session_document["debug_session"],
+                    "paused_reason": "breakpoint_hit",
+                    "last_control_action": "breakpoint_hit",
+                    "last_breakpoint_frame_identity": event.get("frame_identity"),
+                }
+            elif event_kind == "record_frame.hit":
+                session_document["debug_session"] = {
+                    **session_document["debug_session"],
+                    "last_control_action": "record_frame",
+                    "last_record_frame_identity": event.get("frame_identity"),
+                }
+            elif event_kind == "debug.paused":
+                previous_action = session_document["debug_session"].get("last_control_action")
+                session_document["debug_session"] = {
+                    **session_document["debug_session"],
+                    "status": "paused",
+                    "paused_reason": event.get("reason"),
+                    "last_control_action": previous_action or "paused",
+                }
+
+        def append_debug_keyframe_for_event(
+            *,
+            event: dict,
+            runtime_preview_override: dict | None = None,
+            runtime_preview_summary_override: dict | None = None,
+        ) -> None:
+            keyframes = (
+                list(session_document.get("debug_keyframes", []))
+                if isinstance(session_document.get("debug_keyframes"), list)
+                else []
+            )
+            keyframe = self._build_debug_keyframe(
+                session_document=session_document,
+                event=event,
+                variable_snapshot=runtime_context.variables,
+                runtime_preview=runtime_preview_override,
+                runtime_preview_summary=runtime_preview_summary_override,
+            )
+            keyframes.append(keyframe)
+            session_document["debug_keyframes"] = keyframes
+            if isinstance(keyframe.get("snapshot_id"), str):
+                snapshots = (
+                    list(session_document.get("debug_snapshots", []))
+                    if isinstance(session_document.get("debug_snapshots"), list)
+                    else []
+                )
+                snapshots.append(deepcopy(keyframe))
+                session_document["debug_snapshots"] = snapshots
+
+        def finalize_preview(
+            *,
+            current_program_counter: int | None,
+            current_repeat_mode: bool,
+            current_node_override: dict | None = None,
+            current_iteration_stack: list[str] | None = None,
+        ) -> None:
+            session_document["runtime_preview"] = self._build_runtime_debug_snapshot(
+                scheduler_mode=runtime_plan.get("scheduler_mode"),
+                pending_node_entries=pending_node_entries,
+                queued_node_ids=queued_node_ids,
+                executed_node_ids_in_order=executed_node_ids_in_order,
+                join_state_by_node_id=join_state_by_node_id,
+                retry_state_by_node_id=retry_state_by_node_id,
+                executable_nodes=executable_nodes,
+                current_program_counter=current_program_counter,
+                current_repeat_mode=current_repeat_mode,
+                current_iteration_stack=current_iteration_stack,
+            )
+            if isinstance(current_node_override, dict):
+                session_document["runtime_preview"]["current_node"] = deepcopy(current_node_override)
+            session_document["runtime_preview_summary"] = self._build_runtime_preview_summary(
+                session_document["runtime_preview"]
+            )
+            session_document["variable_snapshot"] = deepcopy(runtime_context.variables)
+            descriptors = (
+                deepcopy(session_document.get("variable_descriptors"))
+                if isinstance(session_document.get("variable_descriptors"), dict)
+                else {}
+            )
+            for variable_name, value in runtime_context.variables.items():
+                if not isinstance(variable_name, str) or variable_name in descriptors:
+                    continue
+                descriptors[variable_name] = {
+                    "name": variable_name,
+                    "value_type": self._describe_debug_variable_value_type(value),
+                    "scope": "dynamic",
+                    "editable": True,
+                    "origin": "runtime.dynamic",
+                    "nullable": value is None,
+                }
+            session_document["variable_descriptors"] = descriptors
+            session_document["debug_session"] = {
+                **session_document["debug_session"],
+                "flow_runtime_snapshot": self._extract_debug_flow_runtime_snapshot(runtime_context),
+            }
+
+        def build_current_node_snapshot(
+            *,
+            executable_node: dict | None,
+            repeat_mode_value: bool,
+            iteration_stack_value: list[str],
+        ) -> dict | None:
+            if not isinstance(executable_node, dict):
+                return None
+            node_id = executable_node.get("node_id")
+            if not isinstance(node_id, str) or not node_id.strip():
+                return None
+            return {
+                "node_id": node_id,
+                "node_kind": executable_node.get("node_kind"),
+                "repeat_mode": repeat_mode_value,
+                "graph_model_id": runtime_plan.get("graph_model_id"),
+                "iteration_stack": list(iteration_stack_value),
+            }
+
+        def persist_running_debug_session(
+            *,
+            current_program_counter: int | None,
+            current_repeat_mode: bool,
+            current_iteration_stack: list[str],
+            current_node_override: dict | None = None,
+        ) -> None:
+            session_document["debug_session"] = {
+                **session_document["debug_session"],
+                "status": "running",
+                "paused_reason": None,
+                "completed_at": None,
+                "resume_from_pending_queue": False,
+            }
+            finalize_preview(
+                current_program_counter=current_program_counter,
+                current_repeat_mode=current_repeat_mode,
+                current_node_override=current_node_override,
+                current_iteration_stack=current_iteration_stack,
+            )
+            self._replace_debug_session_document(session_document)
+
+        def handle_manual_debug_control_requests(
+            *,
+            current_program_counter: int | None,
+            current_repeat_mode: bool,
+            current_iteration_stack: list[str],
+            current_node_override: dict | None = None,
+            resume_from_pending_queue_value: bool = False,
+            resume_cursor_value: dict | None = None,
+        ) -> dict | None:
+            nonlocal keep_runtime_context
+            if bool(debug_control_flags.get("abort_requested")):
+                completed_at = datetime.now(timezone.utc).isoformat()
+                abort_event = {
+                    "event_kind": "debug.aborted",
+                    "recorded_at": completed_at,
+                    "session_id": session_id,
+                    "node_id": (
+                        session_document.get("runtime_preview", {}).get("current_node", {}).get("node_id")
+                        if isinstance(session_document.get("runtime_preview"), dict)
+                        else None
+                    ),
+                    "reason": debug_control_flags.get("abort_reason") or "user_abort",
+                }
+                append_debug_event(abort_event)
+                finalize_preview(
+                    current_program_counter=current_program_counter,
+                    current_repeat_mode=current_repeat_mode,
+                    current_iteration_stack=current_iteration_stack,
+                )
+                append_debug_keyframe_for_event(event=abort_event)
+                session_document["debug_session"] = {
+                    **session_document["debug_session"],
+                    "status": "aborted",
+                    "completed_at": completed_at,
+                    "paused_reason": abort_event["reason"],
+                    "last_control_action": "abort",
+                    "pending_component_pause": None,
+                    "resume_from_pending_queue": False,
+                }
+                self._replace_debug_session_document(session_document)
+                self._release_debug_runtime_context(session_id)
+                return {
+                    "status": "aborted",
+                    **session_document,
+                }
+            if bool(debug_control_flags.get("pause_requested")):
+                pause_event = {
+                    "event_kind": "debug.paused",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                    "node_id": (
+                        session_document.get("runtime_preview", {}).get("current_node", {}).get("node_id")
+                        if isinstance(session_document.get("runtime_preview"), dict)
+                        else None
+                    ),
+                    "reason": debug_control_flags.get("pause_reason") or "manual_pause",
+                    "pause_requested": True,
+                }
+                append_debug_event(pause_event)
+                session_document["debug_session"] = {
+                    **session_document["debug_session"],
+                    "resume_from_pending_queue": resume_from_pending_queue_value,
+                    "resume_cursor": deepcopy(resume_cursor_value),
+                    "pending_component_pause": None,
+                }
+                finalize_preview(
+                    current_program_counter=current_program_counter,
+                    current_repeat_mode=current_repeat_mode,
+                    current_node_override=current_node_override,
+                    current_iteration_stack=current_iteration_stack,
+                )
+                append_debug_keyframe_for_event(event=pause_event)
+                keep_runtime_context = True
+                self._reset_debug_pause_request(session_id)
+                self._replace_debug_session_document(session_document)
+                return {
+                    "status": "paused",
+                    **session_document,
+                }
+            return None
+
+        def queue_control_edge(edge: dict, *, repeat_mode_value: bool) -> None:
+            self._queue_runtime_control_edge_with_wait_all(
+                edge=edge,
+                repeat_mode_value=repeat_mode_value,
+                control_edges_by_source=control_edges_by_source,
+                control_edges_by_target=control_edges_by_target,
+                node_index_by_id=node_index_by_id,
+                node_kind_by_id=node_kind_by_id,
+                join_state_by_node_id=join_state_by_node_id,
+                pending_node_entries=pending_node_entries,
+                queued_node_ids=queued_node_ids,
+                executed_node_ids=executed_node_ids,
+                executable_nodes=executable_nodes,
+                event_log=None,
+                session_id=session_id,
+            )
+
+        def queue_control_edges(
+            *,
+            source_node_id: str,
+            source_port_id: str | None,
+            repeat_mode_value: bool,
+        ) -> None:
+            ExecutionCore.queue_control_edges(
+                control_edges_by_source=control_edges_by_source,
+                source_node_id=source_node_id,
+                source_port_id=source_port_id,
+                repeat_mode=repeat_mode_value,
+                enqueue=lambda edge, repeat: queue_control_edge(
+                    edge,
+                    repeat_mode_value=repeat,
+                ),
+            )
+
+        scheduler_mode = runtime_plan.get("scheduler_mode")
+        if scheduler_mode == "flow_graph":
+            resume_cursor_node_id = (
+                resume_cursor.get("node_id")
+                if isinstance(resume_cursor, dict)
+                and isinstance(resume_cursor.get("node_id"), str)
+                else None
+            )
+            if isinstance(resume_cursor_node_id, str) and resume_cursor_node_id in node_index_by_id:
+                session_document["debug_session"] = {
+                    **session_document["debug_session"],
+                    "resume_from_pending_queue": False,
+                    "resume_cursor": None,
+                }
+                resume_from_pending_queue = False
+                queued_node_ids.discard(resume_cursor_node_id)
+                program_counter = node_index_by_id[resume_cursor_node_id]
+                repeat_mode = bool(resume_cursor.get("repeat_mode"))
+                active_iteration_stack = (
+                    list(resume_cursor.get("iteration_stack"))
+                    if isinstance(resume_cursor.get("iteration_stack"), list)
+                    else []
+                )
+            elif isinstance(resume_node_id, str) and resume_node_id in node_index_by_id:
+                preview_queued_node_ids = (
+                    runtime_preview.get("queued_node_ids")
+                    if isinstance(runtime_preview.get("queued_node_ids"), list)
+                    else []
+                )
+                for queued_node_id in preview_queued_node_ids:
+                    if isinstance(queued_node_id, str) and queued_node_id in node_index_by_id:
+                        self._enqueue_runtime_flow_graph_node(
+                            pending_node_entries=pending_node_entries,
+                            queued_node_ids=queued_node_ids,
+                            executed_node_ids=executed_node_ids,
+                            executable_nodes=executable_nodes,
+                            node_index=node_index_by_id[queued_node_id],
+                            repeat_mode=False,
+                            event_log=None,
+                            session_id=session_id,
+                        )
+                if resume_from_pending_queue:
+                    session_document["debug_session"] = {
+                        **session_document["debug_session"],
+                        "resume_from_pending_queue": False,
+                    }
+                    resume_from_pending_queue = False
+                    cursor = ExecutionCore.dispatch_next_token(
+                        pending_node_entries=pending_node_entries,
+                        executable_nodes=executable_nodes,
+                    )
+                    program_counter = cursor.program_counter
+                    repeat_mode = cursor.repeat_mode
+                    active_iteration_stack = cursor.iteration_stack
+                else:
+                    queued_node_ids.discard(resume_node_id)
+                    pending_node_entries = [
+                        entry
+                        for entry in pending_node_entries
+                        if not (
+                            isinstance(entry, dict)
+                            and isinstance(entry.get("node_index"), int)
+                            and executable_nodes[entry["node_index"]]["node_id"] == resume_node_id
+                        )
+                    ]
+                    program_counter = node_index_by_id[resume_node_id]
+                    repeat_mode = preview_repeat_mode
+            else:
+                for entry_node_id in runtime_plan.get("entry_node_ids", []):
+                    entry_index = node_index_by_id.get(entry_node_id)
+                    if entry_index is not None:
+                        self._enqueue_runtime_flow_graph_node(
+                            pending_node_entries=pending_node_entries,
+                            queued_node_ids=queued_node_ids,
+                            executed_node_ids=executed_node_ids,
+                            executable_nodes=executable_nodes,
+                            node_index=entry_index,
+                            repeat_mode=False,
+                            event_log=None,
+                            session_id=session_id,
+                        )
+                cursor = ExecutionCore.dispatch_next_token(
+                    pending_node_entries=pending_node_entries,
+                    executable_nodes=executable_nodes,
+                )
+                program_counter = cursor.program_counter
+                repeat_mode = cursor.repeat_mode
+                active_iteration_stack = cursor.iteration_stack
+        else:
+            if isinstance(resume_node_id, str) and resume_node_id in node_index_by_id:
+                program_counter = node_index_by_id[resume_node_id]
+                repeat_mode = preview_repeat_mode
+            else:
+                program_counter = 0
+                repeat_mode = False
+
+        manual_control_result = handle_manual_debug_control_requests(
+            current_program_counter=program_counter if program_counter >= 0 else None,
+            current_repeat_mode=repeat_mode,
+            current_iteration_stack=active_iteration_stack,
+            current_node_override=(
+                build_current_node_snapshot(
+                    executable_node=executable_nodes[program_counter],
+                    repeat_mode_value=repeat_mode,
+                    iteration_stack_value=active_iteration_stack,
+                )
+                if 0 <= program_counter < len(executable_nodes)
+                else None
+            ),
+            resume_from_pending_queue_value=resume_from_pending_queue,
+        )
+        if isinstance(manual_control_result, dict):
+            return manual_control_result
+
+        if 0 <= program_counter < len(executable_nodes):
+            persist_running_debug_session(
+                current_program_counter=program_counter,
+                current_repeat_mode=repeat_mode,
+                current_iteration_stack=active_iteration_stack,
+                current_node_override=build_current_node_snapshot(
+                    executable_node=executable_nodes[program_counter],
+                    repeat_mode_value=repeat_mode,
+                    iteration_stack_value=active_iteration_stack,
+                ),
+            )
+
+        if step_mode == "step_out" and not isinstance(pending_component_pause, dict):
+            append_debug_event(
+                {
+                    "event_kind": "debug.paused",
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                    "node_id": resume_node_id,
+                    "reason": "step_out_not_available",
+                }
+            )
+            session_document["debug_session"] = {
+                **session_document["debug_session"],
+                "status": "paused",
+                "paused_reason": "step_out_not_available",
+                "last_control_action": "step_out",
+            }
+            finalize_preview(
+                current_program_counter=program_counter if program_counter >= 0 else None,
+                current_repeat_mode=repeat_mode,
+            )
+            keep_runtime_context = True
+            append_debug_keyframe_for_event(
+                event={
+                    "event_kind": "debug.paused",
+                    "node_id": resume_node_id,
+                    "reason": "step_out_not_available",
+                }
+            )
+            self._replace_debug_session_document(session_document)
+            return {
+                "status": "paused",
+                **session_document,
+            }
+        if step_mode == "step_out" and isinstance(pending_component_pause, dict):
+            runtime_context.flow_runtime["debug_runtime"] = {
+                "session_id": session_id,
+                "step_mode": "step_over",
+                "pending_component_pause": deepcopy(pending_component_pause),
+            }
+
+        while 0 <= program_counter < len(executable_nodes):
+            executable_node = executable_nodes[program_counter]
+            node_state = node_states[program_counter]
+            if (
+                scheduler_mode == "flow_graph"
+                and repeat_mode is not True
+                and node_state["node_id"] in executed_node_ids
+            ):
+                cursor = ExecutionCore.dispatch_next_token(
+                    pending_node_entries=pending_node_entries,
+                    executable_nodes=executable_nodes,
+                )
+                program_counter = cursor.program_counter
+                repeat_mode = cursor.repeat_mode
+                active_iteration_stack = cursor.iteration_stack
+                continue
+
+            if (
+                isinstance(exception_skip_node_once, str)
+                and exception_skip_node_once == node_state["node_id"]
+            ):
+                append_debug_event(
+                    {
+                        "event_kind": "node.skipped",
+                        "recorded_at": datetime.now(timezone.utc).isoformat(),
+                        "session_id": session_id,
+                        "node_id": executable_node["node_id"],
+                        "reason": "debug_exception_skip",
+                    }
+                )
+                session_document["debug_session"] = {
+                    **session_document["debug_session"],
+                    "exception_skip_node_once": None,
+                    "pending_component_pause": None,
+                }
+                exception_skip_node_once = None
+                if scheduler_mode == "flow_graph":
+                    executed_node_ids.add(node_state["node_id"])
+                    executed_node_ids_in_order.append(node_state["node_id"])
+                    queue_control_edges(
+                        source_node_id=executable_node["node_id"],
+                        source_port_id=None,
+                        repeat_mode_value=repeat_mode,
+                    )
+                    cursor = ExecutionCore.dispatch_next_token(
+                        pending_node_entries=pending_node_entries,
+                        executable_nodes=executable_nodes,
+                    )
+                    program_counter = cursor.program_counter
+                    repeat_mode = cursor.repeat_mode
+                    active_iteration_stack = cursor.iteration_stack
+                else:
+                    program_counter += 1
+                continue
+
+            debugger_config = (
+                executable_node.get("node_config", {}).get("debugger")
+                if isinstance(executable_node.get("node_config"), dict)
+                else {}
+            )
+            breakpoint_config = (
+                debugger_config.get("breakpoint")
+                if isinstance(debugger_config, dict) and isinstance(debugger_config.get("breakpoint"), dict)
+                else {}
+            )
+            should_allow_before_breakpoint_pause = (
+                step_mode is None or stepped_node_count >= (step_budget or 0)
+            )
+            if (
+                should_allow_before_breakpoint_pause
+                and bool(breakpoint_config.get("enabled"))
+                and breakpoint_config.get("pause_timing") in {
+                "before",
+                "both",
+                }
+            ):
+                if (
+                    isinstance(resume_skip_breakpoint_once, dict)
+                    and resume_skip_breakpoint_once.get("node_id") == executable_node["node_id"]
+                    and resume_skip_breakpoint_once.get("pause_timing") == "before"
+                    and (
+                        list(resume_skip_breakpoint_once.get("iteration_stack"))
+                        if isinstance(resume_skip_breakpoint_once.get("iteration_stack"), list)
+                        else []
+                    ) == active_iteration_stack
+                ):
+                    resume_skip_breakpoint_once = None
+                    session_document["debug_session"] = {
+                        **session_document["debug_session"],
+                        "resume_skip_breakpoint_once": None,
+                    }
+                else:
+                    breakpoint_gate = self._evaluate_debug_breakpoint_gate(
+                        breakpoint_config=breakpoint_config,
+                        runtime_context=runtime_context,
+                        debug_session_state=session_document["debug_session"],
+                        node_id=executable_node["node_id"],
+                        node_kind=executable_node.get("node_kind"),
+                        session_id=session_id,
+                        instance_path=[runtime_plan.get("graph_model_id"), executable_node["node_id"]],
+                        pause_timing="before",
+                    )
+                    if breakpoint_gate["should_pause"]:
+                        if isinstance(breakpoint_gate["diagnostic_event"], dict):
+                            append_debug_event(breakpoint_gate["diagnostic_event"])
+                        if isinstance(breakpoint_gate["diagnostic_link"], dict):
+                            diagnostic_links = list(session_document.get("diagnostic_links", []))
+                            diagnostic_links.append(breakpoint_gate["diagnostic_link"])
+                            session_document["diagnostic_links"] = diagnostic_links
+                        if breakpoint_gate["emit_breakpoint_hit"]:
+                            append_debug_event(
+                                controller.build_breakpoint_hit_event(
+                                    node_id=executable_node["node_id"],
+                                    instance_path=[runtime_plan.get("graph_model_id"), executable_node["node_id"]],
+                                    pause_timing="before",
+                                    iteration_stack=active_iteration_stack,
+                                )
+                            )
+                        append_debug_event(
+                            {
+                                "event_kind": "debug.paused",
+                                "node_id": executable_node["node_id"],
+                                "reason": breakpoint_gate["reason"],
+                            }
+                        )
+                        finalize_preview(
+                            current_program_counter=program_counter,
+                            current_repeat_mode=repeat_mode,
+                            current_iteration_stack=active_iteration_stack,
+                        )
+                        keep_runtime_context = True
+                        breakpoint_keyframe_event = next(
+                            (
+                                item
+                                for item in reversed(debug_events)
+                                if isinstance(item, dict)
+                                and item.get("event_kind") == "breakpoint.hit"
+                                and item.get("node_id") == executable_node["node_id"]
+                            ),
+                            None,
+                        )
+                        append_debug_keyframe_for_event(
+                            event=breakpoint_keyframe_event
+                            if isinstance(breakpoint_keyframe_event, dict)
+                            else {
+                                "event_kind": "debug.paused",
+                                "node_id": executable_node["node_id"],
+                                "reason": breakpoint_gate["reason"],
+                            }
+                        )
+                        self._replace_debug_session_document(session_document)
+                        return {
+                            "status": "paused",
+                            **session_document,
+                        }
+
+            if scheduler_mode == "flow_graph":
+                executed_node_ids.add(node_state["node_id"])
+            node_state["node_status"] = "running"
+            node_state["started_at"] = datetime.now(timezone.utc).isoformat()
+            node_state["input_snapshot"] = deepcopy(
+                executable_node.get("node_config", {})
+                if isinstance(executable_node.get("node_config"), dict)
+                else {}
+            )
+            persist_running_debug_session(
+                current_program_counter=program_counter,
+                current_repeat_mode=repeat_mode,
+                current_iteration_stack=active_iteration_stack,
+                current_node_override=build_current_node_snapshot(
+                    executable_node=executable_node,
+                    repeat_mode_value=repeat_mode,
+                    iteration_stack_value=active_iteration_stack,
+                ),
+            )
+            node_output = ExecutionCore.execute_node(
+                owner=self,
+                executable_node=executable_node,
+                runtime_context=runtime_context,
+                data_edges_by_target=data_edges_by_target,
+                executor_registry=executor_registry,
+            )
+            node_state["output"] = node_output
+            completed_at = datetime.now(timezone.utc).isoformat()
+            if isinstance(node_output, dict) and node_output.get("status") == "paused":
+                if scheduler_mode == "flow_graph":
+                    executed_node_ids.discard(node_state["node_id"])
+                node_state["node_status"] = "pending"
+                node_state["started_at"] = None
+                node_state["input_snapshot"] = None
+                node_state["output"] = None
+                paused_variables = (
+                    node_output.get("component_result", {}).get("variables")
+                    if isinstance(node_output.get("component_result"), dict)
+                    else node_output.get("variables")
+                )
+                if isinstance(paused_variables, dict):
+                    runtime_context.variables.update(deepcopy(paused_variables))
+                for event in node_output.get("debug_events", []):
+                    if isinstance(event, dict):
+                        append_debug_event(event)
+                current_node_override = (
+                    deepcopy(node_output.get("current_node"))
+                    if isinstance(node_output.get("current_node"), dict)
+                    else None
+                )
+                session_document["debug_session"] = {
+                    **session_document["debug_session"],
+                    "status": "paused",
+                    "paused_reason": node_output.get("pause_reason", "breakpoint_hit"),
+                    "pending_component_pause": {
+                        "outer_node_id": node_state["node_id"],
+                        "graph_model_id": (
+                            current_node_override.get("graph_model_id")
+                            if isinstance(current_node_override, dict)
+                            else None
+                        ),
+                        "node_id": (
+                            current_node_override.get("node_id")
+                            if isinstance(current_node_override, dict)
+                            else None
+                        ),
+                        "pause_timing": "before",
+                    },
+                }
+                finalize_preview(
+                    current_program_counter=program_counter,
+                    current_repeat_mode=repeat_mode,
+                    current_node_override=current_node_override,
+                    current_iteration_stack=active_iteration_stack,
+                )
+                keep_runtime_context = True
+                append_debug_keyframe_for_event(
+                    event={
+                        "event_kind": "debug.paused",
+                        "node_id": executable_node["node_id"],
+                        "reason": node_output.get("pause_reason", "breakpoint_hit"),
+                    }
+                )
+                self._replace_debug_session_document(session_document)
+                return {
+                    "status": "paused",
+                    **session_document,
+                }
+            if isinstance(node_output, dict) and node_output.get("status") == "failed":
+                node_state["node_status"] = "failed"
+                node_state["completed_at"] = completed_at
+                node_state["error"] = {
+                    "error_code": node_output.get("error_code") or "runtime.node_failed",
+                    "message": node_output.get("message", "runtime node failed"),
+                }
+                append_debug_event(
+                    {
+                        "event_kind": "diagnostic.raised",
+                        "recorded_at": completed_at,
+                        "session_id": session_id,
+                        "node_id": executable_node["node_id"],
+                        "node_kind": executable_node.get("node_kind"),
+                        "severity": "error",
+                        "message": node_output.get("message", "runtime node failed"),
+                        "error_code": node_output.get("error_code") or "runtime.node_failed",
+                    }
+                )
+                append_debug_event(
+                    {
+                        "event_kind": "debug.paused",
+                        "recorded_at": completed_at,
+                        "session_id": session_id,
+                        "node_id": executable_node["node_id"],
+                        "reason": "exception_raised",
+                    }
+                )
+                session_document["debug_session"] = {
+                    **session_document["debug_session"],
+                    "status": "paused",
+                    "paused_reason": "exception_raised",
+                    "last_control_action": "paused",
+                    "completed_at": None,
+                    "pending_component_pause": None,
+                    "exception_skip_node_once": None,
+                }
+                failure_diagnostic_links = list(session_document.get("diagnostic_links", []))
+                failure_diagnostic_links.append(
+                    {
+                        "diagnostic_id": f"debug:{session_id}:{executable_node['node_id']}:failed",
+                        "category": node_output.get("error_code") or "runtime.node_failed",
+                        "severity": "error",
+                        "message": node_output.get("message", "runtime node failed"),
+                        "graph_ref": {"node_id": executable_node["node_id"]},
+                    }
+                )
+                session_document["diagnostic_links"] = failure_diagnostic_links
+                finalize_preview(
+                    current_program_counter=program_counter,
+                    current_repeat_mode=repeat_mode,
+                    current_iteration_stack=active_iteration_stack,
+                )
+                keep_runtime_context = True
+                append_debug_keyframe_for_event(
+                    event={
+                        "event_kind": "debug.paused",
+                        "node_id": executable_node["node_id"],
+                        "reason": "exception_raised",
+                    }
+                )
+                self._replace_debug_session_document(session_document)
+                return {
+                    "status": "paused",
+                    **session_document,
+                }
+
+            node_state["node_status"] = "completed"
+            node_state["completed_at"] = completed_at
+            executed_node_ids_in_order.append(node_state["node_id"])
+            if step_budget is not None:
+                stepped_node_count += 1
+
+            record_frame_config = (
+                debugger_config.get("record_frame")
+                if isinstance(debugger_config, dict) and isinstance(debugger_config.get("record_frame"), dict)
+                else {}
+            )
+            if bool(record_frame_config.get("enabled")):
+                record_frame_event = controller.build_record_frame_event(
+                    node_id=executable_node["node_id"],
+                    instance_path=[runtime_plan.get("graph_model_id"), executable_node["node_id"]],
+                    iteration_stack=active_iteration_stack,
+                )
+                append_debug_event(record_frame_event)
+                append_debug_keyframe_for_event(event=record_frame_event)
+            current_node_snapshot = build_current_node_snapshot(
+                executable_node=executable_node,
+                repeat_mode_value=repeat_mode,
+                iteration_stack_value=active_iteration_stack,
+            )
+
+            next_program_counter = program_counter + 1
+            node_kind = executable_node.get("node_kind")
+            if scheduler_mode == "flow_graph":
+                if node_kind == "control.if":
+                    self._queue_runtime_if_successors(
+                        executable_node=executable_node,
+                        runtime_context=runtime_context,
+                        control_edges_by_source=control_edges_by_source,
+                        node_index_by_id=node_index_by_id,
+                        node_kind_by_id=node_kind_by_id,
+                        control_edges_by_target=control_edges_by_target,
+                        join_state_by_node_id=join_state_by_node_id,
+                        pending_node_entries=pending_node_entries,
+                        queued_node_ids=queued_node_ids,
+                        executed_node_ids=executed_node_ids,
+                        executable_nodes=executable_nodes,
+                        event_log=None,
+                        session_id=session_id,
+                    )
+                elif node_kind == "control.switch":
+                    self._queue_runtime_switch_successors(
+                        executable_node=executable_node,
+                        runtime_context=runtime_context,
+                        control_edges_by_source=control_edges_by_source,
+                        node_index_by_id=node_index_by_id,
+                        node_kind_by_id=node_kind_by_id,
+                        control_edges_by_target=control_edges_by_target,
+                        join_state_by_node_id=join_state_by_node_id,
+                        pending_node_entries=pending_node_entries,
+                        queued_node_ids=queued_node_ids,
+                        executed_node_ids=executed_node_ids,
+                        executable_nodes=executable_nodes,
+                        event_log=None,
+                        session_id=session_id,
+                    )
+                elif node_kind == "control.parallel_fork":
+                    self._queue_runtime_parallel_fork_successors(
+                        executable_node=executable_node,
+                        control_edges_by_source=control_edges_by_source,
+                        node_index_by_id=node_index_by_id,
+                        node_kind_by_id=node_kind_by_id,
+                        control_edges_by_target=control_edges_by_target,
+                        join_state_by_node_id=join_state_by_node_id,
+                        pending_node_entries=pending_node_entries,
+                        queued_node_ids=queued_node_ids,
+                        executed_node_ids=executed_node_ids,
+                        executable_nodes=executable_nodes,
+                        event_log=None,
+                        session_id=session_id,
+                    )
+                elif node_kind == "control.while":
+                    self._queue_runtime_while_successors(
+                        executable_node=executable_node,
+                        runtime_context=runtime_context,
+                        control_edges_by_source=control_edges_by_source,
+                        node_index_by_id=node_index_by_id,
+                        node_kind_by_id=node_kind_by_id,
+                        control_edges_by_target=control_edges_by_target,
+                        join_state_by_node_id=join_state_by_node_id,
+                        pending_node_entries=pending_node_entries,
+                        queued_node_ids=queued_node_ids,
+                        executed_node_ids=executed_node_ids,
+                        executable_nodes=executable_nodes,
+                        event_log=None,
+                        session_id=session_id,
+                    )
+                elif node_kind == "control.retry":
+                    self._queue_runtime_retry_successors(
+                        executable_node=executable_node,
+                        runtime_context=runtime_context,
+                        control_edges_by_source=control_edges_by_source,
+                        node_index_by_id=node_index_by_id,
+                        node_kind_by_id=node_kind_by_id,
+                        control_edges_by_target=control_edges_by_target,
+                        join_state_by_node_id=join_state_by_node_id,
+                        pending_node_entries=pending_node_entries,
+                        queued_node_ids=queued_node_ids,
+                        executed_node_ids=executed_node_ids,
+                        executable_nodes=executable_nodes,
+                        retry_state_by_node_id=retry_state_by_node_id,
+                        event_log=None,
+                        session_id=session_id,
+                    )
+                else:
+                    queue_control_edges(
+                        source_node_id=executable_node["node_id"],
+                        source_port_id=node_output.get("port_id")
+                        if isinstance(node_output, dict)
+                        else None,
+                        repeat_mode_value=repeat_mode,
+                    )
+                cursor = ExecutionCore.dispatch_next_token(
+                    pending_node_entries=pending_node_entries,
+                    executable_nodes=executable_nodes,
+                )
+                next_program_counter = cursor.program_counter
+                repeat_mode = cursor.repeat_mode
+                next_iteration_stack = cursor.iteration_stack
+                upcoming_program_counter = (
+                    next_program_counter if next_program_counter >= 0 else None
+                )
+                pause_resume_from_pending_queue = scheduler_mode == "flow_graph"
+                pause_current_node_override = (
+                    current_node_snapshot if pause_resume_from_pending_queue else None
+                )
+                if (
+                    bool(breakpoint_config.get("enabled"))
+                    and breakpoint_config.get("pause_timing") in {"after", "both"}
+                ):
+                    breakpoint_gate = self._evaluate_debug_breakpoint_gate(
+                        breakpoint_config=breakpoint_config,
+                        runtime_context=runtime_context,
+                        debug_session_state=session_document["debug_session"],
+                        node_id=executable_node["node_id"],
+                        node_kind=executable_node.get("node_kind"),
+                        session_id=session_id,
+                        instance_path=[runtime_plan.get("graph_model_id"), executable_node["node_id"]],
+                        pause_timing="after",
+                    )
+                    if breakpoint_gate["should_pause"]:
+                        if isinstance(breakpoint_gate["diagnostic_event"], dict):
+                            append_debug_event(breakpoint_gate["diagnostic_event"])
+                        if isinstance(breakpoint_gate["diagnostic_link"], dict):
+                            diagnostic_links = list(session_document.get("diagnostic_links", []))
+                            diagnostic_links.append(breakpoint_gate["diagnostic_link"])
+                            session_document["diagnostic_links"] = diagnostic_links
+                        if breakpoint_gate["emit_breakpoint_hit"]:
+                            append_debug_event(
+                                controller.build_breakpoint_hit_event(
+                                    node_id=executable_node["node_id"],
+                                    instance_path=[runtime_plan.get("graph_model_id"), executable_node["node_id"]],
+                                    pause_timing="after",
+                                    iteration_stack=active_iteration_stack,
+                                )
+                            )
+                        append_debug_event(
+                            {
+                                "event_kind": "debug.paused",
+                                "node_id": executable_node["node_id"],
+                                "reason": breakpoint_gate["reason"],
+                            }
+                        )
+                        session_document["debug_session"] = {
+                            **session_document["debug_session"],
+                            "pending_component_pause": None,
+                            "resume_from_pending_queue": pause_resume_from_pending_queue,
+                            "resume_cursor": (
+                                {
+                                    "node_id": executable_nodes[upcoming_program_counter]["node_id"],
+                                    "repeat_mode": repeat_mode,
+                                    "iteration_stack": list(next_iteration_stack),
+                                }
+                                if upcoming_program_counter is not None
+                                else None
+                            ),
+                        }
+                        finalize_preview(
+                            current_program_counter=upcoming_program_counter,
+                            current_repeat_mode=repeat_mode,
+                            current_node_override=pause_current_node_override,
+                            current_iteration_stack=next_iteration_stack,
+                        )
+                        keep_runtime_context = True
+                        breakpoint_keyframe_event = next(
+                            (
+                                item
+                                for item in reversed(debug_events)
+                                if isinstance(item, dict)
+                                and item.get("event_kind") == "breakpoint.hit"
+                                and item.get("node_id") == executable_node["node_id"]
+                            ),
+                            None,
+                        )
+                        append_debug_keyframe_for_event(
+                            event=breakpoint_keyframe_event
+                            if isinstance(breakpoint_keyframe_event, dict)
+                            else {
+                                "event_kind": "debug.paused",
+                                "node_id": executable_node["node_id"],
+                                "reason": breakpoint_gate["reason"],
+                            }
+                        )
+                        self._replace_debug_session_document(session_document)
+                        return {
+                            "status": "paused",
+                            **session_document,
+                        }
+
+                manual_control_result = handle_manual_debug_control_requests(
+                    current_program_counter=upcoming_program_counter,
+                    current_repeat_mode=repeat_mode,
+                    current_iteration_stack=next_iteration_stack,
+                    current_node_override=pause_current_node_override,
+                    resume_from_pending_queue_value=pause_resume_from_pending_queue,
+                    resume_cursor_value=(
+                        {
+                            "node_id": executable_nodes[upcoming_program_counter]["node_id"],
+                            "repeat_mode": repeat_mode,
+                            "iteration_stack": list(next_iteration_stack),
+                        }
+                        if upcoming_program_counter is not None
+                        else None
+                    ),
+                )
+                if isinstance(manual_control_result, dict):
+                    return manual_control_result
+
+                if step_budget is not None and stepped_node_count >= step_budget:
+                    if upcoming_program_counter is None:
+                        completed_at = datetime.now(timezone.utc).isoformat()
+                        completion_event = {
+                            "event_kind": "debug.completed",
+                            "recorded_at": completed_at,
+                            "session_id": session_id,
+                            "node_id": executable_node["node_id"],
+                            "reason": "step_completed",
+                        }
+                        session_document["debug_session"] = {
+                            **session_document["debug_session"],
+                            "status": "completed",
+                            "completed_at": completed_at,
+                            "paused_reason": None,
+                            "last_control_action": step_mode,
+                            "pending_component_pause": None,
+                        }
+                        finalize_preview(
+                            current_program_counter=None,
+                            current_repeat_mode=False,
+                            current_iteration_stack=[],
+                        )
+                        append_debug_event(completion_event)
+                        append_debug_keyframe_for_event(event=completion_event)
+                        self._replace_debug_session_document(session_document)
+                        self._release_debug_runtime_context(session_id)
+                        return {
+                            "status": "completed",
+                            **session_document,
+                        }
+                    session_document["debug_session"] = {
+                        **session_document["debug_session"],
+                        "status": "paused",
+                        "paused_reason": "step_completed",
+                        "last_control_action": step_mode,
+                        "pending_component_pause": None,
+                    }
+                    append_debug_event(
+                        {
+                            "event_kind": "debug.paused",
+                            "recorded_at": datetime.now(timezone.utc).isoformat(),
+                            "session_id": session_id,
+                            "node_id": executable_node["node_id"],
+                            "reason": "step_completed",
+                        }
+                    )
+                    finalize_preview(
+                        current_program_counter=upcoming_program_counter,
+                        current_repeat_mode=repeat_mode,
+                        current_iteration_stack=next_iteration_stack,
+                    )
+                    keep_runtime_context = True
+                    append_debug_keyframe_for_event(
+                        event={
+                            "event_kind": "debug.paused",
+                            "node_id": executable_node["node_id"],
+                            "reason": "step_completed",
+                        }
+                    )
+                    self._replace_debug_session_document(session_document)
+                    return {
+                        "status": "paused",
+                        **session_document,
+                    }
+                active_iteration_stack = next_iteration_stack
+            program_counter = next_program_counter
+
+        completed_at = datetime.now(timezone.utc).isoformat()
+        terminal_control_action = (
+            step_mode
+            if step_mode in {"step_over", "step_into", "step_out"}
+            else "continue"
+        )
+        session_document["debug_session"] = {
+            **session_document["debug_session"],
+            "status": "completed",
+            "completed_at": completed_at,
+            "last_control_action": terminal_control_action,
+            "pending_component_pause": None,
+        }
+        finalize_preview(
+            current_program_counter=None,
+            current_repeat_mode=False,
+            current_iteration_stack=[],
+        )
+        completion_event = {
+            "event_kind": "debug.completed",
+            "recorded_at": completed_at,
+            "session_id": session_id,
+            "node_id": None,
+            "reason": "completed",
+        }
+        append_debug_event(completion_event)
+        append_debug_keyframe_for_event(event=completion_event)
+        self._replace_debug_session_document(session_document)
+        self._release_debug_runtime_context(session_id)
+        return {
+            "status": "completed",
+            **session_document,
+        }
 
     def _extract_runtime_sessions(self, state: dict | None) -> list[dict]:
         raw_sessions = state.get("runtime_sessions") if isinstance(state, dict) else None
@@ -16187,7 +20294,7 @@ class CompilationWorkbenchService:
             if not isinstance(started_at, str) or not started_at.strip():
                 continue
             normalized_sessions.append(item)
-        return normalized_sessions[:MAX_RUNTIME_SESSION_HISTORY]
+        return normalized_sessions[:MAX_RUNTIME_LIVE_SESSION_DOCUMENTS]
 
     def _extract_debug_sessions(self, state: dict | None) -> list[dict]:
         raw_sessions = state.get("debug_sessions") if isinstance(state, dict) else None
@@ -16222,7 +20329,7 @@ class CompilationWorkbenchService:
             if not isinstance(started_at, str) or not started_at.strip():
                 continue
             normalized_sessions.append(item)
-        return normalized_sessions[:MAX_DEBUG_SESSION_HISTORY]
+        return normalized_sessions[:MAX_DEBUG_LIVE_SESSION_DOCUMENTS]
 
     def _normalize_compile_records_in_state(self, state: dict) -> bool:
         changed = False
@@ -16597,6 +20704,31 @@ class CompilationWorkbenchService:
             "entries": entries,
         }
 
+    def _build_debug_diagnostic_links_from_diagnostics(self, diagnostics: object) -> list[dict]:
+        entries = diagnostics.get("entries", []) if isinstance(diagnostics, dict) else diagnostics
+        if not isinstance(entries, list):
+            return []
+        return [
+            {
+                "diagnostic_id": entry.get("diagnostic_id", f"debug-diagnostic-{index}"),
+                "stage": entry.get("stage", "debug.prepare"),
+                "severity": entry.get("severity", "error"),
+                "category": entry.get("category", "debug.error"),
+                "message": entry.get("message", ""),
+                "object_ref": entry.get("object_ref"),
+                "trace_ref": entry.get("trace_ref"),
+                "subject_ref": entry.get("object_ref"),
+                "source_ref": entry.get("stage_extension"),
+                "graph_ref": (
+                    entry.get("stage_extension", {}).get("graph_ref")
+                    if isinstance(entry.get("stage_extension"), dict)
+                    else None
+                ),
+            }
+            for index, entry in enumerate(entries)
+            if isinstance(entry, dict)
+        ]
+
     def _build_runtime_debug_snapshot(
         self,
         *,
@@ -16609,64 +20741,42 @@ class CompilationWorkbenchService:
         executable_nodes: list[dict],
         current_program_counter: int | None,
         current_repeat_mode: bool,
+        current_iteration_stack: list[str] | None = None,
     ) -> dict:
-        token_queue: list[dict[str, object]] = []
-        for entry in pending_node_entries:
-            if not isinstance(entry, dict):
-                continue
-            node_index = entry.get("node_index")
-            if not isinstance(node_index, int) or not (0 <= node_index < len(executable_nodes)):
-                continue
-            executable_node = executable_nodes[node_index]
-            token_queue.append(
-                {
-                    "node_id": executable_node.get("node_id"),
-                    "node_kind": executable_node.get("node_kind"),
-                    "repeat_mode": bool(entry.get("repeat_mode")),
-                }
-            )
+        return ExecutionCore.build_scheduler_snapshot(
+            scheduler_mode=scheduler_mode,
+            pending_node_entries=pending_node_entries,
+            queued_node_ids=queued_node_ids,
+            executed_node_ids_in_order=executed_node_ids_in_order,
+            join_state_by_node_id=join_state_by_node_id,
+            retry_state_by_node_id=retry_state_by_node_id,
+            executable_nodes=executable_nodes,
+            current_program_counter=current_program_counter,
+            current_repeat_mode=current_repeat_mode,
+            current_iteration_stack=current_iteration_stack,
+        )
 
-        join_buffers: dict[str, dict[str, object]] = {}
-        for node_id, join_state in join_state_by_node_id.items():
-            if not isinstance(node_id, str) or not isinstance(join_state, dict):
-                continue
-            arrived_ports = join_state.get("arrived_input_ports")
-            join_buffers[node_id] = {
-                "arrived_input_ports": (
-                    sorted(arrived_ports)
-                    if isinstance(arrived_ports, set)
-                    else []
-                )
-            }
-
-        retry_states: dict[str, dict[str, object]] = {}
-        for node_id, retry_state in retry_state_by_node_id.items():
-            if not isinstance(node_id, str) or not isinstance(retry_state, dict):
-                continue
-            retry_states[node_id] = {
-                "attempts": int(retry_state.get("attempts", 0))
-                if isinstance(retry_state.get("attempts"), int)
-                else 0
-            }
-
-        current_node = None
-        if isinstance(current_program_counter, int) and 0 <= current_program_counter < len(executable_nodes):
-            executable_node = executable_nodes[current_program_counter]
-            current_node = {
-                "node_id": executable_node.get("node_id"),
-                "node_kind": executable_node.get("node_kind"),
-                "repeat_mode": current_repeat_mode,
-            }
-
-        return {
-            "scheduler_mode": scheduler_mode,
-            "token_queue": token_queue,
-            "queued_node_ids": sorted(item for item in queued_node_ids if isinstance(item, str)),
-            "executed_node_ids": [item for item in executed_node_ids_in_order if isinstance(item, str)],
-            "join_buffers": join_buffers,
-            "retry_states": retry_states,
-            "current_node": current_node,
-        }
+    def _restore_runtime_debug_snapshot(
+        self,
+        *,
+        snapshot: dict,
+        executable_nodes: list[dict],
+    ) -> tuple[
+        list[dict[str, object]],
+        set[str],
+        dict[str, dict[str, object]],
+        dict[str, dict[str, object]],
+    ]:
+        restored = ExecutionCore.restore_scheduler_snapshot(
+            snapshot=snapshot,
+            executable_nodes=executable_nodes,
+        )
+        return (
+            restored.pending_node_entries,
+            restored.queued_node_ids,
+            restored.join_state_by_node_id,
+            restored.retry_state_by_node_id,
+        )
 
     def _build_runtime_preview_summary(self, snapshot: dict | None) -> dict:
         if not isinstance(snapshot, dict):

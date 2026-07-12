@@ -13,6 +13,9 @@ import GraphCanvasPanel from '@/components/output/graph/GraphCanvasPanel.vue'
 import PreferencesPanel from '@/components/shells/PreferencesPanel.vue'
 import ProjectSettingsPanel from '@/components/shells/ProjectSettingsPanel.vue'
 import PackagePanel from '@/components/shells/PackagePanel.vue'
+import DebugVariablesPanel from '@/components/output/debug/DebugVariablesPanel.vue'
+import DebugTimelinePanel from '@/components/output/debug/DebugTimelinePanel.vue'
+import DebugSnapshotsPanel from '@/components/output/debug/DebugSnapshotsPanel.vue'
 
 const dock = useDockStore()
 const resource = useResourceStore()
@@ -29,6 +32,9 @@ onMounted(() => {
   dock.register({ id: 'preferences', title: '首选项' })
   dock.register({ id: 'projectSettings', title: '项目设置' })
   dock.register({ id: 'packageManager', title: '.wcrun 包管理' })
+  dock.register({ id: 'debugVariables', title: 'Debug 变量' })
+  dock.register({ id: 'debugTimeline', title: 'Debug 事件' })
+  dock.register({ id: 'debugSnapshots', title: 'Debug 快照' })
 
   // Default layout
   if (dock.zones.center.panels.length === 0) {
@@ -52,5 +58,8 @@ onMounted(() => {
     <template #preferences><PreferencesPanel /></template>
     <template #projectSettings><ProjectSettingsPanel /></template>
     <template #packageManager><PackagePanel /></template>
+    <template #debugVariables><DebugVariablesPanel /></template>
+    <template #debugTimeline><DebugTimelinePanel /></template>
+    <template #debugSnapshots><DebugSnapshotsPanel /></template>
   </DockLayout>
 </template>

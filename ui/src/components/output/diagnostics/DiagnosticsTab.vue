@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useCompilationStore } from '@/stores/compilationStore'
-import { useRuntimeStore } from '@/stores/runtimeStore'
+import { useProjectDiagnosticsStore } from '@/stores/projectDiagnosticsStore'
 import { useGraphStore } from '@/stores/graphStore'
 import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
 import type { DiagnosticSeverity, Diagnostic } from '@/types/domains/diagnostics'
 
-const compilation = useCompilationStore()
-const runtimeStore = useRuntimeStore()
+const projectDiagnostics = useProjectDiagnosticsStore()
 const graphStore = useGraphStore()
 
 const severityFilter = ref<DiagnosticSeverity | 'all'>('all')
@@ -17,8 +15,14 @@ const sortBy = ref<'severity' | 'stage' | 'count'>('severity')
 const expandedKeys = ref<Set<string>>(new Set())
 
 const groups = computed(() => {
-  // Merge compilation + runtime diagnostics
-  let result = [...compilation.diagnosticGroups, ...runtimeStore.runtimeDiagnosticGroups]
+  const grouped = new Map<string, { stage: string; category: string; severity: string; message: string; count: number }>()
+  for (const d of projectDiagnostics.visibleEntries) {
+    const key = `${d.stage}|${d.category}|${d.severity}|${d.message}`
+    const existing = grouped.get(key)
+    if (existing) existing.count += d.count
+    else grouped.set(key, { stage: d.stage, category: d.category, severity: d.severity, message: d.message, count: d.count })
+  }
+  let result = [...grouped.values()]
   if (severityFilter.value !== 'all') {
     result = result.filter(g => g.severity === severityFilter.value)
   }
@@ -45,19 +49,17 @@ const groups = computed(() => {
   return result
 })
 
-const hasCompiled = computed(() => compilation.compilePhase !== 'idle')
-const hasAnyActivity = computed(() => hasCompiled.value || runtimeStore.hasRuntimeDiagnostics || runtimeStore.runtimeLiveStatus !== 'idle')
-const hasDiagnostics = computed(() => compilation.diagnosticGroups.length > 0 || runtimeStore.hasRuntimeDiagnostics)
+const hasAnyActivity = computed(() => projectDiagnostics.entries.length > 0)
+const hasDiagnostics = computed(() => projectDiagnostics.visibleEntries.length > 0)
 
 /** Look up individual Diagnostic entries matching a group */
 function groupEntries(stage: string, category: string, severity: string, message: string): Diagnostic[] {
-  const fromCompile = compilation.outcome?.diagnostic_catalog?.entries.filter(
-    e => e.stage === stage && e.category === category && e.severity === severity && e.message === message
-  ) || []
-  const fromRuntime = runtimeStore.getRuntimeDiagnosticEntries().filter(
-    e => e.stage === stage && e.category === category && e.severity === severity && e.message === message
+  return projectDiagnostics.visibleEntries.filter(
+    entry => entry.stage === stage
+      && entry.category === category
+      && entry.severity === severity
+      && entry.message === message,
   )
-  return [...fromCompile, ...fromRuntime]
 }
 
 function groupKey(g: { stage: string; category: string; severity: string; message: string }): string {
@@ -209,10 +211,6 @@ function formatEntryForCopy(entry: Diagnostic): string {
       title="编译或运行后查看诊断信息"
       description="运行编译或执行任务以生成诊断结果"
     />
-
-    <div v-else-if="compilation.isCompiling" class="loading-block">
-      <div v-for="i in 5" :key="i" class="skeleton-row skeleton-pulse"></div>
-    </div>
 
     <PlaceholderBanner
       v-else-if="!hasDiagnostics"

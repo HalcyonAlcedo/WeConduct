@@ -16,10 +16,85 @@ import '@vue-flow/minimap/dist/style.css'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useDockStore } from '@/stores/dockStore'
 import { useToastStore } from '@/stores/toastStore'
+import { useDebugStore } from '@/stores/debugStore'
 
 const compilation = useCompilationStore()
-const graphStore = useGraphStore()
 const workspace = useGraphWorkspaceStore()
+const debugStore = useDebugStore()
+
+const ctxNodeConfig = computed(() => {
+  const nid = contextMenu.value?.nodeId
+  if (!nid) return undefined
+  return workspace.graphModel?.nodes.find(n => n.node_id === nid)?.node_config
+})
+const contextNodeId = computed(() => contextMenu.value?.nodeId)
+const nodeHasBP = computed(() => debugStore.hasBreakpoint(ctxNodeConfig.value, contextNodeId.value))
+const nodeHasRF = computed(() => debugStore.hasRecordFrame(ctxNodeConfig.value, contextNodeId.value))
+const nodeBPTiming = computed(() => (
+  debugStore.getEffectiveDebuggerConfig(ctxNodeConfig.value, contextNodeId.value).breakpoint as any
+)?.pause_timing || 'before')
+const isPausedDebugSession = computed(() => {
+  const status = debugStore.activeSession?.debug_session?.status || debugStore.activeSession?.status
+  return status === 'paused'
+})
+const canEditDebugConfig = computed(() => {
+  return workspace.isGraphEditable || isPausedDebugSession.value
+})
+
+function getEffectiveNodeConfig(nodeConfig: Record<string, unknown>, nodeId: string) {
+  return {
+    ...nodeConfig,
+    debugger: debugStore.getEffectiveDebuggerConfig(nodeConfig, nodeId),
+  }
+}
+
+async function applyNodeDebugConfig(nodeId: string, nextNodeConfig: Record<string, unknown>) {
+  if (isPausedDebugSession.value) {
+    try {
+      await debugStore.applyNodeDebuggerConfig(
+        nodeId,
+        debugStore.getDebuggerConfig(nextNodeConfig),
+      )
+    } catch (error: any) {
+      toast.error('调试配置更新失败', error?.message || '请求失败')
+    }
+    return
+  }
+  const node = workspace.graphModel?.nodes.find(candidate => candidate.node_id === nodeId)
+  if (!node) return
+  workspace.pushUndo?.()
+  node.node_config = nextNodeConfig
+  workspace.markChanged?.()
+}
+
+async function toggleBreakpointOnNode() {
+  if (!canEditDebugConfig.value) return
+  const nid = contextMenu.value?.nodeId
+  if (!nid) return
+  const node = workspace.graphModel?.nodes.find(n => n.node_id === nid)
+  if (!node?.node_config) return
+  const effectiveConfig = getEffectiveNodeConfig(node.node_config, nid)
+  await applyNodeDebugConfig(nid, debugStore.toggleBreakpointConfig(effectiveConfig))
+}
+async function setBPTiming(timing: string) {
+  if (!canEditDebugConfig.value) return
+  const nid = contextMenu.value?.nodeId
+  if (!nid) return
+  const node = workspace.graphModel?.nodes.find(n => n.node_id === nid)
+  if (!node?.node_config) return
+  const effectiveConfig = getEffectiveNodeConfig(node.node_config, nid)
+  await applyNodeDebugConfig(nid, debugStore.setBreakpointPauseTiming(effectiveConfig, timing))
+}
+async function toggleRecordFrameOnNode() {
+  if (!canEditDebugConfig.value) return
+  const nid = contextMenu.value?.nodeId
+  if (!nid) return
+  const node = workspace.graphModel?.nodes.find(n => n.node_id === nid)
+  if (!node?.node_config) return
+  const effectiveConfig = getEffectiveNodeConfig(node.node_config, nid)
+  await applyNodeDebugConfig(nid, debugStore.toggleRecordFrameConfig(effectiveConfig))
+}
+const graphStore = useGraphStore()
 const dock = useDockStore()
 const toast = useToastStore()
 
@@ -268,6 +343,16 @@ function onViewportChange(vp: { x: number; y: number; zoom: number }) {
       <button @click="copyNode">复制节点</button>
       <button v-if="copiedNode && workspace.isGraphEditable" @click="pasteNode">粘贴节点</button>
       <button v-if="workspace.isGraphEditable" @click="deleteNode">删除节点</button>
+      <hr>
+      <button v-if="canEditDebugConfig" @click="toggleBreakpointOnNode(); closeContextMenu()">
+        {{ nodeHasBP ? '🔴 移除断点' : '🔴 添加断点' }}
+      </button>
+      <button v-if="nodeHasBP && canEditDebugConfig" @click="setBPTiming('before'); closeContextMenu()" style="padding-left:20px">{{ nodeBPTiming === 'before' ? '✓ ' : '' }}执行前暂停</button>
+      <button v-if="nodeHasBP && canEditDebugConfig" @click="setBPTiming('after'); closeContextMenu()" style="padding-left:20px">{{ nodeBPTiming === 'after' ? '✓ ' : '' }}执行后暂停</button>
+      <button v-if="nodeHasBP && canEditDebugConfig" @click="setBPTiming('both'); closeContextMenu()" style="padding-left:20px">{{ nodeBPTiming === 'both' ? '✓ ' : '' }}前后都停</button>
+      <button v-if="canEditDebugConfig" @click="toggleRecordFrameOnNode(); closeContextMenu()">
+        {{ nodeHasRF ? '◉ 移除记录帧' : '◉ 添加记录帧' }}
+      </button>
       <hr><button @click="closeContextMenu">取消</button>
     </div>
     <div v-if="contextMenu || edgeContextMenu" class="vf-ctxmask" @click="closeContextMenu"></div>

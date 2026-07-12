@@ -1,0 +1,95 @@
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import { useDebugStore } from '@/stores/debugStore'
+
+const debugStore = useDebugStore()
+const emit = defineEmits<{
+  (event: 'select-event', eventIndex: number): void
+}>()
+const events = computed(() => debugStore.events)
+const total = computed(() => debugStore.eventsTotal)
+const selectedEventIndex = ref<number | null>(null)
+const projectionLoading = ref(false)
+
+function eventKey(event: Record<string, unknown>, index: number): string {
+  if (typeof event.event_id === 'string' && event.event_id) return event.event_id
+  if (typeof event.event_index === 'number') return `event-${event.event_index}`
+  return `event-${index}`
+}
+
+async function selectEvent(eventIndex: unknown) {
+  if (typeof eventIndex !== 'number' || !debugStore.eventsSessionId) return
+  projectionLoading.value = true
+  try {
+    await debugStore.loadProjection(debugStore.eventsSessionId, 'history', eventIndex)
+    selectedEventIndex.value = eventIndex
+    emit('select-event', eventIndex)
+  } finally {
+    projectionLoading.value = false
+  }
+}
+
+async function exitHistory() {
+  const activeSessionId = debugStore.activeSession?.debug_session?.session_id
+  if (debugStore.isDebugActive && activeSessionId) {
+    await debugStore.loadProjection(activeSessionId, 'live')
+  } else {
+    debugStore.clearProjection()
+  }
+  selectedEventIndex.value = null
+}
+</script>
+
+<template>
+  <div class="dtp-root">
+    <div class="dtp-empty" v-if="!events.length">无事件记录</div>
+    <template v-else>
+      <div class="dtp-toolbar">
+        <span class="dtp-summary">共 {{ total }} 条事件</span>
+        <button v-if="selectedEventIndex !== null" data-action="exit-history" class="dtp-exit"
+          :disabled="projectionLoading" @click="exitHistory">退出历史查看</button>
+      </div>
+      <div v-for="(ev, index) in events" :key="eventKey(ev, index)"
+        :data-event-id="ev.event_id || ''"
+        :data-keyframe-id="ev.keyframe_id || ''"
+        :class="['dtp-ev', `dtp-ev-${ev.event_kind.replace('.','-')}`, { 'dtp-selected': selectedEventIndex === ev.event_index }]"
+        @click="selectEvent(ev.event_index)">
+        <span class="dtp-kind">{{ ev.event_kind }}</span>
+        <span v-if="ev.reason" class="dtp-reason">{{ ev.reason }}</span>
+        <div class="dtp-meta">
+          <span v-if="ev.event_index != null">#{{ ev.event_index }}</span>
+          <span v-if="ev.keyframe_id" class="dtp-keyframe">关键帧</span>
+          <span v-if="ev.node_id">节点: {{ ev.node_id }}</span>
+          <span v-if="ev.session_id">会话: {{ ev.session_id }}</span>
+          <span v-if="ev.recorded_at">时间: {{ ev.recorded_at }}</span>
+          <span v-if="ev.frame_identity">帧: {{ ev.frame_identity.slice(0, 12) }}</span>
+          <span v-if="ev.pause_timing">时机: {{ ev.pause_timing }}</span>
+          <span v-if="ev.breakpoint_hit_ordinal_in_session != null">#{{ ev.breakpoint_hit_ordinal_in_session }}</span>
+        </div>
+        <div v-if="ev.instance_path?.length" class="dtp-stack">
+          实例路径: {{ ev.instance_path.join(' → ') }}
+        </div>
+        <div v-if="ev.iteration_stack?.length" class="dtp-stack">
+          迭代栈: {{ ev.iteration_stack.join(' → ') }}
+        </div>
+      </div>
+    </template>
+  </div>
+</template>
+
+<style scoped>
+.dtp-root { padding: var(--space-md); overflow-y: auto; height: 100%; }
+.dtp-empty { font-size: var(--text-caption); color: var(--text-disabled); }
+.dtp-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); margin-bottom: var(--space-sm); }
+.dtp-summary { font-size: var(--text-small); color: var(--text-disabled); }
+.dtp-exit { border: 1px solid var(--border-default); background: var(--bg-panel); color: var(--text-secondary); cursor: pointer; padding: 2px 8px; border-radius: var(--radius-sm); font-size: var(--text-caption); font-family: var(--font-ui); }
+.dtp-exit:hover:not(:disabled) { background: var(--bg-hover); }
+.dtp-ev { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); font-size: var(--text-caption); cursor: pointer; }
+.dtp-ev:hover { background: var(--bg-hover); }
+.dtp-selected { background: var(--bg-hover); box-shadow: inset 2px 0 0 var(--accent); }
+.dtp-kind { font-weight: 600; color: var(--state-info); }
+.dtp-keyframe { color: var(--state-success); font-weight: 600; }
+.dtp-reason { color: var(--state-warning); font-style: italic; margin-left: 8px; }
+.dtp-meta { display: flex; gap: var(--space-md); margin-top: 2px; color: var(--text-disabled); font-family: var(--font-mono); font-size: var(--text-caption); }
+.dtp-stack { font-family: var(--font-mono); font-size: var(--text-caption); color: var(--text-disabled); margin-top: 2px; }
+</style>

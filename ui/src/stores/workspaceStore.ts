@@ -6,6 +6,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { fetchHealth, fetchSnapshot } from '@/services/api'
 import type { HealthResponse, SnapshotResponse } from '@/types/domains/api'
+import { useProjectDiagnosticsStore } from './projectDiagnosticsStore'
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -59,12 +60,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
       health.value = healthData
       snapshot.value = snapshotData
+      useProjectDiagnosticsStore().switchProject({
+        project_id: snapshotData.project?.project_id ?? null,
+        project_name: snapshotData.project?.project_name ?? null,
+      })
       connectionState.value = 'connected'
       isInitialized.value = true
     } catch (err) {
       connectionState.value = 'error'
       connectionError.value = err instanceof Error ? err.message : 'Failed to connect'
       console.error('[WorkspaceStore] Initialization failed:', err)
+      useProjectDiagnosticsStore().ingestApiError(err, { source: 'workspace', operation: 'workspace.initialize' })
     }
   }
 
@@ -72,8 +78,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     try {
       const data = await fetchSnapshot()
       snapshot.value = data
+      useProjectDiagnosticsStore().switchProject({
+        project_id: data.project?.project_id ?? null,
+        project_name: data.project?.project_name ?? null,
+      })
     } catch (err) {
       console.error('[WorkspaceStore] Snapshot refresh failed:', err)
+      useProjectDiagnosticsStore().ingestApiError(err, { source: 'workspace', operation: 'workspace.refresh_snapshot' })
     }
   }
 
@@ -83,6 +94,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     health.value = null
     snapshot.value = null
     isInitialized.value = false
+    useProjectDiagnosticsStore().switchProject()
   }
 
   return {

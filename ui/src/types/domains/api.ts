@@ -277,11 +277,6 @@ export interface RuntimePrepareResponse {
     requested_graph_saved_at: string | null
     compile_status: string
   }
-  runtime_session: {
-    session_id: string
-    status: string
-    execution_supported: boolean
-  }
   runtime_plan: RuntimePlan | null
   diagnostics: {
     total_count: number
@@ -358,15 +353,14 @@ export interface DebugPrepareResponse {
     requested_graph_saved_at: string | null
     compile_status: string
   }
-  debug_session: {
-    session_id: string
-    status: string
-    resume_supported: boolean
-    breakpoint_slots: unknown[]
-  }
   stage_timeline: StageTimelineEntry[]
   object_index: ObjectIndex | null
   diagnostic_links: DiagnosticLink[]
+  runtime_preview?: Record<string, unknown> | null
+  runtime_preview_summary?: Record<string, unknown> | null
+  message?: string
+  details?: Record<string, unknown>
+  security_requirement_summary?: Record<string, unknown> | null
 }
 
 // ===== P3: Host Info =====
@@ -532,6 +526,7 @@ export interface ProjectSettings {
   external_resources: Record<string, unknown>[]
   resource_policy: { embedded_resources: string[]; external_resource_bindings: Record<string, unknown>[] }
   compile_profile: { source_of_truth: string; inject_project_runtime_defaults_into_main_flow_start: boolean }
+  debug_profile?: { history_retention_limit: number }
   /** 0.7-E: Python runtime profile (editable in project settings) */
   python_runtime_profile: PythonRuntimeProfile
 }
@@ -779,8 +774,16 @@ export interface RecentProjectsResponse { recent_projects: RecentProject[] }
 // ===== P6: Runtime Sessions =====
 
 export interface RuntimeSessionsResponse { sessions: RuntimeSessionSummary[] }
+export type RuntimeSessionStatus =
+  | 'preparing'
+  | 'ready'
+  | 'running'
+  | 'aborting'
+  | 'aborted'
+  | 'completed'
+  | 'failed'
 export interface RuntimeSessionSummary {
-  session_id: string; status: string; graph_model_id: string | null
+  session_id: string; status: RuntimeSessionStatus; graph_model_id: string | null
 }
 export interface RuntimeExecutionSummary {
   status: string
@@ -803,8 +806,8 @@ export interface RuntimeProgress {
   event_count: number
 }
 export interface RuntimeSessionDetailResponse {
-  status: string; request: Record<string, unknown>
-  runtime_session: { session_id: string | null; status: string; execution_supported: boolean }
+  status?: RuntimeSessionStatus | 'started' | 'accepted' | 'diagnostic_blocked'; request: Record<string, unknown>
+  runtime_session: { session_id: string | null; status: RuntimeSessionStatus; execution_supported: boolean; abort_reason?: string | null; aborted_at?: string | null }
   runtime_plan: RuntimePlan | null
   node_states: Record<string, unknown>[]
   event_log: Record<string, unknown>[]
@@ -815,11 +818,13 @@ export interface RuntimeSessionDetailResponse {
 }
 export interface RuntimeStreamSnapshot extends RuntimeSessionDetailResponse {
   session_id: string
+  status: RuntimeSessionStatus
 }
-export type RuntimeStreamTerminalEventName = 'runtime.completed' | 'runtime.failed'
+export type RuntimeStreamTerminalEventName = 'runtime.completed' | 'runtime.failed' | 'runtime.aborted'
 export type RuntimeStreamEventName =
   | 'runtime.snapshot'
   | 'runtime.summary'
+  | 'runtime.aborting'
   | RuntimeStreamTerminalEventName
 
 // ===== P6: Debug Sessions =====
@@ -830,10 +835,107 @@ export interface DebugSessionSummary {
 }
 export interface DebugSessionDetailResponse {
   status: string; request: Record<string, unknown>
-  debug_session: { session_id: string; status: string; resume_supported: boolean; breakpoint_slots: unknown[] }
+  debug_session: DebugSessionDocument
   stage_timeline: StageTimelineEntry[]
   object_index: ObjectIndex | null
   diagnostic_links: DiagnosticLink[]
+  variable_snapshot?: Record<string, unknown>
+  runtime_preview?: Record<string, unknown>
+  runtime_preview_summary?: Record<string, unknown>
+}
+
+export interface DebugHistorySummaryResponse {
+  summary: {
+    debug_session_count: number
+    debug_status_counts: Record<string, number>
+  }
+  sessions: Record<string, unknown>[]
+}
+
+export interface DebugHistorySessionResponse {
+  source: 'history_store' | 'active_session' | 'execution_history'
+  session_id: string
+  session: Record<string, unknown>
+}
+
+// ===== 0.8.0: Debugger =====
+
+export interface DebugSessionDocument {
+  session_id: string
+  status: string
+  step_mode: string | null
+  paused_reason: string | null
+  last_control_action: string | null
+  step_sequence: number
+  variable_apply_mode: string
+  pending_variable_overrides: Record<string, unknown>
+  can_step_out?: boolean
+  last_breakpoint_frame_identity: string | null
+  last_record_frame_identity: string | null
+}
+
+export interface DebugProjection {
+  mode: 'live' | 'history'
+  node_status_by_id: Record<string, string>
+  active_paths: string[][]
+  paused_node_id?: string
+  history_event_index?: number
+  history_keyframe_id?: string | null
+  record_frame_node_ids?: string[]
+  skipped_node_ids?: string[]
+}
+
+export interface DebugProjectionResponse {
+  session_id: string
+  source: string
+  projection: DebugProjection
+  variable_snapshot?: Record<string, unknown>
+  runtime_preview?: Record<string, unknown>
+}
+
+export interface DebugEvent {
+  event_id: string
+  event_index: number
+  keyframe_id?: string
+  event_kind: string
+  node_id?: string
+  recorded_at: string
+  session_id: string
+  instance_path: string[]
+  pause_timing?: string
+  iteration_stack: string[]
+  frame_identity?: string
+  reason?: string
+  breakpoint_hit_ordinal_in_session?: number
+  record_frame_ordinal_in_session?: number
+  pause_requested?: boolean
+}
+
+export interface DebugEventsResponse {
+  session_id: string
+  source: string
+  total_count: number
+  events: DebugEvent[]
+}
+
+export interface DebugControlResponse {
+  status: string
+  debug_session: DebugSessionDocument
+}
+
+export interface DebugVariablesApplyRequest {
+  updates: Record<string, unknown>
+  apply_mode: 'staged' | 'immediate'
+}
+
+export interface DebugVariablesApplyResponse {
+  status: string
+  debug_session: DebugSessionDocument
+}
+
+export interface DebugStartResponse {
+  status: string
+  debug_session: DebugSessionDocument
 }
 
 // ===== P6: Execution History =====

@@ -13,6 +13,7 @@ from .project_python_runtime import (
 
 PREFERENCES_FILE_VERSION = 1
 FILE_ACCESS_SCOPES = {"restricted", "custom_roots", "allow_all"}
+DEBUG_VARIABLE_APPLY_MODES = {"staged", "immediate"}
 
 
 class PreferencesStore:
@@ -141,6 +142,7 @@ def build_default_preferences() -> dict:
             "timeout_seconds": 60,
             "sandbox_mode": "restricted",
             "capture_stdout_stderr": True,
+            "variable_apply_mode": "staged",
             "blocked_import_modules": [
                 "ctypes",
                 "importlib",
@@ -344,6 +346,15 @@ def _normalize_python_runtime_settings(settings: Any) -> dict:
     )
     normalized["capture_stdout_stderr"] = bool(
         settings.get("capture_stdout_stderr", defaults["capture_stdout_stderr"])
+    )
+    variable_apply_mode = settings.get(
+        "variable_apply_mode",
+        defaults["variable_apply_mode"],
+    )
+    normalized["variable_apply_mode"] = (
+        variable_apply_mode
+        if variable_apply_mode in DEBUG_VARIABLE_APPLY_MODES
+        else defaults["variable_apply_mode"]
     )
     normalized["blocked_import_modules"] = _normalize_python_import_module_list(
         settings.get("blocked_import_modules", defaults["blocked_import_modules"])

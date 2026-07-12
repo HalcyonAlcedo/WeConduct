@@ -33,6 +33,10 @@ ENV/
 .coverage.*
 htmlcov/
 coverage.xml
+.playwright-cli
+output
+!ui/src/components/output/
+!ui/src/components/output/**
 
 # --- Build / packaging ---
 build/

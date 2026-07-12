@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useCompilationStore } from '@/stores/compilationStore'
 import { useRuntimeStore } from '@/stores/runtimeStore'
+import { useDebugStore } from '@/stores/debugStore'
 import SummaryTab from '@/components/output/summary/SummaryTab.vue'
 import DiagnosticsTab from '@/components/output/diagnostics/DiagnosticsTab.vue'
 import GraphTab from '@/components/output/graph/GraphTab.vue'
@@ -12,6 +13,7 @@ import HostInfoTab from '@/components/output/host/HostInfoTab.vue'
 
 const compilation = useCompilationStore()
 const runtimeStore = useRuntimeStore()
+const debugStore = useDebugStore()
 
 type TabId = 'summary' | 'diagnostics' | 'graph' | 'history' | 'runtime' | 'debug' | 'host'
 const activeTab = ref<TabId>('summary')
@@ -24,12 +26,28 @@ function tabClass(tab: TabId) {
   }
 }
 
-const diagCount = () => {
-  const groups = compilation.diagnosticGroups
-  if (groups.length === 0) return ''
-  const total = groups.reduce((sum, g) => sum + g.count, 0)
-  return `(${total})`
+function isNonUserFacingDiagnostic(candidate: { category: string; severity: string }) {
+  return candidate.category.endsWith('.completed') && candidate.severity === 'info'
 }
+
+const compilationDiagnosticCount = computed(() =>
+  compilation.diagnosticGroups
+    .filter((group) => !isNonUserFacingDiagnostic(group))
+    .reduce((sum, group) => sum + group.count, 0),
+)
+const runtimeDiagnosticCount = computed(() =>
+  runtimeStore.runtimeDiagnosticGroups.reduce((sum, group) => sum + group.count, 0),
+)
+const debugDiagnosticCount = computed(() =>
+  (debugStore.activeSession?.diagnostic_links || [])
+    .filter((group) => !isNonUserFacingDiagnostic(group))
+    .length,
+)
+const diagCount = computed(() => {
+  const total = compilationDiagnosticCount.value + runtimeDiagnosticCount.value + debugDiagnosticCount.value
+  if (total === 0) return ''
+  return `(C${compilationDiagnosticCount.value}/R${runtimeDiagnosticCount.value}/D${debugDiagnosticCount.value})`
+})
 </script>
 
 <template>
@@ -37,7 +55,7 @@ const diagCount = () => {
     <!-- Tabs -->
     <div class="ot-tabs">
       <button :class="tabClass('summary')" @click="activeTab = 'summary'">概要</button>
-      <button :class="tabClass('diagnostics')" @click="activeTab = 'diagnostics'">诊断 {{ diagCount() }}</button>
+      <button :class="tabClass('diagnostics')" @click="activeTab = 'diagnostics'">诊断 {{ diagCount }}</button>
       <button :class="tabClass('graph')" @click="activeTab = 'graph'">图模型</button>
       <button :class="tabClass('history')" @click="activeTab = 'history'">历史</button>
       <button :class="tabClass('runtime')" @click="activeTab = 'runtime'">Runtime</button>

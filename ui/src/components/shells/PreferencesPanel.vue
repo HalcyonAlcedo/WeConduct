@@ -49,6 +49,7 @@ const FIELD_DEFS: Record<string, FieldDef[]> = {
   python: [
     { key: 'python_executable_path', label: 'Python 路径', type: 'text' }, { key: 'timeout_seconds', label: '超时（秒）', type: 'number' },
     { key: 'sandbox_mode', label: '沙盒模式', type: 'select', options: ['restricted'] }, { key: 'capture_stdout_stderr', label: '捕获标准输出/错误', type: 'bool' },
+    { key: 'variable_apply_mode', label: '调试变量应用策略', type: 'select', options: ['staged', 'immediate'], hint: 'staged 为暂存后再继续调试，immediate 为立即生效' },
     { key: 'default_python_version_spec', label: '默认 Python 版本', type: 'text' },
     { key: 'default_cache_location_mode', label: '默认缓存位置模式', type: 'select', options: ['software_cache', 'project_cache'] },
     { key: 'default_project_cache_mode', label: '默认项目缓存模式', type: 'select', options: ['full_venv', 'wheelhouse_rebuild'] },
@@ -75,12 +76,17 @@ const form = reactive<Record<string, Record<string, any>>>({ program_settings: {
 const saveState = reactive<Record<string, 'idle' | 'saving' | 'saved' | 'error'>>({}); const saveError = reactive<Record<string, string>>({})
 
 function normalizeRoots(value: unknown): string[] { if (!Array.isArray(value)) return []; const result: string[] = []; for (const item of value) { if (typeof item !== 'string') continue; const n = item.trim(); if (!n || result.includes(n)) continue; result.push(n) } return result }
+function normalizePreferenceValue(value: unknown): unknown {
+  return value
+}
 
 function initForm() {
   const prefs = workspace.snapshot?.preferences || {}
   for (const section of Object.values(SECTION_MAP)) {
     const source = (prefs as Record<string, any>)[section] || {}
-    const next = { ...source }
+    const next = Object.fromEntries(
+      Object.entries(source).map(([key, value]) => [key, normalizePreferenceValue(value)]),
+    )
     if (section === 'security_settings') { next.file_access_allowed_roots = normalizeRoots(next.file_access_allowed_roots); next.file_access_blocked_roots = normalizeRoots(next.file_access_blocked_roots) }
     form[section] = next; saveState[section] = 'idle'; saveError[section] = ''
   }
@@ -106,7 +112,16 @@ async function doSave(section: string) {
     }
     await postPreferences({ section, values } as PreferencesUpdateRequest)
     saveState[section] = 'saved'; setTimeout(() => { if (saveState[section] === 'saved') saveState[section] = 'idle' }, 2000)
-    try { const r = await fetchPreferences(); if (section === 'security_settings') { form[section] = { ...(r.preferences[section] as any || {}), file_access_allowed_roots: normalizeRoots((r.preferences[section] as any)?.file_access_allowed_roots), file_access_blocked_roots: normalizeRoots((r.preferences[section] as any)?.file_access_blocked_roots) } } else { form[section] = { ...(r.preferences[section] as Record<string, any> || {}) } } } catch {}
+    try {
+      const r = await fetchPreferences()
+      if (section === 'security_settings') {
+        form[section] = { ...(r.preferences[section] as any || {}), file_access_allowed_roots: normalizeRoots((r.preferences[section] as any)?.file_access_allowed_roots), file_access_blocked_roots: normalizeRoots((r.preferences[section] as any)?.file_access_blocked_roots) }
+      } else {
+        form[section] = Object.fromEntries(
+          Object.entries((r.preferences[section] as Record<string, any> || {})).map(([key, value]) => [key, normalizePreferenceValue(value)]),
+        )
+      }
+    } catch {}
     await workspace.refreshSnapshot()
   } catch (e: any) {
     if (e?.body?.error === 'high_risk_confirmation_required') { confirmDialog.value = { section, changes: e.body.high_risk_changes || [] }; saveState[section] = 'idle'; return }
@@ -116,7 +131,7 @@ async function doSave(section: string) {
 
 async function confirmHighRiskSave() {
   if (!confirmDialog.value) return; const { section } = confirmDialog.value; confirmDialog.value = null; saveState[section] = 'saving'
-  try { await postPreferences({ section, values: flattenForSave(section, form[section]), confirm_high_risk: true } as PreferencesUpdateRequest); saveState[section] = 'saved'; setTimeout(() => { if (saveState[section] === 'saved') saveState[section] = 'idle' }, 2000); try { const r = await fetchPreferences(); if (section === 'security_settings') { form[section] = { ...(r.preferences[section] as any || {}), file_access_allowed_roots: normalizeRoots((r.preferences[section] as any)?.file_access_allowed_roots), file_access_blocked_roots: normalizeRoots((r.preferences[section] as any)?.file_access_blocked_roots) } } else { form[section] = { ...(r.preferences[section] as Record<string, any> || {}) } } } catch {}; await workspace.refreshSnapshot() } catch (e: any) { saveState[section] = 'error'; saveError[section] = e?.message || '保存失败' }
+  try { await postPreferences({ section, values: flattenForSave(section, form[section]), confirm_high_risk: true } as PreferencesUpdateRequest); saveState[section] = 'saved'; setTimeout(() => { if (saveState[section] === 'saved') saveState[section] = 'idle' }, 2000); try { const r = await fetchPreferences(); if (section === 'security_settings') { form[section] = { ...(r.preferences[section] as any || {}), file_access_allowed_roots: normalizeRoots((r.preferences[section] as any)?.file_access_allowed_roots), file_access_blocked_roots: normalizeRoots((r.preferences[section] as any)?.file_access_blocked_roots) } } else { form[section] = Object.fromEntries(Object.entries((r.preferences[section] as Record<string, any> || {})).map(([key, value]) => [key, normalizePreferenceValue(value)])) } } catch {}; await workspace.refreshSnapshot() } catch (e: any) { saveState[section] = 'error'; saveError[section] = e?.message || '保存失败' }
 }
 
 function flattenForSave(section: string, vals: Record<string, any>): Record<string, unknown> {

@@ -7,6 +7,7 @@ import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { fetchGraphDocument, putGraphDocument, postSourceProjection, fetchNodeDraft } from '@/services/api'
 import { useToastStore } from './toastStore'
+import { useDebugStore } from './debugStore'
 import type { GraphDocumentResponse, GraphDocumentView, ParameterFieldSchema } from '@/types/domains/api'
 import type { GraphModel } from '@/types/domains/graph'
 
@@ -14,6 +15,7 @@ export type GraphLoadState = 'idle' | 'loading' | 'loaded' | 'error'
 export type GraphSaveState = 'idle' | 'saving' | 'saved' | 'error' | 'conflict'
 
 export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
+  const debugStore = useDebugStore()
   const loadState = ref<GraphLoadState>('idle')
   const saveState = ref<GraphSaveState>('idle')
   const loadError = ref<string | null>(null)
@@ -96,8 +98,13 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   const hasGraph = computed(() => !!graphModel.value && (graphModel.value.nodes?.length ?? 0) > 0)
   const isLoaded = computed(() => loadState.value === 'loaded')
   const lastCompileMatches = computed(() => view.value?.last_compile_matches_saved_graph ?? false)
-  /** Graph is editable (false when .wcrun loaded or source_of_truth === wcrun_package) */
-  const isGraphEditable = computed(() => view.value?.is_editable !== false)
+  /** Graph is editable (false when .wcrun loaded, debug session active, or source_of_truth === wcrun_package) */
+  const isGraphEditable = computed(() => {
+    if (view.value?.is_editable === false) return false
+    // Lock graph editing from the hydrated debugStore active session only.
+    if (debugStore.isDebugActive) return false
+    return true
+  })
 
   // Actions
   async function loadGraph(documentId?: string, options?: { forceRefresh?: boolean }) {
@@ -432,7 +439,7 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     currentDocumentId, isCustomComponentGraph, graphDocuments, refreshGraphDocuments,
     draftsByDocumentId, saveCurrentDraft, restoreDraft, clearAllDrafts, invalidateMainGraphDrafts,
     loadGraph, saveGraph, addNode, pasteNode, removeNode, updateNode,
-    updateNodePosition, addEdge, removeEdge, updateEdgeRelation, pushUndo, undo, redo, reset,
+    markChanged, updateNodePosition, addEdge, removeEdge, updateEdgeRelation, pushUndo, undo, redo, reset,
     syncStatus, syncError, syncSource, scheduleAutoSync,
     parameterSchemas, cacheParameterSchema,
     viewport, updateViewport,

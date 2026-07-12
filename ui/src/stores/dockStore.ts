@@ -18,6 +18,22 @@ export interface ZoneState {
   activePanelId: string | null
 }
 
+function removePanelAndResolveActive(zone: ZoneState, panelId: string) {
+  const removedIndex = zone.panels.findIndex(panel => panel.id === panelId)
+  if (removedIndex === -1) return
+
+  const wasActive = zone.activePanelId === panelId
+  zone.panels = zone.panels.filter(panel => panel.id !== panelId)
+
+  if (!wasActive) return
+
+  const nextActive =
+    zone.panels[removedIndex]?.id
+    ?? zone.panels[removedIndex - 1]?.id
+    ?? null
+  zone.activePanelId = nextActive
+}
+
 export const useDockStore = defineStore('dock', () => {
   // Zone states — each zone is a tab group
   const zones = reactive<Record<DockZone, ZoneState>>({
@@ -50,9 +66,10 @@ export const useDockStore = defineStore('dock', () => {
     if (!panel) return
     // Remove from all zones first
     for (const z of Object.values(zones)) {
-      z.panels = z.panels.filter(p => p.id !== panelId)
+      removePanelAndResolveActive(z, panelId)
     }
     const wasEmpty = zones[zone].panels.length === 0
+    zones[zone].panels = zones[zone].panels.filter(existing => existing.id !== panelId)
     zones[zone].panels.push(panel)
     zones[zone].activePanelId = panelId
 
@@ -66,10 +83,7 @@ export const useDockStore = defineStore('dock', () => {
 
   function removeFromZone(panelId: string) {
     for (const z of Object.values(zones)) {
-      z.panels = z.panels.filter(p => p.id !== panelId)
-      if (z.activePanelId === panelId) {
-        z.activePanelId = z.panels[0]?.id ?? null
-      }
+      removePanelAndResolveActive(z, panelId)
     }
   }
 

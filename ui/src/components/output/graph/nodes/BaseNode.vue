@@ -3,6 +3,7 @@ import { Handle, Position } from '@vue-flow/core'
 import { computed, ref } from 'vue'
 import { useResourceStore } from '@/stores/resourceStore'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
+import { useDebugStore } from '@/stores/debugStore'
 import { postFileDialog, postGraphNormalize } from '@/services/api'
 import { useToastStore } from '@/stores/toastStore'
 import { PARAM_TEMPLATES } from '@/config/fieldTemplates'
@@ -17,7 +18,26 @@ const props = defineProps<{
 }>()
 
 const resource = useResourceStore()
+const debugStore = useDebugStore()
+
+const nid = computed(() => props.data.nodeId || props.id)
+const debugNodeStatus = computed(() => {
+  return debugStore.projection?.node_status_by_id?.[nid.value] || null
+})
+const isRecordFrameNode = computed(() => debugStore.projection?.record_frame_node_ids?.includes(nid.value) ?? false)
+const isSkippedNode = computed(() => debugStore.projection?.skipped_node_ids?.includes(nid.value) ?? false)
+const debugClasses = computed(() => {
+  const cs: string[] = []
+  if (debugNodeStatus.value) cs.push(`dbg-${debugNodeStatus.value}`)
+  if (isRecordFrameNode.value) cs.push('dbg-record_frame')
+  if (isSkippedNode.value) cs.push('dbg-skipped')
+  return cs.join(' ')
+})
+const nodeId = computed(() => props.data.nodeId || props.id)
 const workspace = useGraphWorkspaceStore()
+const nodeConfig = computed(() => workspace.graphModel?.nodes.find(n => n.node_id === nodeId.value)?.node_config)
+const hasBP = computed(() => debugStore.hasBreakpoint(nodeConfig.value, nodeId.value))
+const hasRF = computed(() => debugStore.hasRecordFrame(nodeConfig.value, nodeId.value))
 
 const nodePorts = computed(() => props.data.ports || [])
 const inputPorts = computed(() => nodePorts.value.filter(p => p.direction === 'input'))
@@ -203,12 +223,14 @@ async function applyBranches() {
 </script>
 
 <template>
-  <div :class="['vf-node', kindClass, { selected, 'node-disabled': isDisabled, 'node-ro': !workspace.isGraphEditable }]">
+  <div :class="['vf-node', kindClass, { selected, 'node-disabled': isDisabled, 'node-ro': !workspace.isGraphEditable }, debugClasses]">
     <!-- Header: full width -->
     <div class="vf-node-header">
       <span class="vf-node-kind">{{ kindLabel }}</span>
       <span v-if="isDisabled" class="vf-disabled-badge">禁用</span>
       <span v-if="isCompatibility" class="vf-compat-badge">兼容</span>
+      <span v-if="hasBP" class="vf-bp-badge">🔴</span>
+      <span v-if="hasRF" class="vf-rf-badge">◉</span>
       <span v-if="data.nodeId" class="vf-node-id">{{ data.nodeId }}</span>
     </div>
 
@@ -356,4 +378,11 @@ async function applyBranches() {
 .node-observe   { border-left: 3px solid var(--state-warning); }
 .node-bridge    { border-left: 3px solid var(--state-success); }
 .node-disabled { opacity: 0.55; }
+/* Debug projection status */
+.dbg-running { box-shadow: 0 0 0 2px var(--state-info); }
+.dbg-waiting { box-shadow: 0 0 0 1px var(--border-default); }
+.dbg-completed { box-shadow: 0 0 0 2px var(--state-success); }
+.dbg-paused { box-shadow: 0 0 0 2px var(--state-warning); }
+.dbg-record_frame { box-shadow: 0 0 0 2px var(--accent); }
+.dbg-skipped { opacity: 0.5; }
 </style>

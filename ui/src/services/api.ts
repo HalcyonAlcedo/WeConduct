@@ -25,6 +25,13 @@ import type {
   RuntimeSessionsResponse, RuntimeSessionDetailResponse,
   RuntimeProgress,
   DebugSessionsResponse, DebugSessionDetailResponse,
+  DebugHistorySummaryResponse,
+  DebugHistorySessionResponse,
+  DebugProjectionResponse,
+  DebugEventsResponse,
+  DebugControlResponse,
+  DebugVariablesApplyRequest,
+  DebugVariablesApplyResponse,
   ExecutionHistoryResponse,
   PreferencesResponse,
   PreferencesUpdateRequest,
@@ -79,7 +86,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const body = await res.json()
 
   if (!res.ok) {
-    throw new ApiError(res.status, body)
+    const error = new ApiError(res.status, body)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('weconduct:api-error', {
+        detail: { error, path, method: options?.method || 'GET' },
+      }))
+    }
+    throw error
   }
 
   return body as T
@@ -216,6 +229,7 @@ export function fetchRuntimeSessions(): Promise<RuntimeSessionsResponse> { retur
 export function fetchRuntimeSession(id: string): Promise<RuntimeSessionDetailResponse> { return request(`/workbench/runtime/${id}`) }
 export function postRuntimeStart(body?: Record<string, unknown>): Promise<RuntimeSessionDetailResponse> { return request('/workbench/runtime/start', { method: 'POST', body: body ? JSON.stringify(body) : undefined }) }
 export function postRuntimeRun(sessionId: string): Promise<RuntimeSessionDetailResponse> { return request(`/workbench/runtime/${sessionId}/run`, { method: 'POST', body: '{}' }) }
+export function postRuntimeAbort(sessionId: string, reason = 'user_abort'): Promise<RuntimeSessionDetailResponse> { return request(`/workbench/runtime/${sessionId}/abort`, { method: 'POST', body: JSON.stringify({ reason }) }) }
 export function getRuntimeStreamUrl(sessionId: string): string { return `${API_BASE}/workbench/runtime/${sessionId}/stream` }
 export function buildRuntimeProgressFromSession(detail: RuntimeSessionDetailResponse): RuntimeProgress {
   const nodeStates = Array.isArray(detail.node_states) ? detail.node_states : []
@@ -242,6 +256,64 @@ export function buildRuntimeProgressFromSession(detail: RuntimeSessionDetailResp
 export function fetchDebugSessions(): Promise<DebugSessionsResponse> { return request('/workbench/debug/sessions') }
 export function fetchDebugSession(id: string): Promise<DebugSessionDetailResponse> { return request(`/workbench/debug/${id}`) }
 export function postDebugStart(body?: Record<string, unknown>): Promise<DebugSessionDetailResponse> { return request('/workbench/debug/start', { method: 'POST', body: body ? JSON.stringify(body) : undefined }) }
+export function fetchDebugHistorySessions(): Promise<DebugHistorySummaryResponse> { return request('/workbench/debug/history') }
+export function fetchDebugHistorySession(id: string): Promise<DebugHistorySessionResponse> { return request(`/workbench/debug/history/${id}`) }
+
+// ===== 0.8.0: Debugger Projection =====
+
+export function fetchDebugProjection(sessionId: string, mode: 'live' | 'history', eventIndex?: number, keyframeId?: string): Promise<DebugProjectionResponse> {
+  const params = new URLSearchParams()
+  if (eventIndex != null) params.set('event_index', String(eventIndex))
+  if (keyframeId) params.set('keyframe_id', keyframeId)
+  const qs = params.size ? `?${params.toString()}` : ''
+  return request<DebugProjectionResponse>(`/workbench/debug/projection/${mode}/${sessionId}${qs}`)
+}
+
+// ===== 0.8.0: Debugger Control =====
+
+export function postDebugContinue(sessionId: string): Promise<DebugControlResponse> {
+  return request<DebugControlResponse>(`/workbench/debug/${sessionId}/continue`, { method: 'POST', body: '{}' })
+}
+export function postDebugStepOver(sessionId: string): Promise<DebugControlResponse> {
+  return request<DebugControlResponse>(`/workbench/debug/${sessionId}/step-over`, { method: 'POST', body: '{}' })
+}
+export function postDebugStepInto(sessionId: string): Promise<DebugControlResponse> {
+  return request<DebugControlResponse>(`/workbench/debug/${sessionId}/step-into`, { method: 'POST', body: '{}' })
+}
+export function postDebugStepOut(sessionId: string): Promise<DebugControlResponse> {
+  return request<DebugControlResponse>(`/workbench/debug/${sessionId}/step-out`, { method: 'POST', body: '{}' })
+}
+
+// ===== 0.8.0: Debugger Variables =====
+
+export function postDebugVariablesApply(sessionId: string, body: DebugVariablesApplyRequest): Promise<DebugVariablesApplyResponse> {
+  return request<DebugVariablesApplyResponse>(`/workbench/debug/${sessionId}/variables/apply`, { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function postDebugNodeDebuggerApply(
+  sessionId: string,
+  nodeId: string,
+  debuggerConfig: Record<string, unknown>,
+): Promise<DebugSessionDetailResponse & { node_id: string; debugger: Record<string, unknown> }> {
+  return request(`/workbench/debug/${sessionId}/debugger-config/apply`, {
+    method: 'POST',
+    body: JSON.stringify({ node_id: nodeId, debugger: debuggerConfig }),
+  })
+}
+
+// ===== 0.8.0: Debugger Events =====
+
+export function fetchDebugEvents(sessionId: string): Promise<DebugEventsResponse> {
+  return request<DebugEventsResponse>(`/workbench/debug/${sessionId}/events`)
+}
+
+export function postDebugPause(sessionId: string, body?: { reason: string; node_id?: string }): Promise<DebugControlResponse> {
+  return request<DebugControlResponse>(`/workbench/debug/${sessionId}/pause`, { method: 'POST', body: JSON.stringify(body || { reason: 'manual_pause' }) })
+}
+
+export function postDebugAbort(sessionId: string, body?: { reason: string }): Promise<DebugControlResponse> {
+  return request<DebugControlResponse>(`/workbench/debug/${sessionId}/abort`, { method: 'POST', body: JSON.stringify(body || { reason: 'user_abort' }) })
+}
 
 // ===== P6: Execution History =====
 export function fetchExecutionHistory(): Promise<ExecutionHistoryResponse> { return request('/workbench/execution-history') }
