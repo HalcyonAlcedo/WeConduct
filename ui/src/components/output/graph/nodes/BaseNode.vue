@@ -18,7 +18,11 @@ const props = defineProps<{
 }>()
 
 const resource = useResourceStore()
+const workspace = useGraphWorkspaceStore()
 const debugStore = useDebugStore()
+
+const showMedium = computed(() => (workspace.viewport.zoom) >= 0.35)
+const showDetail = computed(() => (workspace.viewport.zoom) >= 0.75)
 
 const nid = computed(() => props.data.nodeId || props.id)
 const debugNodeStatus = computed(() => {
@@ -34,7 +38,6 @@ const debugClasses = computed(() => {
   return cs.join(' ')
 })
 const nodeId = computed(() => props.data.nodeId || props.id)
-const workspace = useGraphWorkspaceStore()
 const nodeConfig = computed(() => workspace.graphModel?.nodes.find(n => n.node_id === nodeId.value)?.node_config)
 const hasBP = computed(() => debugStore.hasBreakpoint(nodeConfig.value, nodeId.value))
 const hasRF = computed(() => debugStore.hasRecordFrame(nodeConfig.value, nodeId.value))
@@ -227,11 +230,11 @@ async function applyBranches() {
     <!-- Header: full width -->
     <div class="vf-node-header">
       <span class="vf-node-kind">{{ kindLabel }}</span>
-      <span v-if="isDisabled" class="vf-disabled-badge">禁用</span>
-      <span v-if="isCompatibility" class="vf-compat-badge">兼容</span>
-      <span v-if="hasBP" class="vf-bp-badge">🔴</span>
-      <span v-if="hasRF" class="vf-rf-badge">◉</span>
-      <span v-if="data.nodeId" class="vf-node-id">{{ data.nodeId }}</span>
+      <span v-if="showDetail && isDisabled" class="vf-disabled-badge">禁用</span>
+      <span v-if="showDetail && isCompatibility" class="vf-compat-badge">兼容</span>
+      <span v-if="showDetail && hasBP" class="vf-bp-badge">🔴</span>
+      <span v-if="showDetail && hasRF" class="vf-rf-badge">◉</span>
+      <span v-if="showDetail && data.nodeId" class="vf-node-id">{{ data.nodeId }}</span>
     </div>
 
     <!-- Body: three-column — left ports | content | right ports -->
@@ -239,14 +242,14 @@ async function applyBranches() {
       <div class="vf-port-col" v-if="inputPorts.length">
         <div v-for="p in inputPorts" :key="p.port_id" class="vf-port-item">
           <Handle type="target" :position="Position.Left" :id="p.port_id" class="vf-handle" />
-          <span class="vf-port-label">{{ portLabel(p) }}</span>
+          <span v-if="showDetail" class="vf-port-label">{{ portLabel(p) }}</span>
         </div>
       </div>
 
       <div class="vf-node-main">
         <div class="vf-node-body">
-          <span class="vf-node-label">{{ data.label }}</span>
-          <div v-if="configSections.length" class="vf-config">
+          <span v-if="showMedium" class="vf-node-label">{{ data.label }}</span>
+          <div v-if="showDetail && configSections.length" class="vf-config">
             <template v-for="(sec, si) in configSections" :key="si">
               <div v-if="sec.section" class="vf-cfg-section">{{ sec.section }}</div>
               <div v-for="e in sec.rows" :key="e.path" class="vf-cfg-row">
@@ -271,7 +274,7 @@ async function applyBranches() {
 
       <div class="vf-port-col" v-if="outputPorts.length">
         <div v-for="p in outputPorts" :key="p.port_id" class="vf-port-item">
-          <span class="vf-port-label">{{ portLabel(p) }}</span>
+          <span v-if="showDetail" class="vf-port-label">{{ portLabel(p) }}</span>
           <Handle type="source" :position="Position.Right" :id="p.port_id" class="vf-handle" />
         </div>
       </div>
