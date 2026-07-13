@@ -116,6 +116,7 @@ class RuntimeContext:
     allowed_path_roots: tuple[Path, ...] = field(default_factory=tuple)
     runtime_settings: dict[str, Any] = field(default_factory=dict)
     cancellation_context: CancellationContext = field(default_factory=CancellationContext)
+    owns_cancellation_context: bool = True
     _cleanup_keys: set[str] = field(default_factory=set, init=False, repr=False)
     _close_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
@@ -140,7 +141,8 @@ class RuntimeContext:
                 return
             self._closed = True
         _register_browser_runtime_cleanup(self)
-        self.cancellation_context.request_cancel("runtime context closed")
+        if self.owns_cancellation_context:
+            self.cancellation_context.request_cancel("runtime context closed")
         self.browser_runtime.clear()
 
 

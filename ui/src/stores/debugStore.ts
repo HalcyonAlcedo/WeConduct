@@ -539,7 +539,10 @@ export const useDebugStore = defineStore('debug', () => {
         useProjectDiagnosticsStore().ingestApiError(error, { source: 'debug', operation: 'debug.poll' })
         const stillOwnsPolling = pollingSessionId.value === pollingOwnerAtStart
           && (pollingOwnerAtStart === null || pollingOwnerAtStart === sessionId)
-        if (!stillOwnsPolling) return
+        if (!stillOwnsPolling) {
+          if (options.throwOnError) throw error
+          return
+        }
         if (pollingOwnerAtStart === null) stopPolling()
         else stopPolling(sessionId)
         await refreshSessions().catch(() => {})

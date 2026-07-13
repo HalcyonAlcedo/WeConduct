@@ -19,6 +19,9 @@ const graphWs = useGraphWorkspaceStore()
 const graphStore = useGraphStore()
 const toast = useToastStore()
 const updateStore = useUpdateStore()
+function shouldConfirmDeleteNode(): boolean {
+  return ((workspace.snapshot as any)?.graph_workspace?.graph_preferences?.confirm_delete_node) !== false
+}
 
 useKeyboard([
   { key: 'Enter', ctrl: true, handler: async () => {
@@ -40,6 +43,12 @@ useKeyboard([
   { key: 'Delete', handler: () => {
     const sel = graphStore.selectedNode
     if (sel && graphWs.graphModel) {
+      if (!shouldConfirmDeleteNode()) {
+        graphWs.removeNode(sel)
+        graphStore.selectNode(null)
+        toast.success('已删除', sel)
+        return
+      }
       ;(window as any).__openDeleteConfirm?.(() => {
         graphWs.removeNode(sel)
         graphStore.selectNode(null)

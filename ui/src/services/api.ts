@@ -35,15 +35,13 @@ import type {
   ExecutionHistoryResponse,
   PreferencesResponse,
   PreferencesUpdateRequest,
+  ConfigValuesResponse,
+  ConfigPatchRequest,
   UpdateCheckRequest,
   UpdateStatusResponse,
   NodeDraftResponse,
   WebControlConvertRequest,
   WebControlConvertResponse,
-  ProjectSettingsResponse,
-  RuntimeDefaults,
-  RuntimeDefaultsResponse,
-  RuntimeDefaultsUpdateResponse,
   PackagePreflightResponse,
   PackageBuildRequest,
   PackageBuildResponse,
@@ -344,11 +342,40 @@ export function fetchNodeDraft(params: { resource_key: string; node_id?: string;
   return request<NodeDraftResponse>('/workbench/graph/node-draft' + qs)
 }
 
-// ===== Preferences =====
-export function fetchPreferences(): Promise<PreferencesResponse> { return request<PreferencesResponse>('/workbench/preferences') }
-export function postPreferences(body: PreferencesUpdateRequest): Promise<PreferencesResponse> { return request<PreferencesResponse>('/workbench/preferences', { method: 'POST', body: JSON.stringify(body) }) }
-export function postPreferencesPreview(body: { section: string; values: Record<string, unknown> }): Promise<{ section: string; current_values: Record<string, unknown>; proposed_values: Record<string, unknown>; confirmation_required: boolean; high_risk_changes: { field: string; from: unknown; to: unknown; reason: string }[] }> { return request('/workbench/preferences/preview', { method: 'POST', body: JSON.stringify(body) }) }
-export function postPreferencesReset(): Promise<PreferencesResponse> { return request<PreferencesResponse>('/workbench/preferences/reset', { method: 'POST', body: '{}' }) }
+// ===== 0.8.1: Configuration (legacy visual adapter) =====
+type ProgramConfigurationValues = { values: Record<string, Record<string, unknown>> }
+const PROGRAM_SECTION_DOMAINS: Record<string, string[]> = { program_settings: ['ui', 'workspace', 'updates'], security_settings: ['security'], python_runtime_settings: ['python_defaults'] }
+function legacyPreferences(values: Record<string, Record<string, unknown>>): PreferencesResponse { return { preferences: { preferences_file_version: 2, program_settings: { ...(values.ui || {}), ...(values.workspace || {}), ...(values.updates || {}) }, compile_settings: {}, security_settings: values.security || {}, python_runtime_settings: values.python_defaults || {}, graph_settings: {}, other_settings: {} } } }
+function configurationOperations(section: string, values: Record<string, unknown>) {
+  const domains = PROGRAM_SECTION_DOMAINS[section] || []
+  const known = new Map<string, string>([['default_window_size', 'ui'], ['resource_language', 'ui'], ['default_project_directory', 'workspace'], ['recent_project_limit', 'workspace'], ['preferences_auto_save', 'workspace'], ['check_updates_on_startup', 'updates']])
+  return Object.entries(values).flatMap(([key, value]) => {
+    const domain = known.get(key) || (domains.includes('security') ? 'security' : domains.includes('python_defaults') ? 'python_defaults' : undefined)
+    return domain ? [{ op: 'replace', path: `/${domain}/${key}`, value }] : []
+  })
+}
+export async function fetchPreferences(): Promise<PreferencesResponse> { const result = await request<ProgramConfigurationValues>('/workbench/config/values?scope=program'); return legacyPreferences(result.values) }
+export async function postPreferences(body: PreferencesUpdateRequest): Promise<PreferencesResponse> { const result = await request<ProgramConfigurationValues>('/workbench/config/values', { method: 'PATCH', body: JSON.stringify({ scope: 'program', operations: configurationOperations(body.section, body.values), confirm_high_risk: body.confirm_high_risk === true }) }); return legacyPreferences(result.values) }
+export async function postPreferencesPreview(body: { section: string; values: Record<string, unknown> }): Promise<{ section: string; current_values: Record<string, unknown>; proposed_values: Record<string, unknown>; confirmation_required: boolean; high_risk_changes: { field: string; from: unknown; to: unknown; reason: string }[] }> { const result = await request<any>('/workbench/config/preview', { method: 'POST', body: JSON.stringify({ scope: 'program', operations: configurationOperations(body.section, body.values) }) }); return { section: body.section, current_values: legacyPreferences(result.current_values).preferences[body.section] as Record<string, unknown>, proposed_values: legacyPreferences(result.proposed_values).preferences[body.section] as Record<string, unknown>, confirmation_required: result.confirmation_required, high_risk_changes: (result.high_risk_changes || []).map((item: any) => ({ field: String(item.path || '').split('/').pop() || '', from: item.from, to: item.to, reason: 'changes high-risk configuration' })) } }
+export async function postPreferencesReset(): Promise<PreferencesResponse> { const result = await request<ProgramConfigurationValues>('/workbench/config/reset', { method: 'POST', body: JSON.stringify({ scope: 'program' }) }); return legacyPreferences(result.values) }
+
+export function fetchConfigValues<TValues = Record<string, unknown>>(scope: 'program' | 'project' | 'graph'): Promise<ConfigValuesResponse<TValues>> {
+  return request<ConfigValuesResponse<TValues>>(`/workbench/config/values?scope=${encodeURIComponent(scope)}`)
+}
+
+export function patchConfigValues<TValues = Record<string, unknown>>(body: ConfigPatchRequest): Promise<ConfigValuesResponse<TValues>> {
+  return request<ConfigValuesResponse<TValues>>('/workbench/config/values', {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  })
+}
+
+export function resetConfigValues<TValues = Record<string, unknown>>(scope: 'program' | 'project' | 'graph'): Promise<ConfigValuesResponse<TValues>> {
+  return request<ConfigValuesResponse<TValues>>('/workbench/config/reset', {
+    method: 'POST',
+    body: JSON.stringify({ scope }),
+  })
+}
 
 // ===== 0.7.2: Updates =====
 export function fetchUpdateStatus(): Promise<UpdateStatusResponse> {
@@ -376,10 +403,6 @@ export function postGraphUpgradeRecheck(): Promise<import('@/types/domains/api')
 }
 
 // ===== P16: Project Settings & .wcrun Package =====
-export function fetchProjectSettings(): Promise<ProjectSettingsResponse> { return request('/workbench/project/settings') }
-export function postProjectSettings(body: { project_settings: Record<string, unknown> }): Promise<ProjectSettingsResponse> { return request('/workbench/project/settings', { method: 'POST', body: JSON.stringify(body) }) }
-export function fetchRuntimeDefaults(): Promise<RuntimeDefaultsResponse> { return request('/workbench/project/runtime-defaults') }
-export function postRuntimeDefaults(body: { runtime_defaults: RuntimeDefaults }): Promise<RuntimeDefaultsUpdateResponse> { return request('/workbench/project/runtime-defaults', { method: 'POST', body: JSON.stringify(body) }) }
 export function postPackagePreflight(body?: { mode?: string; source_of_truth?: string }): Promise<PackagePreflightResponse> {
   return request('/workbench/project/package/preflight', {
     method: 'POST',
@@ -421,7 +444,7 @@ export function postPythonRuntimeExportBundle(body: { output_path: string; packa
 // ===== 0.7.4: Security Requirements =====
 
 export function postSecurityEnableRequired(body: { confirm_high_risk: boolean }): Promise<import('@/types/domains/api').SecurityEnableRequiredResponse> {
-  return request('/workbench/project/settings/security/enable-required', { method: 'POST', body: JSON.stringify(body) })
+  return request('/workbench/project/security/enable-required', { method: 'POST', body: JSON.stringify(body) })
 }
 
 export { ApiError }

@@ -195,15 +195,19 @@ def test_debug_history_store_never_exposes_partial_msgpack_during_concurrent_wri
     assert reader_payloads[0]["variable_snapshot"]["value"] in {"before", "after"}
 
 
-def test_debug_history_store_rejects_corrupted_index_instead_of_overwriting_it(
+def test_debug_history_store_quarantines_corrupted_index_and_recovers_empty(
     tmp_path: Path,
 ) -> None:
     history_root = tmp_path / "debug-history"
     history_root.mkdir(parents=True)
     index_path = history_root / "index.json"
-    index_path.write_text("{truncated", encoding="utf-8")
+    corrupted_payload = b"\x00" * 64
+    index_path.write_bytes(corrupted_payload)
 
-    with pytest.raises(ValueError, match="debug history index must be valid JSON"):
-        DebugSessionHistoryStore(project_root=tmp_path, retention_limit=10)
+    store = DebugSessionHistoryStore(project_root=tmp_path, retention_limit=10)
 
-    assert index_path.read_text(encoding="utf-8") == "{truncated"
+    assert store.list_session_summaries() == []
+    assert index_path.exists() is False
+    backup_paths = list(history_root.glob("index.json*.corrupt"))
+    assert len(backup_paths) == 1
+    assert backup_paths[0].read_bytes() == corrupted_payload

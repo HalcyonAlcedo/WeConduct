@@ -11,7 +11,7 @@ from threading import Thread
 from types import ModuleType
 from typing import Any
 
-from weconduct.api import build_api_server
+from weconduct.api import build_api_server, migrate_configuration_storage
 
 
 class DesktopShellDependencyError(RuntimeError):
@@ -186,6 +186,7 @@ def launch_desktop_shell(
             "preferences_path": str(preferences_path.resolve()),
             "ui_dist_path": str(ui_dist_path.resolve()),
         }
+    migrate_configuration_storage(preferences_path)
     preferred_width, preferred_height = _resolve_preferred_window_size(
         preferences_path,
         fallback_width=options.width,
@@ -334,10 +335,17 @@ def _resolve_preferred_window_size(
         return fallback_width, fallback_height
     if not isinstance(payload, dict):
         return fallback_width, fallback_height
-    program_settings = payload.get("program_settings")
-    if not isinstance(program_settings, dict):
+    values = payload.get("values")
+    if not (
+        payload.get("configuration_format_version") == 1
+        and payload.get("scope") == "program"
+        and isinstance(values, dict)
+    ):
         return fallback_width, fallback_height
-    default_window_size = program_settings.get("default_window_size")
+    ui_settings = values.get("ui")
+    if not isinstance(ui_settings, dict):
+        return fallback_width, fallback_height
+    default_window_size = ui_settings.get("default_window_size")
     if not isinstance(default_window_size, dict):
         return fallback_width, fallback_height
     width = default_window_size.get("width")

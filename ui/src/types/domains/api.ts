@@ -521,11 +521,10 @@ export interface WebControlConvertResponse {
 export interface ProjectSettings {
   project_settings_schema_version: number
   project_identity: { name: string; description?: string; version?: string; tags?: string[] }
-  runtime_defaults: { initial_variables: Record<string, unknown>; browser_config: Record<string, unknown>; execution_defaults: Record<string, unknown> }
   packaging: { default_output_name?: string }
   external_resources: Record<string, unknown>[]
   resource_policy: { embedded_resources: string[]; external_resource_bindings: Record<string, unknown>[] }
-  compile_profile: { source_of_truth: string; inject_project_runtime_defaults_into_main_flow_start: boolean }
+  compile_profile: { source_of_truth: string }
   debug_profile?: { history_retention_limit: number }
   /** 0.7-E: Python runtime profile (editable in project settings) */
   python_runtime_profile: PythonRuntimeProfile
@@ -538,26 +537,6 @@ export interface ProjectSettingsSnapshot {
   has_external_resources?: boolean; embedded_resource_count?: number; external_resource_count?: number
   package_default_output_name?: string
   main_graph_compatibility?: GraphCompatibilitySummary
-}
-
-export interface ProjectSettingsState {
-  loaded: boolean; source: string; project_file_path: string | null
-  session_dir: string | null; project_settings_path: string | null; is_dirty: boolean
-  /** 0.6.2: main graph compatibility summary */
-  main_graph_compatibility?: GraphCompatibilitySummary
-}
-
-export interface ProjectSettingsResponse { project_settings: ProjectSettings; state: ProjectSettingsState; python_runtime_summary?: PythonRuntimeSummary; security_requirement_summary?: SecurityRequirementSummary }
-
-export interface RuntimeDefaults {
-  initial_variables: Record<string, unknown>; browser_config: Record<string, unknown>; execution_defaults: Record<string, unknown>
-}
-
-export interface RuntimeDefaultsResponse { runtime_defaults: RuntimeDefaults; state: ProjectSettingsState }
-
-export interface RuntimeDefaultsUpdateResponse {
-  status: string; runtime_defaults: RuntimeDefaults
-  graph_projection_refresh?: { node_id: string; node_config: Record<string, unknown> }
 }
 
 export interface PackagePreflightEntry {
@@ -643,6 +622,50 @@ export interface PreferencesUpdateRequest {
   section: string
   values: Record<string, unknown>
   confirm_high_risk?: boolean
+}
+
+export type ConfigScope = 'program' | 'project' | 'graph'
+
+export interface ConfigValuesResponse<TValues = Record<string, unknown>> {
+  scope: ConfigScope
+  values: TValues
+}
+
+export interface ConfigPatchOperation {
+  op: 'replace' | 'remove'
+  path: string
+  value?: unknown
+}
+
+export interface ConfigPatchRequest {
+  scope: ConfigScope
+  operations: ConfigPatchOperation[]
+  confirm_high_risk?: boolean
+}
+
+export interface ProjectConfigRegistryValues {
+  identity?: {
+    name?: string
+  }
+  debug?: {
+    history_retention_limit?: number
+  }
+  resources?: {
+    external_resources?: Record<string, unknown>[]
+    embedded_resources?: string[]
+  }
+  packaging?: {
+    default_output_name?: string
+    include_embedded_resources?: boolean
+  }
+  python_profile?: Partial<PythonRuntimeProfile>
+}
+
+export interface GraphEntrypointRuntimeValues {
+  entrypoint_runtime?: {
+    initial_variables?: Record<string, unknown>
+    browser_config?: Record<string, unknown>
+  }
 }
 
 export interface PreferencesResponse {

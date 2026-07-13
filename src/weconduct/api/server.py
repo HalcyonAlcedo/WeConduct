@@ -13,10 +13,24 @@ from weconduct.application import (
     CompilationWorkbenchService,
     FileWorkspaceStateStore,
     GraphDocumentRevisionConflictError,
-    HighRiskPreferenceChangeRequiredError,
-    PreferencesService,
-    FilePreferencesStore,
     UpdateService,
+)
+from weconduct.application.configuration import (
+    ConfigurationService,
+    HighRiskConfigurationChangeRequiredError,
+)
+from weconduct.application.configuration.builtin_registry import (
+    build_builtin_configuration_registry,
+)
+from weconduct.application.configuration.migration import migrate_program_configuration
+from weconduct.application.configuration.migration import migrate_graph_configuration
+from weconduct.application.configuration.graph_repository import (
+    FileGraphConfigurationRepository,
+    WorkbenchGraphConfigurationRepository,
+)
+from weconduct.application.configuration.project_repository import ProjectConfigurationRepository
+from weconduct.application.configuration.program_repository import (
+    FileProgramConfigurationRepository,
 )
 from weconduct.application.compilation_workbench_service import (
     DIAGNOSTIC_SEVERITIES,
@@ -30,6 +44,26 @@ DEFAULT_WORKSPACE_STATE_PATH = (
 DEFAULT_PREFERENCES_PATH = Path(__file__).resolve().parents[3] / ".weconduct" / "preferences.json"
 DEFAULT_UI_DIST_PATH = Path(__file__).resolve().parents[3] / "ui" / "dist"
 DebugActionResult = TypeVar("DebugActionResult")
+
+
+def migrate_configuration_storage(preferences_path: str | Path) -> dict:
+    path = Path(preferences_path)
+    registry = build_builtin_configuration_registry()
+    program_repository = FileProgramConfigurationRepository(path)
+    legacy_preferences = program_repository.read_legacy_payload()
+    program_result = migrate_program_configuration(
+        repository=program_repository,
+        registry=registry,
+    )
+    graph_repository = FileGraphConfigurationRepository(
+        path.with_name("graph-preferences.json")
+    )
+    graph_result = migrate_graph_configuration(
+        repository=graph_repository,
+        registry=registry,
+        legacy_preferences=legacy_preferences,
+    )
+    return {"program": program_result, "graph": graph_result}
 
 
 class ApiServerClosingError(ValueError):
@@ -130,6 +164,30 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         if not self._require_api_token():
             return
 
+        if request_path == "/api/workbench/config/schema":
+            try:
+                scope = self._get_optional_query_param(query_params, "scope")
+                if not isinstance(scope, str) or not scope.strip():
+                    raise ValueError("query parameter must be a non-empty string: scope")
+                result = self._get_configuration_service().get_schema(scope=scope)
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
+        if request_path == "/api/workbench/config/values":
+            try:
+                scope = self._get_optional_query_param(query_params, "scope")
+                if not isinstance(scope, str) or not scope.strip():
+                    raise ValueError("query parameter must be a non-empty string: scope")
+                result = self._get_configuration_service().get_values(scope=scope)
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
         if self.path == "/api/workbench/snapshot":
             payload = dict(service.get_workbench_snapshot())
             payload["ui_hosting"] = self._build_ui_hosting_metadata()
@@ -199,30 +257,6 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if self.path == "/api/workbench/project/settings":
-            result = service.get_project_settings_document()
-            self._write_json(
-                HTTPStatus.OK,
-                {
-                    "project_settings": result["project_settings"],
-                    "security_requirement_summary": result.get("security_requirement_summary"),
-                    "python_runtime_summary": result.get("python_runtime_summary"),
-                    "state": result["state"],
-                },
-            )
-            return
-
-        if self.path == "/api/workbench/project/runtime-defaults":
-            result = service.get_project_settings_document()
-            self._write_json(
-                HTTPStatus.OK,
-                {
-                    "runtime_defaults": result["project_settings"]["runtime_defaults"],
-                    "state": result["state"],
-                },
-            )
-            return
-
         if self.path == "/api/workbench/project/python-runtime":
             result = service.get_project_python_runtime_document()
             self._write_json(
@@ -247,16 +281,6 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 self._write_invalid_request_error(exc)
                 return
             self._write_json(HTTPStatus.OK, result)
-            return
-
-        if self.path == "/api/workbench/preferences":
-            result = self._get_preferences_service().get_preferences_document()
-            self._write_json(
-                HTTPStatus.OK,
-                {
-                    "preferences": result,
-                },
-            )
             return
 
         if self.path == "/api/workbench/update/status":
@@ -478,6 +502,36 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
 
         self._write_not_found_error()
 
+    def do_PATCH(self) -> None:  # noqa: N802
+        if not self._require_api_token():
+            return
+        if urlparse(self.path).path != "/api/workbench/config/values":
+            self._write_not_found_error()
+            return
+        try:
+            payload = self._read_json_request_body()
+            scope = payload.get("scope")
+            operations = payload.get("operations")
+            confirm_high_risk = payload.get("confirm_high_risk", False)
+            if not isinstance(scope, str) or not scope.strip():
+                raise ValueError("field must be a non-empty string: scope")
+            if not isinstance(operations, list):
+                raise ValueError("field must be a JSON array: operations")
+            if not isinstance(confirm_high_risk, bool):
+                raise ValueError("field must be a boolean: confirm_high_risk")
+            result = self._get_configuration_service().apply(
+                scope=scope,
+                operations=operations,
+                confirm_high_risk=confirm_high_risk,
+            )
+        except HighRiskConfigurationChangeRequiredError as exc:
+            self._write_high_risk_configuration_confirmation_required_error(exc)
+            return
+        except ValueError as exc:
+            self._write_invalid_request_error(exc)
+            return
+        self._write_json(HTTPStatus.OK, result)
+
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/api/host/file-dialog":
             if not self._require_api_token():
@@ -650,6 +704,35 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     )
                 )
             self._write_json(status_code, response_payload)
+            return
+        if self.path == "/api/workbench/config/preview":
+            try:
+                payload = self._read_json_request_body()
+                scope = payload.get("scope")
+                operations = payload.get("operations")
+                if not isinstance(scope, str) or not scope.strip():
+                    raise ValueError("field must be a non-empty string: scope")
+                result = self._get_configuration_service().preview(
+                    scope=scope,
+                    operations=operations,
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
+        if self.path == "/api/workbench/config/reset":
+            try:
+                payload = self._read_json_request_body()
+                scope = payload.get("scope")
+                if not isinstance(scope, str) or not scope.strip():
+                    raise ValueError("field must be a non-empty string: scope")
+                result = self._get_configuration_service().reset(scope=scope)
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
             return
 
         if self.path.startswith("/api/workbench/runtime/") and self.path.endswith("/abort"):
@@ -932,46 +1015,6 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if self.path == "/api/workbench/project/settings":
-            try:
-                payload = self._read_json_request_body()
-                project_settings = payload.get("project_settings")
-                result = service.update_project_settings(project_settings=project_settings)
-            except ValueError as exc:
-                self._write_invalid_request_error(exc)
-                return
-            self._write_json(
-                HTTPStatus.OK,
-                {
-                    "project_settings": result["project_settings"],
-                    "python_runtime_summary": result.get("python_runtime_summary"),
-                    "state": result["state"],
-                },
-            )
-            return
-
-        if self.path == "/api/workbench/project/runtime-defaults":
-            try:
-                payload = self._read_json_request_body()
-                runtime_defaults = payload.get("runtime_defaults")
-                if not isinstance(runtime_defaults, dict):
-                    raise ValueError("field must be a JSON object: runtime_defaults")
-                result = service.update_project_runtime_defaults(
-                    runtime_defaults=runtime_defaults
-                )
-            except ValueError as exc:
-                self._write_invalid_request_error(exc)
-                return
-            self._write_json(
-                HTTPStatus.OK,
-                {
-                    "status": result["status"],
-                    "runtime_defaults": result["runtime_defaults"],
-                    "graph_projection_refresh": result["graph_projection_refresh"],
-                },
-            )
-            return
-
         if self.path == "/api/workbench/project/python-runtime/health-check":
             try:
                 self._read_optional_json_request_body()
@@ -1140,7 +1183,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.OK, result)
             return
 
-        if self.path == "/api/workbench/project/settings/security/enable-required":
+        if self.path == "/api/workbench/project/security/enable-required":
             try:
                 payload = self._read_json_request_body()
                 confirm_high_risk = payload.get("confirm_high_risk", False)
@@ -1149,44 +1192,13 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 result = service.enable_project_required_security_settings(
                     confirm_high_risk=confirm_high_risk,
                 )
-            except HighRiskPreferenceChangeRequiredError as exc:
-                self._write_high_risk_confirmation_required_error(exc)
+            except HighRiskConfigurationChangeRequiredError as exc:
+                self._write_high_risk_configuration_confirmation_required_error(exc)
                 return
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
                 return
             self._write_json(HTTPStatus.OK, result)
-            return
-
-        if self.path == "/api/workbench/preferences":
-            try:
-                payload = self._read_json_request_body()
-                section = payload.get("section")
-                values = payload.get("values")
-                confirm_high_risk = payload.get("confirm_high_risk", False)
-                if not isinstance(section, str) or not section.strip():
-                    raise ValueError("field must be a non-empty string: section")
-                if not isinstance(values, dict):
-                    raise ValueError("field must be a JSON object: values")
-                if not isinstance(confirm_high_risk, bool):
-                    raise ValueError("field must be a boolean when provided: confirm_high_risk")
-                result = self._get_preferences_service().update_preferences(
-                    section=section.strip(),
-                    values=values,
-                    confirm_high_risk=confirm_high_risk,
-                )
-            except HighRiskPreferenceChangeRequiredError as exc:
-                self._write_high_risk_confirmation_required_error(exc)
-                return
-            except ValueError as exc:
-                self._write_invalid_request_error(exc)
-                return
-            self._write_json(
-                HTTPStatus.OK,
-                {
-                    "preferences": result,
-                },
-            )
             return
 
         if self.path == "/api/workbench/update/check":
@@ -1257,25 +1269,6 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     "pending_graph_upgrade": result["pending_graph_upgrade"],
                 },
             )
-            return
-
-        if self.path == "/api/workbench/preferences/preview":
-            try:
-                payload = self._read_json_request_body()
-                section = payload.get("section")
-                values = payload.get("values")
-                if not isinstance(section, str) or not section.strip():
-                    raise ValueError("field must be a non-empty string: section")
-                if not isinstance(values, dict):
-                    raise ValueError("field must be a JSON object: values")
-                result = self._get_preferences_service().preview_preferences_update(
-                    section=section.strip(),
-                    values=values,
-                )
-            except ValueError as exc:
-                self._write_invalid_request_error(exc)
-                return
-            self._write_json(HTTPStatus.OK, result)
             return
 
         if self.path == "/api/workbench/project/convert-webcontrol":
@@ -1372,21 +1365,6 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     "status": result["status"],
                     "project": result["project"],
                     "graph_document": result["graph_document"].model_dump(),
-                },
-            )
-            return
-
-        if self.path == "/api/workbench/preferences/reset":
-            try:
-                self._read_json_request_body()
-                result = self._get_preferences_service().reset_preferences()
-            except ValueError as exc:
-                self._write_invalid_request_error(exc)
-                return
-            self._write_json(
-                HTTPStatus.OK,
-                {
-                    "preferences": result,
                 },
             )
             return
@@ -1886,16 +1864,16 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             payload,
         )
 
-    def _write_high_risk_confirmation_required_error(
+    def _write_high_risk_configuration_confirmation_required_error(
         self,
-        exc: HighRiskPreferenceChangeRequiredError,
+        exc: HighRiskConfigurationChangeRequiredError,
     ) -> None:
         self._write_json(
             HTTPStatus.CONFLICT,
             {
                 "error": "high_risk_confirmation_required",
                 "message": str(exc),
-                "section": exc.section,
+                "scope": exc.scope,
                 "requires_confirmation": True,
                 "high_risk_changes": [dict(item) for item in exc.high_risk_changes],
             },
@@ -2435,17 +2413,51 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             if not hasattr(self.server, "workbench_service"):
                 self.server.workbench_service = CompilationWorkbenchService(
                     state_store=FileWorkspaceStateStore(self._resolve_workspace_state_path()),
-                    preferences_service=self._get_preferences_service(),
+                    configuration_service=self._get_configuration_service(),
                 )
             return self.server.workbench_service
 
-    def _get_preferences_service(self) -> PreferencesService:
+    def _get_configuration_service(self) -> ConfigurationService:
         with self.server._service_lock:
-            if not hasattr(self.server, "preferences_service"):
-                self.server.preferences_service = PreferencesService(
-                    preferences_store=FilePreferencesStore(self._resolve_preferences_path())
+            if not hasattr(self.server, "configuration_service"):
+                repository = FileProgramConfigurationRepository(
+                    self._resolve_preferences_path()
                 )
-            return self.server.preferences_service
+                registry = build_builtin_configuration_registry()
+                legacy_preferences = repository.read_legacy_payload()
+                self.server.configuration_migration_result = migrate_program_configuration(
+                    repository=repository,
+                    registry=registry,
+                )
+                graph_repository = FileGraphConfigurationRepository(
+                    self._resolve_preferences_path().with_name("graph-preferences.json")
+                )
+                self.server.graph_configuration_migration_result = migrate_graph_configuration(
+                    repository=graph_repository,
+                    registry=registry,
+                    legacy_preferences=legacy_preferences,
+                )
+                graph_configuration_repository = WorkbenchGraphConfigurationRepository(
+                    editor_repository=graph_repository,
+                    get_entrypoint_runtime=lambda: (
+                        self.server.workbench_service.get_graph_entrypoint_runtime_configuration()
+                        if hasattr(self.server, "workbench_service")
+                        else {}
+                    ),
+                    update_entrypoint_runtime=lambda values: self._get_service().update_graph_entrypoint_runtime_configuration(values),
+                )
+                self.server.configuration_service = ConfigurationService(
+                    registry=registry,
+                    repositories={
+                        "program": repository,
+                        "graph": graph_configuration_repository,
+                        "project": ProjectConfigurationRepository(
+                            lambda: self._get_service().get_project_settings_document()["project_settings"],
+                            lambda document: self._get_service().update_project_settings(project_settings=document),
+                        ),
+                    },
+                )
+            return self.server.configuration_service
 
     def _get_update_service(self) -> UpdateService:
         if not hasattr(self.server, "update_service"):
@@ -2536,5 +2548,8 @@ def build_api_server(
         if ui_dist_path is not None
         else DEFAULT_UI_DIST_PATH
     )
+    migration_result = migrate_configuration_storage(server.preferences_path)
+    server.configuration_migration_result = migration_result["program"]
+    server.graph_configuration_migration_result = migration_result["graph"]
     server.api_token = api_token
     return server

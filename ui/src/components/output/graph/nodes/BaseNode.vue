@@ -8,6 +8,7 @@ import { postFileDialog, postGraphNormalize } from '@/services/api'
 import { useToastStore } from '@/stores/toastStore'
 import { PARAM_TEMPLATES } from '@/config/fieldTemplates'
 import type { FieldTemplate } from '@/config/fieldTemplates'
+import { useWorkspaceStore } from '@/stores/workspaceStore'
 
 const toast = useToastStore()
 
@@ -20,9 +21,18 @@ const props = defineProps<{
 const resource = useResourceStore()
 const workspace = useGraphWorkspaceStore()
 const debugStore = useDebugStore()
+const shellWorkspace = useWorkspaceStore()
 
 const showMedium = computed(() => (workspace.viewport.zoom) >= 0.35)
 const showDetail = computed(() => (workspace.viewport.zoom) >= 0.75)
+const graphPreferences = computed(() => {
+  const prefs = (shellWorkspace.snapshot as any)?.graph_workspace?.graph_preferences
+  return {
+    show_node_id_on_node: prefs?.show_node_id_on_node ?? true,
+    show_disabled_resource_badge: prefs?.show_disabled_resource_badge ?? true,
+    show_inline_config_summary: prefs?.show_inline_config_summary ?? true,
+  }
+})
 
 const nid = computed(() => props.data.nodeId || props.id)
 const debugNodeStatus = computed(() => {
@@ -230,11 +240,11 @@ async function applyBranches() {
     <!-- Header: full width -->
     <div class="vf-node-header">
       <span class="vf-node-kind">{{ kindLabel }}</span>
-      <span v-if="showDetail && isDisabled" class="vf-disabled-badge">禁用</span>
+      <span v-if="showDetail && graphPreferences.show_disabled_resource_badge && isDisabled" class="vf-disabled-badge">禁用</span>
       <span v-if="showDetail && isCompatibility" class="vf-compat-badge">兼容</span>
       <span v-if="showDetail && hasBP" class="vf-bp-badge">🔴</span>
       <span v-if="showDetail && hasRF" class="vf-rf-badge">◉</span>
-      <span v-if="showDetail && data.nodeId" class="vf-node-id">{{ data.nodeId }}</span>
+      <span v-if="showDetail && graphPreferences.show_node_id_on_node && data.nodeId" class="vf-node-id">{{ data.nodeId }}</span>
     </div>
 
     <!-- Body: three-column — left ports | content | right ports -->
@@ -249,7 +259,7 @@ async function applyBranches() {
       <div class="vf-node-main">
         <div class="vf-node-body">
           <span v-if="showMedium" class="vf-node-label">{{ data.label }}</span>
-          <div v-if="showDetail && configSections.length" class="vf-config">
+          <div v-if="showDetail && graphPreferences.show_inline_config_summary && configSections.length" class="vf-config">
             <template v-for="(sec, si) in configSections" :key="si">
               <div v-if="sec.section" class="vf-cfg-section">{{ sec.section }}</div>
               <div v-for="e in sec.rows" :key="e.path" class="vf-cfg-row">

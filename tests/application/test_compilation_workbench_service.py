@@ -7,10 +7,57 @@ from time import monotonic, sleep
 import weconduct.application.compilation_workbench_service as workbench_service_module
 from weconduct.application import CompilationWorkbenchService
 from weconduct.application.workspace_state_store import FileWorkspaceStateStore
-from weconduct.application.preferences_service import PreferencesService
-from weconduct.application.preferences_store import InMemoryPreferencesStore
+from weconduct.application.workspace_state_store import InMemoryWorkspaceStateStore
+from weconduct.application.configuration import (
+    ConfigurationService,
+    InMemoryConfigurationRepository,
+)
+from weconduct.application.configuration.builtin_registry import (
+    build_builtin_configuration_registry,
+)
 from weconduct.contracts import CompilationOutcome, Diagnostic, DiagnosticCatalog, create_initial_summary
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolate_application_data_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+
+
+def _build_test_configuration_service() -> ConfigurationService:
+    return ConfigurationService(
+        registry=build_builtin_configuration_registry(),
+        repositories={
+            "program": InMemoryConfigurationRepository(),
+            "graph": InMemoryConfigurationRepository(),
+            "project": InMemoryConfigurationRepository(),
+        },
+    )
+
+
+def _update_test_configuration(
+    configuration_service: ConfigurationService,
+    *,
+    section: str,
+    values: dict,
+    confirm_high_risk: bool = False,
+) -> None:
+    domain_by_section = {
+        "security_settings": "security",
+        "python_runtime_settings": "python_defaults",
+    }
+    domain = domain_by_section[section]
+    configuration_service.apply(
+        scope="program",
+        operations=[
+            {"op": "replace", "path": f"/{domain}/{key}", "value": value}
+            for key, value in values.items()
+        ],
+        confirm_high_risk=confirm_high_risk,
+    )
 
 
 class _AliveThread:
@@ -1624,11 +1671,11 @@ def test_workbench_service_returns_compilation_payload() -> None:
     assert result["view"]["stage_cards"][-1]["stage"] == "emit"
 
 
-def test_update_project_runtime_defaults_writes_back_main_flow_start_projection() -> None:
+def test_update_graph_entrypoint_runtime_defaults_writes_main_flow_start() -> None:
     service = CompilationWorkbenchService()
     service.save_graph_document(_build_minimal_workspace_graph(initial_variables={"username": "before"}))
 
-    update_result = service.update_project_runtime_defaults(
+    update_result = service.update_graph_entrypoint_runtime_defaults(
         runtime_defaults={
             "initial_variables": {"username": "after", "token": "abc"},
             "browser_config": {"headless": False},
@@ -1640,6 +1687,7 @@ def test_update_project_runtime_defaults_writes_back_main_flow_start_projection(
     )
     graph_document = service.get_graph_document()
     flow_start = next(node for node in graph_document["graph_model"].nodes if node.node_kind == "flow.start")
+    project_settings = service.get_project_settings_document()["project_settings"]
 
     assert update_result["status"] == "updated"
     assert flow_start.node_config["initial_variables"] == {"username": "after", "token": "abc"}
@@ -1648,6 +1696,62 @@ def test_update_project_runtime_defaults_writes_back_main_flow_start_projection(
         "default_timeout_ms": 45000,
         "default_retry_count": 2,
     }
+    assert "runtime_defaults" not in project_settings
+
+
+def test_workspace_state_migrates_legacy_runtime_defaults_into_flow_start_once() -> None:
+    store = InMemoryWorkspaceStateStore()
+    seed_service = CompilationWorkbenchService(state_store=store)
+    seed_service.save_graph_document(
+        _build_minimal_workspace_graph(initial_variables={"username": "graph"})
+    )
+    legacy_state = store.load()
+    assert legacy_state is not None
+    legacy_state["project_settings"]["runtime_defaults"] = {
+        "initial_variables": {"username": "legacy", "token": "abc"},
+        "browser_config": {"headless": False},
+        "execution_defaults": {"default_timeout_ms": 45000, "default_retry_count": 2},
+    }
+
+    migrated_store = InMemoryWorkspaceStateStore(legacy_state)
+    migrated_service = CompilationWorkbenchService(state_store=migrated_store)
+    migrated_settings = migrated_service.get_project_settings_document()["project_settings"]
+    graph_document = migrated_service.get_graph_document()["graph_model"]
+    flow_start = next(node for node in graph_document.nodes if node.node_kind == "flow.start")
+
+    assert "runtime_defaults" not in migrated_settings
+    assert flow_start.node_config["initial_variables"] == {
+        "username": "legacy",
+        "token": "abc",
+    }
+    assert "runtime_defaults" not in migrated_store.load()["project_settings"]
+
+
+def test_open_project_persists_legacy_runtime_defaults_migration(tmp_path: Path) -> None:
+    project_path = tmp_path / "legacy-runtime.weconduct.json"
+    seed_service = CompilationWorkbenchService()
+    seed_service.save_graph_document(
+        _build_minimal_workspace_graph(initial_variables={"username": "graph"})
+    )
+    seed_service.save_project_as(project_path=str(project_path))
+    storage_root = seed_service._resolve_project_storage_root(project_path)
+    settings_path = storage_root / "project-settings.json"
+    settings_payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    settings_payload["runtime_defaults"] = {
+        "initial_variables": {"username": "legacy"},
+        "browser_config": {"headless": False},
+        "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+    }
+    settings_path.write_text(json.dumps(settings_payload), encoding="utf-8")
+
+    loaded_service = CompilationWorkbenchService()
+    loaded_service.open_project(project_path=project_path)
+
+    migrated_settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    migrated_graph = json.loads((storage_root / "graphs" / "workspace.graph.json").read_text(encoding="utf-8"))
+    flow_start = next(node for node in migrated_graph["nodes"] if node["node_kind"] == "flow.start")
+    assert "runtime_defaults" not in migrated_settings
+    assert flow_start["node_config"]["initial_variables"] == {"username": "legacy"}
 
 
 def test_runtime_abort_interrupts_active_node_and_is_idempotent(monkeypatch) -> None:
@@ -1781,8 +1885,8 @@ def test_project_settings_default_debug_profile_history_retention_limit_is_ten()
 def test_loaded_wcrun_runtime_blocks_when_manifest_security_requirements_exceed_preferences(
     tmp_path: Path,
 ) -> None:
-    preferences_service = PreferencesService(preferences_store=InMemoryPreferencesStore())
-    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    configuration_service = _build_test_configuration_service()
+    service = CompilationWorkbenchService(configuration_service=configuration_service)
     graph_payload = _build_runtime_sensitive_workspace_graph()
     service.save_graph_document(graph_payload)
     project_path = tmp_path / "package-security.weconduct.json"
@@ -1798,7 +1902,7 @@ def test_loaded_wcrun_runtime_blocks_when_manifest_security_requirements_exceed_
         output_path=tmp_path / "package.wcrun",
     )
 
-    loaded_service = CompilationWorkbenchService(preferences_service=preferences_service)
+    loaded_service = CompilationWorkbenchService(configuration_service=configuration_service)
     loaded_service.load_project_package(package_path=build_result["package"]["output_path"])
     runtime_result = loaded_service.start_runtime_session(graph_document_payload=None)
     debug_prepare_result = loaded_service.prepare_debug_session(graph_document_payload=None)
@@ -1865,8 +1969,8 @@ def test_build_wcrun_manifest_derives_security_requirements_from_graph_and_proje
 def test_load_wcrun_uses_manifest_security_requirements_when_project_settings_do_not_define_them(
     tmp_path: Path,
 ) -> None:
-    preferences_service = PreferencesService(preferences_store=InMemoryPreferencesStore())
-    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    configuration_service = _build_test_configuration_service()
+    service = CompilationWorkbenchService(configuration_service=configuration_service)
     service.save_graph_document(_build_runtime_sensitive_workspace_graph())
     project_path = tmp_path / "derived-security-load.weconduct.json"
     service.save_project_as(project_path=str(project_path))
@@ -1882,7 +1986,7 @@ def test_load_wcrun_uses_manifest_security_requirements_when_project_settings_do
         output_path=tmp_path / "derived-security-load.wcrun",
     )
 
-    loaded_service = CompilationWorkbenchService(preferences_service=preferences_service)
+    loaded_service = CompilationWorkbenchService(configuration_service=configuration_service)
     load_result = loaded_service.load_project_package(package_path=build_result["package"]["output_path"])
     summary = load_result["security_requirement_summary"]
     blocked_fields = {
@@ -1910,7 +2014,7 @@ def test_load_project_package_projects_runtime_defaults_back_into_main_flow_star
         "browser_config": {"headless": False},
         "execution_defaults": {"default_timeout_ms": 45000, "default_retry_count": 2},
     }
-    service.update_project_runtime_defaults(runtime_defaults=runtime_defaults)
+    service.update_graph_entrypoint_runtime_defaults(runtime_defaults=runtime_defaults)
     build_result = service.build_project_package(
         mode="wcrun",
         source_of_truth="saved_project_only",
@@ -1949,9 +2053,12 @@ def test_load_project_package_preserves_runtime_default_relative_paths(
     )
 
     loaded_service = CompilationWorkbenchService()
-    load_result = loaded_service.load_project_package(package_path=build_result["package"]["output_path"])
-    loaded_settings = load_result["project_settings"]
-    loaded_initial_variables = loaded_settings["runtime_defaults"]["initial_variables"]
+    loaded_service.load_project_package(package_path=build_result["package"]["output_path"])
+    graph_document = loaded_service.get_graph_document()
+    flow_start = next(
+        node for node in graph_document["graph_model"].nodes if node.node_kind == "flow.start"
+    )
+    loaded_initial_variables = flow_start.node_config["initial_variables"]
 
     assert loaded_initial_variables["upload_file_path"] == "input/a.txt"
 
@@ -2009,15 +2116,16 @@ def test_loaded_wcrun_full_venv_runtime_uses_portable_bundled_python_payload(
 def test_loaded_wcrun_full_venv_python_run_recovers_from_stale_pyvenv_cfg(
     tmp_path: Path,
 ) -> None:
-    preferences_service = PreferencesService(preferences_store=InMemoryPreferencesStore())
-    preferences_service.update_preferences(
+    configuration_service = _build_test_configuration_service()
+    _update_test_configuration(
+        configuration_service,
         section="security_settings",
         values={
             "allow_python_execution": True,
         },
         confirm_high_risk=True,
     )
-    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    service = CompilationWorkbenchService(configuration_service=configuration_service)
     service.save_graph_document(_build_python_only_workspace_graph())
     project_path = tmp_path / "portable-fullvenv-pythonrun.weconduct.json"
     service.save_project_as(project_path=str(project_path))
@@ -2038,7 +2146,7 @@ def test_loaded_wcrun_full_venv_python_run_recovers_from_stale_pyvenv_cfg(
         output_path=tmp_path / "portable-fullvenv-pythonrun.wcrun",
     )
 
-    loaded_service = CompilationWorkbenchService(preferences_service=preferences_service)
+    loaded_service = CompilationWorkbenchService(configuration_service=configuration_service)
     load_result = loaded_service.load_project_package(package_path=build_result["package"]["output_path"])
     settings_document = loaded_service.get_project_settings_document()
     runtime_summary = settings_document["python_runtime_summary"]
@@ -2070,15 +2178,16 @@ def test_loaded_wcrun_full_venv_python_run_recovers_from_stale_pyvenv_cfg(
 def test_loaded_wcrun_full_venv_python_run_recovers_when_runtime_goes_stale_after_session_start(
     tmp_path: Path,
 ) -> None:
-    preferences_service = PreferencesService(preferences_store=InMemoryPreferencesStore())
-    preferences_service.update_preferences(
+    configuration_service = _build_test_configuration_service()
+    _update_test_configuration(
+        configuration_service,
         section="security_settings",
         values={
             "allow_python_execution": True,
         },
         confirm_high_risk=True,
     )
-    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    service = CompilationWorkbenchService(configuration_service=configuration_service)
     service.save_graph_document(_build_python_only_workspace_graph())
     project_path = tmp_path / "portable-fullvenv-pythonrun-late-stale.weconduct.json"
     service.save_project_as(project_path=str(project_path))
@@ -2099,7 +2208,7 @@ def test_loaded_wcrun_full_venv_python_run_recovers_when_runtime_goes_stale_afte
         output_path=tmp_path / "portable-fullvenv-pythonrun-late-stale.wcrun",
     )
 
-    loaded_service = CompilationWorkbenchService(preferences_service=preferences_service)
+    loaded_service = CompilationWorkbenchService(configuration_service=configuration_service)
     load_result = loaded_service.load_project_package(package_path=build_result["package"]["output_path"])
     settings_document = loaded_service.get_project_settings_document()
     runtime_summary = settings_document["python_runtime_summary"]
@@ -2133,15 +2242,16 @@ def test_loaded_wcrun_full_venv_python_run_recovers_when_runtime_goes_stale_afte
 def test_loaded_wcrun_full_venv_python_run_falls_back_when_launcher_exists_but_is_not_launchable(
     tmp_path: Path,
 ) -> None:
-    preferences_service = PreferencesService(preferences_store=InMemoryPreferencesStore())
-    preferences_service.update_preferences(
+    configuration_service = _build_test_configuration_service()
+    _update_test_configuration(
+        configuration_service,
         section="security_settings",
         values={
             "allow_python_execution": True,
         },
         confirm_high_risk=True,
     )
-    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    service = CompilationWorkbenchService(configuration_service=configuration_service)
     service.save_graph_document(_build_python_only_workspace_graph())
     project_path = tmp_path / "portable-fullvenv-pythonrun-bad-launcher.weconduct.json"
     service.save_project_as(project_path=str(project_path))
@@ -2162,7 +2272,7 @@ def test_loaded_wcrun_full_venv_python_run_falls_back_when_launcher_exists_but_i
         output_path=tmp_path / "portable-fullvenv-pythonrun-bad-launcher.wcrun",
     )
 
-    loaded_service = CompilationWorkbenchService(preferences_service=preferences_service)
+    loaded_service = CompilationWorkbenchService(configuration_service=configuration_service)
     load_result = loaded_service.load_project_package(package_path=build_result["package"]["output_path"])
     settings_document = loaded_service.get_project_settings_document()
     runtime_summary = settings_document["python_runtime_summary"]
@@ -2198,15 +2308,16 @@ def test_loaded_wcrun_full_venv_python_run_falls_back_when_launcher_exists_but_i
 def test_loaded_wcrun_full_venv_python_run_fallback_preserves_third_party_dependencies(
     tmp_path: Path,
 ) -> None:
-    preferences_service = PreferencesService(preferences_store=InMemoryPreferencesStore())
-    preferences_service.update_preferences(
+    configuration_service = _build_test_configuration_service()
+    _update_test_configuration(
+        configuration_service,
         section="security_settings",
         values={
             "allow_python_execution": True,
         },
         confirm_high_risk=True,
     )
-    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    service = CompilationWorkbenchService(configuration_service=configuration_service)
     service.save_graph_document(_build_python_only_workspace_graph())
     project_path = tmp_path / "portable-fullvenv-pythonrun-reportlab.weconduct.json"
     service.save_project_as(project_path=str(project_path))
@@ -2237,7 +2348,7 @@ def test_loaded_wcrun_full_venv_python_run_fallback_preserves_third_party_depend
         output_path=tmp_path / "portable-fullvenv-pythonrun-reportlab.wcrun",
     )
 
-    loaded_service = CompilationWorkbenchService(preferences_service=preferences_service)
+    loaded_service = CompilationWorkbenchService(configuration_service=configuration_service)
     load_result = loaded_service.load_project_package(package_path=build_result["package"]["output_path"])
     settings_document = loaded_service.get_project_settings_document()
     runtime_summary = settings_document["python_runtime_summary"]
@@ -2274,15 +2385,16 @@ def test_loaded_wcrun_full_venv_python_run_reports_process_details_when_child_re
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    preferences_service = PreferencesService(preferences_store=InMemoryPreferencesStore())
-    preferences_service.update_preferences(
+    configuration_service = _build_test_configuration_service()
+    _update_test_configuration(
+        configuration_service,
         section="security_settings",
         values={
             "allow_python_execution": True,
         },
         confirm_high_risk=True,
     )
-    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    service = CompilationWorkbenchService(configuration_service=configuration_service)
     service.save_graph_document(_build_python_only_workspace_graph())
     project_path = tmp_path / "portable-fullvenv-pythonrun-missing-output.weconduct.json"
     service.save_project_as(project_path=str(project_path))
@@ -2303,7 +2415,7 @@ def test_loaded_wcrun_full_venv_python_run_reports_process_details_when_child_re
         output_path=tmp_path / "portable-fullvenv-pythonrun-missing-output.wcrun",
     )
 
-    loaded_service = CompilationWorkbenchService(preferences_service=preferences_service)
+    loaded_service = CompilationWorkbenchService(configuration_service=configuration_service)
     load_result = loaded_service.load_project_package(package_path=build_result["package"]["output_path"])
     settings_document = loaded_service.get_project_settings_document()
     runtime_summary = settings_document["python_runtime_summary"]
@@ -2323,20 +2435,25 @@ def test_loaded_wcrun_full_venv_python_run_reports_process_details_when_child_re
         encoding="utf-8",
     )
 
-    real_run = subprocess.run
+    class FakeProcess:
+        def __init__(self, args, **kwargs) -> None:
+            self.args = args
+            self.returncode = 23
 
-    def fake_run(*args, **kwargs):
-        argv = args[0] if args else kwargs.get("args", [])
-        if isinstance(argv, list) and len(argv) >= 2 and str(argv[1]).endswith("runner.py"):
-            return subprocess.CompletedProcess(
-                args=argv,
-                returncode=23,
-                stdout="child stdout probe",
-                stderr="child stderr probe",
-            )
-        return real_run(*args, **kwargs)
+        def communicate(self, timeout=None) -> tuple[str, str]:
+            return "child stdout probe", "child stderr probe"
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+        def poll(self) -> int:
+            return self.returncode
+
+    real_popen = subprocess.Popen
+
+    def fake_popen(args, **kwargs):
+        if isinstance(args, list) and any(str(item).endswith("runner.py") for item in args):
+            return FakeProcess(args, **kwargs)
+        return real_popen(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
     session_result = loaded_service.start_runtime_session(graph_document_payload=None)
     assert session_result["status"] == "started"
@@ -2360,8 +2477,8 @@ def test_loaded_wcrun_full_venv_python_run_reports_process_details_when_child_re
 def test_project_security_settings_report_blocked_entries_and_can_be_enabled(
     tmp_path: Path,
 ) -> None:
-    preferences_service = PreferencesService(preferences_store=InMemoryPreferencesStore())
-    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    configuration_service = _build_test_configuration_service()
+    service = CompilationWorkbenchService(configuration_service=configuration_service)
     service.save_graph_document(_build_minimal_workspace_graph(initial_variables={"username": "before"}))
     project_path = tmp_path / "package-security.weconduct.json"
     service.save_project_as(project_path=str(project_path))
@@ -2374,10 +2491,12 @@ def test_project_security_settings_report_blocked_entries_and_can_be_enabled(
     service.update_project_settings(project_settings=project_settings)
 
     summary_before = service.get_project_settings_document()["security_requirement_summary"]
+    snapshot_summary = service.get_workbench_snapshot()["security_requirement_summary"]
     enable_result = service.enable_project_required_security_settings(confirm_high_risk=True)
     summary_after = enable_result["security_requirement_summary"]
 
     assert summary_before["ready"] is False
+    assert snapshot_summary == summary_before
     assert summary_before["blocked_count"] >= 1
     assert enable_result["status"] == "updated"
     assert summary_after["ready"] is True
@@ -3138,12 +3257,13 @@ def test_apply_debug_session_variables_in_immediate_mode_does_not_leave_pending_
 
 
 def test_debug_session_inherits_variable_apply_mode_from_software_preferences() -> None:
-    preferences_service = PreferencesService(preferences_store=InMemoryPreferencesStore())
-    preferences_service.update_preferences(
+    configuration_service = _build_test_configuration_service()
+    _update_test_configuration(
+        configuration_service,
         section="python_runtime_settings",
         values={"variable_apply_mode": "immediate"},
     )
-    service = CompilationWorkbenchService(preferences_service=preferences_service)
+    service = CompilationWorkbenchService(configuration_service=configuration_service)
     service.save_graph_document(
         _build_debug_execution_workspace_graph(start_breakpoint_before=True)
     )

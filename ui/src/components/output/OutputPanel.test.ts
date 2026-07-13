@@ -92,6 +92,13 @@ vi.mock('@/stores/debugStore', () => ({
 vi.mock('@/stores/graphWorkspaceStore', () => ({
   useGraphWorkspaceStore: () => workspaceState,
 }))
+vi.mock('@/stores/workspaceStore', () => ({
+  useWorkspaceStore: () => ({
+    snapshot: {
+      graph_workspace: { graph_preferences: {} },
+    },
+  }),
+}))
 vi.mock('@/stores/graphStore', () => ({
   useGraphStore: () => graphStoreState,
 }))

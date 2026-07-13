@@ -41,8 +41,19 @@ from weconduct.contracts import (
     create_empty_graph_model,
     create_initial_summary,
 )
-from weconduct.application.preferences_service import PreferencesService
-from weconduct.application.preferences_store import _normalize_security_settings
+from weconduct.application.configuration import (
+    ConfigurationService,
+    InMemoryConfigurationRepository,
+)
+from weconduct.application.configuration.builtin_registry import (
+    build_builtin_configuration_registry,
+)
+from weconduct.application.configuration.graph_repository import (
+    WorkbenchGraphConfigurationRepository,
+)
+from weconduct.application.configuration.project_repository import (
+    ProjectConfigurationRepository,
+)
 from weconduct.application.legacy_webcontrol_converter import (
     build_conversion_report,
     convert_legacy_webcontrol_project,
@@ -74,7 +85,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
-CURRENT_API_VERSION = "0.8.0"
+CURRENT_API_VERSION = "0.8.1"
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
@@ -237,12 +248,12 @@ class CompilationWorkbenchService:
         self,
         *,
         state_store: WorkspaceStateStore | None = None,
-        preferences_service: PreferencesService | None = None,
+        configuration_service: ConfigurationService | None = None,
         runtime_stream_broker: RuntimeSessionStreamBroker | None = None,
     ) -> None:
         self._compiler = CompilerFacade()
         self._state_store = state_store or InMemoryWorkspaceStateStore()
-        self._preferences_service = preferences_service or PreferencesService()
+        self._configuration_service = configuration_service or self._build_default_configuration_service()
         self._runtime_stream_broker = runtime_stream_broker or RuntimeSessionStreamBroker()
         self._project_python_runtime_manager = ProjectPythonRuntimeManager(
             app_data_root=self._resolve_application_data_root()
@@ -277,6 +288,53 @@ class CompilationWorkbenchService:
         self._state = state
         self._allow_dirty_workspace_recovery_conversion = False
 
+    def _build_default_configuration_service(self) -> ConfigurationService:
+        editor_repository = InMemoryConfigurationRepository()
+        return ConfigurationService(
+            registry=build_builtin_configuration_registry(),
+            repositories={
+                "program": InMemoryConfigurationRepository(),
+                "graph": WorkbenchGraphConfigurationRepository(
+                    editor_repository=editor_repository,
+                    get_entrypoint_runtime=self.get_graph_entrypoint_runtime_configuration,
+                    update_entrypoint_runtime=self.update_graph_entrypoint_runtime_configuration,
+                ),
+                "project": ProjectConfigurationRepository(
+                    lambda: self._extract_project_settings(getattr(self, "_state", None)),
+                    lambda document: self.update_project_settings(project_settings=document),
+                ),
+            },
+        )
+
+    def _get_configuration_domain(self, *, scope: str, domain: str) -> dict:
+        try:
+            values = self._configuration_service.get_values(scope=scope)["values"]
+        except ValueError:
+            return {}
+        domain_values = values.get(domain)
+        return deepcopy(domain_values) if isinstance(domain_values, dict) else {}
+
+    def _build_preferences_snapshot(self) -> dict:
+        return {
+            "preferences_file_version": 3,
+            "program_settings": {
+                **self._get_configuration_domain(scope="program", domain="ui"),
+                **self._get_configuration_domain(scope="program", domain="workspace"),
+                **self._get_configuration_domain(scope="program", domain="updates"),
+            },
+            "compile_settings": {},
+            "security_settings": self._get_configuration_domain(
+                scope="program", domain="security"
+            ),
+            "python_runtime_settings": self._get_configuration_domain(
+                scope="program", domain="python_defaults"
+            ),
+            "graph_settings": self._get_configuration_domain(
+                scope="graph", domain="editor_preferences"
+            ),
+            "other_settings": {},
+        }
+
     def get_workbench_snapshot(self) -> dict:
         self._refresh_state_from_store()
         graph_model = self._get_graph_document_model()
@@ -284,8 +342,9 @@ class CompilationWorkbenchService:
             "workbench": self._build_workbench_metadata(),
             "project": self._build_project_metadata(),
             "project_settings": self._build_project_settings_snapshot_summary(),
+            "security_requirement_summary": self._build_project_security_requirement_summary(),
             "graph_workspace": self._build_graph_workspace_metadata(graph_model),
-            "preferences": self._preferences_service.get_preferences_document(),
+            "preferences": self._build_preferences_snapshot(),
             "capabilities": self._build_capabilities_metadata(),
             "entrypoints": self._build_entrypoints_metadata(),
             "compiler": {
@@ -389,21 +448,18 @@ class CompilationWorkbenchService:
         self._persist_project_settings_file_if_bound()
         return self.get_project_settings_document()
 
-    def update_project_runtime_defaults(self, *, runtime_defaults: dict) -> dict:
+    def update_graph_entrypoint_runtime_defaults(self, *, runtime_defaults: dict) -> dict:
         normalized_runtime_defaults = self._normalize_runtime_defaults_payload(runtime_defaults)
 
         def mutation(state: dict | None) -> dict:
             current_state, _ = self._normalize_workspace_state(state)
-            project_settings = self._extract_project_settings(current_state)
-            project_settings["runtime_defaults"] = normalized_runtime_defaults
-            current_state["project_settings"] = self._normalize_project_settings_document(project_settings)
             graph_document = (
                 deepcopy(current_state.get("graph_document"))
                 if isinstance(current_state.get("graph_document"), dict)
                 else None
             )
             if isinstance(graph_document, dict):
-                current_state["graph_document"] = self._project_runtime_defaults_into_main_flow_start(
+                current_state["graph_document"] = self._write_entrypoint_runtime_to_main_flow_start(
                     graph_document_payload=graph_document,
                     runtime_defaults=normalized_runtime_defaults,
                 )
@@ -415,6 +471,9 @@ class CompilationWorkbenchService:
 
         self._state = self._state_store.mutate(mutation)
         self._persist_project_settings_file_if_bound()
+        project_file_path = self._get_project_runtime().get("project_file_path")
+        if isinstance(project_file_path, str) and project_file_path.strip():
+            self._save_project_to_path(Path(project_file_path))
         graph_projection_refresh = {
             "node_id": "node-start",
             "node_config": {
@@ -428,6 +487,27 @@ class CompilationWorkbenchService:
             "runtime_defaults": deepcopy(normalized_runtime_defaults),
             "graph_projection_refresh": graph_projection_refresh,
         }
+
+    def get_graph_entrypoint_runtime_configuration(self) -> dict:
+        runtime_defaults = self._extract_runtime_defaults_from_graph_payload(
+            self._state.get("graph_document")
+        )
+        return {
+            "initial_variables": deepcopy(runtime_defaults["initial_variables"]),
+            "browser_config": deepcopy(runtime_defaults["browser_config"]),
+        }
+
+    def update_graph_entrypoint_runtime_configuration(self, values: dict) -> None:
+        if not isinstance(values, dict):
+            raise ValueError("graph entrypoint runtime configuration must be a JSON object")
+        self._refresh_state_from_store()
+        runtime_defaults = self._extract_runtime_defaults_from_graph_model(
+            self._get_graph_document_model()
+        )
+        for key in ("initial_variables", "browser_config"):
+            if key in values:
+                runtime_defaults[key] = deepcopy(values[key])
+        self.update_graph_entrypoint_runtime_defaults(runtime_defaults=runtime_defaults)
 
     def _persist_project_settings_file_if_bound(self) -> None:
         project_runtime = self._extract_project_runtime(self._state)
@@ -458,16 +538,9 @@ class CompilationWorkbenchService:
             result_entries.append(payload)
 
         project_settings = package_project_view["project_settings"]
-        runtime_defaults = (
-            project_settings.get("runtime_defaults")
-            if isinstance(project_settings.get("runtime_defaults"), dict)
-            else {}
-        )
-        initial_variables = (
-            runtime_defaults.get("initial_variables")
-            if isinstance(runtime_defaults.get("initial_variables"), dict)
-            else {}
-        )
+        initial_variables = self._extract_runtime_defaults_from_graph_model(
+            graph_model
+        )["initial_variables"]
 
         external_resources = project_settings.get("external_resources")
         if isinstance(external_resources, list):
@@ -906,17 +979,18 @@ class CompilationWorkbenchService:
 
         def mutation(state: dict | None) -> dict:
             current_state, _ = self._normalize_workspace_state(state)
-            current_settings = self._extract_project_settings(current_state)
-            runtime_defaults = self._normalize_runtime_defaults_payload(
-                current_settings.get("runtime_defaults")
-            )
+            graph_document = deepcopy(current_state.get("graph_document"))
+            graph_model = GraphModel.model_validate(graph_document)
+            runtime_defaults = self._extract_runtime_defaults_from_graph_model(graph_model)
             runtime_defaults["initial_variables"][target_name.strip()] = normalized_value
-            current_settings["runtime_defaults"] = runtime_defaults
-            current_state["project_settings"] = self._normalize_project_settings_document(current_settings)
+            current_state["graph_document"] = self._write_entrypoint_runtime_to_main_flow_start(
+                graph_document_payload=graph_document,
+                runtime_defaults=runtime_defaults,
+            )
             return current_state
 
         self._state = self._state_store.mutate(mutation)
-        updated_settings = self.get_project_settings_document()["project_settings"]
+        updated_runtime = self._extract_runtime_defaults_from_workspace_graph()
         return {
             "status": "bound",
             "binding": {
@@ -924,7 +998,7 @@ class CompilationWorkbenchService:
                 "target_name": target_name.strip(),
                 "value": normalized_value,
             },
-            "runtime_defaults": deepcopy(updated_settings["runtime_defaults"]),
+            "entrypoint_runtime": deepcopy(updated_runtime),
         }
 
     def get_recent_projects_document(self) -> dict:
@@ -2707,6 +2781,8 @@ class CompilationWorkbenchService:
             return current_state
 
         self._state = self._state_store.mutate(mutation)
+        if project_document.get("project_configuration_migrated") is True:
+            self._write_project_storage_layout(resolved_path)
         graph_model = self._get_graph_document_model()
         return {
             "status": "opened",
@@ -3453,7 +3529,7 @@ class CompilationWorkbenchService:
     def _build_temporary_project_conversion_service(self) -> "CompilationWorkbenchService":
         return CompilationWorkbenchService(
             state_store=InMemoryWorkspaceStateStore(),
-            preferences_service=self._preferences_service,
+            configuration_service=self._configuration_service,
         )
 
     def set_resource_enabled(self, *, resource_id: str, enabled: bool) -> dict:
@@ -5712,6 +5788,7 @@ class CompilationWorkbenchService:
                 allowed_path_roots=tuple(parent_runtime_context.allowed_path_roots),
                 runtime_settings=deepcopy(parent_runtime_context.runtime_settings),
                 cancellation_context=parent_runtime_context.cancellation_context,
+                owns_cancellation_context=False,
             )
             child_context.browser_runtime = parent_runtime_context.browser_runtime
         child_context.variables.update(inputs)
@@ -6600,9 +6677,10 @@ class CompilationWorkbenchService:
                 "event_log": event_log,
             }
         finally:
-            if child_context.browser_runtime is parent_runtime_context.browser_runtime:
-                child_context.browser_runtime = {}
-            child_context.close()
+            if child_context is not parent_runtime_context:
+                if child_context.browser_runtime is parent_runtime_context.browser_runtime:
+                    child_context.browser_runtime = {}
+                child_context.close()
 
     def _get_component_call_stack(self, runtime_context: RuntimeContext) -> list[str]:
         call_stack = runtime_context.flow_runtime.get("component_call_stack", [])
@@ -9095,10 +9173,9 @@ class CompilationWorkbenchService:
         return "object"
 
     def _get_debug_variable_apply_mode(self) -> str:
-        preferences = self._preferences_service.get_preferences_document()
-        python_runtime_settings = preferences.get("python_runtime_settings")
-        if not isinstance(python_runtime_settings, dict):
-            return "immediate"
+        python_runtime_settings = self._get_configuration_domain(
+            scope="program", domain="python_defaults"
+        )
         apply_mode = python_runtime_settings.get("variable_apply_mode", "immediate")
         return apply_mode if apply_mode in {"staged", "immediate"} else "immediate"
 
@@ -9848,8 +9925,7 @@ class CompilationWorkbenchService:
             "graph_document": "/api/workbench/graph",
             "graph_source_projection": "/api/workbench/graph/source-projection",
             "project_document": "/api/workbench/project",
-            "project_settings": "/api/workbench/project/settings",
-            "project_runtime_defaults": "/api/workbench/project/runtime-defaults",
+            "configuration_values": "/api/workbench/config/values",
             "project_documents": "/api/workbench/project/documents",
             "recent_projects": "/api/workbench/recent-projects",
             "project_new_action": "/api/workbench/project/new",
@@ -10717,9 +10793,9 @@ class CompilationWorkbenchService:
         return existing_dump != normalized_ports
 
     def _resolve_resource_display_name(self, resource: dict) -> str:
-        preferences = self._preferences_service.get_preferences_document()
-        program_settings = preferences.get("program_settings", {})
-        preferred_locale = program_settings.get("resource_language")
+        preferred_locale = self._get_configuration_domain(
+            scope="program", domain="ui"
+        ).get("resource_language")
         display_name_i18n = resource.get("display_name_i18n", {})
         if (
             isinstance(preferred_locale, str)
@@ -10804,9 +10880,9 @@ class CompilationWorkbenchService:
             projection = None
             if graph_model.graph_model_id == "graph:workspace" and node.node_kind == "flow.start":
                 projection = {
-                    "kind": "project_runtime_defaults",
+                    "kind": "graph_entrypoint_runtime",
                     "enabled": True,
-                    "source": "project_settings.runtime_defaults",
+                    "source": "flow.start.node_config",
                 }
             nodes_by_id[node.node_id] = {
                 "node_id": node.node_id,
@@ -12789,6 +12865,13 @@ class CompilationWorkbenchService:
             if normalized_runtime != state["project_runtime"]:
                 state["project_runtime"] = normalized_runtime
                 changed = True
+        raw_project_settings = state.get("project_settings")
+        legacy_runtime_defaults = (
+            deepcopy(raw_project_settings.get("runtime_defaults"))
+            if isinstance(raw_project_settings, dict)
+            and isinstance(raw_project_settings.get("runtime_defaults"), dict)
+            else None
+        )
         normalized_project_settings = self._extract_project_settings(state)
         if normalized_project_settings != state.get("project_settings"):
             state["project_settings"] = normalized_project_settings
@@ -12800,22 +12883,12 @@ class CompilationWorkbenchService:
             except ValidationError:
                 graph_model = None
             if graph_model is not None:
-                merged_project_settings = self._merge_runtime_defaults_with_graph_backfill(
-                    project_settings_payload=state.get("project_settings"),
-                    graph_model=graph_model,
-                    state=state,
-                )
-                if merged_project_settings != state.get("project_settings"):
-                    state["project_settings"] = merged_project_settings
-                    changed = True
-                projected_graph_document = self._project_runtime_defaults_into_main_flow_start(
-                    graph_document_payload=graph_document_payload,
-                    runtime_defaults=(
-                        merged_project_settings.get("runtime_defaults")
-                        if isinstance(merged_project_settings, dict)
-                        else None
-                    ),
-                )
+                projected_graph_document = graph_document_payload
+                if legacy_runtime_defaults is not None:
+                    projected_graph_document = self._write_entrypoint_runtime_to_main_flow_start(
+                        graph_document_payload=graph_document_payload,
+                        runtime_defaults=legacy_runtime_defaults,
+                    )
                 if projected_graph_document != graph_document_payload:
                     state["graph_document"] = projected_graph_document
                     changed = True
@@ -13145,18 +13218,11 @@ class CompilationWorkbenchService:
             resolved_downloads_root = downloads_root.resolve()
             if resolved_downloads_root not in roots:
                 roots.append(resolved_downloads_root)
-        preferences = self._preferences_service.get_preferences_document()
-        security_settings = preferences.get("security_settings")
-        file_access_scope = (
-            security_settings.get("file_access_scope", "restricted")
-            if isinstance(security_settings, dict)
-            else "restricted"
+        security_settings = self._get_configuration_domain(
+            scope="program", domain="security"
         )
-        raw_allowed_roots = (
-            security_settings.get("file_access_allowed_roots", [])
-            if isinstance(security_settings, dict)
-            else []
-        )
+        file_access_scope = security_settings.get("file_access_scope", "restricted")
+        raw_allowed_roots = security_settings.get("file_access_allowed_roots", [])
         if file_access_scope == "custom_roots" and isinstance(raw_allowed_roots, list):
             for raw_root in raw_allowed_roots:
                 if not isinstance(raw_root, str) or not raw_root.strip():
@@ -13190,7 +13256,6 @@ class CompilationWorkbenchService:
         project_id: str,
         project_name: str,
         project_file_path: str | None,
-        runtime_defaults: dict | None = None,
     ) -> dict:
         python_runtime_profile = self._build_default_project_python_runtime_profile()
         if project_file_path:
@@ -13208,7 +13273,6 @@ class CompilationWorkbenchService:
                 "author": "",
                 "tags": [],
             },
-            "runtime_defaults": self._normalize_runtime_defaults_payload(runtime_defaults),
             "security_settings": self._build_initial_project_security_settings_document(),
             "debug_profile": self._build_initial_project_debug_profile_document(),
             "python_runtime_profile": python_runtime_profile,
@@ -13224,10 +13288,7 @@ class CompilationWorkbenchService:
                 "embedded_resources": [],
                 "external_resource_bindings": [],
             },
-            "compile_profile": {
-                "source_of_truth": "saved_project_only",
-                "inject_project_runtime_defaults_into_main_flow_start": True,
-            },
+            "compile_profile": {"source_of_truth": "saved_project_only"},
         }
 
     def _build_initial_project_debug_profile_document(self) -> dict:
@@ -13252,14 +13313,8 @@ class CompilationWorkbenchService:
 
     def _build_default_project_python_runtime_profile(self) -> dict:
         defaults = build_default_python_runtime_profile()
-        try:
-            preferences = self._preferences_service.get_preferences_document()
-        except ValueError:
-            preferences = {}
-        runtime_settings = (
-            preferences.get("python_runtime_settings")
-            if isinstance(preferences, dict) and isinstance(preferences.get("python_runtime_settings"), dict)
-            else {}
+        runtime_settings = self._get_configuration_domain(
+            scope="program", domain="python_defaults"
         )
         defaults["python_version_spec"] = runtime_settings.get(
             "default_python_version_spec",
@@ -13301,71 +13356,19 @@ class CompilationWorkbenchService:
             }
         )
 
-    def _merge_runtime_defaults_with_graph_backfill(
-        self,
-        *,
-        project_settings_payload: dict | None,
-        graph_model: GraphModel,
-        state: dict | None = None,
-    ) -> dict:
-        normalized_settings = self._normalize_project_settings_document_for_state(
-            state,
-            project_settings_payload,
-        )
-        current_runtime_defaults = (
-            normalized_settings.get("runtime_defaults")
-            if isinstance(normalized_settings.get("runtime_defaults"), dict)
-            else {}
-        )
-        graph_runtime_defaults = self._extract_runtime_defaults_from_graph_model(graph_model)
+    def _extract_runtime_defaults_from_graph_payload(self, payload: object) -> dict:
+        if not isinstance(payload, dict):
+            return self._normalize_runtime_defaults_payload(None)
+        try:
+            graph_model = GraphModel.model_validate(payload)
+        except ValidationError:
+            return self._normalize_runtime_defaults_payload(None)
+        return self._extract_runtime_defaults_from_graph_model(graph_model)
 
-        current_initial_variables = (
-            deepcopy(current_runtime_defaults.get("initial_variables"))
-            if isinstance(current_runtime_defaults.get("initial_variables"), dict)
-            else {}
+    def _extract_package_runtime_defaults(self, package_document: dict) -> dict:
+        return self._extract_runtime_defaults_from_graph_payload(
+            package_document.get("graph_document")
         )
-        graph_initial_variables = (
-            deepcopy(graph_runtime_defaults.get("initial_variables"))
-            if isinstance(graph_runtime_defaults.get("initial_variables"), dict)
-            else {}
-        )
-        merged_initial_variables = dict(graph_initial_variables)
-        merged_initial_variables.update(current_initial_variables)
-
-        current_browser_config = (
-            deepcopy(current_runtime_defaults.get("browser_config"))
-            if isinstance(current_runtime_defaults.get("browser_config"), dict)
-            else {}
-        )
-        graph_browser_config = (
-            deepcopy(graph_runtime_defaults.get("browser_config"))
-            if isinstance(graph_runtime_defaults.get("browser_config"), dict)
-            else {}
-        )
-        merged_browser_config = dict(graph_browser_config)
-        merged_browser_config.update(current_browser_config)
-
-        current_execution_defaults = (
-            deepcopy(current_runtime_defaults.get("execution_defaults"))
-            if isinstance(current_runtime_defaults.get("execution_defaults"), dict)
-            else {}
-        )
-        graph_execution_defaults = (
-            deepcopy(graph_runtime_defaults.get("execution_defaults"))
-            if isinstance(graph_runtime_defaults.get("execution_defaults"), dict)
-            else {}
-        )
-        merged_execution_defaults = dict(graph_execution_defaults)
-        merged_execution_defaults.update(current_execution_defaults)
-
-        normalized_settings["runtime_defaults"] = self._normalize_runtime_defaults_payload(
-            {
-                "initial_variables": merged_initial_variables,
-                "browser_config": merged_browser_config,
-                "execution_defaults": merged_execution_defaults,
-            }
-        )
-        return self._normalize_project_settings_document_for_state(state, normalized_settings)
 
     def _normalize_runtime_defaults_payload(self, payload: dict | None) -> dict:
         raw_payload = payload if isinstance(payload, dict) else {}
@@ -13397,7 +13400,7 @@ class CompilationWorkbenchService:
             },
         }
 
-    def _project_runtime_defaults_into_main_flow_start(
+    def _write_entrypoint_runtime_to_main_flow_start(
         self,
         *,
         graph_document_payload: dict,
@@ -13435,7 +13438,6 @@ class CompilationWorkbenchService:
     ) -> dict:
         raw_payload = payload if isinstance(payload, dict) else {}
         raw_identity = raw_payload.get("project_identity")
-        raw_runtime_defaults = raw_payload.get("runtime_defaults")
         raw_security_settings = raw_payload.get("security_settings")
         raw_debug_profile = raw_payload.get("debug_profile")
         raw_python_runtime_profile = raw_payload.get("python_runtime_profile")
@@ -13446,8 +13448,6 @@ class CompilationWorkbenchService:
         raw_runtime_requirements = raw_payload.get("runtime_requirements")
         if not isinstance(raw_identity, dict):
             raw_identity = {}
-        if not isinstance(raw_runtime_defaults, dict):
-            raw_runtime_defaults = {}
         if not isinstance(raw_packaging, dict):
             raw_packaging = {}
         if not isinstance(raw_resource_policy, dict):
@@ -13470,7 +13470,6 @@ class CompilationWorkbenchService:
             if isinstance(raw_identity.get("name"), str) and raw_identity.get("name").strip()
             else (project.get("project_name") if isinstance(project, dict) else "WeConduct Workspace")
         )
-        runtime_defaults = self._normalize_runtime_defaults_payload(raw_runtime_defaults)
         security_settings = self._normalize_project_security_settings(raw_security_settings)
         debug_profile = self._normalize_project_debug_profile(raw_debug_profile)
         python_runtime_profile = normalize_python_runtime_profile(
@@ -13514,7 +13513,6 @@ class CompilationWorkbenchService:
                 if isinstance(raw_identity.get("tags"), list)
                 else [],
             },
-            "runtime_defaults": runtime_defaults,
             "security_settings": security_settings,
             "debug_profile": debug_profile,
             "python_runtime_profile": python_runtime_profile,
@@ -13547,11 +13545,6 @@ class CompilationWorkbenchService:
                     and raw_compile_profile.get("source_of_truth").strip()
                     else "saved_project_only"
                 ),
-                "inject_project_runtime_defaults_into_main_flow_start": bool(
-                    raw_compile_profile.get(
-                        "inject_project_runtime_defaults_into_main_flow_start", True
-                    )
-                ),
             },
             "runtime_requirements": deepcopy(raw_runtime_requirements),
         }
@@ -13575,10 +13568,15 @@ class CompilationWorkbenchService:
             project_file_path=project_file_path,
         )
         if not isinstance(raw_settings, dict):
-            return base_document
-        merged_document = deepcopy(base_document)
-        merged_document.update(deepcopy(raw_settings))
-        return self._normalize_project_settings_document_for_state(state, merged_document)
+            normalized_document = base_document
+        else:
+            merged_document = deepcopy(base_document)
+            merged_document.update(deepcopy(raw_settings))
+            normalized_document = self._normalize_project_settings_document_for_state(
+                state,
+                merged_document,
+            )
+        return normalized_document
 
     def _get_debug_history_retention_limit(self, state: dict | None = None) -> int:
         effective_state = state if isinstance(state, dict) else self._state
@@ -13845,32 +13843,18 @@ class CompilationWorkbenchService:
         return candidate.resolve()
 
     def _get_default_project_directory(self) -> Path | None:
-        preferences = self._preferences_service.get_preferences_document()
-        program_settings = preferences.get("program_settings")
-        if not isinstance(program_settings, dict):
-            return None
-        default_project_directory = program_settings.get("default_project_directory")
+        default_project_directory = self._get_configuration_domain(
+            scope="program", domain="workspace"
+        ).get("default_project_directory")
         if not isinstance(default_project_directory, str) or not default_project_directory.strip():
             return None
         return self._resolve_project_directory(default_project_directory)
 
     def _get_graph_preferences(self) -> dict:
-        preferences = self._preferences_service.get_preferences_document()
-        graph_settings = preferences.get("graph_settings")
-        if not isinstance(graph_settings, dict):
-            return {
-                "auto_sync_mode": "responsive",
-                "save_conflict_policy": "prefer_current_graph",
-                "show_node_id_on_node": True,
-                "show_disabled_resource_badge": True,
-                "snap_to_grid": True,
-                "grid_enabled": True,
-                "auto_open_node_on_drop": True,
-                "confirm_delete_node": True,
-                "show_inline_config_summary": True,
-            }
+        graph_settings = self._get_configuration_domain(
+            scope="graph", domain="editor_preferences"
+        )
         return {
-            "auto_sync_mode": graph_settings.get("auto_sync_mode", "responsive"),
             "save_conflict_policy": graph_settings.get(
                 "save_conflict_policy",
                 "prefer_current_graph",
@@ -13891,9 +13875,12 @@ class CompilationWorkbenchService:
         }
 
     def _build_runtime_execution_settings(self) -> dict:
-        preferences = self._preferences_service.get_preferences_document()
-        security_settings = preferences.get("security_settings")
-        python_runtime_settings = preferences.get("python_runtime_settings")
+        security_settings = self._get_configuration_domain(
+            scope="program", domain="security"
+        )
+        python_runtime_settings = self._get_configuration_domain(
+            scope="program", domain="python_defaults"
+        )
         runtime_settings = {
             "confirm_high_risk_actions": (
                 security_settings.get("confirm_high_risk_actions", True)
@@ -14088,16 +14075,21 @@ class CompilationWorkbenchService:
         return runtime_settings
 
     def _build_initial_project_security_settings_document(self) -> dict:
-        preferences = self._preferences_service.get_preferences_document()
-        security_settings = (
-            preferences.get("security_settings")
-            if isinstance(preferences, dict) and isinstance(preferences.get("security_settings"), dict)
-            else {}
+        security_settings = self._get_configuration_domain(
+            scope="program", domain="security"
         )
         return self._normalize_project_security_settings(security_settings)
 
     def _normalize_project_security_settings(self, payload: dict | None) -> dict:
-        normalized = _normalize_security_settings(payload if isinstance(payload, dict) else {})
+        normalized = self._get_configuration_domain(scope="program", domain="security")
+        if isinstance(payload, dict):
+            normalized.update(
+                {
+                    key: value
+                    for key, value in payload.items()
+                    if key in normalized and isinstance(value, bool)
+                }
+            )
         return {
             "allow_file_access": bool(normalized.get("allow_file_access", False)),
             "allow_browser_executor": bool(normalized.get("allow_browser_executor", False)),
@@ -14118,11 +14110,8 @@ class CompilationWorkbenchService:
             else deepcopy(self._extract_project_settings(self._state))
         )
         required_security = self._extract_required_security_settings(effective_project_settings)
-        preferences = self._preferences_service.get_preferences_document()
-        current_security = _normalize_security_settings(
-            preferences.get("security_settings")
-            if isinstance(preferences, dict) and isinstance(preferences.get("security_settings"), dict)
-            else {}
+        current_security = self._get_configuration_domain(
+            scope="program", domain="security"
         )
         blocked_entries: list[dict] = []
         required_overrides: dict[str, bool] = {}
@@ -14173,14 +14162,22 @@ class CompilationWorkbenchService:
             if isinstance(summary.get("required_security_overrides"), dict)
             else {}
         )
-        updated_preferences = self._preferences_service.update_preferences(
-            section="security_settings",
-            values=overrides,
+        operations = [
+            {
+                "op": "replace",
+                "path": f"/security/{field_name}",
+                "value": value,
+            }
+            for field_name, value in overrides.items()
+        ]
+        updated_configuration = self._configuration_service.apply(
+            scope="program",
+            operations=operations,
             confirm_high_risk=confirm_high_risk,
         )
         return {
             "status": "updated",
-            "preferences": updated_preferences,
+            "configuration": updated_configuration,
             "security_requirement_summary": self._build_project_security_requirement_summary(),
         }
 
@@ -14435,78 +14432,35 @@ class CompilationWorkbenchService:
         }
 
     def _build_preferences_state(self) -> dict:
-        preferences = self._preferences_service.get_preferences_document()
-        return {
-            "program_settings": {
-                "language": "stored_only",
-                "resource_language": "stored_only",
-                "theme": "stored_only",
-                "default_window_size": "active",
-                "startup_action": "stored_only",
-                "default_project_directory": "active",
-                "recent_project_limit": "active",
-                "preferences_auto_save": "active",
-                "font_scale": "stored_only",
-            },
-            "compile_settings": {
-                "default_source_kind": "stored_only",
-                "diagnostic_level": "stored_only",
-                "block_on_disabled_components": "stored_only",
-                "allow_degraded_compile": "stored_only",
-                "stop_on_first_error": "stored_only",
-                "emit_runtime_plan": "stored_only",
-                "emit_debug_plan": "stored_only",
-            },
-            "security_settings": {
-                "confirm_high_risk_actions": "active",
-                "allow_external_programs": "active",
-                "allow_file_access": "active",
-                "file_access_scope": "active",
-                "file_access_allowed_roots": "active",
-                "file_access_blocked_roots": "active",
-                "file_access_allowed_extensions": "active",
-                "file_access_blocked_extensions": "active",
-                "file_access_require_absolute_path": "active",
-                "allow_browser_executor": "active",
-                "allow_browser_screenshots": "active",
-                "allow_cookie_manipulation": "active",
-                "allow_browser_storage_manipulation": "active",
-                "allow_browser_uploads": "active",
-                "allow_browser_downloads": "active",
-                "allow_new_browser_windows": "active",
-                "allow_local_network_access": "active",
-                "allow_remote_network_access": "active",
-                "allow_python_execution": "active",
-                "allow_js_injection": "active",
-                "allow_js_evaluation": "active",
-                "show_security_warnings_in_runtime": "active",
-                "log_security_events": "active",
-            },
-            "python_runtime_settings": {
-                "python_executable_path": "active",
-                "timeout_seconds": "active",
-                "sandbox_mode": "active",
-                "capture_stdout_stderr": "active",
-                "variable_apply_mode": "active",
-                "blocked_import_modules": "active",
-            },
-            "graph_settings": {
-                "auto_sync_mode": "active",
-                "save_conflict_policy": "active",
-                "show_node_id_on_node": "active",
-                "show_disabled_resource_badge": "active",
-                "snap_to_grid": "active",
-                "grid_enabled": "active",
-                "auto_open_node_on_drop": "active",
-                "confirm_delete_node": "active",
-                "show_inline_config_summary": "active",
-            },
-            "other_settings": {
-                "workspace_draft_recovery_enabled": "stored_only",
-                "workspace_draft_recovery_ttl_minutes": "stored_only",
-            },
-            "preferences_file_version": preferences.get("preferences_file_version"),
+        state: dict[str, dict[str, str] | int] = {
+            "program_settings": {},
+            "compile_settings": {},
+            "security_settings": {},
+            "python_runtime_settings": {},
+            "graph_settings": {},
+            "other_settings": {},
+            "preferences_file_version": 3,
         }
+        section_by_domain = {
+            "ui": "program_settings",
+            "workspace": "program_settings",
+            "updates": "program_settings",
+            "security": "security_settings",
+            "python_defaults": "python_runtime_settings",
+        }
+        for domain in self._configuration_service.get_schema(scope="program")["domains"]:
+            section = section_by_domain.get(domain["key"])
+            if section is None:
+                continue
+            section_state = state[section]
+            if isinstance(section_state, dict):
+                section_state.update({field["key"]: field["status"] for field in domain["fields"]})
+        graph_state = state["graph_settings"]
+        if isinstance(graph_state, dict):
+            for domain in self._configuration_service.get_schema(scope="graph")["domains"]:
+                if domain["key"] == "editor_preferences":
+                    graph_state.update({field["key"]: field["status"] for field in domain["fields"]})
+        return state
 
     def _build_runtime_security_events(
         self,
@@ -14755,28 +14709,6 @@ class CompilationWorkbenchService:
         )
         project_settings["project_identity"]["project_id"] = self._state["project"]["project_id"]
         project_settings["project_identity"]["name"] = self._state["project"]["project_name"]
-        graph_runtime_defaults = (
-            self._extract_runtime_defaults_from_graph_model(graph_model_override)
-            if graph_model_override is not None
-            else self._extract_runtime_defaults_from_workspace_graph()
-        )
-        current_runtime_defaults = (
-            project_settings.get("runtime_defaults")
-            if isinstance(project_settings.get("runtime_defaults"), dict)
-            else {}
-        )
-        current_initial_variables = (
-            current_runtime_defaults.get("initial_variables")
-            if isinstance(current_runtime_defaults.get("initial_variables"), dict)
-            else {}
-        )
-        graph_initial_variables = (
-            graph_runtime_defaults.get("initial_variables")
-            if isinstance(graph_runtime_defaults.get("initial_variables"), dict)
-            else {}
-        )
-        if graph_initial_variables and not current_initial_variables:
-            project_settings["runtime_defaults"] = graph_runtime_defaults
         project_settings["packaging"]["default_output_name"] = self._build_default_package_output_name(project_path)
         return self._normalize_project_settings_document(project_settings)
 
@@ -15961,11 +15893,6 @@ class CompilationWorkbenchService:
                 if isinstance(project_settings.get("project_identity"), dict)
                 else {}
             ),
-            "runtime_defaults": deepcopy(
-                project_settings.get("runtime_defaults", {})
-                if isinstance(project_settings.get("runtime_defaults"), dict)
-                else {}
-            ),
             "packaging": deepcopy(
                 project_settings.get("packaging", {})
                 if isinstance(project_settings.get("packaging"), dict)
@@ -16130,21 +16057,9 @@ class CompilationWorkbenchService:
             if isinstance(project_document.get("graph_workspace"), dict)
             else {}
         )
-        project_settings = (
-            project_document.get("project_settings")
-            if isinstance(project_document.get("project_settings"), dict)
-            else {}
-        )
-        runtime_defaults = (
-            project_settings.get("runtime_defaults")
-            if isinstance(project_settings.get("runtime_defaults"), dict)
-            else {}
-        )
-        initial_variables = (
-            runtime_defaults.get("initial_variables")
-            if isinstance(runtime_defaults.get("initial_variables"), dict)
-            else {}
-        )
+        initial_variables = self._extract_package_runtime_defaults(package_document)[
+            "initial_variables"
+        ]
         resource_registry = (
             self._build_loaded_package_resource_registry(package_document)
             if isinstance(package_document, dict)
@@ -16174,16 +16089,9 @@ class CompilationWorkbenchService:
             if isinstance(project_settings.get("external_resources"), list)
             else []
         )
-        runtime_defaults = (
-            project_settings.get("runtime_defaults")
-            if isinstance(project_settings.get("runtime_defaults"), dict)
-            else {}
-        )
-        initial_variables = (
-            runtime_defaults.get("initial_variables")
-            if isinstance(runtime_defaults.get("initial_variables"), dict)
-            else {}
-        )
+        initial_variables = self._extract_package_runtime_defaults(package_document)[
+            "initial_variables"
+        ]
         entries: list[dict] = []
         for item in external_resources:
             if not isinstance(item, dict):
@@ -16264,7 +16172,12 @@ class CompilationWorkbenchService:
             if isinstance(manifest_payload.get("runtime_requirements"), dict)
             else {}
         )
-        binding_entries = self._evaluate_package_external_resource_binding_entries(project_settings)
+        binding_entries = self._evaluate_package_external_resource_binding_entries(
+            project_settings,
+            initial_variables=self._extract_package_runtime_defaults(package_document)[
+                "initial_variables"
+            ],
+        )
         python_runtime_entries = self._evaluate_package_python_runtime_entries(package_document)
         requirement_entries = (
             requirement_entries
@@ -16327,21 +16240,16 @@ class CompilationWorkbenchService:
             "diagnostics": diagnostics,
         }
 
-    def _evaluate_package_external_resource_binding_entries(self, project_settings: dict) -> list[dict]:
+    def _evaluate_package_external_resource_binding_entries(
+        self,
+        project_settings: dict,
+        *,
+        initial_variables: dict,
+    ) -> list[dict]:
         external_resources = (
             project_settings.get("external_resources")
             if isinstance(project_settings.get("external_resources"), list)
             else []
-        )
-        runtime_defaults = (
-            project_settings.get("runtime_defaults")
-            if isinstance(project_settings.get("runtime_defaults"), dict)
-            else {}
-        )
-        initial_variables = (
-            runtime_defaults.get("initial_variables")
-            if isinstance(runtime_defaults.get("initial_variables"), dict)
-            else {}
         )
         missing_entries: list[dict] = []
         for item in external_resources:
@@ -16752,16 +16660,9 @@ class CompilationWorkbenchService:
             if isinstance(project_settings.get("external_resources"), list)
             else []
         )
-        runtime_defaults = (
-            project_settings.get("runtime_defaults")
-            if isinstance(project_settings.get("runtime_defaults"), dict)
-            else {}
-        )
-        initial_variables = (
-            runtime_defaults.get("initial_variables")
-            if isinstance(runtime_defaults.get("initial_variables"), dict)
-            else {}
-        )
+        initial_variables = self._extract_runtime_defaults_from_workspace_graph()[
+            "initial_variables"
+        ]
         missing_entries: list[dict] = []
         for item in external_resources:
             if not isinstance(item, dict):
@@ -17138,16 +17039,9 @@ class CompilationWorkbenchService:
         if bool(packaged_resources.get("requires_captcha_ocr", False)):
             require("allow_file_access")
 
-        runtime_defaults = (
-            project_settings.get("runtime_defaults")
-            if isinstance(project_settings.get("runtime_defaults"), dict)
-            else {}
-        )
-        initial_variables = (
-            runtime_defaults.get("initial_variables")
-            if isinstance(runtime_defaults.get("initial_variables"), dict)
-            else {}
-        )
+        initial_variables = self._extract_runtime_defaults_from_graph_model(graph_model)[
+            "initial_variables"
+        ]
         for value in initial_variables.values():
             if isinstance(value, str):
                 lowered = value.lower()
@@ -17556,13 +17450,10 @@ class CompilationWorkbenchService:
             ),
             "graph_document": graph_model.model_dump(),
             "graph_document_meta": graph_document_meta,
-            "project_settings": self._merge_runtime_defaults_with_graph_backfill(
-                project_settings_payload=self._build_initial_project_settings_document(
-                    project_id=normalized_project.get("project_id", "weconduct-workspace"),
-                    project_name=normalized_project.get("project_name", "Opened Project"),
-                    project_file_path=str(project_path.resolve()),
-                ),
-                graph_model=graph_model,
+            "project_settings": self._build_initial_project_settings_document(
+                project_id=normalized_project.get("project_id", "weconduct-workspace"),
+                project_name=normalized_project.get("project_name", "Opened Project"),
+                project_file_path=str(project_path.resolve()),
             ),
         }
 
@@ -17639,6 +17530,18 @@ class CompilationWorkbenchService:
                 project_file_path=str(project_path.resolve()),
             )
         )
+        legacy_runtime_defaults = (
+            project_settings_payload.get("runtime_defaults")
+            if isinstance(project_settings_payload.get("runtime_defaults"), dict)
+            else None
+        )
+        if legacy_runtime_defaults is not None:
+            graph_model = GraphModel.model_validate(
+                self._write_entrypoint_runtime_to_main_flow_start(
+                    graph_document_payload=graph_model.model_dump(mode="python"),
+                    runtime_defaults=legacy_runtime_defaults,
+                )
+            )
         effective_registry = self._compose_effective_resource_registry(
             builtin_resource_refs=raw_builtin_resource_refs,
             project_resources=project_resources,
@@ -17662,6 +17565,7 @@ class CompilationWorkbenchService:
 
         return {
             "project_file_schema_version": PROJECT_FILE_SCHEMA_VERSION,
+            "project_configuration_migrated": legacy_runtime_defaults is not None,
             "project": normalized_project,
             "resource_registry": effective_registry,
             "editor_history": self._extract_editor_history({"editor_history": raw_editor_history}),
@@ -17670,9 +17574,9 @@ class CompilationWorkbenchService:
             ),
             "graph_document": graph_model.model_dump(),
             "graph_document_meta": graph_document_meta,
-            "project_settings": self._merge_runtime_defaults_with_graph_backfill(
-                project_settings_payload=project_settings_payload,
-                graph_model=graph_model,
+            "project_settings": self._normalize_project_settings_document_for_state(
+                {"project": normalized_project},
+                project_settings_payload,
             ),
         }
 
@@ -17798,11 +17702,9 @@ class CompilationWorkbenchService:
         return next_items[: self._get_recent_project_limit()]
 
     def _get_recent_project_limit(self) -> int:
-        preferences = self._preferences_service.get_preferences_document()
-        program_settings = preferences.get("program_settings")
-        if not isinstance(program_settings, dict):
-            return MAX_RECENT_PROJECTS
-        raw_limit = program_settings.get("recent_project_limit")
+        raw_limit = self._get_configuration_domain(
+            scope="program", domain="workspace"
+        ).get("recent_project_limit")
         if not isinstance(raw_limit, int):
             return MAX_RECENT_PROJECTS
         if raw_limit < 1:

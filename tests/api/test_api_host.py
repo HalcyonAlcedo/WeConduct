@@ -81,6 +81,42 @@ def test_api_server_close_shuts_down_workbench_debug_sessions(tmp_path: Path) ->
     ]
 
 
+def test_build_api_server_migrates_program_configuration_before_serving(
+    tmp_path: Path,
+) -> None:
+    preferences_path = tmp_path / "runtime" / "preferences.json"
+    preferences_path.parent.mkdir(parents=True)
+    preferences_path.write_text(
+        json.dumps(
+            {
+                "preferences_file_version": 2,
+                "program_settings": {
+                    "default_window_size": {"width": 1500, "height": 920}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=preferences_path,
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    try:
+        migrated = json.loads(preferences_path.read_text(encoding="utf-8"))
+        assert migrated["configuration_format_version"] == 1
+        assert migrated["scope"] == "program"
+        assert migrated["values"]["ui"]["default_window_size"] == {
+            "width": 1500,
+            "height": 920,
+        }
+    finally:
+        server.server_close()
+
+
 def test_api_server_close_waits_for_inflight_debug_action_and_rejects_new_action(
     tmp_path: Path,
 ) -> None:
@@ -1689,8 +1725,12 @@ def test_api_exposes_debug_variable_apply_action(tmp_path: Path) -> None:
         )
 
         assert apply_payload["debug_session"]["session_id"] == session_id
-        assert apply_payload["variable_snapshot"]["username"] == "debug-user"
-        assert apply_payload["debug_session"]["pending_variable_overrides"]["retry_count"] == 3
+        assert apply_payload["variable_snapshot"]["username"] == "original-user"
+        assert apply_payload["variable_snapshot"]["retry_count"] == 0
+        assert apply_payload["debug_session"]["pending_variable_overrides"] == {
+            "username": "debug-user",
+            "retry_count": 3,
+        }
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -2244,6 +2284,188 @@ def _get_json(url: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def test_api_exposes_program_configuration_schema_and_patch(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+
+        schema = _get_json(f"{base_url}/api/workbench/config/schema?scope=program")
+        updated = _patch_json(
+            f"{base_url}/api/workbench/config/values",
+            {
+                "scope": "program",
+                "operations": [
+                    {
+                        "op": "replace",
+                        "path": "/updates/check_updates_on_startup",
+                        "value": True,
+                    }
+                ],
+            },
+        )
+
+        assert schema["scope"] == "program"
+        assert any(domain["key"] == "security" for domain in schema["domains"])
+        assert updated["values"]["updates"]["check_updates_on_startup"] is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_api_exposes_graph_configuration_scope(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        created = _post_json(
+            f"{base_url}/api/workbench/project/new",
+            {
+                "project_name": "graph-config",
+                "project_directory": str(tmp_path / "project"),
+            },
+        )
+        graph_document = created["graph_document"]
+        graph_document["nodes"] = [
+            {
+                "node_id": "node-start",
+                "lowered_kind": "control",
+                "source_anchor_ref": "n-node-start",
+                "expansion_role": "flow.start",
+                "display_name": "流程入口",
+                "node_kind": "flow.start",
+                "position": {"x": 0, "y": 0},
+                "ports": [],
+                "node_config": {
+                    "initial_variables": {},
+                    "browser_config": {"headless": True},
+                    "execution_defaults": {
+                        "default_timeout_ms": 30000,
+                        "default_retry_count": 0,
+                    },
+                },
+            }
+        ]
+        _put_json(f"{base_url}/api/workbench/graph", graph_document)
+        updated = _patch_json(
+            f"{base_url}/api/workbench/config/values",
+            {
+                "scope": "graph",
+                "operations": [
+                    {
+                        "op": "replace",
+                        "path": "/editor_preferences/save_conflict_policy",
+                        "value": "strict",
+                    },
+                    {
+                        "op": "replace",
+                        "path": "/entrypoint_runtime/initial_variables",
+                        "value": {"username": "configured"},
+                    },
+                    {
+                        "op": "replace",
+                        "path": "/entrypoint_runtime/browser_config",
+                        "value": {"headless": False, "slow_mo_ms": 25},
+                    },
+                ],
+            },
+        )
+        graph_document = _get_json(f"{base_url}/api/workbench/graph")
+        flow_start = next(
+            node
+            for node in graph_document["graph_model"]["nodes"]
+            if node["node_kind"] == "flow.start"
+        )
+
+        assert updated["values"]["editor_preferences"]["save_conflict_policy"] == "strict"
+        assert flow_start["node_config"]["initial_variables"] == {"username": "configured"}
+        assert flow_start["node_config"]["browser_config"] == {
+            "headless": False,
+            "slow_mo_ms": 25,
+        }
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_api_exposes_project_configuration_scope(tmp_path: Path) -> None:
+    server = build_api_server(host="127.0.0.1", port=0, workspace_state_path=tmp_path / "runtime" / "workspace-state.json", preferences_path=tmp_path / "runtime" / "preferences.json", ui_dist_path=tmp_path / "ui-dist")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        _post_json(f"{base_url}/api/workbench/project/new", {"project_name": "before", "project_directory": str(tmp_path / "project")})
+        updated = _patch_json(
+            f"{base_url}/api/workbench/config/values",
+            {
+                "scope": "project",
+                "operations": [
+                    {"op": "replace", "path": "/identity/name", "value": "after"},
+                    {"op": "replace", "path": "/debug/history_retention_limit", "value": 15},
+                    {"op": "replace", "path": "/resources/embedded_resources", "value": ["input/a.txt"]},
+                    {"op": "replace", "path": "/packaging/default_output_name", "value": "after.wcrun"},
+                    {"op": "replace", "path": "/python_profile/runtime_enabled", "value": True},
+                ],
+            },
+        )
+        assert updated["values"]["identity"]["name"] == "after"
+        assert updated["values"]["debug"]["history_retention_limit"] == 15
+        assert updated["values"]["resources"]["embedded_resources"] == ["input/a.txt"]
+        assert updated["values"]["packaging"]["default_output_name"] == "after.wcrun"
+        assert updated["values"]["python_profile"]["runtime_enabled"] is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/api/workbench/project/settings",
+        "/api/workbench/project/runtime-defaults",
+    ],
+)
+def test_api_does_not_expose_legacy_project_configuration_routes(
+    tmp_path: Path,
+    route: str,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(f"{base_url}{route}")
+        assert error.value.code == 404
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def _wait_for_debug_session_status(
     base_url: str,
     session_id: str,
@@ -2271,6 +2493,36 @@ def _post_json(url: str, payload: dict) -> dict:
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:  # pragma: no cover - keep response body visible in test failure
+        body = exc.read().decode("utf-8", errors="replace")
+        raise AssertionError(f"HTTP {exc.code} for {url}: {body}") from exc
+
+
+def _patch_json(url: str, payload: dict) -> dict:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="PATCH",
+    )
+    try:
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:  # pragma: no cover - keep response body visible in test failure
+        body = exc.read().decode("utf-8", errors="replace")
+        raise AssertionError(f"HTTP {exc.code} for {url}: {body}") from exc
+
+
+def _put_json(url: str, payload: dict) -> dict:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="PUT",
     )
     try:
         with urllib.request.urlopen(request) as response:

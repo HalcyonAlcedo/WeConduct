@@ -1,0 +1,221 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mount } from '@vue/test-utils'
+import { defineComponent, h, nextTick } from 'vue'
+
+const workspaceSnapshotState = vi.hoisted(() => ({
+  snapshot: {
+    graph_workspace: {
+      graph_preferences: {
+        snap_to_grid: false,
+        grid_enabled: false,
+        auto_open_node_on_drop: false,
+        confirm_delete_node: true,
+      },
+    },
+  } as any,
+}))
+
+const compilationState = vi.hoisted(() => ({
+  outcome: null as any,
+}))
+
+const debugState = vi.hoisted(() => ({
+  activeSession: null as any,
+  hasBreakpoint: vi.fn(() => false),
+  hasRecordFrame: vi.fn(() => false),
+  getEffectiveDebuggerConfig: vi.fn(() => ({})),
+  getDebuggerConfig: vi.fn(() => ({})),
+  toggleBreakpointConfig: vi.fn((cfg: any) => cfg),
+  setBreakpointPauseTiming: vi.fn((cfg: any) => cfg),
+  toggleRecordFrameConfig: vi.fn((cfg: any) => cfg),
+  applyNodeDebuggerConfig: vi.fn(),
+}))
+
+const graphWorkspaceState = vi.hoisted(() => ({
+  isGraphEditable: true,
+  isLoaded: true,
+  graphModel: {
+    nodes: [
+      {
+        node_id: 'node-a',
+        display_name: '节点A',
+        node_kind: 'data.set_variable',
+        node_config: {},
+        position: { x: 100, y: 100 },
+        ports: [],
+      },
+    ],
+    edges: [],
+  } as any,
+  addNode: vi.fn(),
+  removeNode: vi.fn(),
+  removeEdge: vi.fn(),
+  updateEdgeRelation: vi.fn(),
+  updateViewport: vi.fn(),
+  updateNodePosition: vi.fn(),
+  addEdge: vi.fn(),
+  pasteNode: vi.fn(),
+  pushUndo: vi.fn(),
+  markChanged: vi.fn(),
+}))
+
+const graphStoreState = vi.hoisted(() => ({
+  selectGraphModel: vi.fn(({ workspaceModel }: any) => ({ model: workspaceModel })),
+  toVueFlow: vi.fn(() => ({
+    nodes: [
+      {
+        id: 'node-a',
+        position: { x: 0, y: 0 },
+        data: { label: '节点A', nodeId: 'node-a', kind: 'execution', expansionRole: 'x', ports: [] },
+      },
+    ],
+    edges: [],
+  })),
+  selectNode: vi.fn(),
+}))
+
+const dockState = vi.hoisted(() => ({
+  isPanelVisible: vi.fn(() => true),
+  restorePanel: vi.fn(),
+}))
+
+const toastState = vi.hoisted(() => ({
+  info: vi.fn(),
+  error: vi.fn(),
+}))
+
+const vueFlowState = vi.hoisted(() => ({
+  props: null as Record<string, unknown> | null,
+}))
+
+const backgroundState = vi.hoisted(() => ({
+  props: null as Record<string, unknown> | null,
+}))
+
+vi.mock('@/stores/workspaceStore', () => ({
+  useWorkspaceStore: () => workspaceSnapshotState,
+}))
+vi.mock('@/stores/compilationStore', () => ({
+  useCompilationStore: () => compilationState,
+}))
+vi.mock('@/stores/debugStore', () => ({
+  useDebugStore: () => debugState,
+}))
+vi.mock('@/stores/graphWorkspaceStore', () => ({
+  useGraphWorkspaceStore: () => graphWorkspaceState,
+}))
+vi.mock('@/stores/graphStore', () => ({
+  useGraphStore: () => graphStoreState,
+}))
+vi.mock('@/stores/dockStore', () => ({
+  useDockStore: () => dockState,
+}))
+vi.mock('@/stores/toastStore', () => ({
+  useToastStore: () => toastState,
+}))
+vi.mock('@vue-flow/core', () => ({
+  VueFlow: defineComponent({
+    props: ['snapToGrid', 'snapGrid'],
+    emits: ['node-context-menu'],
+    setup(props, { emit, slots }) {
+      vueFlowState.props = props as Record<string, unknown>
+      return () => h('div', [
+        h('button', {
+          class: 'emit-node-context-menu',
+          onClick: () => emit('node-context-menu', {
+            node: { id: 'node-a' },
+            event: { preventDefault() {}, clientX: 10, clientY: 20 },
+          }),
+        }),
+        slots.default?.(),
+      ])
+    },
+  }),
+  Handle: defineComponent({ setup() { return () => h('div') } }),
+  Position: { Left: 'left', Right: 'right' },
+  useVueFlow: () => ({ setCenter: vi.fn() }),
+}))
+vi.mock('@vue-flow/background', () => ({
+  Background: defineComponent({
+    props: ['gap', 'size', 'patternColor'],
+    setup(props) {
+      backgroundState.props = props as Record<string, unknown>
+      return () => h('div', { class: 'vf-bg-stub' })
+    },
+  }),
+}))
+vi.mock('@vue-flow/controls', () => ({
+  Controls: defineComponent({ setup() { return () => h('div') } }),
+}))
+vi.mock('@vue-flow/minimap', () => ({
+  MiniMap: defineComponent({ setup() { return () => h('div') } }),
+}))
+
+import VueFlowGraph from './VueFlowGraph.vue'
+
+function buildDropEvent() {
+  return {
+    preventDefault: vi.fn(),
+    currentTarget: {
+      getBoundingClientRect: () => ({ left: 0, top: 0 }),
+    },
+    clientX: 80,
+    clientY: 120,
+    dataTransfer: {
+      types: ['application/json'],
+      getData: () => JSON.stringify({ resource_key: 'flow.log', display_name: '日志节点' }),
+    },
+  } as unknown as DragEvent
+}
+
+describe('VueFlowGraph', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vueFlowState.props = null
+    backgroundState.props = null
+    workspaceSnapshotState.snapshot.graph_workspace.graph_preferences = {
+      snap_to_grid: false,
+      grid_enabled: false,
+      auto_open_node_on_drop: false,
+      confirm_delete_node: true,
+    }
+    graphWorkspaceState.addNode.mockResolvedValue('node-new')
+  })
+
+  it('根据 graph_preferences 控制 snap-to-grid 与 Background 显示', async () => {
+    mount(VueFlowGraph)
+    await nextTick()
+
+    expect(vueFlowState.props?.snapToGrid).toBe(false)
+    expect(backgroundState.props).toBeNull()
+  })
+
+  it('auto_open_node_on_drop=false 时只选中节点，不自动打开属性面板', async () => {
+    const wrapper = mount(VueFlowGraph)
+    await nextTick()
+
+    await wrapper.get('.vf-wrapper').trigger('drop', buildDropEvent())
+    await nextTick()
+
+    expect(graphWorkspaceState.addNode).toHaveBeenCalled()
+    expect(graphStoreState.selectNode).toHaveBeenCalledWith('node-new')
+    expect(dockState.restorePanel).not.toHaveBeenCalled()
+  })
+
+  it('confirm_delete_node=false 时右键删除节点直接执行，不走确认弹窗', async () => {
+    workspaceSnapshotState.snapshot.graph_workspace.graph_preferences.confirm_delete_node = false
+    ;(window as any).__openDeleteConfirm = vi.fn()
+
+    const wrapper = mount(VueFlowGraph)
+    await wrapper.get('.emit-node-context-menu').trigger('click')
+    await nextTick()
+
+    const deleteButton = wrapper.findAll('.vf-ctxmenu button')
+      .find(button => button.text().includes('删除节点'))
+    expect(deleteButton).toBeDefined()
+    await deleteButton!.trigger('click')
+
+    expect((window as any).__openDeleteConfirm).not.toHaveBeenCalled()
+    expect(graphWorkspaceState.removeNode).toHaveBeenCalledWith('node-a')
+  })
+})

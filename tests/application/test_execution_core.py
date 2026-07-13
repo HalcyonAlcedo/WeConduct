@@ -6,6 +6,7 @@ import pytest
 
 from weconduct.application.execution_core import ExecutionCore
 from weconduct.runtime.engine import (
+    CancellationContext,
     RuntimeCancellationError,
     RuntimeContext,
     RuntimeExecutorRegistry,
@@ -292,6 +293,18 @@ def test_runtime_context_close_is_idempotent_and_continues_cleanup() -> None:
     assert browser_context.close_calls == 1
     assert browser.close_calls == 1
     assert playwright.stop_calls == 1
+
+
+def test_runtime_context_close_does_not_cancel_borrowed_context() -> None:
+    cancellation_context = CancellationContext()
+    runtime_context = RuntimeContext(
+        cancellation_context=cancellation_context,
+        owns_cancellation_context=False,
+    )
+
+    runtime_context.close()
+
+    assert cancellation_context.is_cancelled is False
 
 
 def test_browser_wait_for_timeout_checks_cancellation_between_slices() -> None:

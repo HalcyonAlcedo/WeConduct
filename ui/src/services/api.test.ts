@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { ApiError } from './api'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ApiError, fetchConfigValues, patchConfigValues, resetConfigValues } from './api'
 
 describe('ApiError', () => {
   it('prioritizes body.message over body.error', () => {
@@ -27,5 +27,82 @@ describe('ApiError', () => {
     const err = new ApiError(404, body)
     expect(err.status).toBe(404)
     expect(err.body).toBe(body)
+  })
+})
+
+describe('configuration API', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('fetchConfigValues 请求统一配置 GET scope', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ scope: 'project', values: { identity: { name: 'demo-project' } } }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchConfigValues('project')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/workbench/config/values?scope=project', {
+      headers: { 'Content-Type': 'application/json' },
+    })
+    expect(result).toEqual({
+      scope: 'project',
+      values: { identity: { name: 'demo-project' } },
+    })
+  })
+
+  it('patchConfigValues 发送统一配置 PATCH body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ scope: 'graph', values: { entrypoint_runtime: { initial_variables: {}, browser_config: { headless: true } } } }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const body = {
+      scope: 'graph' as const,
+      operations: [
+        {
+          op: 'replace' as const,
+          path: '/entrypoint_runtime/initial_variables',
+          value: {},
+        },
+        {
+          op: 'replace' as const,
+          path: '/entrypoint_runtime/browser_config',
+          value: { headless: true },
+        },
+      ],
+      confirm_high_risk: false,
+    }
+
+    const result = await patchConfigValues(body)
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/workbench/config/values', {
+      headers: { 'Content-Type': 'application/json' },
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    })
+    expect(result).toEqual({
+      scope: 'graph',
+      values: { entrypoint_runtime: { initial_variables: {}, browser_config: { headless: true } } },
+    })
+  })
+
+  it('resetConfigValues 重置指定配置作用域', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ scope: 'graph', values: { editor_preferences: {} } }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await resetConfigValues('graph')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/workbench/config/reset', {
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      body: JSON.stringify({ scope: 'graph' }),
+    })
   })
 })

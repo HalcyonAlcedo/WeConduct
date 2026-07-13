@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, reactive, watch, onMounted } from 'vue'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
-import { postPreferences, postPreferencesReset, fetchPreferences, postPreferencesPreview, postFileDialog } from '@/services/api'
+import { postPreferences, postPreferencesReset, fetchPreferences, postPreferencesPreview, postFileDialog, fetchConfigValues, patchConfigValues, resetConfigValues } from '@/services/api'
 import type { PreferencesUpdateRequest } from '@/types/domains/api'
 import { useToastStore } from '@/stores/toastStore'
 
@@ -58,7 +58,7 @@ const FIELD_DEFS: Record<string, FieldDef[]> = {
     { key: 'blocked_import_modules', label: '阻断导入模块', type: 'string_list', hint: '这些模块会在 python.run 中被禁止导入。删除某项后，项目脚本即可导入该模块。' },
   ],
   nodegraph: [
-    { key: 'auto_sync_mode', label: '自动同步模式', type: 'select', options: ['responsive'] }, { key: 'show_node_id_on_node', label: '显示节点 ID', type: 'bool' },
+    { key: 'show_node_id_on_node', label: '显示节点 ID', type: 'bool' },
     { key: 'show_disabled_resource_badge', label: '显示禁用资源徽章', type: 'bool' }, { key: 'snap_to_grid', label: '吸附网格', type: 'bool' },
     { key: 'grid_enabled', label: '网格启用', type: 'bool' }, { key: 'auto_open_node_on_drop', label: '拖放后自动打开节点', type: 'bool' },
     { key: 'confirm_delete_node', label: '删除节点确认', type: 'bool' }, { key: 'show_inline_config_summary', label: '显示内联配置摘要', type: 'bool' },
@@ -90,8 +90,31 @@ function initForm() {
     if (section === 'security_settings') { next.file_access_allowed_roots = normalizeRoots(next.file_access_allowed_roots); next.file_access_blocked_roots = normalizeRoots(next.file_access_blocked_roots) }
     form[section] = next; saveState[section] = 'idle'; saveError[section] = ''
   }
+  form.graph_settings = {
+    ...form.graph_settings,
+    ...normalizeGraphPreferences((workspace.snapshot as any)?.graph_workspace?.graph_preferences),
+  }
 }
-onMounted(() => initForm()); watch(() => workspace.snapshot?.preferences, () => initForm(), { deep: true })
+async function loadGraphPreferences() {
+  try {
+    const result = await fetchConfigValues<{ editor_preferences?: Record<string, unknown> }>('graph')
+    const editorPreferences = normalizeGraphPreferences(result.values?.editor_preferences)
+    if (Object.keys(editorPreferences).length) {
+      form.graph_settings = {
+        ...form.graph_settings,
+        ...editorPreferences,
+      }
+    }
+  } catch {}
+}
+onMounted(async () => { initForm(); await loadGraphPreferences() })
+watch(() => workspace.snapshot?.preferences, () => initForm(), { deep: true })
+watch(() => (workspace.snapshot as any)?.graph_workspace?.graph_preferences, () => {
+  form.graph_settings = {
+    ...form.graph_settings,
+    ...normalizeGraphPreferences((workspace.snapshot as any)?.graph_workspace?.graph_preferences),
+  }
+}, { deep: true })
 
 const prefsState = computed(() => (workspace.snapshot as any)?.graph_workspace?.preferences_state || {})
 function fieldState(s: string, k: string): string | undefined { const n = (prefsState.value as any)[s]; if (!n || typeof n !== 'object') return; const v = n[k]; return typeof v === 'string' ? v : undefined }
@@ -106,6 +129,20 @@ function onFieldChange(section: string) { if (!autoSaveEnabled.value) return; cl
 async function doSave(section: string) {
   saveState[section] = 'saving'; saveError[section] = ''
   try {
+    if (section === 'graph_settings') {
+      const result = await patchConfigValues<{ editor_preferences?: Record<string, unknown> }>({
+        scope: 'graph',
+        operations: graphPreferenceOperations(form[section]),
+        confirm_high_risk: false,
+      })
+      form.graph_settings = {
+        ...form.graph_settings,
+        ...normalizeGraphPreferences(result.values?.editor_preferences),
+      }
+      saveState[section] = 'saved'; setTimeout(() => { if (saveState[section] === 'saved') saveState[section] = 'idle' }, 2000)
+      await workspace.refreshSnapshot()
+      return
+    }
     const values = flattenForSave(section, form[section])
     if (section === 'security_settings') {
       try { const preview = await postPreferencesPreview({ section, values }); if (preview.confirmation_required && preview.high_risk_changes.length) { confirmDialog.value = { section, changes: preview.high_risk_changes }; saveState[section] = 'idle'; return } } catch {}
@@ -115,11 +152,10 @@ async function doSave(section: string) {
     try {
       const r = await fetchPreferences()
       if (section === 'security_settings') {
-        form[section] = { ...(r.preferences[section] as any || {}), file_access_allowed_roots: normalizeRoots((r.preferences[section] as any)?.file_access_allowed_roots), file_access_blocked_roots: normalizeRoots((r.preferences[section] as any)?.file_access_blocked_roots) }
+        form[section] = { ...form[section], ...(r.preferences[section] as any || {}), file_access_allowed_roots: normalizeRoots((r.preferences[section] as any)?.file_access_allowed_roots), file_access_blocked_roots: normalizeRoots((r.preferences[section] as any)?.file_access_blocked_roots) }
       } else {
-        form[section] = Object.fromEntries(
-          Object.entries((r.preferences[section] as Record<string, any> || {})).map(([key, value]) => [key, normalizePreferenceValue(value)]),
-        )
+        const savedValues = (r.preferences[section] as Record<string, any>) || {}
+        form[section] = { ...form[section], ...Object.fromEntries(Object.entries(savedValues).map(([key, value]) => [key, normalizePreferenceValue(value)])) }
       }
     } catch {}
     await workspace.refreshSnapshot()
@@ -130,8 +166,28 @@ async function doSave(section: string) {
 }
 
 async function confirmHighRiskSave() {
-  if (!confirmDialog.value) return; const { section } = confirmDialog.value; confirmDialog.value = null; saveState[section] = 'saving'
-  try { await postPreferences({ section, values: flattenForSave(section, form[section]), confirm_high_risk: true } as PreferencesUpdateRequest); saveState[section] = 'saved'; setTimeout(() => { if (saveState[section] === 'saved') saveState[section] = 'idle' }, 2000); try { const r = await fetchPreferences(); if (section === 'security_settings') { form[section] = { ...(r.preferences[section] as any || {}), file_access_allowed_roots: normalizeRoots((r.preferences[section] as any)?.file_access_allowed_roots), file_access_blocked_roots: normalizeRoots((r.preferences[section] as any)?.file_access_blocked_roots) } } else { form[section] = Object.fromEntries(Object.entries((r.preferences[section] as Record<string, any> || {})).map(([key, value]) => [key, normalizePreferenceValue(value)])) } } catch {}; await workspace.refreshSnapshot() } catch (e: any) { saveState[section] = 'error'; saveError[section] = e?.message || '保存失败' }
+  if (!confirmDialog.value) return
+  const { section } = confirmDialog.value
+  confirmDialog.value = null
+  saveState[section] = 'saving'
+  try {
+    await postPreferences({ section, values: flattenForSave(section, form[section]), confirm_high_risk: true } as PreferencesUpdateRequest)
+    saveState[section] = 'saved'
+    setTimeout(() => { if (saveState[section] === 'saved') saveState[section] = 'idle' }, 2000)
+    try {
+      const r = await fetchPreferences()
+      const savedValues = (r.preferences[section] as Record<string, any>) || {}
+      if (section === 'security_settings') {
+        form[section] = { ...form[section], ...savedValues, file_access_allowed_roots: normalizeRoots(savedValues.file_access_allowed_roots), file_access_blocked_roots: normalizeRoots(savedValues.file_access_blocked_roots) }
+      } else {
+        form[section] = { ...form[section], ...Object.fromEntries(Object.entries(savedValues).map(([key, value]) => [key, normalizePreferenceValue(value)])) }
+      }
+    } catch {}
+    await workspace.refreshSnapshot()
+  } catch (e: any) {
+    saveState[section] = 'error'
+    saveError[section] = e?.message || '保存失败'
+  }
 }
 
 function flattenForSave(section: string, vals: Record<string, any>): Record<string, unknown> {
@@ -144,6 +200,17 @@ function flattenForSave(section: string, vals: Record<string, any>): Record<stri
     r[k] = v
   }
   return r
+}
+function normalizeGraphPreferences(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>))
+}
+function graphPreferenceOperations(values: Record<string, unknown>) {
+  return Object.entries(values).map(([key, value]) => ({
+    op: 'replace' as const,
+    path: `/editor_preferences/${key}`,
+    value,
+  }))
 }
 
 function isRootsFieldVisible(): boolean { return getField('security_settings', 'allow_file_access') && getField('security_settings', 'file_access_scope') === 'custom_roots' }
@@ -163,14 +230,48 @@ function updateStringListItem(fieldKey: string, idx: number, val: string) { cons
 // Extension display helper: convert string[] to comma-separated display
 function extDisplay(fieldKey: string): string { const v = getField('security_settings', fieldKey); if (Array.isArray(v)) return v.join(', '); return typeof v === 'string' ? v : '' }
 
-async function doReset(section: string) { saveState[section] = 'saving'; saveError[section] = ''; try { await postPreferencesReset(); const r = await fetchPreferences(); for (const sec of Object.values(SECTION_MAP)) { const vals = { ...((r.preferences as Record<string, any>)[sec] || {}) }; if (sec === 'security_settings') vals.file_access_allowed_roots = normalizeRoots(vals.file_access_allowed_roots); form[sec] = vals; saveState[sec] = 'saved'; setTimeout(() => { if (saveState[sec] === 'saved') saveState[sec] = 'idle' }, 2000) }; await workspace.refreshSnapshot() } catch (e: any) { saveState[section] = 'error'; saveError[section] = e?.message || '重置失败' } }
+async function doReset(section: string) {
+  saveState[section] = 'saving'
+  saveError[section] = ''
+  try {
+    if (section === 'graph_settings') {
+      const result = await resetConfigValues<{ editor_preferences?: Record<string, unknown> }>('graph')
+      form.graph_settings = normalizeGraphPreferences(result.values?.editor_preferences)
+      saveState[section] = 'saved'
+      setTimeout(() => { if (saveState[section] === 'saved') saveState[section] = 'idle' }, 2000)
+      await workspace.refreshSnapshot()
+      return
+    }
+    await postPreferencesReset()
+    const result = await fetchPreferences()
+    for (const current of Object.values(SECTION_MAP)) {
+      if (current === 'graph_settings') continue
+      const values = { ...((result.preferences as Record<string, any>)[current] || {}) }
+      if (current === 'security_settings') {
+        values.file_access_allowed_roots = normalizeRoots(values.file_access_allowed_roots)
+      }
+      form[current] = values
+      saveState[current] = 'saved'
+      setTimeout(() => { if (saveState[current] === 'saved') saveState[current] = 'idle' }, 2000)
+    }
+    await workspace.refreshSnapshot()
+  } catch (error: any) {
+    saveState[section] = 'error'
+    saveError[section] = error?.message || '重置失败'
+  }
+}
 
 function saveStatusLabel(section: string): string { const s = saveState[section]; if (s === 'saving') return '保存中…'; if (s === 'saved') return '已保存'; if (s === 'error') return '保存失败'; return '' }
 function getField(section: string, key: string): any { return form[section]?.[key] }
 function setField(section: string, key: string, value: any) { if (form[section]) { form[section][key] = value; onFieldChange(section) } }
 function toggleBool(section: string, key: string) { setField(section, key, !getField(section, key)) }
 const currentSection = computed(() => SECTION_MAP[active.value] || 'program_settings')
-const currentFields = computed(() => FIELD_DEFS[active.value] || [])
+const currentFields = computed(() => {
+  const fields = FIELD_DEFS[active.value] || []
+  const sectionState = (prefsState.value as any)?.[currentSection.value]
+  if (!sectionState || typeof sectionState !== 'object') return fields
+  return fields.filter(field => sectionState[field.key] === 'active')
+})
 </script>
 <template>
   <div class="pref">

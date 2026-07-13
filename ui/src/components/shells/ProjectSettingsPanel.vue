@@ -1,12 +1,21 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, computed, watch } from 'vue'
-import { fetchProjectSettings, postProjectSettings, postRuntimeDefaults, postOpenPath, postFileDialog,
+import { ref, reactive, onMounted, computed, watch, toRaw } from 'vue'
+import { fetchConfigValues, patchConfigValues, fetchPythonRuntime, postOpenPath, postFileDialog,
   postPythonRuntimeHealthCheck, postPythonRuntimePrepare, postPythonRuntimeRebuild,
   postPythonRuntimeClear, postPythonRuntimeExportBundle, postSecurityEnableRequired,
 } from '@/services/api'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useToastStore } from '@/stores/toastStore'
-import type { ProjectSettings, ProjectSettingsSnapshot, PythonRuntimeProfile, PythonRuntimeStatus, SecurityRequirementSummary } from '@/types/domains/api'
+import type {
+  ConfigPatchOperation,
+  GraphEntrypointRuntimeValues,
+  ProjectConfigRegistryValues,
+  ProjectSettingsSnapshot,
+  PythonRuntimeGetResponse,
+  PythonRuntimeProfile,
+  PythonRuntimeStatus,
+  SecurityRequirementSummary,
+} from '@/types/domains/api'
 
 const workspace = useWorkspaceStore()
 const toast = useToastStore()
@@ -15,34 +24,77 @@ const active = ref<'identity' | 'runtime' | 'packaging' | 'compile' | 'pythonRun
 const loading = ref(false)
 const saveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 
-const pythonProfile = reactive<PythonRuntimeProfile>({
+const DEFAULT_PYTHON_PROFILE: PythonRuntimeProfile = {
   runtime_enabled: false, python_version_spec: '3.13', interpreter_strategy: 'bundled',
   custom_python_path: null, cache_location_mode: 'software_cache', project_cache_mode: 'wheelhouse_rebuild',
   requirements_source_mode: 'inline', requirements_inline: [], requirements_file_path: null,
   lock_file_path: null, index_strategy: 'default', custom_index_url: null,
   auto_prepare_on_run: true, package_embed_mode: 'wheelhouse_rebuild',
   materialized_runtime_hash: null, last_health_status: 'unknown', last_health_message: null,
-})
-const runtimeStatus = reactive<PythonRuntimeStatus>({
+}
+const DEFAULT_RUNTIME_STATUS: PythonRuntimeStatus = {
   health_status: null, health_message: null, runtime_root: null, python_executable: null,
   manifest_hash: null, cache_location_mode: null, project_cache_mode: null,
-})
+}
+interface ProjectSettingsEditorModel {
+  project_settings_schema_version: number
+  project_identity: { name: string; description?: string; version?: string; author?: string; tags?: string[] }
+  entrypoint_runtime: {
+    initial_variables: Record<string, unknown>
+    browser_config: Record<string, unknown>
+    execution_defaults: Record<string, unknown>
+  }
+  packaging: { default_output_name?: string; include_embedded_resources?: boolean }
+  external_resources: Record<string, unknown>[]
+  resource_policy: { embedded_resources: string[]; external_resource_bindings: Record<string, unknown>[] }
+  compile_profile: { source_of_truth: string; inject_project_runtime_defaults_into_main_flow_start: boolean }
+  debug_profile?: { history_retention_limit: number }
+  python_runtime_profile: PythonRuntimeProfile
+}
+
+const DEFAULT_ENTRYPOINT_RUNTIME: ProjectSettingsEditorModel['entrypoint_runtime'] = {
+  initial_variables: {},
+  browser_config: { headless: true, slow_mo_ms: 0 },
+  execution_defaults: { default_timeout_ms: 30000, default_retry_count: 0 },
+}
+const pythonProfile = reactive<PythonRuntimeProfile>({ ...DEFAULT_PYTHON_PROFILE })
+const runtimeStatus = reactive<PythonRuntimeStatus>({ ...DEFAULT_RUNTIME_STATUS })
 const actionLoading = ref<string | null>(null)
 
 const secSummary = ref<SecurityRequirementSummary | null>(null)
 const secEnabling = ref(false)
 
-const settings = reactive<ProjectSettings>({
+const settings = reactive<ProjectSettingsEditorModel>({
   project_settings_schema_version: 1,
   project_identity: { name: '' },
-  runtime_defaults: { initial_variables: {}, browser_config: { headless: true, slow_mo_ms: 0 }, execution_defaults: { default_timeout_ms: 30000, default_retry_count: 0 } },
+  entrypoint_runtime: structuredClone(DEFAULT_ENTRYPOINT_RUNTIME),
   packaging: { default_output_name: '' },
   external_resources: [],
   resource_policy: { embedded_resources: [], external_resource_bindings: [] },
   compile_profile: { source_of_truth: 'saved_project_only', inject_project_runtime_defaults_into_main_flow_start: true },
   debug_profile: { history_retention_limit: 10 },
-  python_runtime_profile: { runtime_enabled: false, python_version_spec: '3.13', interpreter_strategy: 'bundled' as const, custom_python_path: null, cache_location_mode: 'software_cache' as const, project_cache_mode: 'wheelhouse_rebuild' as const, requirements_source_mode: 'inline' as const, requirements_inline: [], requirements_file_path: null, lock_file_path: null, index_strategy: 'default' as const, custom_index_url: null, auto_prepare_on_run: true, package_embed_mode: 'wheelhouse_rebuild' as const, materialized_runtime_hash: null, last_health_status: 'unknown' as const, last_health_message: null },
+  python_runtime_profile: { ...DEFAULT_PYTHON_PROFILE },
 })
+
+type ProjectConfigValues = ProjectConfigRegistryValues
+type GraphConfigValues = GraphEntrypointRuntimeValues
+
+const PYTHON_PROFILE_EDITABLE_KEYS: (keyof PythonRuntimeProfile)[] = [
+  'runtime_enabled',
+  'python_version_spec',
+  'interpreter_strategy',
+  'custom_python_path',
+  'cache_location_mode',
+  'project_cache_mode',
+  'requirements_source_mode',
+  'requirements_inline',
+  'requirements_file_path',
+  'lock_file_path',
+  'index_strategy',
+  'custom_index_url',
+  'auto_prepare_on_run',
+  'package_embed_mode',
+]
 
 const tags = ref<string[]>([])
 const tagInput = ref('')
@@ -52,19 +104,190 @@ function removeTag(idx: number) { tags.value.splice(idx, 1) }
 const identityDesc = computed({ get: () => (settings.project_identity as any).description || '', set: (v: string) => { (settings.project_identity as any).description = v } })
 const identityVersion = computed({ get: () => (settings.project_identity as any).version || '', set: (v: string) => { (settings.project_identity as any).version = v } })
 const identityAuthor = computed({ get: () => (settings.project_identity as any).author || '', set: (v: string) => { (settings.project_identity as any).author = v } })
+const runtimeControlsDisabled = computed(() => saveState.value === 'saving')
+const executionDefaultsReadonly = computed(() => true)
+const runtimeInjectionReadonly = computed(() => true)
 
 interface VarEntry { key: string; value: string }
 const variables = reactive<VarEntry[]>([])
-function syncVars() { const obj: Record<string, unknown> = {}; for (const v of variables) { if (v.key.trim()) { const n = Number(v.value); if (!isNaN(n) && v.value.trim()) obj[v.key.trim()] = n; else if (v.value === 'true') obj[v.key.trim()] = true; else if (v.value === 'false') obj[v.key.trim()] = false; else obj[v.key.trim()] = v.value } } settings.runtime_defaults.initial_variables = obj }
-function loadVars() { variables.splice(0, variables.length); for (const [k, v] of Object.entries(settings.runtime_defaults.initial_variables || {})) { variables.push({ key: k, value: typeof v === 'object' ? JSON.stringify(v) : String(v) }) } }
+function syncVars() { const obj: Record<string, unknown> = {}; for (const v of variables) { if (v.key.trim()) { const n = Number(v.value); if (!isNaN(n) && v.value.trim()) obj[v.key.trim()] = n; else if (v.value === 'true') obj[v.key.trim()] = true; else if (v.value === 'false') obj[v.key.trim()] = false; else obj[v.key.trim()] = v.value } } settings.entrypoint_runtime.initial_variables = obj }
+function loadVars() { variables.splice(0, variables.length); for (const [k, v] of Object.entries(settings.entrypoint_runtime.initial_variables || {})) { variables.push({ key: k, value: typeof v === 'object' ? JSON.stringify(v) : String(v) }) } }
 function addVar() { variables.push({ key: '', value: '' }) }
 function removeVar(idx: number) { variables.splice(idx, 1); syncVars() }
 
-async function load() { loading.value = true; try { const r = await fetchProjectSettings(); Object.assign(settings, r.project_settings); loadVars(); tags.value = (settings.project_identity as any).tags || []; const pp = (r.project_settings as any).python_runtime_profile; if (pp) Object.assign(pythonProfile, pp); const rs = (r as any).python_runtime_summary; if (rs) Object.assign(runtimeStatus, rs); secSummary.value = (r as any).security_requirement_summary || null; saveState.value = 'idle' } catch (e: any) { toast.error('加载失败', e?.message) } finally { loading.value = false } }
+function replaceObject(target: Record<string, unknown>, source: Record<string, unknown>) {
+  for (const key of Object.keys(target)) {
+    delete target[key]
+  }
+  Object.assign(target, source)
+}
 
-async function save() { if (isWcrun.value) return; saveState.value = 'saving'; syncVars(); (settings.project_identity as any).tags = [...tags.value]; (settings as any).python_runtime_profile = { ...pythonProfile }; try { const r = await postProjectSettings({ project_settings: { ...settings } as unknown as Record<string, unknown> }); Object.assign(settings, r.project_settings); loadVars(); tags.value = (settings.project_identity as any).tags || []; saveState.value = 'saved'; await workspace.refreshSnapshot(); setTimeout(() => { if (saveState.value === 'saved') saveState.value = 'idle' }, 2000) } catch (e: any) { saveState.value = 'error'; toast.error('保存失败', e?.message) } }
+function replaceArray<T>(target: T[], source: T[]) {
+  target.splice(0, target.length, ...source)
+}
 
-async function saveRuntimeDefaults() { saveState.value = 'saving'; syncVars(); try { await postRuntimeDefaults({ runtime_defaults: settings.runtime_defaults }); saveState.value = 'saved'; await workspace.refreshSnapshot(); setTimeout(() => { if (saveState.value === 'saved') saveState.value = 'idle' }, 2000) } catch (e: any) { saveState.value = 'error'; toast.error('保存失败', e?.message) } }
+function cloneValue<T>(value: T): T {
+  return structuredClone(toRaw(value))
+}
+
+function editablePythonProfileValue() {
+  const next = {} as Partial<PythonRuntimeProfile>
+  for (const key of PYTHON_PROFILE_EDITABLE_KEYS) {
+    next[key] = cloneValue(pythonProfile[key]) as never
+  }
+  return next
+}
+
+function applyProjectConfig(values: ProjectConfigValues) {
+  settings.project_settings_schema_version = 1
+  replaceObject(settings.project_identity as Record<string, unknown>, {
+    name: values.identity?.name || '',
+  })
+  replaceObject(settings.packaging as Record<string, unknown>, {
+    default_output_name: values.packaging?.default_output_name || '',
+    include_embedded_resources: values.packaging?.include_embedded_resources ?? true,
+  })
+  replaceArray(settings.external_resources, cloneValue(values.resources?.external_resources || []))
+  replaceArray(settings.resource_policy.embedded_resources, cloneValue(values.resources?.embedded_resources || []))
+  replaceArray(settings.resource_policy.external_resource_bindings, [])
+  replaceObject(settings.compile_profile as Record<string, unknown>, {
+    source_of_truth: 'saved_project_only',
+    inject_project_runtime_defaults_into_main_flow_start: true,
+  })
+  replaceObject(settings.debug_profile as Record<string, unknown>, {
+    history_retention_limit: values.debug?.history_retention_limit ?? 10,
+  })
+  Object.assign(pythonProfile, DEFAULT_PYTHON_PROFILE, values.python_profile || {})
+  settings.python_runtime_profile = { ...editablePythonProfileValue(), ...pythonProfile }
+  tags.value = Array.isArray((settings.project_identity as any).tags) ? [...((settings.project_identity as any).tags)] : []
+  secSummary.value = (workspace.snapshot as any)?.security_requirement_summary || null
+}
+
+function applyGraphConfig(values: GraphConfigValues) {
+  const entrypointRuntime = values.entrypoint_runtime || {}
+  settings.entrypoint_runtime.initial_variables = cloneValue(entrypointRuntime.initial_variables || {})
+  settings.entrypoint_runtime.browser_config = {
+    ...cloneValue(DEFAULT_ENTRYPOINT_RUNTIME.browser_config),
+    ...cloneValue(entrypointRuntime.browser_config || {}),
+  }
+  settings.entrypoint_runtime.execution_defaults = cloneValue(DEFAULT_ENTRYPOINT_RUNTIME.execution_defaults)
+  loadVars()
+}
+
+function applyPythonRuntimeCapabilities(response: PythonRuntimeGetResponse) {
+  Object.assign(runtimeStatus, DEFAULT_RUNTIME_STATUS, response.runtime_status || {})
+  if (response.python_runtime_profile) {
+    pythonProfile.materialized_runtime_hash = response.python_runtime_profile.materialized_runtime_hash
+    pythonProfile.last_health_status = response.python_runtime_profile.last_health_status
+    pythonProfile.last_health_message = response.python_runtime_profile.last_health_message
+  }
+}
+
+function projectOperations(): ConfigPatchOperation[] {
+  syncVars()
+  const pythonRuntimeProfile = editablePythonProfileValue()
+  settings.python_runtime_profile = { ...pythonRuntimeProfile, ...settings.python_runtime_profile }
+  const operations: ConfigPatchOperation[] = [
+    { op: 'replace', path: '/identity/name', value: settings.project_identity.name },
+    { op: 'replace', path: '/debug/history_retention_limit', value: settings.debug_profile?.history_retention_limit ?? 10 },
+    { op: 'replace', path: '/resources/external_resources', value: cloneValue(settings.external_resources) },
+    { op: 'replace', path: '/resources/embedded_resources', value: cloneValue(settings.resource_policy.embedded_resources) },
+    { op: 'replace', path: '/packaging/default_output_name', value: settings.packaging.default_output_name || '' },
+    { op: 'replace', path: '/packaging/include_embedded_resources', value: (settings.packaging as any).include_embedded_resources ?? true },
+  ]
+  for (const key of PYTHON_PROFILE_EDITABLE_KEYS) {
+    operations.push({
+      op: 'replace',
+      path: `/python_profile/${key}`,
+      value: cloneValue(pythonRuntimeProfile[key]),
+    })
+  }
+  return operations
+}
+
+function graphRuntimeOperations(): ConfigPatchOperation[] {
+  syncVars()
+  return [
+    {
+      op: 'replace',
+      path: '/entrypoint_runtime/initial_variables',
+      value: cloneValue(settings.entrypoint_runtime.initial_variables),
+    },
+    {
+      op: 'replace',
+      path: '/entrypoint_runtime/browser_config',
+      value: cloneValue(settings.entrypoint_runtime.browser_config),
+    },
+  ]
+}
+
+async function load() {
+  loading.value = true
+  try {
+    const [projectResult, graphResult, pythonRuntimeResult] = await Promise.all([
+      fetchConfigValues<ProjectConfigValues>('project'),
+      fetchConfigValues<GraphConfigValues>('graph'),
+      fetchPythonRuntime(),
+    ])
+    applyProjectConfig(projectResult.values || {})
+    applyGraphConfig(graphResult.values || {})
+    applyPythonRuntimeCapabilities(pythonRuntimeResult)
+    secSummary.value = (workspace.snapshot as any)?.security_requirement_summary || null
+    saveState.value = 'idle'
+  } catch (e: any) {
+    toast.error('加载失败', e?.message)
+  } finally {
+    loading.value = false
+  }
+}
+
+function markSaved() {
+  saveState.value = 'saved'
+  setTimeout(() => { if (saveState.value === 'saved') saveState.value = 'idle' }, 2000)
+}
+
+async function save() {
+  if (isWcrun.value) return
+  saveState.value = 'saving'
+  try {
+    const projectResult = await patchConfigValues<ProjectConfigValues>({
+      scope: 'project',
+      operations: projectOperations(),
+      confirm_high_risk: false,
+    })
+    applyProjectConfig(projectResult.values || {})
+    const graphResult = await patchConfigValues<GraphConfigValues>({
+      scope: 'graph',
+      operations: graphRuntimeOperations(),
+      confirm_high_risk: false,
+    })
+    applyGraphConfig(graphResult.values || {})
+    await workspace.refreshSnapshot()
+    secSummary.value = (workspace.snapshot as any)?.security_requirement_summary || null
+    markSaved()
+  } catch (e: any) {
+    saveState.value = 'error'
+    toast.error('保存失败', e?.message)
+  }
+}
+
+async function saveRuntimeDefaults() {
+  saveState.value = 'saving'
+  try {
+    const graphResult = await patchConfigValues<GraphConfigValues>({
+      scope: 'graph',
+      operations: graphRuntimeOperations(),
+      confirm_high_risk: false,
+    })
+    applyGraphConfig(graphResult.values || {})
+    await workspace.refreshSnapshot()
+    secSummary.value = (workspace.snapshot as any)?.security_requirement_summary || null
+    markSaved()
+  } catch (e: any) {
+    saveState.value = 'error'
+    toast.error('保存失败', e?.message)
+  }
+}
 
 const st = computed(() => (workspace.snapshot?.project_settings || {}) as ProjectSettingsSnapshot)
 const isWcrun = computed(() => (st.value as any)?.source_of_truth === 'wcrun_package')
@@ -178,14 +401,14 @@ watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) lo
         </template>
         <template v-else-if="active === 'runtime'">
           <h5>初始变量</h5>
-          <div v-for="(v, i) in variables" :key="i" class="psp-var-row"><input v-model="v.key" class="psp-input" placeholder="变量名" @change="syncVars()" style="width:120px" /><input v-model="v.value" class="psp-input" placeholder="值" @change="syncVars()" style="flex:1" /><button class="psp-rm" @click="removeVar(i)">✕</button></div>
-          <button class="psp-add" @click="addVar">+ 新增变量</button>
+          <div v-for="(v, i) in variables" :key="i" class="psp-var-row"><input v-model="v.key" class="psp-input" placeholder="变量名" @change="syncVars()" style="width:120px" :disabled="runtimeControlsDisabled" /><input v-model="v.value" class="psp-input" placeholder="值" @change="syncVars()" style="flex:1" :disabled="runtimeControlsDisabled" /><button class="psp-rm" @click="removeVar(i)" :disabled="runtimeControlsDisabled">✕</button></div>
+          <button class="psp-add" @click="addVar" :disabled="runtimeControlsDisabled">+ 新增变量</button>
           <h5 style="margin-top:14px">浏览器配置</h5>
-          <div class="psp-field"><label>headless</label><input type="checkbox" v-model="settings.runtime_defaults.browser_config.headless" /></div>
-          <div class="psp-field"><label>slow_mo_ms</label><input type="number" v-model.number="settings.runtime_defaults.browser_config.slow_mo_ms" class="psp-input" style="width:100px" /></div>
+          <div class="psp-field"><label>headless</label><input type="checkbox" v-model="settings.entrypoint_runtime.browser_config.headless" :disabled="runtimeControlsDisabled" /></div>
+          <div class="psp-field"><label>slow_mo_ms</label><input type="number" v-model.number="settings.entrypoint_runtime.browser_config.slow_mo_ms" class="psp-input" style="width:100px" :disabled="runtimeControlsDisabled" /></div>
           <h5 style="margin-top:14px">执行默认值</h5>
-          <div class="psp-field"><label>超时(ms)</label><input type="number" v-model.number="settings.runtime_defaults.execution_defaults.default_timeout_ms" class="psp-input" style="width:100px" /></div>
-          <div class="psp-field"><label>重试次数</label><input type="number" v-model.number="settings.runtime_defaults.execution_defaults.default_retry_count" class="psp-input" style="width:80px" /></div>
+          <div class="psp-field"><label>超时(ms)</label><input type="number" v-model.number="settings.entrypoint_runtime.execution_defaults.default_timeout_ms" class="psp-input" style="width:100px" :disabled="executionDefaultsReadonly" /></div>
+          <div class="psp-field"><label>重试次数</label><input type="number" v-model.number="settings.entrypoint_runtime.execution_defaults.default_retry_count" class="psp-input" style="width:80px" :disabled="executionDefaultsReadonly" /></div>
           <button class="psp-btn-save" @click="saveRuntimeDefaults" :disabled="saveState === 'saving'" style="margin-top:14px">仅保存运行默认值</button>
         </template>
         <template v-else-if="active === 'packaging'">
@@ -202,7 +425,7 @@ watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) lo
         </template>
         <template v-else-if="active === 'compile'">
           <div class="psp-field"><label>真值来源</label><select v-model="settings.compile_profile.source_of_truth" class="psp-input" :disabled="sectionReadonly"><option value="saved_project_only">saved_project_only</option></select></div>
-          <div class="psp-field"><label>注入运行默认值</label><input type="checkbox" v-model="settings.compile_profile.inject_project_runtime_defaults_into_main_flow_start" :disabled="sectionReadonly" /></div>
+          <div class="psp-field"><label>注入运行默认值</label><input type="checkbox" v-model="settings.compile_profile.inject_project_runtime_defaults_into_main_flow_start" :disabled="runtimeInjectionReadonly" /></div>
           <div class="psp-field"><label>调试历史保留上限</label><input type="number" v-model.number="settings.debug_profile!.history_retention_limit" class="psp-input" style="width:100px" min="1" :disabled="sectionReadonly" /></div>
         </template>
         <template v-else-if="active === 'pythonRuntime'">

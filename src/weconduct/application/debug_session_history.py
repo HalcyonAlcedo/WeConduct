@@ -279,11 +279,22 @@ class DebugSessionHistoryStore:
             return []
         try:
             payload = json.loads(self._index_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError("debug history index must be valid JSON") from exc
+        except json.JSONDecodeError:
+            self._quarantine_corrupted_index()
+            return []
         if not isinstance(payload, list):
-            raise ValueError("debug history index must be a JSON array")
+            self._quarantine_corrupted_index()
+            return []
         return [dict(item) for item in payload if isinstance(item, dict)]
+
+    def _quarantine_corrupted_index(self) -> Path:
+        backup_path = self._index_path.with_name(f"{self._index_path.name}.corrupt")
+        if backup_path.exists():
+            backup_path = self._index_path.with_name(
+                f"{self._index_path.name}.{uuid.uuid4().hex}.corrupt"
+            )
+        self._index_path.replace(backup_path)
+        return backup_path
 
     def _normalize_session_payload(self, payload: dict) -> dict:
         debug_session = payload.get("debug_session")

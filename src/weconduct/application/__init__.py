@@ -6,12 +6,6 @@ from .legacy_webcontrol_converter import (
     build_conversion_report,
     convert_legacy_webcontrol_project,
 )
-from .preferences_service import HighRiskPreferenceChangeRequiredError, PreferencesService
-from .preferences_store import (
-    FilePreferencesStore,
-    InMemoryPreferencesStore,
-    PreferencesStore,
-)
 from .runtime_session_stream import RuntimeSessionStreamBroker
 from .update_service import UpdateService
 from .workspace_state_store import (
@@ -25,11 +19,6 @@ __all__ = [
     "GraphDocumentRevisionConflictError",
     "build_conversion_report",
     "convert_legacy_webcontrol_project",
-    "PreferencesService",
-    "HighRiskPreferenceChangeRequiredError",
-    "FilePreferencesStore",
-    "InMemoryPreferencesStore",
-    "PreferencesStore",
     "RuntimeSessionStreamBroker",
     "UpdateService",
     "FileWorkspaceStateStore",

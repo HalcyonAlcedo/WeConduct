@@ -17,10 +17,12 @@ import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useDockStore } from '@/stores/dockStore'
 import { useToastStore } from '@/stores/toastStore'
 import { useDebugStore } from '@/stores/debugStore'
+import { useWorkspaceStore } from '@/stores/workspaceStore'
 
 const compilation = useCompilationStore()
 const workspace = useGraphWorkspaceStore()
 const debugStore = useDebugStore()
+const shellWorkspace = useWorkspaceStore()
 
 const ctxNodeConfig = computed(() => {
   const nid = contextMenu.value?.nodeId
@@ -168,6 +170,11 @@ function deleteNode() {
   if (!contextMenu.value) return
   const nodeId = contextMenu.value.nodeId
   closeContextMenu()
+  if (!graphPreferences.value.confirm_delete_node) {
+    workspace.removeNode(nodeId)
+    toast.info('节点已删除')
+    return
+  }
   ;(window as any).__openDeleteConfirm?.(() => {
     workspace.removeNode(nodeId)
     toast.info('节点已删除')
@@ -212,6 +219,9 @@ async function onDrop(e: DragEvent) {
     const nodeId = await workspace.addNode(item, pos)
     if (nodeId) {
       graphStore.selectNode(nodeId)
+      if (graphPreferences.value.auto_open_node_on_drop) {
+        openMetadataPanel(nodeId)
+      }
       toast.info('已添加节点', item.display_name)
     }
   } catch { /* ignore invalid drops */ }
@@ -235,6 +245,15 @@ const isWorkspaceEmpty = computed(() =>
 )
 
 const hasGraph = computed(() => graphData.value.nodes.length > 0)
+const graphPreferences = computed(() => {
+  const prefs = (shellWorkspace.snapshot as any)?.graph_workspace?.graph_preferences
+  return {
+    snap_to_grid: prefs?.snap_to_grid ?? true,
+    grid_enabled: prefs?.grid_enabled ?? true,
+    auto_open_node_on_drop: prefs?.auto_open_node_on_drop ?? true,
+    confirm_delete_node: prefs?.confirm_delete_node ?? true,
+  }
+})
 
 function onNodeClick({ node }: { node: { id: string } }) {
   graphStore.selectNode(node.id)
@@ -317,7 +336,7 @@ function onViewportChange(vp: { x: number; y: number; zoom: number }) {
       :zoom-on-scroll="true"
       :pan-on-scroll="true"
       :min-zoom="0.1"
-      :snap-to-grid="true"
+      :snap-to-grid="graphPreferences.snap_to_grid"
       :snap-grid="[10, 10]"
       :fit-view-on-init="true"
       class="vf-canvas"
@@ -333,7 +352,7 @@ function onViewportChange(vp: { x: number; y: number; zoom: number }) {
       @edges-change="onEdgesChange"
       @viewport-change="onViewportChange"
     >
-      <Background :gap="16" :size="1" pattern-color="#aaa" />
+      <Background v-if="graphPreferences.grid_enabled" :gap="16" :size="1" pattern-color="#aaa" />
       <MiniMap position="bottom-left" :width="160" :height="100" :mask-color="'rgba(0,0,0,0.08)'" />
       <Controls position="bottom-right" />
     </VueFlow>

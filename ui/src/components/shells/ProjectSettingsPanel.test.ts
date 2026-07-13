@@ -4,9 +4,9 @@ import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 
 const apiMocks = vi.hoisted(() => ({
-  fetchProjectSettings: vi.fn(),
-  postProjectSettings: vi.fn(),
-  postRuntimeDefaults: vi.fn(),
+  fetchConfigValues: vi.fn(),
+  patchConfigValues: vi.fn(),
+  fetchPythonRuntime: vi.fn(),
   postOpenPath: vi.fn(),
   postFileDialog: vi.fn(),
   postPythonRuntimeHealthCheck: vi.fn(),
@@ -18,9 +18,9 @@ const apiMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/services/api', () => ({
-  fetchProjectSettings: apiMocks.fetchProjectSettings,
-  postProjectSettings: apiMocks.postProjectSettings,
-  postRuntimeDefaults: apiMocks.postRuntimeDefaults,
+  fetchConfigValues: apiMocks.fetchConfigValues,
+  patchConfigValues: apiMocks.patchConfigValues,
+  fetchPythonRuntime: apiMocks.fetchPythonRuntime,
   postOpenPath: apiMocks.postOpenPath,
   postFileDialog: apiMocks.postFileDialog,
   postPythonRuntimeHealthCheck: apiMocks.postPythonRuntimeHealthCheck,
@@ -34,24 +34,20 @@ vi.mock('@/services/api', () => ({
 import ProjectSettingsPanel from './ProjectSettingsPanel.vue'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 
-function buildProjectSettingsResponse() {
+function buildProjectConfigResponse() {
   return {
-    project_settings: {
-      project_settings_schema_version: 1,
-      project_identity: { name: 'demo-project' },
-      runtime_defaults: {
-        initial_variables: {},
-        browser_config: { headless: true, slow_mo_ms: 0 },
-        execution_defaults: { default_timeout_ms: 30000, default_retry_count: 0 },
+    scope: 'project',
+    values: {
+      identity: { name: 'demo-project' },
+      packaging: {
+        default_output_name: 'demo.wcrun',
+        include_embedded_resources: true,
       },
-      packaging: { default_output_name: 'demo.wcrun' },
-      external_resources: [],
-      resource_policy: { embedded_resources: [], external_resource_bindings: [] },
-      compile_profile: {
-        source_of_truth: 'saved_project_only',
-        inject_project_runtime_defaults_into_main_flow_start: true,
+      resources: {
+        external_resources: [],
+        embedded_resources: [],
       },
-      python_runtime_profile: {
+      python_profile: {
         runtime_enabled: false,
         python_version_spec: '3.13',
         interpreter_strategy: 'bundled',
@@ -70,20 +66,48 @@ function buildProjectSettingsResponse() {
         last_health_status: 'unknown',
         last_health_message: null,
       },
-      debug_profile: {
+      debug: {
         history_retention_limit: 10,
       },
     },
-    state: {
-      loaded: true,
-      source: 'project_file',
-      project_file_path: 'I:\\demo\\project.weconduct.json',
-      session_dir: null,
-      project_settings_path: 'I:\\demo\\project-settings.json',
-      is_dirty: false,
+  } as any
+}
+
+function buildGraphConfigResponse() {
+  return {
+    scope: 'graph',
+    values: {
+      entrypoint_runtime: {
+        initial_variables: {},
+        browser_config: { headless: true, slow_mo_ms: 0 },
+        execution_defaults: { default_timeout_ms: 30000, default_retry_count: 0 },
+      },
     },
-    python_runtime_summary: {
-      enabled: false,
+  } as any
+}
+
+function buildPythonRuntimeResponse() {
+  return {
+    python_runtime_profile: {
+      runtime_enabled: false,
+      python_version_spec: '3.13',
+      interpreter_strategy: 'bundled',
+      custom_python_path: null,
+      cache_location_mode: 'software_cache',
+      project_cache_mode: 'wheelhouse_rebuild',
+      requirements_source_mode: 'inline',
+      requirements_inline: [],
+      requirements_file_path: null,
+      lock_file_path: null,
+      index_strategy: 'default',
+      custom_index_url: null,
+      auto_prepare_on_run: true,
+      package_embed_mode: 'wheelhouse_rebuild',
+      materialized_runtime_hash: null,
+      last_health_status: 'unknown',
+      last_health_message: null,
+    },
+    runtime_status: {
       health_status: 'unknown',
       health_message: null,
       runtime_root: null,
@@ -91,39 +115,63 @@ function buildProjectSettingsResponse() {
       manifest_hash: null,
       cache_location_mode: null,
       project_cache_mode: null,
-      package_embed_mode: null,
     },
-    security_requirement_summary: null,
+    diagnostics: [],
   } as any
 }
 
-describe('ProjectSettingsPanel', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    vi.clearAllMocks()
-    apiMocks.fetchProjectSettings.mockResolvedValue(buildProjectSettingsResponse())
-  })
-
-  it('显示调试历史保留上限字段', async () => {
-    const workspace = useWorkspaceStore()
-    workspace.snapshot = {
-      project: {
-        project_id: 'proj-1',
-        project_name: 'demo-project',
-      },
+function mountWithWorkspaceSnapshot() {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const workspace = useWorkspaceStore()
+  workspace.snapshot = {
+    project: {
+      project_id: 'proj-1',
+      project_name: 'demo-project',
+    },
       project_settings: {
         source_of_truth: 'project_directory',
         state_source: 'project_settings',
         project_settings_schema_version: 1,
         is_dirty: false,
       },
-    } as any
-
-    const wrapper = mount(ProjectSettingsPanel, {
-      global: {
-        plugins: [createPinia()],
+      security_requirement_summary: {
+        ready: false,
+        blocked_count: 1,
+        blocked_entries: [{ field: 'confirm_high_risk_actions', display_name: '确认高风险操作' }],
       },
+    } as any
+  workspace.refreshSnapshot = vi.fn().mockResolvedValue(undefined)
+
+  const wrapper = mount(ProjectSettingsPanel, {
+    global: {
+      plugins: [pinia],
+    },
+  })
+
+  return { wrapper, workspace }
+}
+
+describe('ProjectSettingsPanel', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    apiMocks.fetchConfigValues.mockImplementation(async (scope: string) => {
+      if (scope === 'project') {
+        return buildProjectConfigResponse()
+      }
+      if (scope === 'graph') {
+        return buildGraphConfigResponse()
+      }
+      throw new Error(`unexpected scope: ${scope}`)
     })
+    apiMocks.fetchPythonRuntime.mockResolvedValue(buildPythonRuntimeResponse())
+    apiMocks.patchConfigValues.mockImplementation(async ({ scope }: { scope: string }) => (
+      scope === 'project' ? buildProjectConfigResponse() : buildGraphConfigResponse()
+    ))
+  })
+
+  it('显示调试历史保留上限字段', async () => {
+    const { wrapper } = mountWithWorkspaceSnapshot()
 
     await nextTick()
     await Promise.resolve()
@@ -132,5 +180,86 @@ describe('ProjectSettingsPanel', () => {
     await nextTick()
 
     expect(wrapper.text()).toContain('调试历史保留上限')
+    expect(wrapper.text()).toContain('确认高风险操作')
+  })
+
+  it('保存全部设置时分别提交 project scope 和 graph scope，并只提交 entrypoint_runtime 允许字段', async () => {
+    const { wrapper } = mountWithWorkspaceSnapshot()
+
+    await nextTick()
+    await Promise.resolve()
+    await nextTick()
+
+    const nameInput = wrapper.findAll('input.psp-input')[0]
+    await nameInput.setValue('renamed-project')
+
+    await wrapper.get('.psp-nav-item:nth-child(2)').trigger('click')
+    await nextTick()
+    await wrapper.get('.psp-add').trigger('click')
+    await nextTick()
+
+    const runtimeInputs = wrapper.findAll('.psp-var-row input.psp-input')
+    await runtimeInputs[0].setValue('token')
+    await runtimeInputs[1].setValue('abc')
+    await runtimeInputs[0].trigger('change')
+    await runtimeInputs[1].trigger('change')
+
+    const runtimeCheckbox = wrapper.get('input[type="checkbox"]')
+    await runtimeCheckbox.setValue(false)
+    const runtimeNumbers = wrapper.findAll('input[type="number"]')
+    await runtimeNumbers[0].setValue('125')
+
+    await wrapper.get('.psp-ft .psp-btn-save').trigger('click')
+
+    expect(apiMocks.patchConfigValues).toHaveBeenCalledTimes(2)
+    expect(apiMocks.patchConfigValues).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      scope: 'project',
+      operations: expect.arrayContaining([
+        { op: 'replace', path: '/identity/name', value: 'renamed-project' },
+        { op: 'replace', path: '/debug/history_retention_limit', value: 10 },
+        { op: 'replace', path: '/resources/external_resources', value: [] },
+        { op: 'replace', path: '/resources/embedded_resources', value: [] },
+        { op: 'replace', path: '/packaging/default_output_name', value: 'demo.wcrun' },
+        { op: 'replace', path: '/packaging/include_embedded_resources', value: true },
+        { op: 'replace', path: '/python_profile/python_version_spec', value: '3.13' },
+      ]),
+      confirm_high_risk: false,
+    }))
+    expect(apiMocks.patchConfigValues).toHaveBeenNthCalledWith(2, {
+      scope: 'graph',
+      operations: [
+        {
+          op: 'replace',
+          path: '/entrypoint_runtime/initial_variables',
+          value: { token: 'abc' },
+        },
+        {
+          op: 'replace',
+          path: '/entrypoint_runtime/browser_config',
+          value: { headless: false, slow_mo_ms: 125 },
+        },
+      ],
+      confirm_high_risk: false,
+    })
+    expect(apiMocks.fetchPythonRuntime).toHaveBeenCalledTimes(1)
+  })
+
+  it('未注册控件保持禁用显示', async () => {
+    const { wrapper } = mountWithWorkspaceSnapshot()
+
+    await nextTick()
+    await Promise.resolve()
+    await nextTick()
+
+    await wrapper.get('.psp-nav-item:nth-child(2)').trigger('click')
+    await nextTick()
+    const runtimeNumbers = wrapper.findAll('input[type="number"]')
+    expect(runtimeNumbers[1].attributes('disabled')).toBeDefined()
+    expect(runtimeNumbers[2].attributes('disabled')).toBeDefined()
+
+    await wrapper.get('.psp-nav-item:nth-child(4)').trigger('click')
+    await nextTick()
+    const compileCheckbox = wrapper.get('.psp-field input[type="checkbox"]')
+    expect(compileCheckbox.attributes('disabled')).toBeDefined()
   })
 })

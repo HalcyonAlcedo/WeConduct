@@ -92,6 +92,79 @@ def test_launch_desktop_shell_starts_api_and_opens_window(tmp_path: Path) -> Non
     ]
 
 
+def test_launch_desktop_shell_reads_window_size_from_current_configuration(
+    tmp_path: Path,
+) -> None:
+    ui_dist_path = _build_ui_dist(tmp_path)
+    preferences_path = tmp_path / "state" / "preferences.json"
+    preferences_path.parent.mkdir(parents=True)
+    preferences_path.write_text(
+        json.dumps(
+            {
+                "configuration_format_version": 1,
+                "scope": "program",
+                "values": {
+                    "ui": {"default_window_size": {"width": 1560, "height": 960}}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake_webview = FakeWebView()
+
+    launch_desktop_shell(
+        DesktopShellOptions(
+            host="127.0.0.1",
+            port=0,
+            workspace_state_path=tmp_path / "state" / "workspace-state.json",
+            preferences_path=preferences_path,
+            ui_dist_path=ui_dist_path,
+            width=1280,
+            height=800,
+        ),
+        webview_module=fake_webview,
+    )
+
+    assert fake_webview.created_windows[0]["width"] == 1560
+    assert fake_webview.created_windows[0]["height"] == 960
+
+
+def test_launch_desktop_shell_migrates_legacy_window_size_before_window_creation(
+    tmp_path: Path,
+) -> None:
+    ui_dist_path = _build_ui_dist(tmp_path)
+    preferences_path = tmp_path / "state" / "preferences.json"
+    preferences_path.parent.mkdir(parents=True)
+    preferences_path.write_text(
+        json.dumps(
+            {
+                "preferences_file_version": 2,
+                "program_settings": {
+                    "default_window_size": {"width": 1510, "height": 930}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake_webview = FakeWebView()
+
+    launch_desktop_shell(
+        DesktopShellOptions(
+            host="127.0.0.1",
+            port=0,
+            workspace_state_path=tmp_path / "state" / "workspace-state.json",
+            preferences_path=preferences_path,
+            ui_dist_path=ui_dist_path,
+            width=1280,
+            height=800,
+        ),
+        webview_module=fake_webview,
+    )
+
+    assert fake_webview.created_windows[0]["width"] == 1510
+    assert fake_webview.created_windows[0]["height"] == 930
+
+
 def test_launch_desktop_shell_exposes_host_file_dialog_provider(tmp_path: Path) -> None:
     ui_dist_path = tmp_path / "ui-dist"
     ui_dist_path.mkdir(parents=True)

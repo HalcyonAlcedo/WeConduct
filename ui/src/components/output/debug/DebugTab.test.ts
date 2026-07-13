@@ -276,6 +276,7 @@ describe('DebugTab', () => {
     setActivePinia(pinia)
     const wrapper = mountDebugTab(pinia)
     await flushMount()
+    apiMocks.fetchDebugSession.mockResolvedValueOnce(makeDetail('dbg-active-1', 'completed'))
     apiMocks.fetchDebugSessions.mockRejectedValueOnce(new Error('sync unavailable'))
 
     const button = wrapper.findAll('button').find((item) => item.text() === '▶ 继续')
