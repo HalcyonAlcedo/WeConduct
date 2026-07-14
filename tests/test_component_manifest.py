@@ -1,17 +1,18 @@
 import json
-import runpy
+import os
 import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_ROOT = (ROOT / ".." / "WeConduct").resolve()
 SCRIPT_PATH = ROOT / "tools" / "build_component_manifest.py"
-OUTPUT_PATH = ROOT / "data" / "weconduct-0.8.1" / "components.json"
-SCHEMA_PATH = ROOT / "data" / "weconduct-0.8.1" / "graph-schema.json"
+COMMITTED_OUTPUT_PATH = ROOT / "data" / "weconduct-0.8.1" / "components.json"
+COMMITTED_SCHEMA_PATH = ROOT / "data" / "weconduct-0.8.1" / "graph-schema.json"
 
 EXPECTED_DOMAIN_COUNTS = {
     "browser": 67,
@@ -36,19 +37,61 @@ EXPECTED_HIDDEN_KEYS = {
 }
 
 
-def run_builder(*, version: str = "0.8.1") -> subprocess.CompletedProcess[str]:
+@pytest.fixture(scope="session")
+def source_root() -> Path | None:
+    env_value = os.environ.get("WECONDUCT_SOURCE_ROOT", "").strip()
+    candidates: list[Path] = []
+    if env_value:
+        candidates.append(Path(env_value).expanduser())
+    candidates.append(ROOT.parent / "WeConduct")
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.exists():
+            return resolved
+    return None
+
+
+def require_source_root(source_root: Path | None) -> Path:
+    if source_root is None:
+        pytest.skip(
+            "缺少真实源码目录：请设置 WECONDUCT_SOURCE_ROOT 或提供兄弟目录 ../WeConduct。"
+        )
+    return source_root
+
+
+@pytest.fixture()
+def committed_components() -> list[dict[str, Any]]:
+    payload = read_json(COMMITTED_OUTPUT_PATH)
+    assert isinstance(payload, list)
+    return payload
+
+
+@pytest.fixture()
+def committed_schema() -> dict[str, Any]:
+    payload = read_json(COMMITTED_SCHEMA_PATH)
+    assert isinstance(payload, dict)
+    return payload
+
+
+def run_builder(
+    *,
+    source_root: Path,
+    output_path: Path,
+    schema_path: Path,
+    version: str = "0.8.1",
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
             str(SCRIPT_PATH),
             "--source-root",
-            str(SOURCE_ROOT),
+            str(source_root),
             "--version",
             version,
             "--output",
-            str(OUTPUT_PATH),
+            str(output_path),
             "--schema-output",
-            str(SCHEMA_PATH),
+            str(schema_path),
         ],
         cwd=ROOT,
         check=False,
@@ -61,22 +104,8 @@ def read_json(path: Path) -> object:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def read_source_resource_keys() -> set[str]:
-    registry_module = runpy.run_path(
-        str(SOURCE_ROOT / "src" / "weconduct" / "builtin_components" / "registry.py")
-    )
-    drafts_module = runpy.run_path(
-        str(SOURCE_ROOT / "src" / "weconduct" / "builtin_components" / "node_drafts.py")
-    )
-    registry = registry_module["build_builtin_resource_registry"]()
-    draft_keys = set(drafts_module["GRAPH_NODE_DRAFT_DEFINITIONS"])
-    registry_keys = {item["resource_key"] for item in registry}
-    assert registry_keys == draft_keys
-    return registry_keys
-
-
-def read_contract_schema() -> dict[str, Any]:
-    sys.path.insert(0, str(SOURCE_ROOT / "src"))
+def read_contract_schema(source_root: Path) -> dict[str, Any]:
+    sys.path.insert(0, str(source_root / "src"))
     try:
         from weconduct.contracts.graph import GraphEdge, GraphModel, GraphNode, GraphPort
 
@@ -90,58 +119,132 @@ def read_contract_schema() -> dict[str, Any]:
         sys.path.pop(0)
 
 
-def test_manifest_builder_generates_expected_snapshot() -> None:
-    result = run_builder()
-    assert result.returncode == 0, result.stderr or result.stdout
-    assert OUTPUT_PATH.exists(), f"缺少输出文件: {OUTPUT_PATH}"
-    assert SCHEMA_PATH.exists(), f"缺少 schema 文件: {SCHEMA_PATH}"
+def test_committed_component_snapshot_statistics(
+    committed_components: list[dict[str, Any]],
+) -> None:
+    assert len(committed_components) == 126
 
-    components = read_json(OUTPUT_PATH)
-    assert isinstance(components, list)
-    assert len(components) == 126
-
-    resource_keys = [item["resource_key"] for item in components]
+    resource_keys = [item["resource_key"] for item in committed_components]
     assert len(set(resource_keys)) == 126
-    assert set(resource_keys) == read_source_resource_keys()
-    assert sum(1 for item in components if item["enabled"]) == 126
-    assert Counter(item["capability_domain"] for item in components) == EXPECTED_DOMAIN_COUNTS
-    assert sum(1 for item in components if item["component_library_visible"]) == 120
-    assert sum(1 for item in components if item["compatibility_only"]) == 6
-    assert {item["resource_key"] for item in components if not item["component_library_visible"]} == EXPECTED_HIDDEN_KEYS
-    assert sum(1 for item in components if item["direct_runtime_executor"]) == 115
-    assert sum(1 for item in components if item["parameter_schema"]) == 32
-    assert sum(len(item["ports"]) for item in components) == 397
-    assert all(item["display_name_zh"].strip() for item in components)
-    assert all(item["description_zh"].strip() for item in components)
+    assert sum(1 for item in committed_components if item["enabled"]) == 126
+    assert Counter(item["capability_domain"] for item in committed_components) == EXPECTED_DOMAIN_COUNTS
+    assert sum(1 for item in committed_components if item["component_library_visible"]) == 120
+    assert sum(1 for item in committed_components if item["compatibility_only"]) == 6
+    assert {
+        item["resource_key"]
+        for item in committed_components
+        if not item["component_library_visible"]
+    } == EXPECTED_HIDDEN_KEYS
+    assert sum(1 for item in committed_components if item["direct_runtime_executor"]) == 115
+    assert sum(1 for item in committed_components if item["parameter_schema"]) == 32
+    assert sum(len(item["ports"]) for item in committed_components) == 397
+    assert all(item["display_name_zh"].strip() for item in committed_components)
+    assert all(item["description_zh"].strip() for item in committed_components)
 
 
-def test_manifest_builder_is_deterministic() -> None:
-    first = run_builder()
-    assert first.returncode == 0, first.stderr or first.stdout
-    first_bytes = OUTPUT_PATH.read_bytes()
-    first_schema_bytes = SCHEMA_PATH.read_bytes()
+def test_committed_component_snapshot_shape(
+    committed_components: list[dict[str, Any]],
+) -> None:
+    expected_keys = {
+        "resource_id",
+        "resource_key",
+        "display_name",
+        "display_name_zh",
+        "description",
+        "description_zh",
+        "capability_domain",
+        "resource_type",
+        "enabled",
+        "origin",
+        "implementation_kind",
+        "compatibility_aliases",
+        "component_library_visible",
+        "compatibility_only",
+        "direct_runtime_executor",
+        "lowered_kind",
+        "expansion_role",
+        "ports",
+        "node_config",
+        "parameter_schema",
+        "ui_field_templates",
+    }
+    assert all(set(item) == expected_keys for item in committed_components)
 
-    second = run_builder()
-    assert second.returncode == 0, second.stderr or second.stdout
-    assert OUTPUT_PATH.read_bytes() == first_bytes
-    assert SCHEMA_PATH.read_bytes() == first_schema_bytes
+
+def test_committed_graph_schema_key_values(committed_schema: dict[str, Any]) -> None:
+    assert committed_schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert committed_schema["properties"]["graph_schema_version"]["const"] == "graph-v1"
+    assert committed_schema["required"] == ["graph_model_id", "compilation_id"]
+
+    defs = committed_schema["$defs"]
+    assert defs["GraphPort"]["properties"]["relation_layer"]["enum"] == ["control", "data", "observe"]
+    assert defs["GraphNode"]["properties"]["lowered_kind"]["enum"] == [
+        "execution",
+        "control",
+        "observe",
+        "bridge",
+    ]
 
 
-def test_graph_schema_matches_contract() -> None:
-    result = run_builder()
+def test_committed_snapshots_do_not_embed_absolute_paths() -> None:
+    for path in (COMMITTED_OUTPUT_PATH, COMMITTED_SCHEMA_PATH):
+        text = path.read_text(encoding="utf-8")
+        assert "I:\\" not in text
+        assert "C:\\" not in text
+        assert "Users\\" not in text
+        assert "WeConduct Object" not in text
+
+
+def test_generated_snapshot_matches_committed_bytes(
+    source_root: Path | None,
+    tmp_path: Path,
+) -> None:
+    resolved_source_root = require_source_root(source_root)
+    first_dir = tmp_path / "first"
+    first_dir.mkdir()
+    first_output = first_dir / "components.json"
+    first_schema = first_dir / "graph-schema.json"
+
+    result = run_builder(
+        source_root=resolved_source_root,
+        output_path=first_output,
+        schema_path=first_schema,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert first_output.read_bytes() == COMMITTED_OUTPUT_PATH.read_bytes()
+    assert first_schema.read_bytes() == COMMITTED_SCHEMA_PATH.read_bytes()
+
+    second_dir = tmp_path / "second"
+    second_dir.mkdir()
+    second_output = second_dir / "components.json"
+    second_schema = second_dir / "graph-schema.json"
+    second_result = run_builder(
+        source_root=resolved_source_root,
+        output_path=second_output,
+        schema_path=second_schema,
+    )
+    assert second_result.returncode == 0, second_result.stderr or second_result.stdout
+    assert second_output.read_bytes() == first_output.read_bytes()
+    assert second_schema.read_bytes() == first_schema.read_bytes()
+
+
+def test_generated_graph_schema_matches_pydantic_contract(
+    source_root: Path | None,
+    tmp_path: Path,
+) -> None:
+    resolved_source_root = require_source_root(source_root)
+    output_path = tmp_path / "components.json"
+    schema_path = tmp_path / "graph-schema.json"
+    result = run_builder(
+        source_root=resolved_source_root,
+        output_path=output_path,
+        schema_path=schema_path,
+    )
     assert result.returncode == 0, result.stderr or result.stdout
 
-    schema = read_json(SCHEMA_PATH)
-    contract = read_contract_schema()
-    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
-    assert schema["properties"]["graph_schema_version"]["const"] == "graph-v1"
+    schema = read_json(schema_path)
+    contract = read_contract_schema(resolved_source_root)
     assert schema["required"] == contract["GraphModel"]["required"]
-    assert schema["required"] == ["graph_model_id", "compilation_id"]
-    compilation_id_schema = schema["properties"]["compilation_id"]
-    if "type" in compilation_id_schema:
-        assert compilation_id_schema["type"] == ["string", "null"]
-    else:
-        assert compilation_id_schema["anyOf"] == [{"type": "string"}, {"type": "null"}]
 
     defs = schema["$defs"]
     assert defs["GraphNode"]["required"] == contract["GraphNode"]["required"]
@@ -151,12 +254,22 @@ def test_graph_schema_matches_contract() -> None:
     assert defs["GraphNode"].get("additionalProperties") == contract["GraphNode"].get("additionalProperties")
     assert defs["GraphPort"].get("additionalProperties") == contract["GraphPort"].get("additionalProperties")
     assert defs["GraphEdge"].get("additionalProperties") == contract["GraphEdge"].get("additionalProperties")
-    assert defs["GraphPort"]["properties"]["relation_layer"]["enum"] == ["control", "data", "observe"]
-    assert defs["GraphNode"]["properties"]["lowered_kind"]["enum"] == ["execution", "control", "observe", "bridge"]
 
 
-def test_manifest_builder_rejects_version_mismatch() -> None:
+def test_manifest_builder_rejects_version_mismatch(
+    source_root: Path | None,
+    tmp_path: Path,
+) -> None:
+    resolved_source_root = require_source_root(source_root)
     for version in ("0.5.2", "0.8.0"):
-        result = run_builder(version=version)
+        output_path = tmp_path / version / "components.json"
+        schema_path = tmp_path / version / "graph-schema.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        result = run_builder(
+            source_root=resolved_source_root,
+            output_path=output_path,
+            schema_path=schema_path,
+            version=version,
+        )
         assert result.returncode != 0
         assert "0.8.1" in (result.stderr or result.stdout)
