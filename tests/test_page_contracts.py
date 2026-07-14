@@ -136,6 +136,47 @@ def test_validate_pages_accepts_valid_fixture(tmp_path: Path) -> None:
     assert "missing_group_pages=0" in result.stdout
 
 
+def test_validate_pages_accepts_utf8_bom_front_matter(tmp_path: Path) -> None:
+    docs_root, manifest_path, groups_path = build_minimal_fixture(tmp_path)
+    index_path = docs_root / "index.md"
+    original = index_path.read_text(encoding="utf-8")
+    index_path.write_text("\ufeff" + original, encoding="utf-8")
+
+    result = run_validate_cli(
+        "--docs-root",
+        str(docs_root),
+        "--manifest",
+        str(manifest_path),
+        "--groups",
+        str(groups_path),
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "missing front matter" not in f"{result.stdout}\n{result.stderr}"
+
+
+def test_validate_pages_rejects_unknown_product_selector(tmp_path: Path) -> None:
+    docs_root, manifest_path, groups_path = build_minimal_fixture(tmp_path)
+
+    result = run_validate_cli(
+        "--docs-root",
+        str(docs_root),
+        "--manifest",
+        str(manifest_path),
+        "--groups",
+        str(groups_path),
+        "--product",
+        "site",
+    )
+
+    assert result.returncode != 0
+    combined = f"{result.stdout}\n{result.stderr}"
+    assert "unknown --product selector" in combined
+    assert "site" in combined
+    assert "weconduct" in combined
+    assert "weave" in combined
+
+
 def test_validate_pages_rejects_missing_required_sections(tmp_path: Path) -> None:
     docs_root, manifest_path, groups_path = build_minimal_fixture(tmp_path)
     write_markdown(

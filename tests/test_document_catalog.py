@@ -163,6 +163,74 @@ def test_catalog_cli_report_list_and_family_filters(tmp_path: Path) -> None:
     assert all(len(line.split("\t")) == 5 for line in lines)
 
 
+def test_catalog_cli_rejects_unknown_family_selector() -> None:
+    result = run_catalog_cli("--family", "browser,unknown-family")
+
+    assert result.returncode != 0
+    combined = f"{result.stdout}\n{result.stderr}"
+    assert "unknown --family selector" in combined
+    assert "unknown-family" in combined
+    assert "browser" not in combined or "unknown-family" in combined
+
+
+def test_catalog_cli_rejects_string_bool_manifest_flags(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "components.json"
+    groups_path = tmp_path / "component-groups.json"
+    manifest_path.write_text(
+        json.dumps(
+            [
+                {
+                    "resource_key": "browser.navigate",
+                    "display_name_zh": "导航",
+                    "capability_domain": "browser",
+                    "component_library_visible": "false",
+                    "compatibility_only": "0",
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    groups_path.write_text(
+        json.dumps(
+            {
+                "product": "weconduct",
+                "version": "0.8.1",
+                "groups": [
+                    {
+                        "group_id": "browser-navigation",
+                        "family": "browser",
+                        "title_zh": "页面导航",
+                        "description_zh": "desc",
+                        "index_path": "docs/weconduct/components/browser/navigation/index.md",
+                        "detail_dir": "docs/weconduct/components/browser/navigation",
+                    }
+                ],
+                "assignments": {
+                    "browser.navigate": {
+                        "primary_group_id": "browser-navigation",
+                        "page_path": "docs/weconduct/components/browser/navigation/navigate.md",
+                        "related_group_ids": [],
+                    }
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = run_catalog_cli("--manifest", str(manifest_path), "--groups", str(groups_path))
+
+    assert result.returncode != 0
+    combined = f"{result.stdout}\n{result.stderr}"
+    assert "component_library_visible" in combined or "compatibility_only" in combined
+    assert "bool" in combined
+
+
 def test_catalog_cli_rejects_invalid_group_contract(tmp_path: Path) -> None:
     manifest_path = tmp_path / "components.json"
     groups_path = tmp_path / "component-groups.json"

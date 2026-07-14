@@ -50,10 +50,12 @@ def main() -> int:
     docs_root = Path(args.docs_root).resolve()
     selectors = build_document_catalog.parse_selectors(args.family)
     products = build_document_catalog.parse_selectors(args.product)
+    validate_product_selectors(products)
 
     manifest = build_document_catalog.load_manifest(Path(args.manifest).resolve())
     group_catalog = build_document_catalog.load_group_catalog(Path(args.groups).resolve())
     catalog = build_document_catalog.validate_catalog(manifest=manifest, catalog=group_catalog)
+    build_document_catalog.validate_family_selectors(catalog, selectors)
     filtered_catalog = build_document_catalog.filter_catalog(catalog, selectors)
 
     report = validate_pages(
@@ -178,6 +180,17 @@ def validate_pages(
     }
 
 
+def validate_product_selectors(product_filters: set[str]) -> None:
+    if not product_filters:
+        return
+    valid_products = {"weconduct", "weave"}
+    unknown = sorted(product_filters - valid_products)
+    if unknown:
+        raise SystemExit(
+            f"unknown --product selector(s): {', '.join(unknown)}; allowed: weconduct, weave"
+        )
+
+
 def matches_product_filter(relative_path: str, product_filters: set[str]) -> bool:
     if relative_path == "index.md":
         return "site" in product_filters
@@ -205,6 +218,8 @@ def split_front_matter(
     text: str,
     relative_path: str,
 ) -> tuple[dict[str, Any], str, list[str]]:
+    if text.startswith("\ufeff"):
+        text = text[1:]
     if not text.startswith("---\n"):
         return {}, text, [f"{relative_path} missing front matter"]
     parts = text.split("---", 2)

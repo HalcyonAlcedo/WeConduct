@@ -34,6 +34,7 @@ def main() -> int:
     manifest = load_manifest(manifest_path)
     catalog = load_group_catalog(groups_path)
     validated = validate_catalog(manifest=manifest, catalog=catalog)
+    validate_family_selectors(validated, selectors)
     filtered = filter_catalog(validated, selectors)
 
     if args.report:
@@ -51,6 +52,24 @@ def parse_selectors(raw_value: str | None) -> set[str]:
     if raw_value is None:
         return set()
     return {part.strip() for part in raw_value.split(",") if part.strip()}
+
+
+def validate_family_selectors(catalog: dict[str, Any], selectors: set[str]) -> None:
+    if not selectors:
+        return
+    valid_selectors = {
+        group["family"]
+        for group in catalog["groups"]
+    } | {
+        group["group_id"]
+        for group in catalog["groups"]
+    }
+    unknown = sorted(selectors - valid_selectors)
+    if unknown:
+        known = ", ".join(sorted(valid_selectors))
+        raise SystemExit(
+            f"unknown --family selector(s): {', '.join(unknown)}; allowed: {known}"
+        )
 
 
 def load_manifest(path: Path) -> list[dict[str, Any]]:
@@ -147,16 +166,24 @@ def validate_catalog(
         if row["page_path"] in page_paths:
             raise SystemExit(f"duplicate page_path: {row['page_path']}")
         page_paths.add(row["page_path"])
+        component_library_visible = require_bool_field(
+            manifest_by_key[resource_key],
+            "component_library_visible",
+            resource_key,
+        )
+        compatibility_only = require_bool_field(
+            manifest_by_key[resource_key],
+            "compatibility_only",
+            resource_key,
+        )
         assignment_rows.append(
             {
                 **row,
                 "resource_key": resource_key,
                 "display_name_zh": str(manifest_by_key[resource_key].get("display_name_zh", "")).strip(),
                 "capability_domain": str(manifest_by_key[resource_key].get("capability_domain", "")).strip(),
-                "component_library_visible": bool(
-                    manifest_by_key[resource_key].get("component_library_visible")
-                ),
-                "compatibility_only": bool(manifest_by_key[resource_key].get("compatibility_only")),
+                "component_library_visible": component_library_visible,
+                "compatibility_only": compatibility_only,
             }
         )
 
@@ -201,6 +228,15 @@ def normalize_assignment(resource_key: str, assignment: dict[str, Any]) -> dict[
         "page_path": page_path.strip(),
         "related_group_ids": normalized_related,
     }
+
+
+def require_bool_field(item: dict[str, Any], field_name: str, resource_key: str) -> bool:
+    value = item.get(field_name)
+    if not isinstance(value, bool):
+        raise SystemExit(
+            f"manifest {resource_key} field {field_name} must be a bool, got {type(value).__name__}: {value!r}"
+        )
+    return value
 
 
 def build_summary(groups: list[dict[str, Any]], assignments: list[dict[str, Any]]) -> dict[str, int]:
