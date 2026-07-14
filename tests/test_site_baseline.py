@@ -115,6 +115,13 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
     assert nav_targets["首页"] == "index.md"
     assert nav_targets["总览"] == "weconduct/index.md"
     assert nav_targets["安装 0.8.1"] == "weconduct/getting-started/install.md"
+    assert nav_targets["项目管理"] == "weconduct/guide/project-management.md"
+    assert nav_targets["项目布局"] == "weconduct/guide/project-layout.md"
+    assert nav_targets["图编辑器"] == "weconduct/guide/graph-editor.md"
+    assert nav_targets["组件库"] == "weconduct/guide/component-library.md"
+    assert nav_targets["节点配置"] == "weconduct/guide/node-configuration.md"
+    assert nav_targets["子图与自定义组件"] == "weconduct/guide/subgraphs-and-custom-components.md"
+    assert nav_targets["WebControl 转换"] == "weconduct/guide/webcontrol-conversion.md"
     assert nav_targets["资源与安全"] == "weconduct/concepts/resources-and-security.md"
     assert nav_targets["内置节点"] == "weconduct/components/index.md"
     assert nav_targets["示例"] == "weconduct/examples/index.md"
@@ -138,6 +145,105 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
 
 def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
     expected_pages = {
+        "docs/weconduct/guide/project-management.md": {
+            "front_matter": {
+                "product": "weconduct",
+                "version": "0.8.1",
+                "doc_id": "weconduct:guide:project-management",
+            },
+            "body_checks": [
+                ".weconduct.json",
+                ".wcrun",
+                "workspace-state.json",
+                "最近项目",
+                "只读",
+            ],
+        },
+        "docs/weconduct/guide/project-layout.md": {
+            "front_matter": {
+                "product": "weconduct",
+                "version": "0.8.1",
+                "doc_id": "weconduct:guide:project-layout",
+            },
+            "body_checks": [
+                "workspace.graph.json",
+                "resources/index.json",
+                "resource-overrides.json",
+                "project-settings.json",
+                "project_resources_index_path",
+            ],
+        },
+        "docs/weconduct/guide/graph-editor.md": {
+            "front_matter": {
+                "product": "weconduct",
+                "version": "0.8.1",
+                "doc_id": "weconduct:guide:graph-editor",
+            },
+            "body_checks": [
+                "Ctrl+Z",
+                "Ctrl+Y",
+                "复制节点",
+                "粘贴节点",
+                "元数据编辑",
+                "graph_preferences",
+            ],
+        },
+        "docs/weconduct/guide/component-library.md": {
+            "front_matter": {
+                "product": "weconduct",
+                "version": "0.8.1",
+                "doc_id": "weconduct:guide:component-library",
+            },
+            "body_checks": [
+                "126",
+                "120",
+                "6",
+                "component_library_visible",
+                "compatibility_only",
+            ],
+        },
+        "docs/weconduct/guide/node-configuration.md": {
+            "front_matter": {
+                "product": "weconduct",
+                "version": "0.8.1",
+                "doc_id": "weconduct:guide:node-configuration",
+            },
+            "body_checks": [
+                "typed-value",
+                "component-schema",
+                "图稿版本冲突",
+                "debugger",
+                "component.input",
+            ],
+        },
+        "docs/weconduct/guide/subgraphs-and-custom-components.md": {
+            "front_matter": {
+                "product": "weconduct",
+                "version": "0.8.1",
+                "doc_id": "weconduct:guide:subgraphs-and-custom-components",
+            },
+            "body_checks": [
+                "component.input",
+                "component.output",
+                "share_parent_variables",
+                "graph.call_subgraph",
+                "schema",
+            ],
+        },
+        "docs/weconduct/guide/webcontrol-conversion.md": {
+            "front_matter": {
+                "product": "weconduct",
+                "version": "0.8.1",
+                "doc_id": "weconduct:guide:webcontrol-conversion",
+            },
+            "body_checks": [
+                "source_path",
+                "blueprint_paths",
+                "conversion-report.json",
+                "legacy_webcontrol_step",
+                "不支持",
+            ],
+        },
         "docs/weconduct/components/index.md": {
             "front_matter": {
                 "product": "weconduct",

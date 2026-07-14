@@ -76,6 +76,14 @@ nav:
           - 变量、类型与表达式: weconduct/concepts/variables-types-and-expressions.md
           - 子图与自定义组件: weconduct/concepts/subgraphs-and-components.md
           - 资源与安全: weconduct/concepts/resources-and-security.md
+      - 使用指南:
+          - 项目管理: weconduct/guide/project-management.md
+          - 项目布局: weconduct/guide/project-layout.md
+          - 图编辑器: weconduct/guide/graph-editor.md
+          - 组件库: weconduct/guide/component-library.md
+          - 节点配置: weconduct/guide/node-configuration.md
+          - 子图与自定义组件: weconduct/guide/subgraphs-and-custom-components.md
+          - WebControl 转换: weconduct/guide/webcontrol-conversion.md
   - 内置节点: weconduct/components/index.md
   - 示例: weconduct/examples/index.md
   - Weave: weave/index.md
