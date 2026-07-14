@@ -34,29 +34,32 @@ jobs:
       - name: Run baseline tests
         run: python -m pytest -q
 
-      - name: Validate Pages metadata
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Run page validator when available
         shell: pwsh
         run: |
           if (Test-Path "validate_pages.py") {
             python validate_pages.py
           } else {
-            Write-Host "Skip validate_pages.py: file not found"
+            Write-Host "Pending validate_pages.py: file not found"
           }
 
-      - name: Validate graph examples
+      - name: Run graph validator when available
         shell: pwsh
         run: |
           if (Test-Path "validate_graph_examples.py") {
             python validate_graph_examples.py
           } else {
-            Write-Host "Skip validate_graph_examples.py: file not found"
+            Write-Host "Pending validate_graph_examples.py: file not found"
           }
 
       - name: Build site
         run: python -m mkdocs build --strict
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: site
 
@@ -65,6 +68,8 @@ jobs:
     needs: build
     environment:
       name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4
