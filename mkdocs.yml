@@ -1,0 +1,65 @@
+site_name: WeConduct 用户文档
+site_description: WeConduct — 节点图驱动的可视化自动化工具，用户使用指南与参考文档
+site_author: HalcyonAlcedo
+copyright: "&copy; WeConduct 用户文档"
+repo_url: https://github.com/HalcyonAlcedo/WeConduct
+repo_name: HalcyonAlcedo/WeConduct
+edit_uri: "" # 禁用编辑链接（docs 分支独立维护，无直接对应关系）
+
+theme:
+  name: material
+  language: zh
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: 切换至深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: 切换至浅色模式
+  features:
+    - navigation.sections    # 侧边栏分组可折叠
+    - navigation.top         # 返回顶部按钮
+    - search.suggest         # 搜索建议
+    - search.highlight       # 搜索高亮
+    - content.code.copy      # 代码块复制按钮
+    - toc.follow             # 目录跟随滚动
+
+markdown_extensions:
+  - admonition               # 提示框（note, warning, tip 等）
+  - pymdownx.details         # 可折叠块
+  - pymdownx.superfences     # 嵌套代码块
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+      toc_depth: 3
+
+plugins:
+  - search:
+      lang: zh
+
+nav:
+  - 首页: index.md
+  # TODO: 以下为占位，随文档内容编写逐步取消注释
+  # - 快速开始: quick-start.md
+  # - 使用指南:
+  #     - 产品总览: guide/overview.md
+  #     - 项目与工作区: guide/projects.md
+  #     - 节点图编辑器: guide/graph-editor.md
+  #     - 运行与调试: guide/run-and-debug.md
+  #     - 项目设置: guide/settings.md
+  #     - wcrun 打包与加载: guide/packaging.md
+  #     - 资源管理: guide/resources.md
+  # - 组件参考: components/index.md
