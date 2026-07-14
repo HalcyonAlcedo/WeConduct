@@ -1,1 +1,203 @@
-/* WeConduct 图示文档样式占位；后续任务在此扩展站点图形相关样式。 */
+weconduct-graph {
+  --graph-surface: color-mix(in srgb, var(--md-default-bg-color, #ffffff) 92%, #d6dce4);
+  --graph-border: color-mix(in srgb, var(--md-default-fg-color, #1f2933) 14%, transparent);
+  --graph-node-bg: color-mix(in srgb, var(--md-default-bg-color, #ffffff) 96%, #9fb0bf);
+  --graph-node-fg: var(--md-default-fg-color, #1f2933);
+  --graph-muted: color-mix(in srgb, var(--md-default-fg-color, #1f2933) 62%, transparent);
+  --graph-control: #2b6f9c;
+  --graph-data: #3f7c57;
+  display: block;
+  margin: 1.5rem 0;
+}
+
+weconduct-graph .wc-graph {
+  aspect-ratio: 16 / 9;
+  min-height: 18rem;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  border: 1px solid var(--graph-border);
+  border-radius: 1rem;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--graph-control) 8%, transparent), transparent 38%),
+    linear-gradient(180deg, color-mix(in srgb, var(--graph-surface) 88%, #edf1f5), var(--graph-surface));
+  box-shadow: 0 14px 40px color-mix(in srgb, var(--graph-border) 34%, transparent);
+}
+
+weconduct-graph .wc-graph-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--graph-border);
+  background: color-mix(in srgb, var(--graph-surface) 92%, transparent);
+}
+
+weconduct-graph .wc-graph-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+weconduct-graph .wc-graph-controls {
+  display: inline-flex;
+  gap: 0.5rem;
+}
+
+weconduct-graph .wc-graph-control {
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--graph-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--graph-node-bg) 88%, transparent);
+  color: var(--graph-node-fg);
+  cursor: pointer;
+  transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+weconduct-graph .wc-graph-control:hover,
+weconduct-graph .wc-graph-control:focus-visible {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--graph-control) 35%, var(--graph-border));
+  background: color-mix(in srgb, var(--graph-node-bg) 75%, transparent);
+}
+
+weconduct-graph .wc-graph-viewport {
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+}
+
+weconduct-graph .wc-graph-viewport:active {
+  cursor: grabbing;
+}
+
+weconduct-graph .wc-graph-canvas {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  transition: transform 180ms ease;
+}
+
+weconduct-graph .wc-graph-svg,
+weconduct-graph .wc-graph-nodes {
+  position: absolute;
+  inset: 0;
+  width: 960px;
+  height: 540px;
+}
+
+weconduct-graph .wc-graph-edge {
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.9;
+}
+
+weconduct-graph .wc-graph-edge-control {
+  stroke: var(--graph-control);
+}
+
+weconduct-graph .wc-graph-edge-data {
+  stroke: var(--graph-data);
+  stroke-dasharray: 8 7;
+}
+
+weconduct-graph .wc-graph-nodes {
+  pointer-events: none;
+}
+
+weconduct-graph .wc-graph-node {
+  position: absolute;
+  width: 176px;
+  padding: 0.8rem 0.85rem;
+  border: 1px solid var(--graph-border);
+  border-radius: 0.85rem;
+  background: var(--graph-node-bg);
+  color: var(--graph-node-fg);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--graph-border) 18%, transparent);
+}
+
+weconduct-graph .wc-graph-node-title,
+weconduct-graph .wc-graph-node-kind,
+weconduct-graph .wc-graph-node-config,
+weconduct-graph .wc-graph-port-list {
+  margin: 0;
+}
+
+weconduct-graph .wc-graph-node-title {
+  font-size: 0.95rem;
+}
+
+weconduct-graph .wc-graph-node-kind,
+weconduct-graph .wc-graph-node-config {
+  margin-top: 0.35rem;
+  color: var(--graph-muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+weconduct-graph .wc-graph-port-list {
+  margin-top: 0.65rem;
+  padding-left: 1rem;
+  font-size: 0.77rem;
+}
+
+weconduct-graph .wc-graph-port {
+  margin-top: 0.18rem;
+}
+
+weconduct-graph .wc-graph-port-control::marker {
+  color: var(--graph-control);
+}
+
+weconduct-graph .wc-graph-port-data::marker {
+  color: var(--graph-data);
+}
+
+weconduct-graph .wc-graph-status,
+weconduct-graph .wc-graph-error {
+  margin: auto;
+  max-width: 34rem;
+  padding: 1rem 1.25rem;
+  color: var(--graph-node-fg);
+}
+
+weconduct-graph .wc-graph-error {
+  border: 1px solid color-mix(in srgb, #b94a48 25%, var(--graph-border));
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--graph-node-bg) 92%, #f7ebeb);
+}
+
+weconduct-graph .wc-graph-fallback {
+  color: var(--graph-muted);
+}
+
+@media (max-width: 720px) {
+  weconduct-graph .wc-graph {
+    min-height: 15rem;
+  }
+
+  weconduct-graph .wc-graph-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  weconduct-graph {
+    --graph-surface: color-mix(in srgb, var(--md-default-bg-color, #11161d) 94%, #24313d);
+    --graph-node-bg: color-mix(in srgb, var(--md-default-bg-color, #11161d) 82%, #1c2630);
+    --graph-border: color-mix(in srgb, #d7dee8 20%, transparent);
+    --graph-muted: color-mix(in srgb, #d7dee8 62%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  weconduct-graph .wc-graph-control,
+  weconduct-graph .wc-graph-canvas {
+    transition: none;
+  }
+}
