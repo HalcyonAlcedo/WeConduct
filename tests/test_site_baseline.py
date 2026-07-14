@@ -30,6 +30,7 @@ def read_json(relative_path: str) -> object:
 
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*(?:\{\s*#([A-Za-z0-9_-]+)\s*\})?\s*$")
+INTERNAL_TASK_RE = re.compile(r"Task\s*\d+", re.IGNORECASE)
 
 
 def split_nav_target(target: str) -> tuple[str, str | None]:
@@ -54,6 +55,18 @@ def collect_markdown_anchors(relative_path: str) -> set[str]:
         if generated:
             anchors.add(generated)
     return anchors
+
+
+def strip_fenced_code_blocks(text: str) -> str:
+    lines: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def test_mkdocs_metadata_and_assets_baseline() -> None:
@@ -129,7 +142,7 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
                 "version": "0.8.1",
                 "doc_id": "weconduct:troubleshooting:index",
             },
-            "body_checks": ["排查流程", "诊断", "校验", "页面加载", "Task17"],
+            "body_checks": ["排查流程", "诊断", "校验", "页面加载"],
         },
     }
 
@@ -138,6 +151,17 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
         assert front_matter == page_contract["front_matter"]
         for needle in page_contract["body_checks"]:
             assert needle in body, f"{relative_path} 缺少关键信息 {needle!r}"
+
+
+def test_docs_do_not_expose_internal_task_labels() -> None:
+    offenders: list[str] = []
+    for path in sorted((ROOT / "docs").rglob("*.md")):
+        text = strip_fenced_code_blocks(path.read_text(encoding="utf-8"))
+        match = INTERNAL_TASK_RE.search(text)
+        if match:
+            offenders.append(f"{path.relative_to(ROOT).as_posix()}: {match.group(0)}")
+
+    assert not offenders, "发现用户可见内部任务引用:\n" + "\n".join(offenders)
 
 
 def test_weave_product_metadata_baseline() -> None:
