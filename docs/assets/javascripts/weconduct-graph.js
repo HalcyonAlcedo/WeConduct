@@ -134,7 +134,7 @@
           return;
         }
         this._graphData = graph;
-        this.renderGraph(graph, title);
+        this.renderGraph(graph, this.getCurrentTitle());
       } catch (error) {
         if (controller.signal.aborted || requestToken !== this._requestToken) {
           return;

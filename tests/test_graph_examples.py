@@ -33,6 +33,8 @@ def run_node_script(script: str, cwd: Path = ROOT) -> subprocess.CompletedProces
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
 
@@ -321,6 +323,167 @@ pointerEl.clearPointerDrag();
 if (pointerEl._state.pointerId !== null) {{
   throw new Error("clearPointerDrag should reset pointer state");
 }}
+"""
+    result = run_node_script(script)
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_embedded_graph_preserves_latest_title_when_pending_request_resolves() -> None:
+    script = f"""
+const fs = require("fs");
+const vm = require("vm");
+
+const source = fs.readFileSync({json.dumps(str(JS_PATH))}, "utf8");
+const registrations = new Map();
+
+class FakeElement {{
+  constructor(tagName = "div", namespaceURI = null) {{
+    this.tagName = tagName.toUpperCase();
+    this.namespaceURI = namespaceURI;
+    this.children = [];
+    this.attributes = new Map();
+    this.style = {{}};
+    this.className = "";
+    this.classList = {{
+      add: (...names) => {{
+        const tokens = new Set((this.className || "").split(/\\s+/).filter(Boolean));
+        for (const name of names) tokens.add(name);
+        this.className = Array.from(tokens).join(" ");
+      }},
+    }};
+    this.textContent = "";
+    this.parentNode = null;
+    this.onpointerdown = null;
+    this.onpointermove = null;
+    this.onpointerup = null;
+    this.onpointercancel = null;
+    this.onlostpointercapture = null;
+    this.onkeydown = null;
+  }}
+  append(...nodes) {{
+    for (const node of nodes) {{
+      if (node == null) continue;
+      node.parentNode = this;
+      this.children.push(node);
+    }}
+  }}
+  setAttribute(name, value) {{
+    this.attributes.set(name, String(value));
+    if (name === "class") this.className = String(value);
+  }}
+  getAttribute(name) {{
+    return this.attributes.has(name) ? this.attributes.get(name) : null;
+  }}
+  addEventListener() {{}}
+  removeEventListener() {{}}
+  setPointerCapture() {{}}
+  releasePointerCapture() {{}}
+  querySelector(selector) {{
+    const matcher = (node) => {{
+      if (selector.startsWith(".")) {{
+        return (node.className || "").split(/\\s+/).includes(selector.slice(1));
+      }}
+      return false;
+    }};
+    const queue = [...this.children];
+    while (queue.length) {{
+      const node = queue.shift();
+      if (matcher(node)) return node;
+      queue.push(...(node.children || []));
+    }}
+    return null;
+  }}
+}}
+
+class FakeHTMLElement extends FakeElement {{
+  constructor() {{
+    super("weconduct-graph");
+    this._attrs = new Map();
+    this.isConnected = true;
+    this.innerHTML = "";
+  }}
+  setAttribute(name, value) {{
+    this._attrs.set(name, String(value));
+  }}
+  getAttribute(name) {{
+    return this._attrs.has(name) ? this._attrs.get(name) : null;
+  }}
+  append(...nodes) {{
+    this.children = [];
+    super.append(...nodes);
+  }}
+}}
+
+let pendingResolve = null;
+const graphPayload = {{
+  graph_model_id: "pending-title",
+  compilation_id: null,
+  graph_schema_version: "graph-v1",
+  nodes: [{{
+    node_id: "node-start",
+    node_kind: "flow.start",
+    display_name: "开始",
+    position: {{ x: 80, y: 96 }},
+    ports: [{{ port_id: "out", direction: "output", relation_layer: "control" }}],
+    node_config: {{}},
+  }}],
+  edges: [],
+}};
+
+const context = {{
+  console,
+  AbortController,
+  HTMLElement: FakeHTMLElement,
+  customElements: {{
+    define(name, ctor) {{ registrations.set(name, ctor); }},
+    get(name) {{ return registrations.get(name); }},
+  }},
+  document: {{
+    fullscreenElement: null,
+    addEventListener() {{}},
+    removeEventListener() {{}},
+    exitFullscreen() {{ return Promise.resolve(); }},
+    createElement(tag) {{ return new FakeElement(tag); }},
+    createElementNS(ns, tag) {{ return new FakeElement(tag, ns); }},
+  }},
+  window: {{}},
+  fetch() {{
+    return new Promise((resolve) => {{
+      pendingResolve = () => resolve({{
+        ok: true,
+        json: async () => graphPayload,
+      }});
+    }});
+  }},
+}};
+context.globalThis = context;
+vm.runInNewContext(source, context, {{ filename: "weconduct-graph.js" }});
+
+const GraphCtor = registrations.get("weconduct-graph");
+if (!GraphCtor) throw new Error("custom element not registered");
+
+async function main() {{
+  const element = new GraphCtor();
+  element.setAttribute("src", "pending.json");
+  element.setAttribute("title", "旧标题");
+  const loadPromise = element.load();
+  element.setAttribute("title", "新标题");
+  element.attributeChangedCallback("title", "旧标题", "新标题");
+  pendingResolve();
+  await loadPromise;
+  const titleNode = element._shell && element._shell.querySelector(".wc-graph-title");
+  if (!titleNode) {{
+    throw new Error("graph title node missing after load");
+  }}
+  if (titleNode.textContent !== "新标题") {{
+    throw new Error(`expected latest title after pending load, got ${{titleNode.textContent}}`);
+  }}
+}}
+
+main().catch((error) => {{
+  console.error(error && error.stack ? error.stack : String(error));
+  process.exit(1);
+}});
 """
     result = run_node_script(script)
     assert result.returncode == 0, result.stderr or result.stdout
