@@ -26,9 +26,9 @@ doc_id: weconduct:concepts:resources-security
 
 ## 最小授权
 
-0.8.1 的默认值不是“全部关闭”：受限范围内的文件访问、浏览器截图、Cookie、浏览器存储、上传和新窗口默认允许；外部程序、浏览器执行器、浏览器下载、本地/远程网络、Python 执行、JavaScript 注入与求值默认关闭。高风险操作确认和运行时安全警告默认开启。
+0.8.1 的有效配置默认值不是“全部关闭”：文件访问、外部程序、浏览器执行器、浏览器下载、本地/远程网络、Python 执行、JavaScript 注入与求值默认关闭；浏览器截图、Cookie、浏览器存储、上传和新窗口默认允许。高风险操作确认和运行时安全警告默认开启。
 
-文件访问虽然默认允许，但默认 `file_access_scope = "restricted"`，不等于允许访问任意路径。运行时允许根由项目配置的 `file_access_allowed_roots`、当前 `project_directory`、`workspace_root` 组成；用户的 `Downloads` 目录存在时也会加入。路径仍会继续经过阻止目录、允许/阻止扩展名等规则检查。只有显式使用 `allow_all` 才会跳过允许根限制。
+开启文件访问后，默认范围仍是“受限”，不等于允许访问任意路径。允许位置由项目显式配置的目录、当前项目目录、工作区目录，以及存在时的用户 `Documents` 和 `Downloads` 目录组成。路径仍会继续经过阻止目录、允许/阻止扩展名等规则检查。配置字段分别是 `file_access_scope`、`file_access_allowed_roots`、`file_access_blocked_roots` 和扩展名白/黑名单；只有显式使用 `allow_all` 才会跳过允许根限制。
 
 建议按以下顺序管理权限：
 

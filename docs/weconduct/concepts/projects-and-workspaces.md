@@ -12,11 +12,11 @@ doc_id: weconduct:concepts:projects-and-workspaces
 
 创建项目时，`project_name` 不能为空。指定 `project_directory` 后，主文件名为 `<项目名>.weconduct.json`。程序把主文件所在目录记录为 `workspace_root`。
 
-保存操作分为：
+界面提供 **保存** 和 **另存为**：
 
-- `save_project`：已有路径时写回当前项目。
-- `save_project_as`：解析新路径并写入新位置。
-- 无路径直接保存：返回 `project.needs_save_as`，由 UI 打开另存为流程。
+- **保存**：已有路径时写回当前项目；后端操作名为 `save_project`。
+- **另存为**：解析新路径并写入新位置；后端操作名为 `save_project_as`。
+- 项目尚无路径时点击保存，界面会自动进入另存为流程；后端以 `project.needs_save_as` 标识该情况。
 
 ## 工作区状态
 

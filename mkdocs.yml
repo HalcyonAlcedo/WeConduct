@@ -62,7 +62,20 @@ extra_css:
 
 nav:
   - 首页: index.md
-  - WeConduct: weconduct/index.md
+  - WeConduct:
+      - 总览: weconduct/index.md
+      - 快速开始:
+          - 安装 0.8.1: weconduct/getting-started/install.md
+          - 创建第一个项目: weconduct/getting-started/first-project.md
+          - 第一次运行: weconduct/getting-started/first-run.md
+          - 保存和打开: weconduct/getting-started/save-and-open.md
+      - 核心概念:
+          - 项目与工作区: weconduct/concepts/projects-and-workspaces.md
+          - 节点、端口与边: weconduct/concepts/nodes-ports-and-edges.md
+          - 控制流与数据流: weconduct/concepts/control-and-data-flow.md
+          - 变量、类型与表达式: weconduct/concepts/variables-types-and-expressions.md
+          - 子图与自定义组件: weconduct/concepts/subgraphs-and-components.md
+          - 资源与安全: weconduct/concepts/resources-and-security.md
   - 内置节点: weconduct/components/index.md
   - 示例: weconduct/examples/index.md
   - Weave: weave/index.md

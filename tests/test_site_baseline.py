@@ -69,6 +69,19 @@ def strip_fenced_code_blocks(text: str) -> str:
     return "\n".join(lines)
 
 
+def collect_nav_targets(items: list[object]) -> list[tuple[str, str]]:
+    targets: list[tuple[str, str]] = []
+    for item in items:
+        assert isinstance(item, dict) and len(item) == 1
+        [(label, value)] = item.items()
+        if isinstance(value, str):
+            targets.append((label, value))
+        else:
+            assert isinstance(value, list), f"{label} 的导航值必须是路径或列表"
+            targets.extend(collect_nav_targets(value))
+    return targets
+
+
 def test_mkdocs_metadata_and_assets_baseline() -> None:
     config = read_yaml("mkdocs.yml", loader=yaml.SafeLoader)
 
@@ -93,19 +106,24 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
     assert config["plugins"] == [{"search": {"lang": "zh"}}]
     assert config["extra_javascript"] == ["assets/javascripts/weconduct-graph.js"]
     assert config["extra_css"] == ["assets/stylesheets/weconduct-graph.css"]
-    assert config["nav"] == [
-        {"首页": "index.md"},
-        {"WeConduct": "weconduct/index.md"},
-        {"内置节点": "weconduct/components/index.md"},
-        {"示例": "weconduct/examples/index.md"},
-        {"Weave": "weave/index.md"},
-        {"故障排查": "weconduct/troubleshooting/index.md"},
-        {"参考": "weconduct/reference/embedded-graphs.md"},
+    nav = config["nav"]
+    assert [next(iter(item)) for item in nav] == [
+        "首页", "WeConduct", "内置节点", "示例", "Weave", "故障排查", "参考"
     ]
 
+    nav_targets = dict(collect_nav_targets(nav))
+    assert nav_targets["首页"] == "index.md"
+    assert nav_targets["总览"] == "weconduct/index.md"
+    assert nav_targets["安装 0.8.1"] == "weconduct/getting-started/install.md"
+    assert nav_targets["资源与安全"] == "weconduct/concepts/resources-and-security.md"
+    assert nav_targets["内置节点"] == "weconduct/components/index.md"
+    assert nav_targets["示例"] == "weconduct/examples/index.md"
+    assert nav_targets["Weave"] == "weave/index.md"
+    assert nav_targets["故障排查"] == "weconduct/troubleshooting/index.md"
+    assert nav_targets["参考"] == "weconduct/reference/embedded-graphs.md"
+
     docs_root = ROOT / "docs"
-    for item in config["nav"]:
-        [(label, target)] = item.items()
+    for label, target in collect_nav_targets(nav):
         target_file, fragment = split_nav_target(target)
         target_path = docs_root / target_file
         assert target_path.exists(), f"{label} -> {target} 不存在"
