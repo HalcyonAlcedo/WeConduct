@@ -1,0 +1,1 @@
+window.WeConductGraph = window.WeConductGraph || {};
