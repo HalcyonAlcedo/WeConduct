@@ -4,6 +4,7 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +75,21 @@ def read_source_resource_keys() -> set[str]:
     return registry_keys
 
 
+def read_contract_schema() -> dict[str, Any]:
+    sys.path.insert(0, str(SOURCE_ROOT / "src"))
+    try:
+        from weconduct.contracts.graph import GraphEdge, GraphModel, GraphNode, GraphPort
+
+        return {
+            "GraphModel": GraphModel.model_json_schema(),
+            "GraphNode": GraphNode.model_json_schema(),
+            "GraphPort": GraphPort.model_json_schema(),
+            "GraphEdge": GraphEdge.model_json_schema(),
+        }
+    finally:
+        sys.path.pop(0)
+
+
 def test_manifest_builder_generates_expected_snapshot() -> None:
     result = run_builder()
     assert result.returncode == 0, result.stderr or result.stdout
@@ -116,16 +132,31 @@ def test_graph_schema_matches_contract() -> None:
     assert result.returncode == 0, result.stderr or result.stdout
 
     schema = read_json(SCHEMA_PATH)
+    contract = read_contract_schema()
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["properties"]["graph_schema_version"]["const"] == "graph-v1"
-    assert schema["required"] == ["graph_model_id", "nodes", "edges"]
+    assert schema["required"] == contract["GraphModel"]["required"]
+    assert schema["required"] == ["graph_model_id", "compilation_id"]
+    compilation_id_schema = schema["properties"]["compilation_id"]
+    if "type" in compilation_id_schema:
+        assert compilation_id_schema["type"] == ["string", "null"]
+    else:
+        assert compilation_id_schema["anyOf"] == [{"type": "string"}, {"type": "null"}]
 
     defs = schema["$defs"]
+    assert defs["GraphNode"]["required"] == contract["GraphNode"]["required"]
+    assert defs["GraphPort"]["required"] == contract["GraphPort"]["required"]
+    assert defs["GraphEdge"]["required"] == contract["GraphEdge"]["required"]
+    assert schema.get("additionalProperties") == contract["GraphModel"].get("additionalProperties")
+    assert defs["GraphNode"].get("additionalProperties") == contract["GraphNode"].get("additionalProperties")
+    assert defs["GraphPort"].get("additionalProperties") == contract["GraphPort"].get("additionalProperties")
+    assert defs["GraphEdge"].get("additionalProperties") == contract["GraphEdge"].get("additionalProperties")
     assert defs["GraphPort"]["properties"]["relation_layer"]["enum"] == ["control", "data", "observe"]
     assert defs["GraphNode"]["properties"]["lowered_kind"]["enum"] == ["execution", "control", "observe", "bridge"]
 
 
 def test_manifest_builder_rejects_version_mismatch() -> None:
-    result = run_builder(version="0.8.0")
-    assert result.returncode != 0
-    assert "0.8.1" in (result.stderr or result.stdout)
+    for version in ("0.5.2", "0.8.0"):
+        result = run_builder(version=version)
+        assert result.returncode != 0
+        assert "0.8.1" in (result.stderr or result.stdout)

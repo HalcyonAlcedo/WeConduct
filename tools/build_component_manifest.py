@@ -5,6 +5,9 @@ import ast
 import json
 import re
 import runpy
+import sys
+import tomllib
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -62,7 +65,7 @@ def main() -> int:
         executor_keys=executor_keys,
         ui_templates=ui_templates,
     )
-    schema = build_graph_schema(version=args.version)
+    schema = build_graph_schema(source_root=source_root, version=args.version)
 
     write_json(output_path, components)
     write_json(schema_output_path, schema)
@@ -70,36 +73,70 @@ def main() -> int:
 
 
 def validate_source_version(source_root: Path, expected_version: str) -> None:
-    graph_contract_path = source_root / "src" / "weconduct" / "contracts" / "graph.py"
-    module = ast.parse(graph_contract_path.read_text(encoding="utf-8"))
-    compatibility_versions: set[str] = set()
+    pyproject_version = read_pyproject_version(source_root / "pyproject.toml")
+    package_version = read_package_json_version(source_root / "ui" / "package.json")
+    compatibility_versions = read_graph_compatibility_versions(
+        source_root / "src" / "weconduct" / "contracts" / "graph.py"
+    )
 
+    mismatches: list[str] = []
+    for anchor_name, actual_version in (
+        ("pyproject.toml project.version", pyproject_version),
+        ("ui/package.json version", package_version),
+        ("graph.py built_with_app_version", compatibility_versions["built_with_app_version"]),
+        ("graph.py last_upgraded_by_app_version", compatibility_versions["last_upgraded_by_app_version"]),
+    ):
+        if actual_version != expected_version:
+            mismatches.append(
+                f"{anchor_name}={actual_version!r} expected {expected_version!r}"
+            )
+
+    if mismatches:
+        raise SystemExit("source version mismatch: " + "; ".join(mismatches))
+
+
+def read_pyproject_version(path: Path) -> str:
+    payload = tomllib.loads(path.read_text(encoding="utf-8"))
+    version = payload.get("project", {}).get("version")
+    if not isinstance(version, str) or not version.strip():
+        raise SystemExit(f"missing project.version in {path}")
+    return version.strip()
+
+
+def read_package_json_version(path: Path) -> str:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    version = payload.get("version")
+    if not isinstance(version, str) or not version.strip():
+        raise SystemExit(f"missing version in {path}")
+    return version.strip()
+
+
+def read_graph_compatibility_versions(path: Path) -> dict[str, str]:
+    module = ast.parse(path.read_text(encoding="utf-8"))
     for node in module.body:
         if not isinstance(node, ast.FunctionDef) or node.name != "create_empty_graph_model":
             continue
         for statement in node.body:
-            if not isinstance(statement, ast.Return):
-                continue
-            if not isinstance(statement.value, ast.Call):
+            if not isinstance(statement, ast.Return) or not isinstance(statement.value, ast.Call):
                 continue
             for keyword in statement.value.keywords:
                 if keyword.arg != "root_metadata":
                     continue
                 root_metadata = ast.literal_eval(keyword.value)
                 graph_compatibility = root_metadata.get("graph_compatibility", {})
-                for key in (
-                    "built_with_app_version",
-                    "minimum_loader_app_version",
-                    "last_upgraded_by_app_version",
+                built_with = graph_compatibility.get("built_with_app_version")
+                last_upgraded = graph_compatibility.get("last_upgraded_by_app_version")
+                if (
+                    isinstance(built_with, str)
+                    and built_with.strip()
+                    and isinstance(last_upgraded, str)
+                    and last_upgraded.strip()
                 ):
-                    value = graph_compatibility.get(key)
-                    if isinstance(value, str) and value.strip():
-                        compatibility_versions.add(value.strip())
-
-    if expected_version not in compatibility_versions:
-        raise SystemExit(
-            f"source version mismatch: expected {expected_version}, found {sorted(compatibility_versions)!r}"
-        )
+                    return {
+                        "built_with_app_version": built_with.strip(),
+                        "last_upgraded_by_app_version": last_upgraded.strip(),
+                    }
+    raise SystemExit("failed to read graph compatibility versions from create_empty_graph_model")
 
 
 def load_registry(source_root: Path) -> list[dict[str, Any]]:
@@ -261,117 +298,25 @@ def build_components(
     return components
 
 
-def build_graph_schema(*, version: str) -> dict[str, Any]:
-    relation_layer_enum = ["control", "data", "observe"]
-    lowered_kind_enum = ["execution", "control", "observe", "bridge"]
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "WeConduct GraphModel",
-        "description": f"WeConduct {version} graph-v1 schema derived from src/weconduct/contracts/graph.py.",
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["graph_model_id", "nodes", "edges"],
-        "properties": {
-            "graph_model_id": {"type": "string"},
-            "compilation_id": {"type": ["string", "null"]},
-            "graph_schema_version": {"const": "graph-v1"},
-            "nodes": {
-                "type": "array",
-                "items": {"$ref": "#/$defs/GraphNode"},
-            },
-            "edges": {
-                "type": "array",
-                "items": {"$ref": "#/$defs/GraphEdge"},
-            },
-            "viewport": {
-                "anyOf": [{"$ref": "#/$defs/GraphViewport"}, {"type": "null"}],
-            },
-            "root_metadata": {
-                "type": "object",
-                "default": {},
-                "additionalProperties": True,
-            },
-            "graph_effective_diagnostic_anchor_refs": {
-                "type": "array",
-                "items": {"type": "string"},
-                "default": [],
-            },
-        },
-        "$defs": {
-            "GraphPosition": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["x", "y"],
-                "properties": {
-                    "x": {"type": "number"},
-                    "y": {"type": "number"},
-                },
-            },
-            "GraphViewport": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["x", "y", "zoom"],
-                "properties": {
-                    "x": {"type": "number"},
-                    "y": {"type": "number"},
-                    "zoom": {"type": "number"},
-                },
-            },
-            "GraphPort": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["port_id", "direction", "relation_layer", "semantic_slot"],
-                "properties": {
-                    "port_id": {"type": "string"},
-                    "direction": {"enum": ["input", "output"]},
-                    "relation_layer": {"enum": relation_layer_enum},
-                    "semantic_slot": {"type": "string"},
-                    "display_name": {"type": ["string", "null"]},
-                    "max_connections": {"type": ["integer", "null"]},
-                },
-            },
-            "GraphNode": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["node_id", "lowered_kind", "source_anchor_ref", "expansion_role"],
-                "properties": {
-                    "node_id": {"type": "string"},
-                    "lowered_kind": {"enum": lowered_kind_enum},
-                    "source_anchor_ref": {"type": "string"},
-                    "expansion_role": {"type": "string"},
-                    "display_name": {"type": ["string", "null"]},
-                    "node_kind": {"type": ["string", "null"]},
-                    "position": {
-                        "anyOf": [{"$ref": "#/$defs/GraphPosition"}, {"type": "null"}],
-                    },
-                    "ports": {
-                        "type": "array",
-                        "items": {"$ref": "#/$defs/GraphPort"},
-                        "default": [],
-                    },
-                    "node_config": {
-                        "type": "object",
-                        "default": {},
-                        "additionalProperties": True,
-                    },
-                },
-            },
-            "GraphEdge": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["edge_id", "relation_layer", "from_node_id", "to_node_id"],
-                "properties": {
-                    "edge_id": {"type": "string"},
-                    "relation_layer": {"enum": relation_layer_enum},
-                    "from_node_id": {"type": "string"},
-                    "to_node_id": {"type": "string"},
-                    "from_port_id": {"type": ["string", "null"]},
-                    "to_port_id": {"type": ["string", "null"]},
-                    "edge_state": {"type": ["string", "null"]},
-                },
-            },
-        },
-    }
+def build_graph_schema(*, source_root: Path, version: str) -> dict[str, Any]:
+    schema = load_graph_contract_schema(source_root)
+    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+    schema["description"] = (
+        f"WeConduct {version} graph-v1 schema derived from src/weconduct/contracts/graph.py."
+    )
+    schema["properties"]["graph_schema_version"] = {"const": "graph-v1"}
+    return schema
+
+
+def load_graph_contract_schema(source_root: Path) -> dict[str, Any]:
+    original_sys_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(source_root / "src"))
+        from weconduct.contracts.graph import GraphModel
+
+        return deepcopy(GraphModel.model_json_schema())
+    finally:
+        sys.path[:] = original_sys_path
 
 
 def write_json(path: Path, payload: Any) -> None:
