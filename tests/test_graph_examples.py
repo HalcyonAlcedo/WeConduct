@@ -26,6 +26,16 @@ def run_validate_cli(*args: str, cwd: Path = ROOT) -> subprocess.CompletedProces
     )
 
 
+def run_node_script(script: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["node", "-e", script],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -187,18 +197,153 @@ def test_validate_graph_examples_rejects_invalid_graphs(tmp_path: Path) -> None:
     assert "from_port_id" in combined or "to_port_id" in combined
 
 
+def test_validate_graph_examples_rejects_empty_node_list(tmp_path: Path) -> None:
+    graphs_root = tmp_path / "docs" / "assets" / "graphs"
+    empty_graph = build_graph_fixture()
+    empty_graph["nodes"] = []
+    write_json(graphs_root / "invalid" / "empty-graph.json", empty_graph)
+
+    result = run_validate_cli("--graphs-root", str(graphs_root))
+    assert result.returncode != 0
+    combined = f"{result.stdout}\n{result.stderr}"
+    assert "invalid/empty-graph.json" in combined
+    assert "at least one node" in combined
+
+
+def test_embedded_graph_javascript_runtime_hardening_behaviors() -> None:
+    script = f"""
+const fs = require("fs");
+const vm = require("vm");
+
+const source = fs.readFileSync({json.dumps(str(JS_PATH))}, "utf8");
+const registrations = new Map();
+
+class FakeHTMLElement {{
+  constructor() {{
+    this._attrs = new Map();
+    this.isConnected = true;
+    this.classList = {{ add() {{}} }};
+  }}
+  setAttribute(name, value) {{ this._attrs.set(name, String(value)); }}
+  getAttribute(name) {{ return this._attrs.has(name) ? this._attrs.get(name) : null; }}
+}}
+
+const context = {{
+  console,
+  AbortController,
+  HTMLElement: FakeHTMLElement,
+  customElements: {{
+    define(name, ctor) {{ registrations.set(name, ctor); }},
+    get(name) {{ return registrations.get(name); }},
+  }},
+  document: {{
+    fullscreenElement: null,
+    addEventListener() {{}},
+    removeEventListener() {{}},
+    exitFullscreen() {{ return Promise.resolve(); }},
+  }},
+  window: {{}},
+  fetch() {{ return Promise.resolve({{ ok: true, json: async () => ({{}}) }}); }},
+}};
+context.globalThis = context;
+vm.runInNewContext(source, context, {{ filename: "weconduct-graph.js" }});
+const GraphCtor = registrations.get("weconduct-graph");
+if (!GraphCtor) {{
+  throw new Error("custom element not registered");
+}}
+
+let titleLoadCount = 0;
+const titleEl = new GraphCtor();
+titleEl._graphData = {{ nodes: [{{}}], edges: [] }};
+titleEl.updateRenderedTitle = () => {{ titleEl._titleUpdated = true; }};
+titleEl.renderGraph = (graph, title) => {{ titleEl._renderedTitle = title; }};
+titleEl.load = () => {{ titleLoadCount += 1; }};
+titleEl.attributeChangedCallback("title", "旧标题", "新标题");
+if (titleLoadCount !== 0) {{
+  throw new Error("title change should not trigger load");
+}}
+if (!titleEl._titleUpdated && titleEl._renderedTitle !== "新标题") {{
+  throw new Error("title change should update rendered title");
+}}
+
+const srcEl = new GraphCtor();
+let abortCount = 0;
+srcEl.abortActiveRequest = () => {{ abortCount += 1; }};
+srcEl.load = () => {{ srcEl._loaded = true; }};
+srcEl.attributeChangedCallback("src", "old.json", "new.json");
+if (abortCount !== 1 || !srcEl._loaded) {{
+  throw new Error("src change should abort stale request and reload");
+}}
+
+const disconnectEl = new GraphCtor();
+let disconnectAbortCount = 0;
+disconnectEl.abortActiveRequest = () => {{ disconnectAbortCount += 1; }};
+disconnectEl.disconnectedCallback();
+if (disconnectAbortCount !== 1) {{
+  throw new Error("disconnectedCallback should abort active request");
+}}
+
+const fullscreenEl = new GraphCtor();
+let fullscreenError = null;
+fullscreenEl.renderError = (message) => {{ fullscreenError = message; }};
+fullscreenEl.requestFullscreen = () => Promise.reject(new Error("blocked"));
+fullscreenEl.toggleFullscreen().then(() => {{
+  if (!fullscreenError || !fullscreenError.includes("全屏")) {{
+    throw new Error("toggleFullscreen should surface readable fullscreen error");
+  }}
+}}).catch((error) => {{
+  throw error;
+}});
+
+const keyEl = new GraphCtor();
+keyEl._state.translateX = 0;
+keyEl._state.translateY = 0;
+keyEl._state.scale = 1;
+let fitCount = 0;
+keyEl.fitToGraph = () => {{ fitCount += 1; }};
+keyEl.updateTransform = () => {{}};
+keyEl.handleViewportKeydown({{ key: "ArrowRight", preventDefault() {{}} }});
+keyEl.handleViewportKeydown({{ key: "+", preventDefault() {{}} }});
+keyEl.handleViewportKeydown({{ key: "0", preventDefault() {{}} }});
+if (keyEl._state.translateX <= 0) {{
+  throw new Error("keyboard pan should move viewport");
+}}
+if (keyEl._state.scale <= 1) {{
+  throw new Error("keyboard zoom should increase scale");
+}}
+if (fitCount !== 1) {{
+  throw new Error("keyboard 0 should trigger fit");
+}}
+
+const pointerEl = new GraphCtor();
+pointerEl._state.pointerId = 7;
+pointerEl.clearPointerDrag();
+if (pointerEl._state.pointerId !== null) {{
+  throw new Error("clearPointerDrag should reset pointer state");
+}}
+"""
+    result = run_node_script(script)
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_embedded_graph_javascript_contains_required_api_and_interactions() -> None:
     script = read_text(JS_PATH)
 
     assert 'customElements.define("weconduct-graph"' in script
     assert "fetch(src" in script or "fetch(this.getAttribute(\"src\")" in script
+    assert "AbortController" in script or "_requestToken" in script
     assert "createElementNS(SVG_NS, \"svg\")" in script
     assert "aria-label" in script
     assert "fullscreen" in script.lower()
     assert "pointerdown" in script
     assert "pointermove" in script
+    assert "pointercancel" in script
+    assert "lostpointercapture" in script
     assert "wheel" in script
+    assert "keydown" in script
+    assert "tabindex" in script.lower() or "tabIndex" in script
     assert "requestFullscreen" in script
+    assert "catch" in script
     assert "fit" in script.lower()
     assert "zoom in" in script.lower() or "zoom-in" in script.lower()
     assert "zoom out" in script.lower() or "zoom-out" in script.lower()
@@ -211,6 +356,9 @@ def test_embedded_graph_stylesheet_contains_responsive_and_motion_contracts() ->
     assert "prefers-reduced-motion" in stylesheet
     assert ":host" in stylesheet or "weconduct-graph" in stylesheet
     assert "--graph-control" in stylesheet or "--graph-data" in stylesheet
+    assert "overflow-wrap" in stylesheet or "word-break" in stylesheet
+    assert "text-overflow" in stylesheet or "min-width: 0" in stylesheet
+    assert "white-space" in stylesheet or "word-break" in stylesheet
 
 
 def test_embedded_graph_doc_contains_front_matter_and_live_example() -> None:
@@ -228,3 +376,4 @@ def test_embedded_graph_doc_contains_front_matter_and_live_example() -> None:
     assert 'title="开始节点"' in body
     assert "可访问回退文本" in body
     assert "20" in body
+    assert "至少 1 个节点" in body or "至少一个节点" in body

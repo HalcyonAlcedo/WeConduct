@@ -1,6 +1,7 @@
 (function registerWeConductGraph() {
   const SVG_NS = "http://www.w3.org/2000/svg";
   const SUPPORTED_LAYERS = new Set(["control", "data"]);
+  const KEYBOARD_PAN_STEP = 32;
 
   function readCompactConfig(nodeConfig) {
     if (!nodeConfig || typeof nodeConfig !== "object") {
@@ -26,6 +27,9 @@
     }
     if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
       throw new Error("Validation failed: nodes and edges must be arrays.");
+    }
+    if (graph.nodes.length === 0) {
+      throw new Error("Validation failed: graph must contain at least one node.");
     }
     for (const [index, node] of graph.nodes.entries()) {
       if (!node || typeof node !== "object") {
@@ -62,6 +66,10 @@
         startTranslateY: 0,
         isFullscreen: false,
       };
+      this._abortController = null;
+      this._requestToken = 0;
+      this._graphData = null;
+      this._graphTitleElement = null;
     }
 
     connectedCallback() {
@@ -74,11 +82,24 @@
     }
 
     disconnectedCallback() {
+      this.abortActiveRequest();
+      this.clearPointerDrag();
       document.removeEventListener("fullscreenchange", this._onFullscreenChange);
     }
 
-    attributeChangedCallback() {
-      if (this.isConnected) {
+    attributeChangedCallback(name, oldValue, newValue) {
+      if (!this.isConnected || oldValue === newValue) {
+        return;
+      }
+      if (name === "title") {
+        this.updateRenderedTitle();
+        if (this._graphData && this._shell && !this._shell.querySelector(".wc-graph-error")) {
+          this.renderGraph(this._graphData, this.getCurrentTitle());
+        }
+        return;
+      }
+      if (name === "src") {
+        this.abortActiveRequest();
         this.load();
       }
     }
@@ -90,24 +111,40 @@
 
     async load() {
       const src = this.getAttribute("src");
-      const title = this.getAttribute("title") || "WeConduct 图";
+      const title = this.getCurrentTitle();
       if (!src) {
         this.renderError("加载失败：缺少 src 属性。");
         return;
       }
 
+      this.abortActiveRequest();
+      const controller = new AbortController();
+      this._abortController = controller;
+      const requestToken = this._requestToken + 1;
+      this._requestToken = requestToken;
       this.renderLoading(title);
 
       try {
-        const response = await fetch(src, { cache: "no-store" });
+        const response = await fetch(src, { cache: "no-store", signal: controller.signal });
         if (!response.ok) {
           throw new Error(`加载失败：HTTP ${response.status}`);
         }
         const graph = validateGraphPayload(await response.json());
+        if (requestToken !== this._requestToken) {
+          return;
+        }
+        this._graphData = graph;
         this.renderGraph(graph, title);
       } catch (error) {
+        if (controller.signal.aborted || requestToken !== this._requestToken) {
+          return;
+        }
         const message = error instanceof Error ? error.message : "加载失败。";
         this.renderError(message);
+      } finally {
+        if (this._abortController === controller) {
+          this._abortController = null;
+        }
       }
     }
 
@@ -123,7 +160,7 @@
 
     renderError(message) {
       this.innerHTML = "";
-      const shell = this.createShell(this.getAttribute("title") || "WeConduct 图");
+      const shell = this.createShell(this.getCurrentTitle());
       const panel = document.createElement("div");
       panel.className = "wc-graph-error";
       const summary = document.createElement("p");
@@ -137,6 +174,8 @@
       }
       shell.viewport.append(panel);
       this.append(shell.root);
+      this._shell = shell.root;
+      this._graphTitleElement = shell.heading;
     }
 
     renderGraph(graph, title) {
@@ -174,6 +213,7 @@
       this._canvas = shell.canvas;
       this._shell = shell.root;
       this._graphBounds = bounds;
+      this._graphTitleElement = shell.heading;
       this.installInteractionHandlers(shell.viewport);
       this.fitToGraph();
     }
@@ -199,11 +239,14 @@
 
       const viewport = document.createElement("div");
       viewport.className = "wc-graph-viewport";
+      viewport.tabIndex = 0;
+      viewport.setAttribute("role", "group");
+      viewport.setAttribute("aria-label", `${title} 图示视口`);
       const canvas = document.createElement("div");
       canvas.className = "wc-graph-canvas";
 
       root.append(header, viewport);
-      return { root, viewport, canvas };
+      return { root, viewport, canvas, heading };
     }
 
     createControlButton(label, symbol, onClick) {
@@ -238,7 +281,8 @@
       for (const port of node.ports) {
         const item = document.createElement("li");
         item.className = `wc-graph-port wc-graph-port-${port.relation_layer}`;
-        item.textContent = `${port.port_id} · ${port.direction}`;
+        const portLabel = port.display_name || port.port_id;
+        item.textContent = `${portLabel} · ${port.port_id} · ${port.direction}`;
         ports.append(item);
       }
 
@@ -289,9 +333,18 @@
       };
       viewport.onpointerup = (event) => {
         if (this._state.pointerId === event.pointerId) {
-          this._state.pointerId = null;
+          this.clearPointerDrag();
           viewport.releasePointerCapture(event.pointerId);
         }
+      };
+      viewport.onpointercancel = () => {
+        this.clearPointerDrag();
+      };
+      viewport.onlostpointercapture = () => {
+        this.clearPointerDrag();
+      };
+      viewport.onkeydown = (event) => {
+        this.handleViewportKeydown(event);
       };
       viewport.addEventListener(
         "wheel",
@@ -302,6 +355,67 @@
         },
         { passive: false }
       );
+    }
+
+    clearPointerDrag() {
+      this._state.pointerId = null;
+    }
+
+    abortActiveRequest() {
+      if (this._abortController) {
+        this._abortController.abort();
+        this._abortController = null;
+      }
+      this._requestToken += 1;
+    }
+
+    getCurrentTitle() {
+      return this.getAttribute("title") || "WeConduct 图";
+    }
+
+    updateRenderedTitle() {
+      if (this._graphTitleElement) {
+        this._graphTitleElement.textContent = this.getCurrentTitle();
+      }
+    }
+
+    handleViewportKeydown(event) {
+      let handled = true;
+      switch (event.key) {
+        case "ArrowLeft":
+          this._state.translateX -= KEYBOARD_PAN_STEP;
+          break;
+        case "ArrowRight":
+          this._state.translateX += KEYBOARD_PAN_STEP;
+          break;
+        case "ArrowUp":
+          this._state.translateY -= KEYBOARD_PAN_STEP;
+          break;
+        case "ArrowDown":
+          this._state.translateY += KEYBOARD_PAN_STEP;
+          break;
+        case "+":
+        case "=":
+          this.nudgeScale(0.1);
+          break;
+        case "-":
+        case "_":
+          this.nudgeScale(-0.1);
+          break;
+        case "0":
+        case "f":
+        case "F":
+          this.fitToGraph();
+          break;
+        default:
+          handled = false;
+      }
+      if (handled) {
+        event.preventDefault();
+        if (!["+", "=", "-", "_"].includes(event.key) && event.key !== "0" && event.key !== "f" && event.key !== "F") {
+          this.updateTransform();
+        }
+      }
     }
 
     nudgeScale(delta) {
@@ -341,13 +455,18 @@
     }
 
     async toggleFullscreen() {
-      if (document.fullscreenElement === this) {
-        await document.exitFullscreen();
-        return;
-      }
-      if (this.requestFullscreen) {
-        await this.requestFullscreen();
-        this._state.isFullscreen = true;
+      try {
+        if (document.fullscreenElement === this) {
+          await document.exitFullscreen();
+          return;
+        }
+        if (this.requestFullscreen) {
+          await this.requestFullscreen();
+          this._state.isFullscreen = true;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "未知错误";
+        this.renderError(`全屏切换失败：${message}`);
       }
     }
   }

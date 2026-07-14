@@ -144,6 +144,8 @@ def validate_graph_payload(
     if not isinstance(nodes, list):
         errors.append(f"{relative_path}: nodes must be a list")
         nodes = []
+    elif len(nodes) == 0:
+        errors.append(f"{relative_path}: nodes must contain at least one node")
     if not isinstance(edges, list):
         errors.append(f"{relative_path}: edges must be a list")
         edges = []

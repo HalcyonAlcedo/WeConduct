@@ -38,6 +38,8 @@ weconduct-graph .wc-graph-title {
   margin: 0;
   font-size: 0.95rem;
   font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 weconduct-graph .wc-graph-controls {
@@ -111,6 +113,7 @@ weconduct-graph .wc-graph-nodes {
 weconduct-graph .wc-graph-node {
   position: absolute;
   width: 176px;
+  min-width: 0;
   padding: 0.8rem 0.85rem;
   border: 1px solid var(--graph-border);
   border-radius: 0.85rem;
@@ -124,10 +127,13 @@ weconduct-graph .wc-graph-node-kind,
 weconduct-graph .wc-graph-node-config,
 weconduct-graph .wc-graph-port-list {
   margin: 0;
+  min-width: 0;
 }
 
 weconduct-graph .wc-graph-node-title {
   font-size: 0.95rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 weconduct-graph .wc-graph-node-kind,
@@ -136,6 +142,7 @@ weconduct-graph .wc-graph-node-config {
   color: var(--graph-muted);
   font-size: 0.76rem;
   line-height: 1.4;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
@@ -147,6 +154,9 @@ weconduct-graph .wc-graph-port-list {
 
 weconduct-graph .wc-graph-port {
   margin-top: 0.18rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
 }
 
 weconduct-graph .wc-graph-port-control::marker {
