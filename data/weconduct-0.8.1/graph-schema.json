@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WeConduct GraphModel",
+  "description": "WeConduct 0.8.1 graph-v1 schema derived from src/weconduct/contracts/graph.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "graph_model_id",
+    "nodes",
+    "edges"
+  ],
+  "properties": {
+    "graph_model_id": {
+      "type": "string"
+    },
+    "compilation_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "graph_schema_version": {
+      "const": "graph-v1"
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GraphNode"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GraphEdge"
+      }
+    },
+    "viewport": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GraphViewport"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "root_metadata": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": true
+    },
+    "graph_effective_diagnostic_anchor_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    }
+  },
+  "$defs": {
+    "GraphPosition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y"
+      ],
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      }
+    },
+    "GraphViewport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "zoom"
+      ],
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "zoom": {
+          "type": "number"
+        }
+      }
+    },
+    "GraphPort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "port_id",
+        "direction",
+        "relation_layer",
+        "semantic_slot"
+      ],
+      "properties": {
+        "port_id": {
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "input",
+            "output"
+          ]
+        },
+        "relation_layer": {
+          "enum": [
+            "control",
+            "data",
+            "observe"
+          ]
+        },
+        "semantic_slot": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_connections": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    },
+    "GraphNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "lowered_kind",
+        "source_anchor_ref",
+        "expansion_role"
+      ],
+      "properties": {
+        "node_id": {
+          "type": "string"
+        },
+        "lowered_kind": {
+          "enum": [
+            "execution",
+            "control",
+            "observe",
+            "bridge"
+          ]
+        },
+        "source_anchor_ref": {
+          "type": "string"
+        },
+        "expansion_role": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "node_kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GraphPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GraphPort"
+          },
+          "default": []
+        },
+        "node_config": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": true
+        }
+      }
+    },
+    "GraphEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "edge_id",
+        "relation_layer",
+        "from_node_id",
+        "to_node_id"
+      ],
+      "properties": {
+        "edge_id": {
+          "type": "string"
+        },
+        "relation_layer": {
+          "enum": [
+            "control",
+            "data",
+            "observe"
+          ]
+        },
+        "from_node_id": {
+          "type": "string"
+        },
+        "to_node_id": {
+          "type": "string"
+        },
+        "from_port_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "to_port_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "edge_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

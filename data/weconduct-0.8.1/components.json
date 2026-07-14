@@ -1,0 +1,6772 @@
+[
+  {
+    "resource_id": "builtin:flow.start",
+    "resource_key": "flow.start",
+    "display_name": "Start",
+    "display_name_zh": "开始",
+    "description": "Declare the entry point and initial variables for a graph flow.",
+    "description_zh": "声明流程入口和初始变量。",
+    "capability_domain": "flow",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "start",
+      "flow_start"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "control",
+    "expansion_role": "flow:start",
+    "ports": [
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:variables",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.variables"
+      }
+    ],
+    "node_config": {
+      "initial_variables": {},
+      "browser_config": {
+        "headless": true,
+        "slow_mo_ms": 0
+      }
+    },
+    "parameter_schema": {
+      "initial_variables": {
+        "type": "object",
+        "required": false,
+        "editor_kind": "key_value_map",
+        "path_kind": null
+      },
+      "browser_config": {
+        "type": "object",
+        "required": false,
+        "editor_kind": "object",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": [
+      {
+        "key": "initial_variables",
+        "type": "object-map",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:component.input",
+    "resource_key": "component.input",
+    "display_name": "Component Input",
+    "display_name_zh": "组件输入",
+    "description": "Declare a formal component input boundary inside a custom node graph.",
+    "description_zh": "在自定义节点图中声明正式组件输入边界。",
+    "capability_domain": "component",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": false,
+    "lowered_kind": "execution",
+    "expansion_role": "component:input",
+    "ports": [
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "inputs": {},
+      "share_parent_variables": false
+    },
+    "parameter_schema": {
+      "inputs": {
+        "type": "object",
+        "required": false,
+        "editor_kind": "component_inputs",
+        "path_kind": null
+      },
+      "share_parent_variables": {
+        "type": "boolean",
+        "required": false,
+        "editor_kind": "boolean",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": [
+      {
+        "key": "inputs",
+        "type": "component-schema",
+        "options": []
+      },
+      {
+        "key": "share_parent_variables",
+        "type": "boolean",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:component.output",
+    "resource_key": "component.output",
+    "display_name": "Component Output",
+    "display_name_zh": "组件输出",
+    "description": "Declare a formal component output boundary inside a custom node graph.",
+    "description_zh": "在自定义节点图中声明正式组件输出边界。",
+    "capability_domain": "component",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": false,
+    "lowered_kind": "execution",
+    "expansion_role": "component:output",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      }
+    ],
+    "node_config": {
+      "outputs": {}
+    },
+    "parameter_schema": {
+      "outputs": {
+        "type": "object",
+        "required": false,
+        "editor_kind": "component_outputs",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": [
+      {
+        "key": "outputs",
+        "type": "component-schema",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:browser.navigate",
+    "resource_key": "browser.navigate",
+    "display_name": "Navigate",
+    "display_name_zh": "导航",
+    "description": "Navigate browser to target URL.",
+    "description_zh": "导航浏览器到目标 URL。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "navigate"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:navigate",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:url",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.url"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "url": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.click",
+    "resource_key": "browser.click",
+    "display_name": "Click",
+    "display_name_zh": "点击",
+    "description": "Click target element in browser.",
+    "description_zh": "点击浏览器中的目标元素。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "click"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:click",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.fill",
+    "resource_key": "browser.fill",
+    "display_name": "Fill",
+    "display_name_zh": "填入",
+    "description": "Fill input element in browser.",
+    "description_zh": "向浏览器输入框填入内容。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "fill"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:fill",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "in:value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "value": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.check",
+    "resource_key": "browser.check",
+    "display_name": "Check",
+    "display_name_zh": "勾选",
+    "description": "Check a checkbox or radio input in browser.",
+    "description_zh": "在浏览器中勾选复选框或单选框。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "check"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:check",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.uncheck",
+    "resource_key": "browser.uncheck",
+    "display_name": "Uncheck",
+    "display_name_zh": "取消勾选",
+    "description": "Uncheck a checkbox input in browser.",
+    "description_zh": "在浏览器中取消勾选复选框。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "uncheck"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:uncheck",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.set_input_files",
+    "resource_key": "browser.set_input_files",
+    "display_name": "Set Input Files",
+    "display_name_zh": "设置上传文件",
+    "description": "Attach local file paths to a browser file input.",
+    "description_zh": "向浏览器文件输入框附加本地文件路径。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "set_input_files",
+      "upload_files"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:set_input_files",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "in:path",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.path"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "path": ""
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "open_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.hover",
+    "resource_key": "browser.hover",
+    "display_name": "Hover",
+    "display_name_zh": "悬停",
+    "description": "Hover pointer over target element.",
+    "description_zh": "将鼠标悬停在目标元素上。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "hover"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:hover",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.select_option",
+    "resource_key": "browser.select_option",
+    "display_name": "Select Option",
+    "display_name_zh": "选择选项",
+    "description": "Select target option in browser.",
+    "description_zh": "在浏览器中选择目标选项。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "select_option"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:select_option",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "in:value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "value": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.wait_for_element",
+    "resource_key": "browser.wait_for_element",
+    "display_name": "Wait For Element",
+    "display_name_zh": "等待元素",
+    "description": "Wait until target element appears.",
+    "description_zh": "等待目标元素出现。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "wait_for_element"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:wait_for_element",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "timeout": 10000
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.wait_for_navigation",
+    "resource_key": "browser.wait_for_navigation",
+    "display_name": "Wait For Navigation",
+    "display_name_zh": "等待导航",
+    "description": "Wait until browser navigation completes.",
+    "description_zh": "等待浏览器导航完成。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "wait_for_navigation"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:wait_for_navigation",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:url_pattern",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.url_pattern"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "url_pattern": "",
+      "timeout": 15000
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.wait_for_timeout",
+    "resource_key": "browser.wait_for_timeout",
+    "display_name": "Wait For Timeout",
+    "display_name_zh": "等待超时",
+    "description": "Wait for fixed timeout in browser flow.",
+    "description_zh": "按固定时长等待。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "wait_for_timeout"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:wait_for_timeout",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "timeout": 0
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.go_back",
+    "resource_key": "browser.go_back",
+    "display_name": "Go Back",
+    "display_name_zh": "后退",
+    "description": "Navigate browser history backward.",
+    "description_zh": "浏览器历史后退。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "go_back",
+      "back"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:go_back",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {},
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.go_forward",
+    "resource_key": "browser.go_forward",
+    "display_name": "Go Forward",
+    "display_name_zh": "前进",
+    "description": "Navigate browser history forward.",
+    "description_zh": "浏览器历史前进。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "go_forward",
+      "forward"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:go_forward",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {},
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.refresh",
+    "resource_key": "browser.refresh",
+    "display_name": "Refresh",
+    "display_name_zh": "刷新",
+    "description": "Reload current browser page.",
+    "description_zh": "刷新当前浏览器页面。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "refresh",
+      "reload"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:refresh",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {},
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.refresh_no_cache",
+    "resource_key": "browser.refresh_no_cache",
+    "display_name": "Refresh No Cache",
+    "display_name_zh": "无缓存刷新",
+    "description": "Reload current browser page without cache.",
+    "description_zh": "无缓存刷新当前浏览器页面。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "refresh_no_cache",
+      "reload_no_cache"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:refresh_no_cache",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {},
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.screenshot",
+    "resource_key": "browser.screenshot",
+    "display_name": "Screenshot",
+    "display_name_zh": "截图",
+    "description": "Capture browser screenshot.",
+    "description_zh": "截取浏览器截图。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "screenshot"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:screenshot",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "path": ""
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "save_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.recognize_captcha",
+    "resource_key": "browser.recognize_captcha",
+    "display_name": "Recognize Captcha",
+    "display_name_zh": "识别验证码",
+    "description": "Recognize captcha image with captcha_ocr.",
+    "description_zh": "使用 captcha_ocr 识别验证码图片。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "recognize_captcha"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:recognize_captcha",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "in:image_bytes_base64",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.image_bytes_base64"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:text",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.text"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "image_bytes_base64": "",
+      "target_variable": "",
+      "model_name": "",
+      "runtime_root": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.switch_to_frame",
+    "resource_key": "browser.switch_to_frame",
+    "display_name": "Switch To Frame",
+    "display_name_zh": "切换到框架",
+    "description": "Switch browser context into target frame.",
+    "description_zh": "将浏览器上下文切换到目标框架。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "switch_to_frame"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:switch_to_frame",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "name": "",
+      "url_contains": "",
+      "index": -1
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.switch_to_parent_frame",
+    "resource_key": "browser.switch_to_parent_frame",
+    "display_name": "Switch To Parent Frame",
+    "display_name_zh": "切换到父框架",
+    "description": "Switch browser context back to parent frame.",
+    "description_zh": "将浏览器上下文切回父框架。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "switch_to_parent_frame"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:switch_to_parent_frame",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {},
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.switch_to_default_content",
+    "resource_key": "browser.switch_to_default_content",
+    "display_name": "Switch To Default Content",
+    "display_name_zh": "切换到默认内容",
+    "description": "Switch browser context back to top-level page.",
+    "description_zh": "将浏览器上下文切回顶层页面。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "switch_to_default_content"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:switch_to_default_content",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {},
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.open_frame_page",
+    "resource_key": "browser.open_frame_page",
+    "display_name": "Open Frame Page",
+    "display_name_zh": "打开框架页面",
+    "description": "Open target frame source as main page.",
+    "description_zh": "将目标框架源作为主页面打开。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "open_frame_page"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:open_frame_page",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "name": "",
+      "url_contains": "",
+      "index": -1
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:http.request",
+    "resource_key": "http.request",
+    "display_name": "HTTP Request",
+    "display_name_zh": "HTTP 请求",
+    "description": "Built-in HTTP request capability.",
+    "description_zh": "内置 HTTP 请求能力。",
+    "capability_domain": "http",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "http_request"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:request",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:url",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.url"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:body",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.body"
+      }
+    ],
+    "node_config": {
+      "method": "GET",
+      "url": "",
+      "headers": {},
+      "timeout": 30,
+      "body": null
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.map",
+    "resource_key": "data.map",
+    "display_name": "Data Map",
+    "display_name_zh": "数据映射",
+    "description": "Built-in data mapping capability.",
+    "description_zh": "内置数据映射能力。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "data_map"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:map",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:source",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.source"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "source": null,
+      "variable_name": "",
+      "mode": "map"
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.set_variable",
+    "resource_key": "data.set_variable",
+    "display_name": "Set Variable",
+    "display_name_zh": "写入变量",
+    "description": "Set runtime variable.",
+    "description_zh": "写入运行时变量。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "set_variable"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:set_variable",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "name": "",
+      "value": null
+    },
+    "parameter_schema": {
+      "name": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "text",
+        "path_kind": null
+      },
+      "value": {
+        "type": "any",
+        "required": false,
+        "editor_kind": "value",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": [
+      {
+        "key": "name",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "value",
+        "type": "typed-value",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:data.get_variable",
+    "resource_key": "data.get_variable",
+    "display_name": "Get Variable",
+    "display_name_zh": "读取变量",
+    "description": "Read runtime variable.",
+    "description_zh": "读取运行时变量。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "get_variable"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:get_variable",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.get_text",
+    "resource_key": "data.get_text",
+    "display_name": "Get Text",
+    "display_name_zh": "读取文本",
+    "description": "Read browser element text into runtime variable.",
+    "description_zh": "读取浏览器元素文本到运行时变量。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "get_text"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:get_text",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "variable_name": "",
+      "target_type": "string"
+    },
+    "parameter_schema": {
+      "selector": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "text",
+        "path_kind": null
+      },
+      "variable_name": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "text",
+        "path_kind": null
+      },
+      "target_type": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "select",
+        "path_kind": null,
+        "options": [
+          "string",
+          "int",
+          "float",
+          "bool",
+          "json"
+        ]
+      }
+    },
+    "ui_field_templates": [
+      {
+        "key": "selector",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "variable_name",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "target_type",
+        "type": "string",
+        "options": [
+          "string",
+          "int",
+          "float",
+          "bool",
+          "json"
+        ]
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:data.get_attribute",
+    "resource_key": "data.get_attribute",
+    "display_name": "Get Attribute",
+    "display_name_zh": "读取属性",
+    "description": "Read browser element attribute into runtime variable.",
+    "description_zh": "读取浏览器元素属性到运行时变量。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "get_attribute"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:get_attribute",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "in:attribute",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.attribute"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "attribute": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "selector",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "attribute",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "variable_name",
+        "type": "string",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:data.get_value",
+    "resource_key": "data.get_value",
+    "display_name": "Get Value",
+    "display_name_zh": "读取值",
+    "description": "Read browser input value into runtime variable.",
+    "description_zh": "读取浏览器输入值到运行时变量。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "get_value"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:get_value",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "selector",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "variable_name",
+        "type": "string",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:data.get_element_count",
+    "resource_key": "data.get_element_count",
+    "display_name": "Get Element Count",
+    "display_name_zh": "读取元素数量",
+    "description": "Count browser elements matching selector.",
+    "description_zh": "统计匹配选择器的浏览器元素数量。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "get_element_count"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:get_element_count",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "selector",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "variable_name",
+        "type": "string",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:data.set_variables_batch",
+    "resource_key": "data.set_variables_batch",
+    "display_name": "Set Variables Batch",
+    "display_name_zh": "批量写入变量",
+    "description": "Set multiple runtime variables at once.",
+    "description_zh": "一次写入多个运行时变量。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "set_variables_batch"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:set_variables_batch",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "variables": {}
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "variables",
+        "type": "object-map",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:data.increment_variable",
+    "resource_key": "data.increment_variable",
+    "display_name": "Increment Variable",
+    "display_name_zh": "变量递增",
+    "description": "Increment numeric runtime variable.",
+    "description_zh": "递增数值型运行时变量。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "increment_variable"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:increment_variable",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": "",
+      "step": 1
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "variable_name",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "step",
+        "type": "number",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:data.decrement_variable",
+    "resource_key": "data.decrement_variable",
+    "display_name": "Decrement Variable",
+    "display_name_zh": "变量递减",
+    "description": "Decrement numeric runtime variable.",
+    "description_zh": "递减数值型运行时变量。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "decrement_variable"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:decrement_variable",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": "",
+      "step": 1
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "variable_name",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "step",
+        "type": "number",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:data.convert_value",
+    "resource_key": "data.convert_value",
+    "display_name": "Convert Value",
+    "display_name_zh": "转换变量类型",
+    "description": "Convert runtime value to a target type and optionally store it.",
+    "description_zh": "将运行时值转换为目标类型，并可选择写回变量。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "convert_value",
+      "cast_value"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:convert_value",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:source_value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.source_value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "source_value": null,
+      "target_type": "string",
+      "variable_name": "",
+      "in_place": false,
+      "source_variable_name": ""
+    },
+    "parameter_schema": {
+      "source_value": {
+        "type": "any",
+        "required": false,
+        "editor_kind": "value",
+        "path_kind": null
+      },
+      "target_type": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "select",
+        "path_kind": null,
+        "options": [
+          "string",
+          "int",
+          "float",
+          "bool",
+          "json"
+        ]
+      },
+      "variable_name": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "text",
+        "path_kind": null
+      },
+      "in_place": {
+        "type": "boolean",
+        "required": false,
+        "editor_kind": "checkbox",
+        "path_kind": null
+      },
+      "source_variable_name": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "text",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": [
+      {
+        "key": "source_value",
+        "type": "typed-value",
+        "options": []
+      },
+      {
+        "key": "target_type",
+        "type": "string",
+        "options": [
+          "string",
+          "int",
+          "float",
+          "bool",
+          "json"
+        ]
+      },
+      {
+        "key": "variable_name",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "in_place",
+        "type": "boolean",
+        "options": []
+      },
+      {
+        "key": "source_variable_name",
+        "type": "string",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:data.evaluate_expression",
+    "resource_key": "data.evaluate_expression",
+    "display_name": "Evaluate Expression",
+    "display_name_zh": "计算表达式",
+    "description": "Evaluate expression into runtime value.",
+    "description_zh": "计算表达式并得到运行时值。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "evaluate_expression",
+      "calculate_expression"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:evaluate_expression",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:expression",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.expression"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "expression": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.regex_replace",
+    "resource_key": "data.regex_replace",
+    "display_name": "Regex Replace",
+    "display_name_zh": "正则替换",
+    "description": "Replace text using regex.",
+    "description_zh": "使用正则表达式替换文本。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "regex_replace"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:regex_replace",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:text",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.text"
+      },
+      {
+        "port_id": "in:pattern",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.pattern"
+      },
+      {
+        "port_id": "in:replacement",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.replacement"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "text": "",
+      "pattern": "",
+      "replacement": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.create_list",
+    "resource_key": "data.create_list",
+    "display_name": "Create List",
+    "display_name_zh": "创建列表",
+    "description": "Create runtime list.",
+    "description_zh": "创建运行时列表。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "create_list"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:create_list",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": "",
+      "items": []
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.list_append",
+    "resource_key": "data.list_append",
+    "display_name": "List Append",
+    "display_name_zh": "列表追加",
+    "description": "Append item to runtime list.",
+    "description_zh": "向运行时列表追加项。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "list_append"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:list_append",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": "",
+      "value": null
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.list_extend",
+    "resource_key": "data.list_extend",
+    "display_name": "List Extend",
+    "display_name_zh": "列表扩展",
+    "description": "Extend runtime list with items.",
+    "description_zh": "用多个项扩展运行时列表。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "list_extend"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:list_extend",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:items",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.items"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": "",
+      "items": []
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.list_get",
+    "resource_key": "data.list_get",
+    "display_name": "List Get",
+    "display_name_zh": "列表读取",
+    "description": "Read runtime list item.",
+    "description_zh": "读取运行时列表项。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "list_get"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:list_get",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:index",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.index"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": "",
+      "index": 0,
+      "output_variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.list_set",
+    "resource_key": "data.list_set",
+    "display_name": "List Set",
+    "display_name_zh": "列表写入",
+    "description": "Write runtime list item.",
+    "description_zh": "写入运行时列表项。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "list_set"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:list_set",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:index",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.index"
+      },
+      {
+        "port_id": "in:value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": "",
+      "index": 0,
+      "value": null
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.list_index",
+    "resource_key": "data.list_index",
+    "display_name": "List Index",
+    "display_name_zh": "列表索引",
+    "description": "Find runtime list item index.",
+    "description_zh": "查找运行时列表项索引。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "list_index"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:list_index",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": "",
+      "value": null,
+      "output_variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "variable_name",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "value",
+        "type": "typed-value",
+        "options": []
+      },
+      {
+        "key": "output_variable_name",
+        "type": "string",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:data.list_length",
+    "resource_key": "data.list_length",
+    "display_name": "List Length",
+    "display_name_zh": "列表长度",
+    "description": "Read runtime list length.",
+    "description_zh": "读取运行时列表长度。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "list_length"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:list_length",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": "",
+      "output_variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.list_insert",
+    "resource_key": "data.list_insert",
+    "display_name": "List Insert",
+    "display_name_zh": "列表插入",
+    "description": "Insert runtime list item by index.",
+    "description_zh": "按索引插入运行时列表项。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "list_insert"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:list_insert",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:index",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.index"
+      },
+      {
+        "port_id": "in:value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": "",
+      "index": 0,
+      "value": null
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.list_remove",
+    "resource_key": "data.list_remove",
+    "display_name": "List Remove",
+    "display_name_zh": "列表移除",
+    "description": "Remove runtime list item by value or index.",
+    "description_zh": "按值或索引移除运行时列表项。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "list_remove"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:list_remove",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:index",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.index"
+      },
+      {
+        "port_id": "in:value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": "",
+      "index": null,
+      "value": null
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.list_slice",
+    "resource_key": "data.list_slice",
+    "display_name": "List Slice",
+    "display_name_zh": "列表切片",
+    "description": "Slice runtime list items.",
+    "description_zh": "对运行时列表进行切片。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "list_slice"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:list_slice",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:start",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.start"
+      },
+      {
+        "port_id": "in:end",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.end"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": "",
+      "start": 0,
+      "end": null,
+      "output_variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.list_sort",
+    "resource_key": "data.list_sort",
+    "display_name": "List Sort",
+    "display_name_zh": "列表排序",
+    "description": "Sort runtime list items.",
+    "description_zh": "对运行时列表排序。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "list_sort"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:list_sort",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:data.list_reverse",
+    "resource_key": "data.list_reverse",
+    "display_name": "List Reverse",
+    "display_name_zh": "列表反转",
+    "description": "Reverse runtime list items.",
+    "description_zh": "反转运行时列表。",
+    "capability_domain": "data",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "list_reverse"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:list_reverse",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:time.get_current_time",
+    "resource_key": "time.get_current_time",
+    "display_name": "Get Current Time",
+    "display_name_zh": "获取当前时间",
+    "description": "Read current system time into runtime output.",
+    "description_zh": "读取当前系统时间到运行时输出。",
+    "capability_domain": "time",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "get_current_time",
+      "current_time"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:get_current_time",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "variable_name": "",
+      "format": "iso",
+      "timezone": "utc"
+    },
+    "parameter_schema": {
+      "variable_name": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "text",
+        "path_kind": null
+      },
+      "format": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "text",
+        "path_kind": null
+      },
+      "timezone": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "text",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:file.read_text_file",
+    "resource_key": "file.read_text_file",
+    "display_name": "Read Text File",
+    "display_name_zh": "读取文本文件",
+    "description": "Read text file contents.",
+    "description_zh": "读取文本文件内容。",
+    "capability_domain": "file",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "read_text_file"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:read_text_file",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:text",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.text"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "encoding": "utf-8"
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "open_file"
+      },
+      "encoding": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "text",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:file.write_text_file",
+    "resource_key": "file.write_text_file",
+    "display_name": "Write Text File",
+    "display_name_zh": "写入文本文件",
+    "description": "Write text file contents.",
+    "description_zh": "写入文本文件内容。",
+    "capability_domain": "file",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "write_text_file"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:write_text_file",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:content",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.content"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "encoding": "utf-8",
+      "content": ""
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "save_file"
+      },
+      "encoding": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "text",
+        "path_kind": null
+      },
+      "content": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "textarea",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:file.read_csv_cell",
+    "resource_key": "file.read_csv_cell",
+    "display_name": "Read CSV Cell",
+    "display_name_zh": "读取 CSV 单元格",
+    "description": "Read CSV cell value.",
+    "description_zh": "读取 CSV 单元格值。",
+    "capability_domain": "file",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "read_csv_cell"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:read_csv_cell",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "encoding": "utf-8",
+      "has_header": true,
+      "row_index": 0,
+      "column": null,
+      "variable_name": ""
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "open_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:file.read_csv_row",
+    "resource_key": "file.read_csv_row",
+    "display_name": "Read CSV Row",
+    "display_name_zh": "读取 CSV 行",
+    "description": "Read CSV row values.",
+    "description_zh": "读取 CSV 行数据。",
+    "capability_domain": "file",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "read_csv_row"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:read_csv_row",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:row",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.row"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "encoding": "utf-8",
+      "has_header": true,
+      "row_index": 0,
+      "variable_name": ""
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "open_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:file.read_csv_table",
+    "resource_key": "file.read_csv_table",
+    "display_name": "Read CSV Table",
+    "display_name_zh": "读取 CSV 表",
+    "description": "Read CSV table values.",
+    "description_zh": "读取 CSV 表数据。",
+    "capability_domain": "file",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "read_csv_table"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:read_csv_table",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:rows",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.rows"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "encoding": "utf-8",
+      "has_header": true,
+      "variable_name": ""
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "open_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:excel.read_cell",
+    "resource_key": "excel.read_cell",
+    "display_name": "Read Excel Cell",
+    "display_name_zh": "读取 Excel 单元格",
+    "description": "Read Excel cell value.",
+    "description_zh": "读取 Excel 单元格值。",
+    "capability_domain": "excel",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "read_excel_cell"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:read_excel_cell",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "sheet_name": "Sheet1",
+      "cell": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "open_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:excel.read_row",
+    "resource_key": "excel.read_row",
+    "display_name": "Read Excel Row",
+    "display_name_zh": "读取 Excel 行",
+    "description": "Read Excel row values.",
+    "description_zh": "读取 Excel 行数据。",
+    "capability_domain": "excel",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "read_excel_row"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:read_excel_row",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:row",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.row"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "sheet_name": "Sheet1",
+      "row_index": 1,
+      "variable_name": ""
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "open_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:excel.read_table",
+    "resource_key": "excel.read_table",
+    "display_name": "Read Excel Table",
+    "display_name_zh": "读取 Excel 表",
+    "description": "Read Excel table values.",
+    "description_zh": "读取 Excel 表数据。",
+    "capability_domain": "excel",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "read_excel_table"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:read_excel_table",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:rows",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.rows"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "sheet_name": "Sheet1",
+      "has_header": true,
+      "variable_name": ""
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "open_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:excel.write_cell",
+    "resource_key": "excel.write_cell",
+    "display_name": "Write Excel Cell",
+    "display_name_zh": "写入 Excel 单元格",
+    "description": "Write Excel cell value.",
+    "description_zh": "写入 Excel 单元格的值。",
+    "capability_domain": "excel",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "write_excel_cell"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:write_excel_cell",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "sheet_name": "Sheet1",
+      "cell": "",
+      "value": null
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "open_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:excel.write_row",
+    "resource_key": "excel.write_row",
+    "display_name": "Write Excel Row",
+    "display_name_zh": "写入 Excel 行",
+    "description": "Write Excel row values.",
+    "description_zh": "写入 Excel 行数据。",
+    "capability_domain": "excel",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "write_excel_row"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:write_excel_row",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:data",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.data"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "sheet_name": "Sheet1",
+      "row_index": 1,
+      "data": []
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "open_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:excel.write_table",
+    "resource_key": "excel.write_table",
+    "display_name": "Write Excel Table",
+    "display_name_zh": "写入 Excel 表",
+    "description": "Write Excel table values.",
+    "description_zh": "写入 Excel 表数据。",
+    "capability_domain": "excel",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "write_excel_table"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:write_excel_table",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:data",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.data"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "sheet_name": "Sheet1",
+      "data": [],
+      "has_header": true
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "open_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:excel.write_file",
+    "resource_key": "excel.write_file",
+    "display_name": "Write Excel File",
+    "display_name_zh": "写入 Excel 文件",
+    "description": "Create or append Excel file.",
+    "description_zh": "创建或追加 Excel 文件。",
+    "capability_domain": "excel",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "write_excel_file"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:write_excel_file",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "sheet_name": "Sheet1",
+      "rows": []
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "save_file"
+      },
+      "sheet_name": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "text",
+        "path_kind": null
+      },
+      "rows": {
+        "type": "array",
+        "required": false,
+        "editor_kind": "array",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:excel.update_cells",
+    "resource_key": "excel.update_cells",
+    "display_name": "Update Excel Cells",
+    "display_name_zh": "更新 Excel 单元格",
+    "description": "Update multiple Excel cells.",
+    "description_zh": "更新多个 Excel 单元格。",
+    "capability_domain": "excel",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "update_excel_cells"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:update_excel_cells",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "sheet_name": "Sheet1",
+      "updates": []
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "open_file"
+      },
+      "sheet_name": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "text",
+        "path_kind": null
+      },
+      "updates": {
+        "type": "array",
+        "required": false,
+        "editor_kind": "array",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:excel.update_batch",
+    "resource_key": "excel.update_batch",
+    "display_name": "Update Excel Batch",
+    "display_name_zh": "批量更新 Excel",
+    "description": "Batch update Excel rows by condition.",
+    "description_zh": "按条件批量更新 Excel 行。",
+    "capability_domain": "excel",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "update_excel_batch"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:update_excel_batch",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "sheet_name": "Sheet1",
+      "condition": "",
+      "updates": {}
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "open_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.extract_web_table",
+    "resource_key": "browser.extract_web_table",
+    "display_name": "Extract Web Table",
+    "display_name_zh": "提取网页表格",
+    "description": "Extract HTML table from current browser page.",
+    "description_zh": "从当前浏览器页面提取 HTML 表格。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "extract_web_table"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:extract_web_table",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:rows",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.rows"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "selector",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "variable_name",
+        "type": "string",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:browser.extract_web_table_to_excel",
+    "resource_key": "browser.extract_web_table_to_excel",
+    "display_name": "Extract Web Table To Excel",
+    "display_name_zh": "提取网页表格到 Excel",
+    "description": "Extract HTML table from browser page and write it to Excel.",
+    "description_zh": "从浏览器页面提取 HTML 表格并写入 Excel。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "builtin_custom_component",
+    "compatibility_aliases": [
+      "extract_web_table_to_excel"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:extract_web_table_to_excel",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "path": "",
+      "sheet_name": "Sheet1"
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "selector",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "path",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "sheet_name",
+        "type": "string",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:browser.inject_js",
+    "resource_key": "browser.inject_js",
+    "display_name": "Inject JS",
+    "display_name_zh": "注入 JS",
+    "description": "Execute JavaScript in current browser context without storing result.",
+    "description_zh": "在当前浏览器上下文执行 JavaScript 且不存储结果。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "inject_js"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:inject_js",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:script",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.script"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "script": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "script",
+        "type": "code",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:browser.run_js",
+    "resource_key": "browser.run_js",
+    "display_name": "Run JS",
+    "display_name_zh": "运行 JS",
+    "description": "Execute JavaScript in current browser context and store result.",
+    "description_zh": "在当前浏览器上下文执行 JavaScript 并存储结果。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "run_js"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:run_js",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:script",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.script"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "script": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "script",
+        "type": "code",
+        "options": []
+      },
+      {
+        "key": "variable_name",
+        "type": "string",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:browser.get_local_storage",
+    "resource_key": "browser.get_local_storage",
+    "display_name": "Get Local Storage",
+    "display_name_zh": "读取本地存储",
+    "description": "Read a localStorage item from current browser context and store the result.",
+    "description_zh": "从当前浏览器上下文读取 localStorage 项并存储结果。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "get_local_storage",
+      "read_local_storage"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:get_local_storage",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:key",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.key"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "key": "",
+      "variable_name": "",
+      "default_value": null
+    },
+    "parameter_schema": {
+      "key": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "text",
+        "path_kind": null
+      },
+      "variable_name": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "text",
+        "path_kind": null
+      },
+      "default_value": {
+        "type": "any",
+        "required": false,
+        "editor_kind": "json",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.wait_for_text",
+    "resource_key": "browser.wait_for_text",
+    "display_name": "Wait For Text",
+    "display_name_zh": "等待文本",
+    "description": "Wait until an element text matches the expected value.",
+    "description_zh": "等待元素文本匹配预期值。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "wait_for_text"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:wait_for_text",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "in:text",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.text"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "text": "",
+      "match_mode": "contains",
+      "timeout": 10000
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.wait_for_attribute",
+    "resource_key": "browser.wait_for_attribute",
+    "display_name": "Wait For Attribute",
+    "display_name_zh": "等待属性",
+    "description": "Wait until an element attribute matches the expected value.",
+    "description_zh": "等待元素属性匹配预期值。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "wait_for_attribute"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:wait_for_attribute",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "in:attribute",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.attribute"
+      },
+      {
+        "port_id": "in:value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "attribute": "",
+      "value": "",
+      "match_mode": "equals",
+      "timeout": 10000
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.wait_for_value",
+    "resource_key": "browser.wait_for_value",
+    "display_name": "Wait For Value",
+    "display_name_zh": "等待值",
+    "description": "Wait until an input or element value matches the expected value.",
+    "description_zh": "等待输入框或元素值匹配预期值。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "wait_for_value"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:wait_for_value",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "in:value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "value": "",
+      "match_mode": "equals",
+      "timeout": 10000
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.wait_for_request",
+    "resource_key": "browser.wait_for_request",
+    "display_name": "Wait For Request",
+    "display_name_zh": "等待请求",
+    "description": "Wait until a browser request matching the filter is observed.",
+    "description_zh": "等待观察到匹配条件的浏览器请求。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "wait_for_request"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:wait_for_request",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "url_pattern": "",
+      "method": "",
+      "timeout": 10000
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.wait_for_response",
+    "resource_key": "browser.wait_for_response",
+    "display_name": "Wait For Response",
+    "display_name_zh": "等待响应",
+    "description": "Wait until a browser response matching the filter is observed.",
+    "description_zh": "等待观察到匹配条件的浏览器响应。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "wait_for_response"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:wait_for_response",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "url_pattern": "",
+      "status_code": null,
+      "timeout": 10000
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.wait_for_popup",
+    "resource_key": "browser.wait_for_popup",
+    "display_name": "Wait For Popup",
+    "display_name_zh": "等待弹窗",
+    "description": "Wait until a popup or new page is opened.",
+    "description_zh": "等待弹出窗口或新页面打开。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "wait_for_popup"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:wait_for_popup",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "timeout": 10000,
+      "activate": true,
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.get_cookie",
+    "resource_key": "browser.get_cookie",
+    "display_name": "Get Cookie",
+    "display_name_zh": "读取 Cookie",
+    "description": "Read a cookie from the current browser context.",
+    "description_zh": "从当前浏览器上下文读取 Cookie。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "get_cookie"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:get_cookie",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:name",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.name"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "name": "",
+      "url": "",
+      "domain": "",
+      "variable_name": "",
+      "default_value": null
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.set_cookie",
+    "resource_key": "browser.set_cookie",
+    "display_name": "Set Cookie",
+    "display_name_zh": "写入 Cookie",
+    "description": "Set a cookie into the current browser context.",
+    "description_zh": "向当前浏览器上下文写入 Cookie。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "set_cookie"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:set_cookie",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "name": "",
+      "value": "",
+      "url": "",
+      "domain": "",
+      "path": "/",
+      "http_only": false,
+      "secure": false,
+      "same_site": "Lax",
+      "expires": null
+    },
+    "parameter_schema": {
+      "same_site": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "select",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.delete_cookie",
+    "resource_key": "browser.delete_cookie",
+    "display_name": "Delete Cookie",
+    "display_name_zh": "删除 Cookie",
+    "description": "Delete cookies from the current browser context by name or filter.",
+    "description_zh": "按名称或过滤条件删除当前浏览器上下文中的 Cookie。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "delete_cookie"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:delete_cookie",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "name": "",
+      "url": "",
+      "domain": "",
+      "path": "/"
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.list_cookies",
+    "resource_key": "browser.list_cookies",
+    "display_name": "List Cookies",
+    "display_name_zh": "列出 Cookie",
+    "description": "List cookies from the current browser context.",
+    "description_zh": "列出当前浏览器上下文中的 Cookie。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "list_cookies"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:list_cookies",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "url": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.set_local_storage",
+    "resource_key": "browser.set_local_storage",
+    "display_name": "Set Local Storage",
+    "display_name_zh": "写入本地存储",
+    "description": "Set a localStorage item in the current browser context.",
+    "description_zh": "在当前浏览器上下文写入 localStorage 项。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "set_local_storage"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:set_local_storage",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:key",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.key"
+      },
+      {
+        "port_id": "in:value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "key": "",
+      "value": null
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.remove_local_storage",
+    "resource_key": "browser.remove_local_storage",
+    "display_name": "Remove Local Storage",
+    "display_name_zh": "删除本地存储",
+    "description": "Remove a localStorage item from the current browser context.",
+    "description_zh": "从当前浏览器上下文删除 localStorage 项。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "remove_local_storage"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:remove_local_storage",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:key",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.key"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "key": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.clear_local_storage",
+    "resource_key": "browser.clear_local_storage",
+    "display_name": "Clear Local Storage",
+    "display_name_zh": "清空本地存储",
+    "description": "Clear localStorage in the current browser context.",
+    "description_zh": "清空当前浏览器上下文中的 localStorage。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "clear_local_storage"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:clear_local_storage",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {},
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.get_session_storage",
+    "resource_key": "browser.get_session_storage",
+    "display_name": "Get Session Storage",
+    "display_name_zh": "读取会话存储",
+    "description": "Read a sessionStorage item from the current browser context.",
+    "description_zh": "从当前浏览器上下文读取 sessionStorage 项。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "get_session_storage"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:get_session_storage",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:key",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.key"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "key": "",
+      "variable_name": "",
+      "default_value": null
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.set_session_storage",
+    "resource_key": "browser.set_session_storage",
+    "display_name": "Set Session Storage",
+    "display_name_zh": "写入会话存储",
+    "description": "Set a sessionStorage item in the current browser context.",
+    "description_zh": "在当前浏览器上下文写入 sessionStorage 项。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "set_session_storage"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:set_session_storage",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:key",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.key"
+      },
+      {
+        "port_id": "in:value",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.value"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "key": "",
+      "value": null
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.press_key",
+    "resource_key": "browser.press_key",
+    "display_name": "Press Key",
+    "display_name_zh": "按键",
+    "description": "Press a keyboard key on the current page or target element.",
+    "description_zh": "在当前页面或目标元素上按下键盘按键。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "press_key"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:press_key",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "key": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.keyboard_type",
+    "resource_key": "browser.keyboard_type",
+    "display_name": "Keyboard Type",
+    "display_name_zh": "键盘输入",
+    "description": "Type text using the browser keyboard.",
+    "description_zh": "使用浏览器键盘输入文本。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "keyboard_type"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:keyboard_type",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:text",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.text"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "text": "",
+      "delay_ms": 0
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.hotkey",
+    "resource_key": "browser.hotkey",
+    "display_name": "Hotkey",
+    "display_name_zh": "快捷键",
+    "description": "Trigger a keyboard shortcut on the current page or target element.",
+    "description_zh": "在当前页面或目标元素上触发快捷键。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "hotkey"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:hotkey",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "combo": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.scroll_to_element",
+    "resource_key": "browser.scroll_to_element",
+    "display_name": "Scroll To Element",
+    "display_name_zh": "滚动到元素",
+    "description": "Scroll the page until the target element is in view.",
+    "description_zh": "滚动页面直到目标元素进入视野。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "scroll_to_element"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:scroll_to_element",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "block": "center",
+      "inline": "nearest"
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.scroll_page",
+    "resource_key": "browser.scroll_page",
+    "display_name": "Scroll Page",
+    "display_name_zh": "滚动页面",
+    "description": "Scroll the current page by offset or absolute position.",
+    "description_zh": "按偏移量或绝对位置滚动当前页面。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "scroll_page"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:scroll_page",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "x": 0,
+      "y": 0,
+      "mode": "by"
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.drag_and_drop",
+    "resource_key": "browser.drag_and_drop",
+    "display_name": "Drag And Drop",
+    "display_name_zh": "拖放",
+    "description": "Drag an element and drop it onto another element.",
+    "description_zh": "拖动元素并将其放到另一个元素上。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "drag_and_drop"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:drag_and_drop",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:source_selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.source_selector"
+      },
+      {
+        "port_id": "in:target_selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.target_selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "source_selector": "",
+      "target_selector": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.element_screenshot",
+    "resource_key": "browser.element_screenshot",
+    "display_name": "Element Screenshot",
+    "display_name_zh": "元素截图",
+    "description": "Capture a screenshot of a target element.",
+    "description_zh": "截取目标元素的截图。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "element_screenshot"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:element_screenshot",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "path": ""
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "save_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.open_tab",
+    "resource_key": "browser.open_tab",
+    "display_name": "Open Tab",
+    "display_name_zh": "打开标签页",
+    "description": "Open a new browser tab.",
+    "description_zh": "打开新的浏览器标签页。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "open_tab"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:open_tab",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:url",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.url"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "url": "",
+      "label": "",
+      "activate": true
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.switch_tab",
+    "resource_key": "browser.switch_tab",
+    "display_name": "Switch Tab",
+    "display_name_zh": "切换标签页",
+    "description": "Switch to another browser tab.",
+    "description_zh": "切换到另一个浏览器标签页。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "switch_tab"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:switch_tab",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "index": null,
+      "label": "",
+      "url_pattern": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.close_tab",
+    "resource_key": "browser.close_tab",
+    "display_name": "Close Tab",
+    "display_name_zh": "关闭标签页",
+    "description": "Close a browser tab.",
+    "description_zh": "关闭浏览器标签页。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "close_tab"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:close_tab",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "index": null,
+      "label": "",
+      "current": false
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.exists",
+    "resource_key": "browser.exists",
+    "display_name": "Exists",
+    "display_name_zh": "元素存在",
+    "description": "Check whether a selector exists on the current page.",
+    "description_zh": "检查当前页面上是否存在指定选择器。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "exists"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:exists",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.is_visible",
+    "resource_key": "browser.is_visible",
+    "display_name": "Is Visible",
+    "display_name_zh": "元素可见",
+    "description": "Check whether a selector is visible on the current page.",
+    "description_zh": "检查当前页面上指定选择器是否可见。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "is_visible"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:is_visible",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.is_enabled",
+    "resource_key": "browser.is_enabled",
+    "display_name": "Is Enabled",
+    "display_name_zh": "元素可用",
+    "description": "Check whether a selector is enabled on the current page.",
+    "description_zh": "检查当前页面上指定选择器是否可用。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "is_enabled"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:is_enabled",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.is_checked",
+    "resource_key": "browser.is_checked",
+    "display_name": "Is Checked",
+    "display_name_zh": "元素已勾选",
+    "description": "Check whether a selector is checked on the current page.",
+    "description_zh": "检查当前页面上指定选择器是否已勾选。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "is_checked"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:is_checked",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.get_html",
+    "resource_key": "browser.get_html",
+    "display_name": "Get HTML",
+    "display_name_zh": "读取 HTML",
+    "description": "Read the outer HTML of a target element.",
+    "description_zh": "读取目标元素的 outer HTML。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "get_html"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:get_html",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.get_inner_html",
+    "resource_key": "browser.get_inner_html",
+    "display_name": "Get Inner HTML",
+    "display_name_zh": "读取内部 HTML",
+    "description": "Read the inner HTML of a target element.",
+    "description_zh": "读取目标元素的 inner HTML。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "get_inner_html"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:get_inner_html",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.download_file",
+    "resource_key": "browser.download_file",
+    "display_name": "Download File",
+    "display_name_zh": "下载文件",
+    "description": "Download a file from a URL to a target path.",
+    "description_zh": "将 URL 指向的文件下载到目标路径。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "download_file"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:download_file",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "in:url",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.url"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "url": "",
+      "path": ""
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "path",
+        "path_kind": "save_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.wait_for_download",
+    "resource_key": "browser.wait_for_download",
+    "display_name": "Wait For Download",
+    "display_name_zh": "等待下载",
+    "description": "Wait until a browser download is captured.",
+    "description_zh": "等待捕获到浏览器下载。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "wait_for_download"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:wait_for_download",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "path": "",
+      "timeout": 10000,
+      "variable_name": ""
+    },
+    "parameter_schema": {
+      "path": {
+        "type": "string",
+        "required": false,
+        "editor_kind": "path",
+        "path_kind": "save_file"
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.set_user_agent",
+    "resource_key": "browser.set_user_agent",
+    "display_name": "Set User Agent",
+    "display_name_zh": "设置 User-Agent",
+    "description": "Configure the browser user agent for subsequent pages.",
+    "description_zh": "为后续页面配置浏览器 User-Agent。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "set_user_agent"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:set_user_agent",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "user_agent": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.set_extra_headers",
+    "resource_key": "browser.set_extra_headers",
+    "display_name": "Set Extra Headers",
+    "display_name_zh": "设置额外请求头",
+    "description": "Configure extra HTTP headers for subsequent browser requests.",
+    "description_zh": "为后续浏览器请求配置额外 HTTP 请求头。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "set_extra_headers"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:set_extra_headers",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "headers": {}
+    },
+    "parameter_schema": {
+      "headers": {
+        "type": "object",
+        "required": true,
+        "editor_kind": "object",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:browser.wait_for_url_change",
+    "resource_key": "browser.wait_for_url_change",
+    "display_name": "Wait For URL Change",
+    "display_name_zh": "等待 URL 变化",
+    "description": "Wait until the current page URL changes and optionally matches a pattern.",
+    "description_zh": "等待当前页面 URL 发生变化并可选匹配指定模式。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "wait_for_url_change"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:wait_for_url_change",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:value",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.value"
+      }
+    ],
+    "node_config": {
+      "from_url": "",
+      "url_pattern": "",
+      "timeout": 10000
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:python.run",
+    "resource_key": "python.run",
+    "display_name": "Run Python",
+    "display_name_zh": "运行 Python",
+    "description": "Run restricted Python script.",
+    "description_zh": "运行受限的 Python 脚本。",
+    "capability_domain": "python",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "run_python"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:python_run",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "code": ""
+    },
+    "parameter_schema": {
+      "code": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "code",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": [
+      {
+        "key": "code",
+        "type": "code",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:control.foreach",
+    "resource_key": "control.foreach",
+    "display_name": "Foreach",
+    "display_name_zh": "遍历",
+    "description": "Iterate list items.",
+    "description_zh": "遍历列表项。",
+    "capability_domain": "control",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "foreach"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "control",
+    "expansion_role": "control:foreach",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "items",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.items"
+      },
+      {
+        "port_id": "loop",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.loop"
+      },
+      {
+        "port_id": "done",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.done"
+      }
+    ],
+    "node_config": {
+      "variable": "",
+      "item_var": "item",
+      "index_var": "index"
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:control.if",
+    "resource_key": "control.if",
+    "display_name": "If",
+    "display_name_zh": "条件分支",
+    "description": "Branch control flow based on a boolean condition.",
+    "description_zh": "根据布尔条件分支控制流。",
+    "capability_domain": "control",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "if"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": false,
+    "lowered_kind": "control",
+    "expansion_role": "control:if",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "repeat",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.repeat"
+      },
+      {
+        "port_id": "condition",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.condition"
+      },
+      {
+        "port_id": "true",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.true"
+      },
+      {
+        "port_id": "false",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.false"
+      }
+    ],
+    "node_config": {
+      "expression": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:control.switch",
+    "resource_key": "control.switch",
+    "display_name": "Switch",
+    "display_name_zh": "多路分支",
+    "description": "Select a control branch by matching an input value.",
+    "description_zh": "按输入值匹配选择控制分支。",
+    "capability_domain": "control",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "switch"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": false,
+    "lowered_kind": "control",
+    "expansion_role": "control:switch",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "selector",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.selector"
+      },
+      {
+        "port_id": "case:default",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.default"
+      }
+    ],
+    "node_config": {
+      "selector": "",
+      "expression": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:control.parallel_fork",
+    "resource_key": "control.parallel_fork",
+    "display_name": "Parallel Fork",
+    "display_name_zh": "并行分叉",
+    "description": "Fan out one control token into multiple named control branches.",
+    "description_zh": "将一个控制令牌分发到多个命名控制分支。",
+    "capability_domain": "control",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "parallel_fork"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": false,
+    "lowered_kind": "control",
+    "expansion_role": "control:parallel_fork",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "branch:left",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.branch:left"
+      },
+      {
+        "port_id": "branch:right",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.branch:right"
+      }
+    ],
+    "node_config": {
+      "branches": [
+        {
+          "key": "left",
+          "label": "Left"
+        },
+        {
+          "key": "right",
+          "label": "Right"
+        }
+      ]
+    },
+    "parameter_schema": {
+      "branches": {
+        "type": "array",
+        "required": true,
+        "editor_kind": "branch_list",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": [
+      {
+        "key": "branches",
+        "type": "branch-list",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:control.join",
+    "resource_key": "control.join",
+    "display_name": "Join",
+    "display_name_zh": "并行汇合",
+    "description": "Wait for one or more incoming control branches before releasing the next step.",
+    "description_zh": "等待一个或多个输入控制分支后再释放下一步。",
+    "capability_domain": "control",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "join"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": false,
+    "lowered_kind": "control",
+    "expansion_role": "control:join",
+    "ports": [
+      {
+        "port_id": "in:left",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.branch:left"
+      },
+      {
+        "port_id": "in:right",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.branch:right"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "branches": [
+        {
+          "key": "left",
+          "label": "Left"
+        },
+        {
+          "key": "right",
+          "label": "Right"
+        }
+      ],
+      "mode": "all",
+      "quorum": null
+    },
+    "parameter_schema": {
+      "branches": {
+        "type": "array",
+        "required": true,
+        "editor_kind": "branch_list",
+        "path_kind": null
+      },
+      "mode": {
+        "type": "string",
+        "required": true,
+        "editor_kind": "select",
+        "path_kind": null
+      },
+      "quorum": {
+        "type": "integer",
+        "required": false,
+        "editor_kind": "number",
+        "path_kind": null
+      }
+    },
+    "ui_field_templates": [
+      {
+        "key": "branches",
+        "type": "branch-list",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:control.while",
+    "resource_key": "control.while",
+    "display_name": "While",
+    "display_name_zh": "条件循环",
+    "description": "Repeat a control branch while a condition remains true.",
+    "description_zh": "当条件保持为真时重复控制分支。",
+    "capability_domain": "control",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "while"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": false,
+    "lowered_kind": "control",
+    "expansion_role": "control:while",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "repeat",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.repeat"
+      },
+      {
+        "port_id": "condition",
+        "direction": "input",
+        "relation_layer": "data",
+        "semantic_slot": "in.condition"
+      },
+      {
+        "port_id": "loop",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.loop"
+      },
+      {
+        "port_id": "done",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.done"
+      }
+    ],
+    "node_config": {
+      "expression": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:control.retry",
+    "resource_key": "control.retry",
+    "display_name": "Retry",
+    "display_name_zh": "重试",
+    "description": "Retry a downstream branch until success or attempt limit exhaustion.",
+    "description_zh": "重试下游分支直到成功或尝试次数耗尽。",
+    "capability_domain": "control",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "retry"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": false,
+    "lowered_kind": "control",
+    "expansion_role": "control:retry",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "attempt",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.attempt"
+      },
+      {
+        "port_id": "exhausted",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.exhausted"
+      }
+    ],
+    "node_config": {
+      "max_attempts": 3,
+      "success_expression": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:control.failover",
+    "resource_key": "control.failover",
+    "display_name": "Failover",
+    "display_name_zh": "故障切换",
+    "description": "Switch to fallback branches when the primary path fails.",
+    "description_zh": "主路径失败时切换到备用分支。",
+    "capability_domain": "control",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "failover"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": false,
+    "lowered_kind": "control",
+    "expansion_role": "control:failover",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "primary",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.primary"
+      },
+      {
+        "port_id": "fallback:backup",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.fallback:backup"
+      },
+      {
+        "port_id": "failed",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.failed"
+      }
+    ],
+    "node_config": {
+      "fallback_expression": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:control.jump_to_step",
+    "resource_key": "control.jump_to_step",
+    "display_name": "Jump To Step",
+    "display_name_zh": "跳转步骤",
+    "description": "Jump to target step.",
+    "description_zh": "跳转到目标步骤。",
+    "capability_domain": "control",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "jump_to_step"
+    ],
+    "component_library_visible": false,
+    "compatibility_only": true,
+    "direct_runtime_executor": true,
+    "lowered_kind": "control",
+    "expansion_role": "control:jump_to_step",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "target_node_id": "",
+      "target_step": null,
+      "condition": "true",
+      "max_jumps": -1
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:control.end_foreach",
+    "resource_key": "control.end_foreach",
+    "display_name": "End Foreach",
+    "display_name_zh": "结束遍历",
+    "description": "Mark the end of a foreach loop body.",
+    "description_zh": "标记遍历循环体结束。",
+    "capability_domain": "control",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "end_foreach"
+    ],
+    "component_library_visible": false,
+    "compatibility_only": true,
+    "direct_runtime_executor": true,
+    "lowered_kind": "control",
+    "expansion_role": "control:end_foreach",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {},
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:control.foreach_continue",
+    "resource_key": "control.foreach_continue",
+    "display_name": "Foreach Continue",
+    "display_name_zh": "遍历继续",
+    "description": "Skip current foreach item when condition matches.",
+    "description_zh": "条件满足时跳过当前遍历项。",
+    "capability_domain": "control",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "foreach_continue"
+    ],
+    "component_library_visible": false,
+    "compatibility_only": true,
+    "direct_runtime_executor": true,
+    "lowered_kind": "control",
+    "expansion_role": "control:foreach_continue",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "condition": "true",
+      "level": 1
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:control.foreach_break",
+    "resource_key": "control.foreach_break",
+    "display_name": "Foreach Break",
+    "display_name_zh": "遍历中断",
+    "description": "Exit current foreach loop when condition matches.",
+    "description_zh": "条件满足时退出当前遍历循环。",
+    "capability_domain": "control",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "foreach_break"
+    ],
+    "component_library_visible": false,
+    "compatibility_only": true,
+    "direct_runtime_executor": true,
+    "lowered_kind": "control",
+    "expansion_role": "control:foreach_break",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "condition": "true",
+      "level": 1
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:graph.call_subgraph",
+    "resource_key": "graph.call_subgraph",
+    "display_name": "Call Subgraph",
+    "display_name_zh": "调用子图",
+    "description": "Call reusable subgraph resource by subgraph_id.",
+    "description_zh": "按 subgraph_id 调用可复用子图资源。",
+    "capability_domain": "graph",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "call_subgraph"
+    ],
+    "component_library_visible": false,
+    "compatibility_only": true,
+    "direct_runtime_executor": false,
+    "lowered_kind": "execution",
+    "expansion_role": "action:call_subgraph",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "subgraph_id": "",
+      "inputs": {},
+      "outputs": {}
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "subgraph_id",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "inputs",
+        "type": "object-map",
+        "options": []
+      },
+      {
+        "key": "outputs",
+        "type": "object-map",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:call_blueprint",
+    "resource_key": "call_blueprint",
+    "display_name": "Call Blueprint",
+    "display_name_zh": "调用蓝图",
+    "description": "Call reusable component graph by blueprint_id.",
+    "description_zh": "按 blueprint_id 调用可复用组件图。",
+    "capability_domain": "component",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "component.call_blueprint"
+    ],
+    "component_library_visible": false,
+    "compatibility_only": true,
+    "direct_runtime_executor": false,
+    "lowered_kind": "execution",
+    "expansion_role": "action:call_blueprint",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "blueprint_id": "",
+      "inputs": {},
+      "outputs": {}
+    },
+    "parameter_schema": {},
+    "ui_field_templates": []
+  },
+  {
+    "resource_id": "builtin:session.apply_auth_session",
+    "resource_key": "session.apply_auth_session",
+    "display_name": "Apply Auth Session",
+    "display_name_zh": "应用认证会话",
+    "description": "Apply auth artifacts into browser session.",
+    "description_zh": "将认证产物应用到浏览器会话。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "apply_auth_session"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:apply_auth_session",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "cookies": [],
+      "local_storage": {}
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "cookies",
+        "type": "json",
+        "options": []
+      },
+      {
+        "key": "local_storage",
+        "type": "object-map",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:dialog.switch_dialog_mode",
+    "resource_key": "dialog.switch_dialog_mode",
+    "display_name": "Switch Dialog Mode",
+    "display_name_zh": "切换对话框模式",
+    "description": "Switch browser dialog handling mode.",
+    "description_zh": "切换浏览器对话框处理模式。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "switch_dialog_mode"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:switch_dialog_mode",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "mode": "auto"
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "mode",
+        "type": "string",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:dialog.watch_dialogs",
+    "resource_key": "dialog.watch_dialogs",
+    "display_name": "Watch Dialogs",
+    "display_name_zh": "监听对话框",
+    "description": "Wait for and return captured browser dialog records.",
+    "description_zh": "等待并返回捕获到的浏览器对话框记录。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "watch_dialogs"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:watch_dialogs",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      },
+      {
+        "port_id": "out:dialogs",
+        "direction": "output",
+        "relation_layer": "data",
+        "semantic_slot": "out.dialogs"
+      }
+    ],
+    "node_config": {
+      "timeout": 0,
+      "variable_name": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "timeout",
+        "type": "number",
+        "options": []
+      },
+      {
+        "key": "variable_name",
+        "type": "string",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:dialog.handle_dialogs",
+    "resource_key": "dialog.handle_dialogs",
+    "display_name": "Handle Dialogs",
+    "display_name_zh": "处理对话框",
+    "description": "Handle captured browser dialogs.",
+    "description_zh": "处理捕获到的浏览器对话框。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": null,
+    "compatibility_aliases": [
+      "handle_dialogs"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:handle_dialogs",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "clear_after": false
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "clear_after",
+        "type": "boolean",
+        "options": []
+      }
+    ]
+  },
+  {
+    "resource_id": "builtin:dialog.set_agent_config",
+    "resource_key": "dialog.set_agent_config",
+    "display_name": "Set Dialog Agent Config",
+    "display_name_zh": "设置对话框代理配置",
+    "description": "Configure runtime browser dialog handling policy.",
+    "description_zh": "配置运行时浏览器对话框处理策略。",
+    "capability_domain": "browser",
+    "resource_type": "builtin_component",
+    "enabled": true,
+    "origin": "builtin",
+    "implementation_kind": "core_atomic",
+    "compatibility_aliases": [
+      "set_agent_config"
+    ],
+    "component_library_visible": true,
+    "compatibility_only": false,
+    "direct_runtime_executor": true,
+    "lowered_kind": "execution",
+    "expansion_role": "action:set_agent_config",
+    "ports": [
+      {
+        "port_id": "in",
+        "direction": "input",
+        "relation_layer": "control",
+        "semantic_slot": "in.control"
+      },
+      {
+        "port_id": "out",
+        "direction": "output",
+        "relation_layer": "control",
+        "semantic_slot": "out.control"
+      }
+    ],
+    "node_config": {
+      "default_action": "accept",
+      "prompt_text": ""
+    },
+    "parameter_schema": {},
+    "ui_field_templates": [
+      {
+        "key": "default_action",
+        "type": "string",
+        "options": []
+      },
+      {
+        "key": "prompt_text",
+        "type": "string",
+        "options": []
+      }
+    ]
+  }
+]
