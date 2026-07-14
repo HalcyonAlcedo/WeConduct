@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import yaml
 
@@ -21,6 +22,10 @@ def parse_front_matter(relative_path: str) -> tuple[dict[str, object], str]:
     front_matter = yaml.safe_load(parts[1]) or {}
     body = parts[2].strip()
     return front_matter, body
+
+
+def read_json(relative_path: str) -> object:
+    return json.loads(read_text(relative_path))
 
 
 def test_mkdocs_metadata_and_assets_baseline() -> None:
@@ -47,7 +52,40 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
     assert config["plugins"] == [{"search": {"lang": "zh"}}]
     assert config["extra_javascript"] == ["assets/javascripts/weconduct-graph.js"]
     assert config["extra_css"] == ["assets/stylesheets/weconduct-graph.css"]
-    assert config["nav"] == [{"首页": "index.md"}]
+    assert config["nav"] == [
+        {"首页": "index.md"},
+        {"WeConduct": "weconduct/index.md"},
+        {"内置节点": "weconduct/index.md"},
+        {"示例": "weconduct/index.md"},
+        {"Weave": "weave/index.md"},
+        {"故障排查": "weave/index.md"},
+        {"参考": "weconduct/reference/embedded-graphs.md"},
+    ]
+
+    docs_root = ROOT / "docs"
+    for item in config["nav"]:
+        [(label, target)] = item.items()
+        target_path = docs_root / target
+        assert target_path.exists(), f"{label} -> {target} 不存在"
+        if target != "index.md":
+            assert target.startswith(("weconduct/", "weave/")), (
+                f"{label} -> {target} 未落在 weconduct/ 或 weave/ 下"
+            )
+
+
+def test_weave_product_metadata_baseline() -> None:
+    payload = read_json("data/weave-0.5.0/product.json")
+
+    assert payload["product"] == "weave"
+    assert payload["version"] == "0.5.0"
+
+    distribution = payload["distribution"]
+    assert distribution["os"] == "windows"
+    assert distribution["arch"] == "x64"
+    assert distribution["package_type"] == "single-file-portable"
+    assert distribution["update_mode"] == "manual-exe-replacement"
+    assert distribution["entry_executable"] == "Weave.exe"
+    assert distribution["sibling_data_dirs"] == [".weave", "plugins"]
 
 
 def test_index_front_matter_and_versions() -> None:
