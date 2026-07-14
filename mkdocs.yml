@@ -62,3 +62,9 @@ extra_css:
 
 nav:
   - 首页: index.md
+  - WeConduct: weconduct/index.md
+  - 内置节点: weconduct/index.md
+  - 示例: weconduct/index.md
+  - Weave: weave/index.md
+  - 故障排查: weave/index.md
+  - 参考: weconduct/reference/embedded-graphs.md

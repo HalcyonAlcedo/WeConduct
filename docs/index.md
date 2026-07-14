@@ -4,14 +4,26 @@ version: latest
 doc_id: site:index
 ---
 
-# WeConduct 文档站
+# 文档入口
 
-当前站点正在建设中，现阶段只建立 MkDocs 与 GitHub Pages 的基础发布链路。
+本页只提供当前已建立的文档入口，不做营销展示。
 
-- 当前覆盖产品版本：`WeConduct 0.8.1`
-- 当前覆盖关联项目：`Weave 0.5.0`
-- 当前公开页面：仅首页
+## 当前覆盖版本
 
-后续章节会按实际产出逐步补充；目前不提供尚未完成章节的内容承诺或虚构目录。
+- `WeConduct 0.8.1`
+- `Weave 0.5.0`
 
-仓库地址：<https://github.com/HalcyonAlcedo/WeConduct>
+## 产品入口
+
+- [WeConduct](weconduct/index.md)：流程节点、示例、运行与调试、打包入口。
+- [Weave](weave/index.md)：工作区、会话、页面分析、网络、存储与故障排查入口。
+
+## Release 状态
+
+- WeConduct Releases：<https://github.com/HalcyonAlcedo/WeConduct/releases>
+- Weave：暂无公开 Release/分发文件。
+
+## 说明
+
+- 当前导航只指向已存在页面或同页锚点。
+- 尚未拆出的专题页，会先收敛到各产品 landing 页面，后续任务再替换为细分页面。
