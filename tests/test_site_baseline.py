@@ -83,10 +83,10 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
     assert config["nav"] == [
         {"首页": "index.md"},
         {"WeConduct": "weconduct/index.md"},
-        {"内置节点": "weconduct/index.md"},
-        {"示例": "weconduct/index.md"},
+        {"内置节点": "weconduct/components/index.md"},
+        {"示例": "weconduct/examples/index.md"},
         {"Weave": "weave/index.md"},
-        {"故障排查": "weave/index.md"},
+        {"故障排查": "weconduct/troubleshooting/index.md"},
         {"参考": "weconduct/reference/embedded-graphs.md"},
     ]
 
@@ -105,16 +105,39 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
             assert fragment in anchors, f"{label} -> {target} 缺少锚点 {fragment}"
 
 
-def test_product_section_anchor_contracts_exist() -> None:
-    expected_section_targets = {
-        "weconduct/index.md": {"embedded-nodes", "examples"},
-        "weave/index.md": {"troubleshooting"},
+def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
+    expected_pages = {
+        "docs/weconduct/components/index.md": {
+            "front_matter": {
+                "product": "weconduct",
+                "version": "0.8.1",
+                "doc_id": "weconduct:components:index",
+            },
+            "body_checks": ["126", "120", "6", "embedded-graphs.md", "聚合页", "详情页", "搜索"],
+        },
+        "docs/weconduct/examples/index.md": {
+            "front_matter": {
+                "product": "weconduct",
+                "version": "0.8.1",
+                "doc_id": "weconduct:examples:index",
+            },
+            "body_checks": ["graph-v1", "0.8.1", "smoke", "下载", "验收"],
+        },
+        "docs/weconduct/troubleshooting/index.md": {
+            "front_matter": {
+                "product": "weconduct",
+                "version": "0.8.1",
+                "doc_id": "weconduct:troubleshooting:index",
+            },
+            "body_checks": ["排查流程", "诊断", "校验", "页面加载", "Task17"],
+        },
     }
 
-    for relative_path, expected_anchors in expected_section_targets.items():
-        anchors = collect_markdown_anchors(relative_path)
-        for anchor in expected_anchors:
-            assert anchor in anchors, f"{relative_path} 缺少锚点 {anchor}"
+    for relative_path, page_contract in expected_pages.items():
+        front_matter, body = parse_front_matter(relative_path)
+        assert front_matter == page_contract["front_matter"]
+        for needle in page_contract["body_checks"]:
+            assert needle in body, f"{relative_path} 缺少关键信息 {needle!r}"
 
 
 def test_weave_product_metadata_baseline() -> None:
