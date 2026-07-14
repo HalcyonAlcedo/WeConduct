@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import re
 
 import yaml
 
@@ -26,6 +27,33 @@ def parse_front_matter(relative_path: str) -> tuple[dict[str, object], str]:
 
 def read_json(relative_path: str) -> object:
     return json.loads(read_text(relative_path))
+
+
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*(?:\{\s*#([A-Za-z0-9_-]+)\s*\})?\s*$")
+
+
+def split_nav_target(target: str) -> tuple[str, str | None]:
+    path, sep, fragment = target.partition("#")
+    return path, fragment if sep else None
+
+
+def collect_markdown_anchors(relative_path: str) -> set[str]:
+    anchors: set[str] = set()
+    for line in read_text(f"docs/{relative_path}").splitlines():
+        match = HEADING_RE.match(line)
+        if not match:
+            continue
+        title = match.group(2).strip()
+        explicit_anchor = match.group(3)
+        if explicit_anchor:
+            anchors.add(explicit_anchor)
+            continue
+        generated = title.lower().replace("`", "")
+        generated = re.sub(r"[^\w\s-]", "", generated)
+        generated = re.sub(r"\s+", "-", generated).strip("-")
+        if generated:
+            anchors.add(generated)
+    return anchors
 
 
 def test_mkdocs_metadata_and_assets_baseline() -> None:
@@ -65,12 +93,28 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
     docs_root = ROOT / "docs"
     for item in config["nav"]:
         [(label, target)] = item.items()
-        target_path = docs_root / target
+        target_file, fragment = split_nav_target(target)
+        target_path = docs_root / target_file
         assert target_path.exists(), f"{label} -> {target} 不存在"
-        if target != "index.md":
-            assert target.startswith(("weconduct/", "weave/")), (
+        if target_file != "index.md":
+            assert target_file.startswith(("weconduct/", "weave/")), (
                 f"{label} -> {target} 未落在 weconduct/ 或 weave/ 下"
             )
+        if fragment:
+            anchors = collect_markdown_anchors(target_file)
+            assert fragment in anchors, f"{label} -> {target} 缺少锚点 {fragment}"
+
+
+def test_product_section_anchor_contracts_exist() -> None:
+    expected_section_targets = {
+        "weconduct/index.md": {"embedded-nodes", "examples"},
+        "weave/index.md": {"troubleshooting"},
+    }
+
+    for relative_path, expected_anchors in expected_section_targets.items():
+        anchors = collect_markdown_anchors(relative_path)
+        for anchor in expected_anchors:
+            assert anchor in anchors, f"{relative_path} 缺少锚点 {anchor}"
 
 
 def test_weave_product_metadata_baseline() -> None:
