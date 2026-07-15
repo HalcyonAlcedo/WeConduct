@@ -122,6 +122,14 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
     assert nav_targets["节点配置"] == "weconduct/guide/node-configuration.md"
     assert nav_targets["子图与自定义组件"] == "weconduct/guide/subgraphs-and-custom-components.md"
     assert nav_targets["WebControl 转换"] == "weconduct/guide/webcontrol-conversion.md"
+    assert nav_targets["标准运行"] == "weconduct/guide/runtime.md"
+    assert nav_targets["终止运行"] == "weconduct/guide/runtime-abort.md"
+    assert nav_targets["执行历史"] == "weconduct/guide/execution-history.md"
+    assert nav_targets["启动 Debug"] == "weconduct/guide/debug-start.md"
+    assert nav_targets["Debug 控制与步进"] == "weconduct/guide/debug-controls.md"
+    assert nav_targets["断点与记录帧"] == "weconduct/guide/breakpoints-and-record-frames.md"
+    assert nav_targets["Debug 变量"] == "weconduct/guide/debug-variables.md"
+    assert nav_targets["Debug 快照"] == "weconduct/guide/debug-snapshots.md"
     assert nav_targets["资源与安全"] == "weconduct/concepts/resources-and-security.md"
     assert nav_targets["内置节点"] == "weconduct/components/index.md"
     assert nav_targets["示例"] == "weconduct/examples/index.md"
@@ -145,6 +153,38 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
 
 def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
     expected_pages = {
+        "docs/weconduct/guide/runtime.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:runtime"},
+            "body_checks": ["自动准备", "completed", "succeeded", "failed", "aborted"],
+        },
+        "docs/weconduct/guide/runtime-abort.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:runtime-abort"},
+            "body_checks": ["立即提交", "aborting", "aborted", "cancelled"],
+        },
+        "docs/weconduct/guide/execution-history.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:execution-history"},
+            "body_checks": ["session_id", "incomplete", "只读"],
+        },
+        "docs/weconduct/guide/debug-start.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:debug-start"},
+            "body_checks": ["preparing", "running", "paused", "stepping"],
+        },
+        "docs/weconduct/guide/debug-controls.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:debug-controls"},
+            "body_checks": ["继续", "暂停", "单步跳过", "单步进入", "单步跳出", "can_step_out"],
+        },
+        "docs/weconduct/guide/breakpoints-and-record-frames.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:breakpoints-record-frames"},
+            "body_checks": ["breakpoint.hit", "record_frame.hit", "frame_identity", "临时断点"],
+        },
+        "docs/weconduct/guide/debug-variables.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:debug-variables"},
+            "body_checks": ["立即提交", "暂存编辑", "历史快照只读", "Ctrl+Enter"],
+        },
+        "docs/weconduct/guide/debug-snapshots.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:debug-snapshots"},
+            "body_checks": ["manual_pause", "frame_identity", "变量快照", "只读"],
+        },
         "docs/weconduct/guide/project-management.md": {
             "front_matter": {
                 "product": "weconduct",

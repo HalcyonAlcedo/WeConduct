@@ -1,0 +1,65 @@
+{
+  "graph_model_id": "graph:docs:debug-breakpoint-record-frame",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-start",
+      "lowered_kind": "control",
+      "source_anchor_ref": "docs:debug:start",
+      "expansion_role": "flow:start",
+      "display_name": "开始",
+      "node_kind": "flow.start",
+      "position": {"x": 40, "y": 120},
+      "ports": [
+        {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        {"port_id": "out:variables", "direction": "output", "relation_layer": "data", "semantic_slot": "out.variables"}
+      ],
+      "node_config": {"initial_variables": {"counter": 0}, "browser_config": {"headless": true, "slow_mo_ms": 0}}
+    },
+    {
+      "node_id": "node-set-counter",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:debug:set-counter",
+      "expansion_role": "action:set_variable",
+      "display_name": "写入计数",
+      "node_kind": "data.set_variable",
+      "position": {"x": 330, "y": 120},
+      "ports": [
+        {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+        {"port_id": "in:value", "direction": "input", "relation_layer": "data", "semantic_slot": "in.value"},
+        {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"}
+      ],
+      "node_config": {
+        "name": "counter",
+        "value": 1,
+        "debugger": {
+          "breakpoint": {"enabled": true, "pause_timing": "before", "hit_count": 0, "once": false}
+        }
+      }
+    },
+    {
+      "node_id": "node-read-counter",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:debug:read-counter",
+      "expansion_role": "action:get_variable",
+      "display_name": "读取计数",
+      "node_kind": "data.get_variable",
+      "position": {"x": 620, "y": 120},
+      "ports": [
+        {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+        {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+        {"port_id": "out:value", "direction": "output", "relation_layer": "data", "semantic_slot": "out.value"}
+      ],
+      "node_config": {"name": "counter", "debugger": {"record_frame": {"enabled": true}}}
+    }
+  ],
+  "edges": [
+    {"edge_id": "edge-start-set", "relation_layer": "control", "from_node_id": "node-start", "to_node_id": "node-set-counter", "from_port_id": "out", "to_port_id": "in"},
+    {"edge_id": "edge-set-read", "relation_layer": "control", "from_node_id": "node-set-counter", "to_node_id": "node-read-counter", "from_port_id": "out", "to_port_id": "in"}
+  ],
+  "viewport": {"x": 0, "y": 0, "zoom": 1},
+  "root_metadata": {"graph_compatibility": {"graph_data_version": "0.6.2", "built_with_app_version": "0.8.1", "minimum_loader_app_version": "0.5.2", "last_upgraded_by_app_version": "0.8.1", "upgrade_history": []}},
+  "graph_effective_diagnostic_anchor_refs": []
+}

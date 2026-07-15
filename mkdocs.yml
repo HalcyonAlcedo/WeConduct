@@ -84,6 +84,15 @@ nav:
           - 节点配置: weconduct/guide/node-configuration.md
           - 子图与自定义组件: weconduct/guide/subgraphs-and-custom-components.md
           - WebControl 转换: weconduct/guide/webcontrol-conversion.md
+      - 运行与 Debug:
+          - 标准运行: weconduct/guide/runtime.md
+          - 终止运行: weconduct/guide/runtime-abort.md
+          - 执行历史: weconduct/guide/execution-history.md
+          - 启动 Debug: weconduct/guide/debug-start.md
+          - Debug 控制与步进: weconduct/guide/debug-controls.md
+          - 断点与记录帧: weconduct/guide/breakpoints-and-record-frames.md
+          - Debug 变量: weconduct/guide/debug-variables.md
+          - Debug 快照: weconduct/guide/debug-snapshots.md
   - 内置节点: weconduct/components/index.md
   - 示例: weconduct/examples/index.md
   - Weave: weave/index.md
