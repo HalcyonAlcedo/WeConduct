@@ -35,6 +35,23 @@ EXPECTED_HIDDEN_KEYS = {
     "graph.call_subgraph",
     "call_blueprint",
 }
+SOURCE_ROOT_MARKERS = (
+    "pyproject.toml",
+    "ui/package.json",
+    "ui/src/config/fieldTemplates.ts",
+    "src/weconduct/builtin_components/registry.py",
+    "src/weconduct/builtin_components/node_drafts.py",
+    "src/weconduct/contracts/graph.py",
+    "src/weconduct/runtime/engine.py",
+)
+
+
+def is_weconduct_source_root(path: Path) -> bool:
+    return all((path / marker).is_file() for marker in SOURCE_ROOT_MARKERS)
+
+
+def test_docs_checkout_is_not_a_weconduct_source_root() -> None:
+    assert not is_weconduct_source_root(ROOT)
 
 
 @pytest.fixture(scope="session")
@@ -46,7 +63,7 @@ def source_root() -> Path | None:
     candidates.append(ROOT.parent / "WeConduct")
     for candidate in candidates:
         resolved = candidate.resolve()
-        if resolved.exists():
+        if is_weconduct_source_root(resolved):
             return resolved
     return None
 
