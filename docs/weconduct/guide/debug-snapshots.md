@@ -18,7 +18,7 @@ doc_id: weconduct:guide:debug-snapshots
 
 ## 追溯
 
-同一节点在循环或组件中可多次命中。使用 session ID、事件索引、命中序号和 `frame_identity` 定位具体一次执行；不要只看节点名。
+同一节点在循环或组件中可多次命中。结构化界面可直接查看 `event_index`、`frame_identity`、`event_id` 和 `keyframe_id`；断点或记录帧的 `breakpoint_ordinal`、`record_frame_ordinal` 命中序号需要展开原始 JSON。追溯时不要只看节点名。
 
 手动暂停的 `reason` 为 `manual_pause`。记录帧的 `pause_requested` 为 `false`。选择历史会话或历史投影后，变量和快照均只读。
 

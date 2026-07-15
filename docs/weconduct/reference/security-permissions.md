@@ -22,7 +22,7 @@ doc_id: weconduct:reference:security-permissions
 
 ## 文件范围
 
-开启文件访问后，默认 `restricted`。允许根来自显式配置、项目/工作区目录和存在时的用户 Documents/Downloads；阻止目录和扩展名规则优先。`allow_all` 会跳过允许根限制，但仍不应绕过阻止规则。
+开启文件访问后，默认 `restricted`。允许根来自项目目录、工作区目录、状态目录、用户 `Downloads` 和 `custom_roots`；0.8.1 不会自动把用户 `Documents` 加入允许根。阻止目录和扩展名规则优先。`allow_all` 会跳过允许根限制，但仍不应绕过阻止规则。
 
 ## 包权限提示
 
