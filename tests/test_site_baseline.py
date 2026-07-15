@@ -139,10 +139,10 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
     assert nav_targets["安全权限"] == "weconduct/reference/security-permissions.md"
     assert nav_targets["资源与安全"] == "weconduct/concepts/resources-and-security.md"
     assert nav_targets["节点总览"] == "weconduct/components/index.md"
-    assert nav_targets["示例"] == "weconduct/examples/index.md"
-    assert nav_targets["Weave"] == "weave/index.md"
-    assert nav_targets["故障排查"] == "weconduct/troubleshooting/index.md"
-    assert nav_targets["参考"] == "weconduct/reference/embedded-graphs.md"
+    assert nav_targets["示例总览"] == "weconduct/examples/index.md"
+    assert nav_targets["Weave 总览"] == "weave/index.md"
+    assert nav_targets["排障总览"] == "weconduct/troubleshooting/index.md"
+    assert nav_targets["内嵌节点图"] == "weconduct/reference/embedded-graphs.md"
 
     group_catalog = read_json("data/weconduct-0.8.1/component-groups.json")
     nav_target_values = set(nav_targets.values())
@@ -341,7 +341,7 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
                 "version": "0.8.1",
                 "doc_id": "weconduct:examples:index",
             },
-            "body_checks": ["graph-v1", "0.8.1", "smoke", "下载", "验收"],
+            "body_checks": ["graph-v1", "0.8.1", "ZIP", "下载", "目录项目"],
         },
         "docs/weconduct/troubleshooting/index.md": {
             "front_matter": {
@@ -349,7 +349,7 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
                 "version": "0.8.1",
                 "doc_id": "weconduct:troubleshooting:index",
             },
-            "body_checks": ["排查流程", "诊断", "校验", "页面加载"],
+            "body_checks": ["通用排查顺序", "诊断", "校验", "会话 ID"],
         },
     }
 

@@ -162,5 +162,19 @@ nav:
           - 插件: weave/guide/plugins.md
       - 与 WeConduct 配合: weave/workflows/use-with-weconduct.md
       - Weave 故障排查: weave/troubleshooting/index.md
-  - 故障排查: weconduct/troubleshooting/index.md
-  - 参考: weconduct/reference/embedded-graphs.md
+      - 已知限制: weave/reference/known-limitations-0.5.0.md
+  - 故障排查:
+      - 排障总览: weconduct/troubleshooting/index.md
+      - 项目与启动: weconduct/troubleshooting/project-and-startup.md
+      - 图校验与编译: weconduct/troubleshooting/graph-validation.md
+      - 运行与 Debug: weconduct/troubleshooting/runtime-and-debug.md
+      - 浏览器与网络: weconduct/troubleshooting/browser-and-network.md
+      - 文件、Python 与包: weconduct/troubleshooting/files-python-and-packages.md
+  - 参考:
+      - 内嵌节点图: weconduct/reference/embedded-graphs.md
+      - 键盘快捷键: weconduct/reference/keyboard-shortcuts.md
+      - 项目格式: weconduct/reference/project-format.md
+      - 变量语法: weconduct/reference/variable-syntax.md
+      - 安全权限: weconduct/reference/security-permissions.md
+      - 术语表: weconduct/reference/glossary.md
+      - 0.8.1 已知限制: weconduct/reference/known-limitations-0.8.1.md

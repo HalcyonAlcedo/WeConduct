@@ -1,0 +1,12 @@
+{
+  "product": "weconduct",
+  "current": "0.8.1",
+  "switcher_enabled": false,
+  "versions": [
+    {
+      "version": "0.8.1",
+      "path": "/weconduct/",
+      "latest": true
+    }
+  ]
+}

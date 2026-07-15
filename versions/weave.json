@@ -1,0 +1,12 @@
+{
+  "product": "weave",
+  "current": "0.5.0",
+  "switcher_enabled": false,
+  "versions": [
+    {
+      "version": "0.5.0",
+      "path": "/weave/",
+      "latest": true
+    }
+  ]
+}
