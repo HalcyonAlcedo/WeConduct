@@ -130,6 +130,13 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
     assert nav_targets["断点与记录帧"] == "weconduct/guide/breakpoints-and-record-frames.md"
     assert nav_targets["Debug 变量"] == "weconduct/guide/debug-variables.md"
     assert nav_targets["Debug 快照"] == "weconduct/guide/debug-snapshots.md"
+    assert nav_targets["程序设置"] == "weconduct/guide/program-settings.md"
+    assert nav_targets["项目设置"] == "weconduct/guide/project-settings.md"
+    assert nav_targets["Python 运行时"] == "weconduct/guide/python-runtime.md"
+    assert nav_targets["资源管理"] == "weconduct/guide/resource-management.md"
+    assert nav_targets["构建 .wcrun"] == "weconduct/guide/wcrun-packaging.md"
+    assert nav_targets["加载 .wcrun"] == "weconduct/guide/wcrun-loading.md"
+    assert nav_targets["安全权限"] == "weconduct/reference/security-permissions.md"
     assert nav_targets["资源与安全"] == "weconduct/concepts/resources-and-security.md"
     assert nav_targets["内置节点"] == "weconduct/components/index.md"
     assert nav_targets["示例"] == "weconduct/examples/index.md"
@@ -153,6 +160,34 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
 
 def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
     expected_pages = {
+        "docs/weconduct/guide/program-settings.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:program-settings"},
+            "body_checks": ["default_window_size", "allow_file_access", "variable_apply_mode", "restart_required"],
+        },
+        "docs/weconduct/guide/project-settings.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:project-settings"},
+            "body_checks": ["history_retention_limit", "default_output_name", "runtime_enabled", ".wcrun"],
+        },
+        "docs/weconduct/guide/python-runtime.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:python-runtime"},
+            "body_checks": ["bundled", "requirements_txt", "wheelhouse_rebuild", "健康检查", "重建", "清理", "导出"],
+        },
+        "docs/weconduct/guide/resource-management.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:resource-management"},
+            "body_checks": ["嵌入资源", "外部资源", "custom_node_graph", "导入", "导出"],
+        },
+        "docs/weconduct/guide/wcrun-packaging.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:wcrun-packaging"},
+            "body_checks": ["saved_project_only", "预检", "package_embed_mode", "校验和"],
+        },
+        "docs/weconduct/guide/wcrun-loading.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:wcrun-loading"},
+            "body_checks": ["检查", "加载", "卸载", "外部绑定", "一键修改并放行权限"],
+        },
+        "docs/weconduct/reference/security-permissions.md": {
+            "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:reference:security-permissions"},
+            "body_checks": ["allow_file_access", "restricted", "Documents", "Downloads", "一键放行"],
+        },
         "docs/weconduct/guide/runtime.md": {
             "front_matter": {"product": "weconduct", "version": "0.8.1", "doc_id": "weconduct:guide:runtime"},
             "body_checks": ["自动准备", "completed", "succeeded", "failed", "aborted"],

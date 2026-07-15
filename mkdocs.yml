@@ -93,6 +93,14 @@ nav:
           - 断点与记录帧: weconduct/guide/breakpoints-and-record-frames.md
           - Debug 变量: weconduct/guide/debug-variables.md
           - Debug 快照: weconduct/guide/debug-snapshots.md
+      - 配置、资源与打包:
+          - 程序设置: weconduct/guide/program-settings.md
+          - 项目设置: weconduct/guide/project-settings.md
+          - Python 运行时: weconduct/guide/python-runtime.md
+          - 资源管理: weconduct/guide/resource-management.md
+          - 构建 .wcrun: weconduct/guide/wcrun-packaging.md
+          - 加载 .wcrun: weconduct/guide/wcrun-loading.md
+          - 安全权限: weconduct/reference/security-permissions.md
   - 内置节点: weconduct/components/index.md
   - 示例: weconduct/examples/index.md
   - Weave: weave/index.md
