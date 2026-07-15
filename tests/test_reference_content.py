@@ -18,8 +18,6 @@ PAGES = {
     "docs/weconduct/reference/project-format.md": ("weconduct", "0.8.1", "weconduct:reference:project-format"),
     "docs/weconduct/reference/variable-syntax.md": ("weconduct", "0.8.1", "weconduct:reference:variable-syntax"),
     "docs/weconduct/reference/glossary.md": ("weconduct", "0.8.1", "weconduct:reference:glossary"),
-    "docs/weconduct/reference/known-limitations-0.8.1.md": ("weconduct", "0.8.1", "weconduct:reference:known-limitations:0.8.1"),
-    "docs/weave/reference/known-limitations-0.5.0.md": ("weave", "0.5.0", "weave:reference:known-limitations:0.5.0"),
 }
 
 
@@ -76,15 +74,9 @@ def test_hidden_version_manifests_reserve_future_switcher() -> None:
 def test_reference_pages_include_real_contract_terms() -> None:
     project_format = (ROOT / "docs/weconduct/reference/project-format.md").read_text(encoding="utf-8")
     variables = (ROOT / "docs/weconduct/reference/variable-syntax.md").read_text(encoding="utf-8")
-    limits = (ROOT / "docs/weconduct/reference/known-limitations-0.8.1.md").read_text(encoding="utf-8")
-    weave_limits = (ROOT / "docs/weave/reference/known-limitations-0.5.0.md").read_text(encoding="utf-8")
 
     assert "project_file_schema_version" in project_format
     assert "project-v2" in project_format
     assert "graph-v1" in project_format
     assert "initial_variables" in variables
     assert "runtime" in variables
-    assert "执行历史" in limits
-    assert "资源导入、导出" in limits
-    assert "直接同步接口" in weave_limits
-    assert "重放" in weave_limits

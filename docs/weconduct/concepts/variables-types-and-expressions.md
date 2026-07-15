@@ -42,7 +42,7 @@ doc_id: weconduct:concepts:variables-types-expressions
 |------|------|
 | `${message}` | 读取变量 `message` 的值 |
 | `结果：${message}` | 把变量值嵌入文本中 |
-| `${message\|string}` | 读取后转换为指定类型 |
+| `${message|string}` | 读取后转换为指定类型 |
 | `${node.node-2.body}` | 读取节点 `node-2` 输出中的 `body` 字段 |
 
 引用可以出现在列表和对象内部，运行时会递归解析所有 `${...}` 标记。

@@ -1,7 +1,7 @@
 site_name: WeConduct 文档
 site_description: WeConduct 0.8.1 与 Weave 0.5.0 文档站点，当前处于建设阶段
 site_author: HalcyonAlcedo
-copyright: "&copy; 2026 WeConduct 用户文档 · 当前版本 0.8.1（建设中）"
+copyright: "&copy; 2026 WeConduct 用户文档 · 当前版本 0.8.1"
 site_url: https://halcyonalcedo.github.io/WeConduct/
 repo_url: https://github.com/HalcyonAlcedo/WeConduct
 repo_name: HalcyonAlcedo/WeConduct
@@ -176,7 +176,6 @@ nav:
           - 插件: weave/guide/plugins.md
       - 与 WeConduct 配合: weave/workflows/use-with-weconduct.md
       - Weave 故障排查: weave/troubleshooting/index.md
-      - 已知限制: weave/reference/known-limitations-0.5.0.md
   - 故障排查:
       - 排障总览: weconduct/troubleshooting/index.md
       - 项目与启动: weconduct/troubleshooting/project-and-startup.md
@@ -191,5 +190,3 @@ nav:
       - 变量语法: weconduct/reference/variable-syntax.md
       - 安全权限: weconduct/reference/security-permissions.md
       - 术语表: weconduct/reference/glossary.md
-      - 0.8.1 已知限制: weconduct/reference/known-limitations-0.8.1.md
-      - 文档状态: reference/documentation-status.md
