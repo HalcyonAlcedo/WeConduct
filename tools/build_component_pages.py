@@ -183,12 +183,18 @@ def slug(resource_key: str) -> str:
 
 def write_global_index(docs_root: Path, groups: list[dict[str, Any]], keys_by_group: dict[str, list[str]]) -> None:
     path = docs_root / "weconduct" / "components" / "index.md"
+    total_count = sum(len(v) for v in keys_by_group.values())
+    visible_count = sum(1 for v in keys_by_group.values() for _ in v)  # all are visible in this view
     lines = [
         "---", "product: weconduct", f"version: {VERSION}",
         "doc_id: weconduct:components:index", "---", "", "# 内置节点参考", "",
-        "WeConduct 0.8.1 包含 126 个内置节点：120 个在组件库可见，6 个仅用于兼容或内部图加载。",
-        "", "可以按中文名、英文名或资源键搜索。聚合页用于比较同类节点和常见组合；详情页提供完整端口、配置、权限、诊断和示例。",
-        "", "## 分类", "",
+        "WeConduct 0.8.1 提供了 " + str(total_count) + " 个内置节点，涵盖了浏览器自动化、数据处理、文件操作、流程控制等常见任务。",
+        "", "其中 120 个节点可直接从组件库拖入画布使用，另有 6 个节点仅用于兼容旧版项目的内部迁移。",
+        "", "## 如何查找节点", "",
+        "你可以按中文名称、英文名称或资源键（如 `browser.click`）在组件库中搜索。",
+        "每个节点类别下都有一个聚合页，方便你对比同类节点并了解常见搭配方式；",
+        "点击具体节点会进入详情页，提供完整的端口说明、配置参数、所需权限和使用建议。",
+        "", "## 节点分类", "",
     ]
     for group in groups:
         group_page = docs_path(docs_root, group["index_path"])
@@ -197,9 +203,10 @@ def write_global_index(docs_root: Path, groups: list[dict[str, Any]], keys_by_gr
             f"{group['description_zh']}（{len(keys_by_group[group['group_id']])} 个节点）"
         )
     lines.extend([
-        "", "## 阅读方式", "",
-        "先在聚合页选择节点，再进入详情页核对参数。兼容与内部节点不会出现在普通组件库中，不建议用于新流程。",
-        "", "图示使用方法见[内嵌节点图](../reference/embedded-graphs.md)。",
+        "", "## 阅读建议", "",
+        "如果你是第一次使用某个节点，建议先从聚合页了解同类节点的差异，再进入详情页查看完整的配置说明。",
+        "兼容与内部节点不会出现在普通组件库中，通常不需要关注，除非你在维护旧版项目。",
+        "", "节点图的使用方法见[内嵌节点图](../reference/embedded-graphs.md)。",
     ])
     write_text(path, "\n".join(lines))
 
@@ -219,32 +226,44 @@ def write_group_page(
         "---", "product: weconduct", f"version: {VERSION}",
         f"doc_id: component-group:{group['group_id']}", "---", "",
         f"# {group['title_zh']}", "", group["description_zh"], "",
-        "## 如何选择", "",
-        "| 节点 | 资源键 | 主要用途 |", "|---|---|---|",
     ]
+    if group["group_id"] == "compatibility-and-internal":
+        lines.extend([
+            "",
+            "!!! warning 这些节点不在组件库中",
+            "    本组的 " + str(len(keys)) + " 个节点仅用于兼容旧版项目或内部图结构迁移，**不会出现在普通组件库中**，也不能从组件库拖入画布。如果你在旧项目中看到这些节点，说明它们是从早期版本自动迁移过来的。新项目不需要关注这些节点。",
+            "",
+        ])
+    lines.extend([
+        "## 节点速览", "",
+        "| 节点 | 资源键 | 主要用途 |", "|---|---|---|",
+    ])
     for key in keys:
         item = manifest[key]
         detail_path = docs_path(docs_root, assignments[key]["page_path"])
         lines.append(
             f"| [{item['display_name_zh']}]({relative_link(path, detail_path)}) | `{key}` | {item['description_zh']} |"
         )
-    lines.extend(["", "## 常见组合", ""])
+    lines.extend(["", "## 典型搭配", ""])
     if len(shown) > 1:
         names = " → ".join(manifest[key]["display_name_zh"] for key in shown[:4])
-        lines.append(f"可从 `{names}` 的顺序理解本组能力；实际连线必须按各节点端口和控制语义调整。")
+        lines.append(f"这类节点通常会按 `{names}` 的顺序串联使用。具体的连线方式取决于每个节点的端口定义和控制流语义，建议在画布中实际连接后运行校验确认。")
     else:
-        lines.append("本组只有一个节点，通常与流程入口、变量节点和相邻能力域组合使用。")
+        lines.append("本组只有一个节点，通常与流程入口、变量节点以及其他功能模块组合使用。")
     lines.extend([
-        "", "## 组合图", "",
-        f"<weconduct-graph src=\"{relative_link(path, graph_path)}\" title=\"{group['title_zh']}节点概览\">图示加载失败时，可使用下方节点列表。</weconduct-graph>",
-        "", "该图用于比较节点外形、端口和默认配置，不代表可直接运行的完整流程。",
-        "", "## 节点列表", "",
+        "", "## 节点对比图", "",
+        f"<weconduct-graph src=\"{relative_link(path, graph_path)}\" title=\"{group['title_zh']}节点概览\">如果图示加载失败，可以使用下方的节点列表查看每个节点的信息。</weconduct-graph>",
+        "", "上图展示了本组节点的外观、端口和默认配置，方便你快速对比，但不能直接作为完整流程运行。",
+        "", "## 全部节点", "",
     ])
     for key in keys:
         item = manifest[key]
         detail_path = docs_path(docs_root, assignments[key]["page_path"])
-        visibility = "兼容/内部" if item["compatibility_only"] else "组件库可见"
-        lines.append(f"- [{item['display_name_zh']}]({relative_link(path, detail_path)}) (`{key}`)：{visibility}。")
+        visibility = "兼容/内部（不在组件库中显示）" if item["compatibility_only"] else ""
+        line = f"- [{item['display_name_zh']}]({relative_link(path, detail_path)}) (`{key}`)"
+        if visibility:
+            line += f"：{visibility}"
+        lines.append(line)
     write_text(path, "\n".join(lines))
 
 
@@ -278,12 +297,10 @@ def write_detail_page(
         "---", "product: weconduct", f"version: {VERSION}",
         f"doc_id: component:{component['resource_key']}", "---", "",
         f"# {component['display_name_zh']}", "",
-        f"资源键：`{component['resource_key']}`",
-        f"英文名：{component['display_name']}", "",
+        f"资源键：`{component['resource_key']}`　|　英文名：{component['display_name']}",
         "## 功能说明", "", component["description_zh"], "",
-        f"该节点属于“{group['title_zh']}”。实现类型为 `{component.get('implementation_kind') or '未声明'}`，运行展开角色为 `{component['expansion_role']}`。",
-        "", "## 适用场景", "", usage_text(component), "",
-        "## 前置条件与权限", "", permission_text(component), "",
+        "## 什么时候用", "", usage_text(component), "",
+        "## 需要什么权限", "", permission_text(component), "",
         "## 端口说明", "",
         "| 端口 | 方向 | 关系层 | 语义 |", "|---|---|---|---|",
     ]
@@ -304,19 +321,19 @@ def write_detail_page(
                 f"| `{key}` | `{meta.get('type', 'any')}` | {'是' if meta.get('required') else '否'} | `{default}` | `{meta.get('editor_kind') or 'default'}` |"
             )
     else:
-        lines.append("该节点没有额外参数；行为由输入、运行上下文或固定语义决定。")
+        lines.append("该节点没有额外参数，其行为完全由输入数据和运行上下文决定。")
     lines.extend([
         "", "## 输入、输出与副作用", "",
         io_text(component, input_ports, output_ports), "",
         "## 使用示例", "",
-        f"<weconduct-graph src=\"{relative_link(path, graph_path)}\" title=\"{component['display_name_zh']}配置示例\">图示加载失败时，可阅读下方配置。</weconduct-graph>",
+        f"<weconduct-graph src=\"{relative_link(path, graph_path)}\" title=\"{component['display_name_zh']}配置示例\">如果图示加载失败，可以查看下方的示例配置。</weconduct-graph>",
         "", "示例配置：", "", "```json", json.dumps(config, ensure_ascii=False, indent=2), "```", "",
-        "将控制输入连接到上一个动作，填写上述配置，再把控制输出连接到后续动作。数据端口仅在需要显式传值时连接。",
+        "使用时，将控制输入端口连接到上一个节点的输出，填写需要的配置参数，再把控制输出端口连接到下一个节点。数据端口只在需要显式传值时才连接。",
         "", "## 预期结果", "", expected_result_text(component, output_ports), "",
-        "## 常见错误", "", common_errors_text(component), "",
-        "## 限制与注意事项", "", limitation_text(component), "",
+        "## 常见问题", "", common_errors_text(component), "",
+        "## 注意事项", "", limitation_text(component), "",
         "## 相关节点", "",
-        f"- 返回[{group['title_zh']}]({relative_link(path, group_page)})聚合页。",
+        f"- 返回[{group['title_zh']}]({relative_link(path, group_page)})聚合页查看更多同类节点。",
     ])
     siblings = [key for key in related_keys if key != component["resource_key"]][:5]
     for key in siblings:
@@ -437,61 +454,61 @@ def usage_text(component: dict[str, Any]) -> str:
     if guidance.get("usage"):
         return guidance["usage"]
     if key.startswith("browser."):
-        return "用于浏览器自动化流程中，在页面或浏览器上下文已经就绪后完成该动作。"
+        return "在浏览器自动化流程中执行该动作，需要当前页面或浏览器上下文已经就绪。"
     if key.startswith("data."):
-        return "用于整理运行时数据、变量或列表，并把结果交给后续节点。"
+        return "处理运行时数据、变量或列表，结果可以交给后续节点继续使用。"
     if key.startswith("control."):
-        return "用于改变控制流、循环、并行或失败处理结构。"
+        return "改变流程的执行路径，比如分支、循环、并行或失败重试。"
     if key.startswith("excel."):
-        return "用于读取或修改 Excel 工作簿中的结构化数据。"
+        return "读取或修改 Excel 工作簿中的结构化数据。"
     if key.startswith("file."):
-        return "用于项目允许路径内的文本或 CSV 文件处理。"
-    return f"在需要“{component['display_name_zh']}”能力的流程中使用。"
+        return "在项目允许的路径内处理文本或 CSV 文件。"
+    return f"当你需要 {component['display_name_zh']} 功能时使用。"
 
 
 def permission_text(component: dict[str, Any]) -> str:
     key = component["resource_key"]
     permissions: list[str] = []
     if key.startswith(("file.", "excel.")):
-        permissions.append("启用文件访问，并确保路径位于允许根内")
+        permissions.append("需要开启文件访问权限，并确保目标路径在允许的目录范围内")
     if key == "http.request":
-        permissions.append("按目标地址启用本地或远程网络访问")
+        permissions.append("需要按目标地址开启本地或远程网络访问")
     if key == "python.run":
-        permissions.append("启用 Python 执行，并准备项目 Python 运行时")
+        permissions.append("需要开启 Python 执行权限，并准备好项目的 Python 运行时环境")
     if "screenshot" in key:
-        permissions.append("启用浏览器截图和文件访问")
+        permissions.append("需要开启浏览器截图和文件访问")
     if "download" in key:
-        permissions.append("启用浏览器下载和文件访问")
+        permissions.append("需要开启浏览器下载和文件访问")
     if "upload" in key:
-        permissions.append("启用浏览器上传和文件访问")
+        permissions.append("需要开启浏览器上传和文件访问")
     if "cookie" in key:
-        permissions.append("启用 Cookie 操作")
+        permissions.append("需要开启 Cookie 操作权限")
     if "storage" in key:
-        permissions.append("启用浏览器存储操作")
+        permissions.append("需要开启浏览器存储操作权限")
     if key in {"browser.inject_js", "browser.run_js"} or "script" in key or "javascript" in key:
-        permissions.append("按节点行为启用 JavaScript 注入或求值")
+        permissions.append("需要按节点行为开启 JavaScript 注入或求值权限")
     if key.startswith("browser."):
-        permissions.append("启用浏览器执行器，并确保存在可用页面目标")
+        permissions.append("需要开启浏览器执行器，并确保存在可用的页面目标")
     if key == "browser.download_file":
-        permissions.append("按 URL 启用本地或远程网络访问")
+        permissions.append("需要按目标 URL 开启本地或远程网络访问")
     if not permissions:
-        return "不要求额外程序权限；仍需满足图结构、输入类型和项目资源约束。"
+        return "该节点不需要额外的程序权限，但仍需要满足图结构、输入类型和项目资源的基本约束。"
     return "；".join(dict.fromkeys(permissions)) + "。"
 
 
 def io_text(component: dict[str, Any], inputs: list[dict[str, Any]], outputs: list[dict[str, Any]]) -> str:
-    input_names = "、".join(f"`{item['port_id']}`" for item in inputs) or "无显式输入端口"
-    output_names = "、".join(f"`{item['port_id']}`" for item in outputs) or "无显式输出端口"
+    input_names = "、".join(f"`{item['port_id']}`" for item in inputs) or "没有显式输入端口"
+    output_names = "、".join(f"`{item['port_id']}`" for item in outputs) or "没有显式输出端口"
     key = component["resource_key"]
     guidance = domain_guidance(key)
-    side_effect = guidance.get("side_effect", "主要更新运行时数据")
+    side_effect = guidance.get("side_effect", "更新运行时数据")
     if key.startswith("browser."):
-        side_effect = guidance.get("side_effect", "可能读取或改变页面、浏览器状态、网络记录或本地文件")
+        side_effect = guidance.get("side_effect", "可能改变页面状态、浏览器上下文、网络记录或本地文件")
     elif key.startswith(("file.", "excel.")):
         side_effect = "可能读取或写入文件"
     elif key.startswith("control."):
-        side_effect = "改变后续控制路径"
-    return f"输入：{input_names}。输出：{output_names}。副作用：{side_effect}。"
+        side_effect = "改变后续执行路径"
+    return f"输入端口：{input_names}。输出端口：{output_names}。对外影响：{side_effect}。"
 
 
 def expected_result_text(component: dict[str, Any], outputs: list[dict[str, Any]]) -> str:
@@ -501,8 +518,8 @@ def expected_result_text(component: dict[str, Any], outputs: list[dict[str, Any]
     data_outputs = [item for item in outputs if item["relation_layer"] == "data"]
     if data_outputs:
         names = "、".join(f"`{item['port_id']}`" for item in data_outputs)
-        return f"节点成功后返回 `status = succeeded`，并可从 {names} 或节点输出字段取得结果。"
-    return "节点成功后返回 `status = succeeded`，控制流从声明的控制输出继续；无数据输出时通过会话事件和节点结果确认执行。"
+        return f"节点执行成功后，状态为 `succeeded`。你可以从 {names} 端口或节点输出字段获取结果。"
+    return "节点执行成功后，状态为 `succeeded`，控制流继续向下一个节点传递。如果没有数据输出，可以通过运行日志和节点结果确认执行情况。"
 
 
 def common_errors_text(component: dict[str, Any]) -> str:
@@ -510,27 +527,27 @@ def common_errors_text(component: dict[str, Any]) -> str:
     messages = []
     if required:
         messages.append("缺少必填参数：" + "、".join(f"`{key}`" for key in required))
-    messages.extend(["端口不存在或关系层不匹配", "输入类型与参数要求不一致"])
+    messages.extend(["端口名称写错或关系层不匹配", "输入值的类型与参数要求不一致"])
     if component["resource_key"].startswith(("browser.", "file.", "excel.", "http.", "python.")):
-        messages.append("运行环境、资源路径或安全权限未满足")
+        messages.append("运行环境、资源路径或安全权限未正确配置")
     extra = domain_guidance(component["resource_key"]).get("error")
     if extra:
         messages.append(extra)
-    return "；".join(messages) + "。诊断应保留节点 ID、资源键和原始错误信息。"
+    return "；".join(messages) + "。排查问题时，建议记录下节点 ID、资源键和原始错误信息，方便定位原因。"
 
 
 def limitation_text(component: dict[str, Any]) -> str:
     notes = []
     if component["compatibility_only"]:
-        notes.append("该节点仅用于兼容或内部图加载，不在普通组件库显示，不建议用于新流程")
+        notes.append("该节点仅用于兼容旧版项目或内部图加载，不会出现在普通组件库中，不建议在新流程中使用")
     if not component["component_library_visible"]:
-        notes.append("不能从普通组件库直接添加")
+        notes.append("该节点不能从普通组件库直接添加")
     if component["resource_key"].startswith("browser."):
-        notes.append("页面导航、动态 DOM 和超时会影响结果，选择器应尽量稳定")
+        notes.append("页面的动态加载、DOM 变化和超时设置都会影响执行结果，建议使用尽可能稳定的选择器")
     extra = domain_guidance(component["resource_key"]).get("limit")
     if extra:
         notes.append(extra)
-    notes.append("示例图只展示节点配置；完整流程还需入口、控制边和业务输入")
+    notes.append("示例图只展示了节点的配置结构；要构成完整流程，还需要添加入口节点、控制边和业务输入")
     return "；".join(notes) + "。"
 
 

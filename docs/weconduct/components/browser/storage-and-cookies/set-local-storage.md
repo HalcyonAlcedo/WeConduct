@@ -6,22 +6,18 @@ doc_id: component:browser.set_local_storage
 
 # 写入本地存储
 
-资源键：`browser.set_local_storage`
-英文名：Set Local Storage
-
+资源键：`browser.set_local_storage`　|　英文名：Set Local Storage
 ## 功能说明
 
 在当前浏览器上下文写入 localStorage 项。
 
-该节点属于“存储与 Cookie”。实现类型为 `core_atomic`，运行展开角色为 `action:set_local_storage`。
-
-## 适用场景
+## 什么时候用
 
 读写当前浏览器上下文的 Cookie 或 Web Storage，用于会话恢复和状态准备。
 
-## 前置条件与权限
+## 需要什么权限
 
-启用浏览器存储操作；启用浏览器执行器，并确保存在可用页面目标。
+需要开启浏览器存储操作权限；需要开启浏览器执行器，并确保存在可用的页面目标。
 
 ## 端口说明
 
@@ -41,11 +37,11 @@ doc_id: component:browser.set_local_storage
 
 ## 输入、输出与副作用
 
-输入：`in`、`in:key`、`in:value`。输出：`out`。副作用：读取、修改或清除浏览器持久状态；写操作会影响后续页面请求。
+输入端口：`in`、`in:key`、`in:value`。输出端口：`out`。对外影响：读取、修改或清除浏览器持久状态；写操作会影响后续页面请求。
 
 ## 使用示例
 
-<weconduct-graph src="../../../../assets/graphs/components/browser/browser-set-local-storage.json" title="写入本地存储配置示例">图示加载失败时，可阅读下方配置。</weconduct-graph>
+<weconduct-graph src="../../../../assets/graphs/components/browser/browser-set-local-storage.json" title="写入本地存储配置示例">如果图示加载失败，可以查看下方的示例配置。</weconduct-graph>
 
 示例配置：
 
@@ -56,23 +52,23 @@ doc_id: component:browser.set_local_storage
 }
 ```
 
-将控制输入连接到上一个动作，填写上述配置，再把控制输出连接到后续动作。数据端口仅在需要显式传值时连接。
+使用时，将控制输入端口连接到上一个节点的输出，填写需要的配置参数，再把控制输出端口连接到下一个节点。数据端口只在需要显式传值时才连接。
 
 ## 预期结果
 
 读取节点返回目标值或默认值；写入和删除节点完成对应状态变更。
 
-## 常见错误
+## 常见问题
 
-缺少必填参数：`key`；端口不存在或关系层不匹配；输入类型与参数要求不一致；运行环境、资源路径或安全权限未满足。诊断应保留节点 ID、资源键和原始错误信息。
+缺少必填参数：`key`；端口名称写错或关系层不匹配；输入值的类型与参数要求不一致；运行环境、资源路径或安全权限未正确配置。排查问题时，建议记录下节点 ID、资源键和原始错误信息，方便定位原因。
 
-## 限制与注意事项
+## 注意事项
 
-页面导航、动态 DOM 和超时会影响结果，选择器应尽量稳定；域、路径、secure 属性和当前页面 origin 会限制数据可见范围；示例图只展示节点配置；完整流程还需入口、控制边和业务输入。
+页面的动态加载、DOM 变化和超时设置都会影响执行结果，建议使用尽可能稳定的选择器；域、路径、secure 属性和当前页面 origin 会限制数据可见范围；示例图只展示了节点的配置结构；要构成完整流程，还需要添加入口节点、控制边和业务输入。
 
 ## 相关节点
 
-- 返回[存储与 Cookie](index.md)聚合页。
+- 返回[存储与 Cookie](index.md)聚合页查看更多同类节点。
 - [读取本地存储](get-local-storage.md) (`browser.get_local_storage`)。
 - [删除本地存储](remove-local-storage.md) (`browser.remove_local_storage`)。
 - [清空本地存储](clear-local-storage.md) (`browser.clear_local_storage`)。

@@ -6,22 +6,18 @@ doc_id: component:browser.get_html
 
 # 读取 HTML
 
-资源键：`browser.get_html`
-英文名：Get HTML
-
+资源键：`browser.get_html`　|　英文名：Get HTML
 ## 功能说明
 
 读取目标元素的 outer HTML。
 
-该节点属于“页面状态与内容”。实现类型为 `core_atomic`，运行展开角色为 `action:get_html`。
+## 什么时候用
 
-## 适用场景
+在浏览器自动化流程中执行该动作，需要当前页面或浏览器上下文已经就绪。
 
-用于浏览器自动化流程中，在页面或浏览器上下文已经就绪后完成该动作。
+## 需要什么权限
 
-## 前置条件与权限
-
-启用浏览器执行器，并确保存在可用页面目标。
+需要开启浏览器执行器，并确保存在可用的页面目标。
 
 ## 端口说明
 
@@ -41,11 +37,11 @@ doc_id: component:browser.get_html
 
 ## 输入、输出与副作用
 
-输入：`in`、`in:selector`。输出：`out`、`out:value`。副作用：可能读取或改变页面、浏览器状态、网络记录或本地文件。
+输入端口：`in`、`in:selector`。输出端口：`out`、`out:value`。对外影响：可能改变页面状态、浏览器上下文、网络记录或本地文件。
 
 ## 使用示例
 
-<weconduct-graph src="../../../../assets/graphs/components/browser/browser-get-html.json" title="读取 HTML配置示例">图示加载失败时，可阅读下方配置。</weconduct-graph>
+<weconduct-graph src="../../../../assets/graphs/components/browser/browser-get-html.json" title="读取 HTML配置示例">如果图示加载失败，可以查看下方的示例配置。</weconduct-graph>
 
 示例配置：
 
@@ -56,23 +52,23 @@ doc_id: component:browser.get_html
 }
 ```
 
-将控制输入连接到上一个动作，填写上述配置，再把控制输出连接到后续动作。数据端口仅在需要显式传值时连接。
+使用时，将控制输入端口连接到上一个节点的输出，填写需要的配置参数，再把控制输出端口连接到下一个节点。数据端口只在需要显式传值时才连接。
 
 ## 预期结果
 
-节点成功后返回 `status = succeeded`，并可从 `out:value` 或节点输出字段取得结果。
+节点执行成功后，状态为 `succeeded`。你可以从 `out:value` 端口或节点输出字段获取结果。
 
-## 常见错误
+## 常见问题
 
-缺少必填参数：`selector`、`variable_name`；端口不存在或关系层不匹配；输入类型与参数要求不一致；运行环境、资源路径或安全权限未满足。诊断应保留节点 ID、资源键和原始错误信息。
+缺少必填参数：`selector`、`variable_name`；端口名称写错或关系层不匹配；输入值的类型与参数要求不一致；运行环境、资源路径或安全权限未正确配置。排查问题时，建议记录下节点 ID、资源键和原始错误信息，方便定位原因。
 
-## 限制与注意事项
+## 注意事项
 
-页面导航、动态 DOM 和超时会影响结果，选择器应尽量稳定；示例图只展示节点配置；完整流程还需入口、控制边和业务输入。
+页面的动态加载、DOM 变化和超时设置都会影响执行结果，建议使用尽可能稳定的选择器；示例图只展示了节点的配置结构；要构成完整流程，还需要添加入口节点、控制边和业务输入。
 
 ## 相关节点
 
-- 返回[页面状态与内容](index.md)聚合页。
+- 返回[页面状态与内容](index.md)聚合页查看更多同类节点。
 - [截图](screenshot.md) (`browser.screenshot`)。
 - [元素截图](element-screenshot.md) (`browser.element_screenshot`)。
 - [识别验证码](recognize-captcha.md) (`browser.recognize_captcha`)。

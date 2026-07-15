@@ -1,7 +1,7 @@
 site_name: WeConduct 文档
 site_description: WeConduct 0.8.1 与 Weave 0.5.0 文档站点，当前处于建设阶段
 site_author: HalcyonAlcedo
-copyright: "&copy; WeConduct 用户文档"
+copyright: "&copy; 2026 WeConduct 用户文档 · 当前版本 0.8.1（建设中）"
 site_url: https://halcyonalcedo.github.io/WeConduct/
 repo_url: https://github.com/HalcyonAlcedo/WeConduct
 repo_name: HalcyonAlcedo/WeConduct
@@ -10,31 +10,39 @@ edit_uri: ""
 theme:
   name: material
   language: zh
+  logo: assets/images/logo.svg
+  favicon: assets/images/logo.svg
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
-      accent: indigo
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: 切换至深色模式
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
-      accent: indigo
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: 切换至浅色模式
+  font:
+    text: Noto Sans SC
+    code: JetBrains Mono
   features:
     - navigation.tabs
     - navigation.sections
     - navigation.indexes
-    - navigation.prune
     - navigation.top
+    - navigation.instant
+    - navigation.tracking
     - search.suggest
     - search.highlight
     - content.code.copy
+    - content.code.annotate
     - toc.follow
+    - navigation.footer
 
 markdown_extensions:
   - admonition
@@ -55,10 +63,16 @@ plugins:
       lang: zh
 
 extra_javascript:
-  - assets/javascripts/weconduct-graph.js
+  - assets/graph-runtime/weconduct-graph.js
+
+extra:
+  announce:
+    content: "📢 WeConduct 0.8.1 与 Weave 0.5.0 文档持续完善中 — 欢迎反馈！"
+    dismiss: true
 
 extra_css:
-  - assets/stylesheets/weconduct-graph.css
+  - assets/graph-runtime/weconduct-graph.css
+  - assets/stylesheets/extra.css
 
 nav:
   - 首页: index.md
@@ -155,7 +169,7 @@ nav:
           - 节点详情与选择器: weave/guide/node-details-and-selectors.md
           - 叠加层与检查模式: weave/guide/overlay-and-inspect-mode.md
       - 浏览器工具:
-          - 网络捕获与重放: weave/guide/network-capture-and-replay.md
+          - 网络捕获: weave/guide/network-capture-and-replay.md
           - 拦截规则: weave/guide/intercept-rules.md
           - 浏览器存储: weave/guide/browser-storage.md
           - 布局与设置: weave/guide/layout-and-settings.md

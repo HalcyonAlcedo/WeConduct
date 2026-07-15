@@ -10,15 +10,15 @@ MANIFEST_PATH = ROOT / "data" / "weconduct-0.8.1" / "components.json"
 GROUPS_PATH = ROOT / "data" / "weconduct-0.8.1" / "component-groups.json"
 REQUIRED_SECTIONS = [
     "功能说明",
-    "适用场景",
-    "前置条件与权限",
+    "什么时候用",
+    "需要什么权限",
     "端口说明",
     "配置参数",
     "输入、输出与副作用",
     "使用示例",
     "预期结果",
-    "常见错误",
-    "限制与注意事项",
+    "常见问题",
+    "注意事项",
     "相关节点",
 ]
 
@@ -202,7 +202,7 @@ def test_validate_pages_rejects_missing_required_sections(tmp_path: Path) -> Non
         str(groups_path),
     )
     assert result.returncode != 0
-    assert "适用场景" in f"{result.stdout}\n{result.stderr}"
+    assert "什么时候用" in f"{result.stdout}\n{result.stderr}"
 
 
 def test_validate_pages_rejects_malformed_frontmatter_duplicate_doc_id_and_wrong_version(

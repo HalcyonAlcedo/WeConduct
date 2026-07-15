@@ -6,22 +6,18 @@ doc_id: component:browser.wait_for_timeout
 
 # 等待超时
 
-资源键：`browser.wait_for_timeout`
-英文名：Wait For Timeout
-
+资源键：`browser.wait_for_timeout`　|　英文名：Wait For Timeout
 ## 功能说明
 
 按固定时长等待。
 
-该节点属于“等待条件”。实现类型为 `core_atomic`，运行展开角色为 `action:wait_for_timeout`。
-
-## 适用场景
+## 什么时候用
 
 在没有可观测页面条件、只能为外部过程留出固定时间时使用；`timeout` 以毫秒计。
 
-## 前置条件与权限
+## 需要什么权限
 
-启用浏览器执行器，并确保存在可用页面目标。
+需要开启浏览器执行器，并确保存在可用的页面目标。
 
 ## 端口说明
 
@@ -38,11 +34,11 @@ doc_id: component:browser.wait_for_timeout
 
 ## 输入、输出与副作用
 
-输入：`in`。输出：`out`。副作用：可能读取或改变页面、浏览器状态、网络记录或本地文件。
+输入端口：`in`。输出端口：`out`。对外影响：可能改变页面状态、浏览器上下文、网络记录或本地文件。
 
 ## 使用示例
 
-<weconduct-graph src="../../../../assets/graphs/components/browser/browser-wait-for-timeout.json" title="等待超时配置示例">图示加载失败时，可阅读下方配置。</weconduct-graph>
+<weconduct-graph src="../../../../assets/graphs/components/browser/browser-wait-for-timeout.json" title="等待超时配置示例">如果图示加载失败，可以查看下方的示例配置。</weconduct-graph>
 
 示例配置：
 
@@ -52,23 +48,23 @@ doc_id: component:browser.wait_for_timeout
 }
 ```
 
-将控制输入连接到上一个动作，填写上述配置，再把控制输出连接到后续动作。数据端口仅在需要显式传值时连接。
+使用时，将控制输入端口连接到上一个节点的输出，填写需要的配置参数，再把控制输出端口连接到下一个节点。数据端口只在需要显式传值时才连接。
 
 ## 预期结果
 
 等待指定毫秒数后返回 `status = succeeded`，随后继续控制流。
 
-## 常见错误
+## 常见问题
 
-端口不存在或关系层不匹配；输入类型与参数要求不一致；运行环境、资源路径或安全权限未满足。诊断应保留节点 ID、资源键和原始错误信息。
+端口名称写错或关系层不匹配；输入值的类型与参数要求不一致；运行环境、资源路径或安全权限未正确配置。排查问题时，建议记录下节点 ID、资源键和原始错误信息，方便定位原因。
 
-## 限制与注意事项
+## 注意事项
 
-页面导航、动态 DOM 和超时会影响结果，选择器应尽量稳定；固定等待不会确认页面真的就绪，优先使用元素、文本、请求或响应等待；示例图只展示节点配置；完整流程还需入口、控制边和业务输入。
+页面的动态加载、DOM 变化和超时设置都会影响执行结果，建议使用尽可能稳定的选择器；固定等待不会确认页面真的就绪，优先使用元素、文本、请求或响应等待；示例图只展示了节点的配置结构；要构成完整流程，还需要添加入口节点、控制边和业务输入。
 
 ## 相关节点
 
-- 返回[等待条件](index.md)聚合页。
+- 返回[等待条件](index.md)聚合页查看更多同类节点。
 - [等待元素](wait-for-element.md) (`browser.wait_for_element`)。
 - [等待导航](wait-for-navigation.md) (`browser.wait_for_navigation`)。
 - [等待文本](wait-for-text.md) (`browser.wait_for_text`)。

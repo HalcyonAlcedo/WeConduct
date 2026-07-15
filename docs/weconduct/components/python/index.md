@@ -8,22 +8,22 @@ doc_id: component-group:python
 
 覆盖 Python 代码执行。
 
-## 如何选择
+## 节点速览
 
 | 节点 | 资源键 | 主要用途 |
 |---|---|---|
 | [运行 Python](run.md) | `python.run` | 运行受限的 Python 脚本。 |
 
-## 常见组合
+## 典型搭配
 
-本组只有一个节点，通常与流程入口、变量节点和相邻能力域组合使用。
+本组只有一个节点，通常与流程入口、变量节点以及其他功能模块组合使用。
 
-## 组合图
+## 节点对比图
 
-<weconduct-graph src="../../../assets/graphs/components/groups/python.json" title="Python 执行节点概览">图示加载失败时，可使用下方节点列表。</weconduct-graph>
+<weconduct-graph src="../../../assets/graphs/components/groups/python.json" title="Python 执行节点概览">如果图示加载失败，可以使用下方的节点列表查看每个节点的信息。</weconduct-graph>
 
-该图用于比较节点外形、端口和默认配置，不代表可直接运行的完整流程。
+上图展示了本组节点的外观、端口和默认配置，方便你快速对比，但不能直接作为完整流程运行。
 
-## 节点列表
+## 全部节点
 
-- [运行 Python](run.md) (`python.run`)：组件库可见。
+- [运行 Python](run.md) (`python.run`)

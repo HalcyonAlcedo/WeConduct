@@ -19,7 +19,7 @@ doc_id: weconduct:guide:component-library
 - `component_library_visible = true`：正常显示，可用于新流程。
 - `compatibility_only = true`：不在普通组件库展示，仅为旧项目、旧蓝图或内部控制结构保留。
 
-不要通过手工编辑 JSON 主动创建兼容节点。需要了解全部节点时，从[内置节点参考](../components/index.md)进入聚合页或详情页。
+兼容节点仅用于旧项目迁移，不会出现在普通组件库中。需要了解全部节点时，请查看[内置节点参考](../components/index.md)。
 
 ## 添加失败
 

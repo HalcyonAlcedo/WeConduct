@@ -4,6 +4,11 @@ output/
 .playwright-cli/
 $tmp-components.json
 $tmp-schema.json
+docs/assets/graph-runtime/
+
+# Vue Flow graph runtime
+node_modules/
+graph-runtime/coverage/
 
 # Python
 __pycache__/

@@ -36,19 +36,14 @@ Cookies 页签当前支持：
 - 查看名称、值、域、路径、过期时间、HttpOnly
 - 删除单条 Cookie
 
-## 0.5.0 的界面边界
+## 0.5.0 暂不支持的操作
 
-虽然后端提供了这些接口：
+当前版本的内置面板还不能执行以下操作：
 
-- 清空全部 Local Storage
-- 清空全部 Session Storage
-- 写入 Cookie
+- 新增 Cookie（可以查看和删除，但不能创建）
+- 一键清空全部 Local Storage 或 Session Storage
 
-但 0.5.0 内置“存储管理”面板没有对应按钮。也就是说：
-
-- 你可以在 UI 里新增和编辑 Local / Session Storage。
-- 你可以在 UI 里删除 Cookie。
-- 你不能在当前内置 UI 里直接新增 Cookie，也不能一键清空全部存储。
+如果需要这些操作，可以切换到 WeConduct 使用对应的浏览器存储节点来完成。
 
 ## 与其他工具配合
 

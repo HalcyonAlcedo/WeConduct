@@ -41,9 +41,9 @@ def test_generator_creates_all_group_and_detail_contracts(tmp_path: Path) -> Non
     assert len(detail_pages) == 126
 
     required_sections = {
-        "功能说明", "适用场景", "前置条件与权限", "端口说明", "配置参数",
-        "输入、输出与副作用", "使用示例", "预期结果", "常见错误",
-        "限制与注意事项", "相关节点",
+        "功能说明", "什么时候用", "需要什么权限", "端口说明", "配置参数",
+        "输入、输出与副作用", "使用示例", "预期结果", "常见问题",
+        "注意事项", "相关节点",
     }
     sample = next(path for path in detail_pages if path.name == "set-variable.md")
     text = sample.read_text(encoding="utf-8")

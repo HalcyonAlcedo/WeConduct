@@ -48,8 +48,8 @@ def test_all_workflow_examples_have_pages_graphs_and_downloads() -> None:
             "doc_id": f"weconduct:example:{example_id}",
         }
         for heading in (
-            "场景", "前置条件", "流程图", "节点职责", "配置步骤",
-            "预期结果", "失败诊断", "下载项目",
+            "这个示例做什么", "准备工作", "流程图", "图中使用了哪些节点", "如何运行",
+            "运行后应该看到什么", "如果出错怎么办", "下载项目",
         ):
             assert f"## {heading}" in body
         assert f"{example_id}.json" in body

@@ -8,7 +8,7 @@ doc_id: component-group:browser-interaction
 
 覆盖点击、输入、选择、拖放和滚动等交互动作。
 
-## 如何选择
+## 节点速览
 
 | 节点 | 资源键 | 主要用途 |
 |---|---|---|
@@ -26,28 +26,28 @@ doc_id: component-group:browser-interaction
 | [设置上传文件](set-input-files.md) | `browser.set_input_files` | 向浏览器文件输入框附加本地文件路径。 |
 | [取消勾选](uncheck.md) | `browser.uncheck` | 在浏览器中取消勾选复选框。 |
 
-## 常见组合
+## 典型搭配
 
-可从 `勾选 → 点击 → 拖放 → 填入` 的顺序理解本组能力；实际连线必须按各节点端口和控制语义调整。
+这类节点通常会按 `勾选 → 点击 → 拖放 → 填入` 的顺序串联使用。具体的连线方式取决于每个节点的端口定义和控制流语义，建议在画布中实际连接后运行校验确认。
 
-## 组合图
+## 节点对比图
 
-<weconduct-graph src="../../../../assets/graphs/components/groups/browser-interaction.json" title="页面交互节点概览">图示加载失败时，可使用下方节点列表。</weconduct-graph>
+<weconduct-graph src="../../../../assets/graphs/components/groups/browser-interaction.json" title="页面交互节点概览">如果图示加载失败，可以使用下方的节点列表查看每个节点的信息。</weconduct-graph>
 
-该图用于比较节点外形、端口和默认配置，不代表可直接运行的完整流程。
+上图展示了本组节点的外观、端口和默认配置，方便你快速对比，但不能直接作为完整流程运行。
 
-## 节点列表
+## 全部节点
 
-- [勾选](check.md) (`browser.check`)：组件库可见。
-- [点击](click.md) (`browser.click`)：组件库可见。
-- [拖放](drag-and-drop.md) (`browser.drag_and_drop`)：组件库可见。
-- [填入](fill.md) (`browser.fill`)：组件库可见。
-- [快捷键](hotkey.md) (`browser.hotkey`)：组件库可见。
-- [悬停](hover.md) (`browser.hover`)：组件库可见。
-- [键盘输入](keyboard-type.md) (`browser.keyboard_type`)：组件库可见。
-- [按键](press-key.md) (`browser.press_key`)：组件库可见。
-- [滚动页面](scroll-page.md) (`browser.scroll_page`)：组件库可见。
-- [滚动到元素](scroll-to-element.md) (`browser.scroll_to_element`)：组件库可见。
-- [选择选项](select-option.md) (`browser.select_option`)：组件库可见。
-- [设置上传文件](set-input-files.md) (`browser.set_input_files`)：组件库可见。
-- [取消勾选](uncheck.md) (`browser.uncheck`)：组件库可见。
+- [勾选](check.md) (`browser.check`)
+- [点击](click.md) (`browser.click`)
+- [拖放](drag-and-drop.md) (`browser.drag_and_drop`)
+- [填入](fill.md) (`browser.fill`)
+- [快捷键](hotkey.md) (`browser.hotkey`)
+- [悬停](hover.md) (`browser.hover`)
+- [键盘输入](keyboard-type.md) (`browser.keyboard_type`)
+- [按键](press-key.md) (`browser.press_key`)
+- [滚动页面](scroll-page.md) (`browser.scroll_page`)
+- [滚动到元素](scroll-to-element.md) (`browser.scroll_to_element`)
+- [选择选项](select-option.md) (`browser.select_option`)
+- [设置上传文件](set-input-files.md) (`browser.set_input_files`)
+- [取消勾选](uncheck.md) (`browser.uncheck`)

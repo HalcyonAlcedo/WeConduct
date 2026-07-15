@@ -4,37 +4,52 @@ version: 0.8.1
 doc_id: weconduct:index
 ---
 
-# WeConduct
+# WeConduct 0.8.1
 
-WeConduct 0.8.1 文档当前以产品 landing 方式组织，先提供可落地入口，再逐步拆成细分章节。
+WeConduct 是一个可视化的自动化流程工具。通过拖拽节点、连接端口，你可以快速构建浏览器操作、数据处理、文件读写等各种自动化工作流程——全程不需要写代码。
 
-## 快速开始 { #quick-start }
+## 快速上手
 
-- 从 [站点首页](../index.md) 进入产品导航。
-- 发布记录与安装包入口：<https://github.com/HalcyonAlcedo/WeConduct/releases>
-- 当前已存在的参考页：[`内嵌图示`](reference/embedded-graphs.md)
+如果你是第一次使用 WeConduct，建议按以下顺序阅读：
 
-## 内置节点参考 { #embedded-nodes }
+1. [安装 WeConduct](getting-started/install.md) — 下载、解压并首次启动
+2. [创建第一个项目](getting-started/first-project.md) — 从零搭建一个简单的自动化流程
+3. [第一次运行](getting-started/first-run.md) — 执行你的第一个流程，看到运行结果
+4. [保存和打开](getting-started/save-and-open.md) — 管理你的项目文件
 
-- 当前版本基于 `WeConduct 0.8.1` 的内置节点目录，共 `126` 个节点待逐步落页。
-- 本阶段先把“内置节点”导航收敛为本节真实入口，后续任务再替换成节点家族页和节点详情页。
-- 现有可直接查阅的参考内容见 [`参考`](reference/embedded-graphs.md)。
+## 核心概念
 
-## 示例 { #examples }
+了解 WeConduct 的基本工作原理，能帮你更快上手：
 
-- 当前示例入口先保留在本节，后续会扩展为教学图、流程片段和完整案例。
-- 已存在的图示组件示例见 [`内嵌图示`](reference/embedded-graphs.md)。
+- [项目与工作区](concepts/projects-and-workspaces.md) — 理解项目结构和工作环境
+- [节点、端口与边](concepts/nodes-ports-and-edges.md) — 构成流程图的三个基本元素
+- [控制流与数据流](concepts/control-and-data-flow.md) — 节点之间的两种连接方式
+- [变量、类型与表达式](concepts/variables-types-and-expressions.md) — 在流程中传递和处理数据
+- [子图与自定义组件](concepts/subgraphs-and-components.md) — 把常用流程打包成可复用的模块
 
-## 运行与调试 { #runtime-debug }
+## 使用指南
 
-- 本节作为运行、日志、调试启动和问题定位的集中入口。
-- 后续任务会在 `weconduct/` 目录内补充运行环境、调试链路和常见问题页面。
+- [图编辑器](guide/graph-editor.md) — 画布操作、快捷键和编辑技巧
+- [组件库](guide/component-library.md) — 浏览和使用内置节点
+- [节点配置](guide/node-configuration.md) — 为节点设置参数和行为
+- [标准运行](guide/runtime.md) — 执行流程并查看结果
+- [调试流程](guide/debug-start.md) — 使用断点和单步执行排查问题
+- [项目设置](guide/project-settings.md) — 配置项目的运行环境
 
-## 打包 { #packaging }
+## 内置节点
 
-- 本节预留给桌面打包、发布流程和产物说明。
-- 当前公开分发入口仍以 GitHub Releases 为准：<https://github.com/HalcyonAlcedo/WeConduct/releases>
+WeConduct 0.8.1 包含 126 个内置节点，涵盖浏览器自动化、数据处理、文件操作、流程控制等多个领域。
 
-## 参考 { #reference }
+[浏览全部节点 →](components/index.md)
 
-- [`内嵌图示`](reference/embedded-graphs.md)：讲解 `<weconduct-graph>` 的用法与 JSON 契约。
+## 可下载示例
+
+每个示例都配有说明页、交互式流程图和完整的项目 ZIP 包，你可以直接下载并运行。
+
+[查看示例 →](examples/index.md)
+
+## 下载
+
+WeConduct 0.8.1 面向 Windows x64，提供便携包和安装包两种分发方式：
+
+[GitHub Releases →](https://github.com/HalcyonAlcedo/WeConduct/releases/tag/0.8.1)

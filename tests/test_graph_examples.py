@@ -11,8 +11,11 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "tools" / "validate_graph_examples.py"
 SMOKE_PATH = ROOT / "docs" / "assets" / "graphs" / "smoke" / "flow-start.json"
-JS_PATH = ROOT / "docs" / "assets" / "javascripts" / "weconduct-graph.js"
-CSS_PATH = ROOT / "docs" / "assets" / "stylesheets" / "weconduct-graph.css"
+PACKAGE_PATH = ROOT / "package.json"
+MKDOCS_PATH = ROOT / "mkdocs.yml"
+GRAPH_RUNTIME_ROOT = ROOT / "graph-runtime" / "src"
+JS_PATH = ROOT / "docs" / "assets" / "graph-runtime" / "weconduct-graph.js"
+CSS_PATH = ROOT / "docs" / "assets" / "graph-runtime" / "weconduct-graph.css"
 DOC_PATH = ROOT / "docs" / "weconduct" / "reference" / "embedded-graphs.md"
 
 
@@ -212,321 +215,72 @@ def test_validate_graph_examples_rejects_empty_node_list(tmp_path: Path) -> None
     assert "at least one node" in combined
 
 
-def test_embedded_graph_javascript_runtime_hardening_behaviors() -> None:
-    script = f"""
-const fs = require("fs");
-const vm = require("vm");
+def test_embedded_graph_uses_version_locked_vue_flow_runtime() -> None:
+    package = read_json(PACKAGE_PATH)
+    assert package["dependencies"]["vue"] == "3.5.34"
+    assert package["dependencies"]["@vue-flow/core"] == "1.48.2"
+    assert package["dependencies"]["@vue-flow/background"] == "1.3.2"
+    assert package["dependencies"]["@vue-flow/controls"] == "1.1.3"
+    assert package["dependencies"]["@vue-flow/minimap"] == "1.5.4"
 
-const source = fs.readFileSync({json.dumps(str(JS_PATH))}, "utf8");
-const registrations = new Map();
-
-class FakeHTMLElement {{
-  constructor() {{
-    this._attrs = new Map();
-    this.isConnected = true;
-    this.classList = {{ add() {{}} }};
-  }}
-  setAttribute(name, value) {{ this._attrs.set(name, String(value)); }}
-  getAttribute(name) {{ return this._attrs.has(name) ? this._attrs.get(name) : null; }}
-}}
-
-const context = {{
-  console,
-  AbortController,
-  HTMLElement: FakeHTMLElement,
-  customElements: {{
-    define(name, ctor) {{ registrations.set(name, ctor); }},
-    get(name) {{ return registrations.get(name); }},
-  }},
-  document: {{
-    fullscreenElement: null,
-    addEventListener() {{}},
-    removeEventListener() {{}},
-    exitFullscreen() {{ return Promise.resolve(); }},
-  }},
-  window: {{}},
-  fetch() {{ return Promise.resolve({{ ok: true, json: async () => ({{}}) }}); }},
-}};
-context.globalThis = context;
-vm.runInNewContext(source, context, {{ filename: "weconduct-graph.js" }});
-const GraphCtor = registrations.get("weconduct-graph");
-if (!GraphCtor) {{
-  throw new Error("custom element not registered");
-}}
-
-let titleLoadCount = 0;
-const titleEl = new GraphCtor();
-titleEl._graphData = {{ nodes: [{{}}], edges: [] }};
-titleEl.updateRenderedTitle = () => {{ titleEl._titleUpdated = true; }};
-titleEl.renderGraph = (graph, title) => {{ titleEl._renderedTitle = title; }};
-titleEl.load = () => {{ titleLoadCount += 1; }};
-titleEl.attributeChangedCallback("title", "旧标题", "新标题");
-if (titleLoadCount !== 0) {{
-  throw new Error("title change should not trigger load");
-}}
-if (!titleEl._titleUpdated && titleEl._renderedTitle !== "新标题") {{
-  throw new Error("title change should update rendered title");
-}}
-
-const srcEl = new GraphCtor();
-let abortCount = 0;
-srcEl.abortActiveRequest = () => {{ abortCount += 1; }};
-srcEl.load = () => {{ srcEl._loaded = true; }};
-srcEl.attributeChangedCallback("src", "old.json", "new.json");
-if (abortCount !== 1 || !srcEl._loaded) {{
-  throw new Error("src change should abort stale request and reload");
-}}
-
-const disconnectEl = new GraphCtor();
-let disconnectAbortCount = 0;
-disconnectEl.abortActiveRequest = () => {{ disconnectAbortCount += 1; }};
-disconnectEl.disconnectedCallback();
-if (disconnectAbortCount !== 1) {{
-  throw new Error("disconnectedCallback should abort active request");
-}}
-
-const fullscreenEl = new GraphCtor();
-let fullscreenError = null;
-fullscreenEl.renderError = (message) => {{ fullscreenError = message; }};
-fullscreenEl.requestFullscreen = () => Promise.reject(new Error("blocked"));
-fullscreenEl.toggleFullscreen().then(() => {{
-  if (!fullscreenError || !fullscreenError.includes("全屏")) {{
-    throw new Error("toggleFullscreen should surface readable fullscreen error");
-  }}
-}}).catch((error) => {{
-  throw error;
-}});
-
-const keyEl = new GraphCtor();
-keyEl._state.translateX = 0;
-keyEl._state.translateY = 0;
-keyEl._state.scale = 1;
-let fitCount = 0;
-keyEl.fitToGraph = () => {{ fitCount += 1; }};
-keyEl.updateTransform = () => {{}};
-keyEl.handleViewportKeydown({{ key: "ArrowRight", preventDefault() {{}} }});
-keyEl.handleViewportKeydown({{ key: "+", preventDefault() {{}} }});
-keyEl.handleViewportKeydown({{ key: "0", preventDefault() {{}} }});
-if (keyEl._state.translateX <= 0) {{
-  throw new Error("keyboard pan should move viewport");
-}}
-if (keyEl._state.scale <= 1) {{
-  throw new Error("keyboard zoom should increase scale");
-}}
-if (fitCount !== 1) {{
-  throw new Error("keyboard 0 should trigger fit");
-}}
-
-const pointerEl = new GraphCtor();
-pointerEl._state.pointerId = 7;
-pointerEl.clearPointerDrag();
-if (pointerEl._state.pointerId !== null) {{
-  throw new Error("clearPointerDrag should reset pointer state");
-}}
-"""
-    result = run_node_script(script)
-    assert result.returncode == 0, result.stderr or result.stdout
+    entrypoint = read_text(GRAPH_RUNTIME_ROOT / "index.ts")
+    assert "@vue-flow/core/dist/style.css" in entrypoint
+    assert "@vue-flow/controls/dist/style.css" in entrypoint
+    assert "@vue-flow/minimap/dist/style.css" in entrypoint
+    assert "registerWeConductGraph" in entrypoint
 
 
-def test_embedded_graph_preserves_latest_title_when_pending_request_resolves() -> None:
-    script = f"""
-const fs = require("fs");
-const vm = require("vm");
+def test_embedded_graph_source_contains_required_vue_flow_surface() -> None:
+    graph_embed = read_text(GRAPH_RUNTIME_ROOT / "GraphEmbed.vue")
+    node = read_text(GRAPH_RUNTIME_ROOT / "DocsBaseNode.vue")
+    custom_element = read_text(GRAPH_RUNTIME_ROOT / "custom-element.ts")
 
-const source = fs.readFileSync({json.dumps(str(JS_PATH))}, "utf8");
-const registrations = new Map();
-
-class FakeElement {{
-  constructor(tagName = "div", namespaceURI = null) {{
-    this.tagName = tagName.toUpperCase();
-    this.namespaceURI = namespaceURI;
-    this.children = [];
-    this.attributes = new Map();
-    this.style = {{}};
-    this.className = "";
-    this.classList = {{
-      add: (...names) => {{
-        const tokens = new Set((this.className || "").split(/\\s+/).filter(Boolean));
-        for (const name of names) tokens.add(name);
-        this.className = Array.from(tokens).join(" ");
-      }},
-    }};
-    this.textContent = "";
-    this.parentNode = null;
-    this.onpointerdown = null;
-    this.onpointermove = null;
-    this.onpointerup = null;
-    this.onpointercancel = null;
-    this.onlostpointercapture = null;
-    this.onkeydown = null;
-  }}
-  append(...nodes) {{
-    for (const node of nodes) {{
-      if (node == null) continue;
-      node.parentNode = this;
-      this.children.push(node);
-    }}
-  }}
-  setAttribute(name, value) {{
-    this.attributes.set(name, String(value));
-    if (name === "class") this.className = String(value);
-  }}
-  getAttribute(name) {{
-    return this.attributes.has(name) ? this.attributes.get(name) : null;
-  }}
-  addEventListener() {{}}
-  removeEventListener() {{}}
-  setPointerCapture() {{}}
-  releasePointerCapture() {{}}
-  querySelector(selector) {{
-    const matcher = (node) => {{
-      if (selector.startsWith(".")) {{
-        return (node.className || "").split(/\\s+/).includes(selector.slice(1));
-      }}
-      return false;
-    }};
-    const queue = [...this.children];
-    while (queue.length) {{
-      const node = queue.shift();
-      if (matcher(node)) return node;
-      queue.push(...(node.children || []));
-    }}
-    return null;
-  }}
-}}
-
-class FakeHTMLElement extends FakeElement {{
-  constructor() {{
-    super("weconduct-graph");
-    this._attrs = new Map();
-    this.isConnected = true;
-    this.innerHTML = "";
-  }}
-  setAttribute(name, value) {{
-    this._attrs.set(name, String(value));
-  }}
-  getAttribute(name) {{
-    return this._attrs.has(name) ? this._attrs.get(name) : null;
-  }}
-  append(...nodes) {{
-    this.children = [];
-    super.append(...nodes);
-  }}
-}}
-
-let pendingResolve = null;
-const graphPayload = {{
-  graph_model_id: "pending-title",
-  compilation_id: null,
-  graph_schema_version: "graph-v1",
-  nodes: [{{
-    node_id: "node-start",
-    node_kind: "flow.start",
-    display_name: "开始",
-    position: {{ x: 80, y: 96 }},
-    ports: [{{ port_id: "out", direction: "output", relation_layer: "control" }}],
-    node_config: {{}},
-  }}],
-  edges: [],
-}};
-
-const context = {{
-  console,
-  AbortController,
-  HTMLElement: FakeHTMLElement,
-  customElements: {{
-    define(name, ctor) {{ registrations.set(name, ctor); }},
-    get(name) {{ return registrations.get(name); }},
-  }},
-  document: {{
-    fullscreenElement: null,
-    addEventListener() {{}},
-    removeEventListener() {{}},
-    exitFullscreen() {{ return Promise.resolve(); }},
-    createElement(tag) {{ return new FakeElement(tag); }},
-    createElementNS(ns, tag) {{ return new FakeElement(tag, ns); }},
-  }},
-  window: {{}},
-  fetch() {{
-    return new Promise((resolve) => {{
-      pendingResolve = () => resolve({{
-        ok: true,
-        json: async () => graphPayload,
-      }});
-    }});
-  }},
-}};
-context.globalThis = context;
-vm.runInNewContext(source, context, {{ filename: "weconduct-graph.js" }});
-
-const GraphCtor = registrations.get("weconduct-graph");
-if (!GraphCtor) throw new Error("custom element not registered");
-
-async function main() {{
-  const element = new GraphCtor();
-  element.setAttribute("src", "pending.json");
-  element.setAttribute("title", "旧标题");
-  const loadPromise = element.load();
-  element.setAttribute("title", "新标题");
-  element.attributeChangedCallback("title", "旧标题", "新标题");
-  pendingResolve();
-  await loadPromise;
-  const titleNode = element._shell && element._shell.querySelector(".wc-graph-title");
-  if (!titleNode) {{
-    throw new Error("graph title node missing after load");
-  }}
-  if (titleNode.textContent !== "新标题") {{
-    throw new Error(`expected latest title after pending load, got ${{titleNode.textContent}}`);
-  }}
-}}
-
-main().catch((error) => {{
-  console.error(error && error.stack ? error.stack : String(error));
-  process.exit(1);
-}});
-"""
-    result = run_node_script(script)
-    assert result.returncode == 0, result.stderr or result.stdout
+    for component in ("VueFlow", "Background", "MiniMap", "Controls"):
+        assert component in graph_embed
+    assert "fit-view-on-init" in graph_embed
+    assert "toggleFullscreen" in graph_embed
+    assert "vf-node" in node
+    assert "vf-handle" in node
+    assert "vf-config" in node
+    assert "customElements.define" in custom_element
+    assert "resolveGraphSource" in custom_element
+    assert "AbortController" in custom_element
 
 
-def test_embedded_graph_javascript_contains_required_api_and_interactions() -> None:
-    script = read_text(JS_PATH)
-
-    assert 'customElements.define("weconduct-graph"' in script
-    assert "fetch(resolveGraphSource(src)" in script
-    assert 'assetMarker = "assets/graphs/"' in script
-    stylesheet = CSS_PATH.read_text(encoding="utf-8")
+def test_embedded_graph_stylesheet_contains_visual_and_responsive_contracts() -> None:
+    stylesheet = read_text(GRAPH_RUNTIME_ROOT / "runtime.css")
+    assert "weconduct-graph" in stylesheet
+    assert "[data-md-color-scheme=\"slate\"]" in stylesheet
+    assert ".node-execution" in stylesheet
+    assert ".node-control" in stylesheet
+    assert ".node-observe" in stylesheet
+    assert ".node-bridge" in stylesheet
+    assert ".vf-handle" in stylesheet
+    assert "--edge-control" in stylesheet
+    assert "vector-effect: non-scaling-stroke" in stylesheet
+    assert ".wc-metadata-panel" in stylesheet
+    assert ".wc-meta-tree-group" in stylesheet
+    assert ".wc-graph-viewport.has-metadata" in stylesheet
+    assert ".metadata-collapsed" in stylesheet
     assert "@media (max-width: 720px)" in stylesheet
-    assert "aspect-ratio: auto" in stylesheet
-    assert "max-width: 100%" in stylesheet
-    assert "AbortController" in script or "_requestToken" in script
-    assert "createElementNS(SVG_NS, \"svg\")" in script
-    assert "aria-label" in script
-    assert "fullscreen" in script.lower()
-    assert "pointerdown" in script
-    assert "pointermove" in script
-    assert "pointercancel" in script
-    assert "lostpointercapture" in script
-    assert "wheel" in script
-    assert "keydown" in script
-    assert "tabindex" in script.lower() or "tabIndex" in script
-    assert "requestFullscreen" in script
-    assert "catch" in script
-    assert "fit" in script.lower()
-    assert "zoom in" in script.lower() or "zoom-in" in script.lower()
-    assert "zoom out" in script.lower() or "zoom-out" in script.lower()
-    assert "Validation failed" in script or "加载失败" in script or "验证失败" in script
-
-
-def test_embedded_graph_stylesheet_contains_responsive_and_motion_contracts() -> None:
-    stylesheet = read_text(CSS_PATH)
-    assert "aspect-ratio" in stylesheet
     assert "prefers-reduced-motion" in stylesheet
-    assert ":host" in stylesheet or "weconduct-graph" in stylesheet
-    assert "--graph-control" in stylesheet or "--graph-data" in stylesheet
-    assert "overflow-wrap" in stylesheet or "word-break" in stylesheet
-    assert "text-overflow" in stylesheet or "min-width: 0" in stylesheet
-    assert "white-space" in stylesheet or "word-break" in stylesheet
+
+
+def test_embedded_graph_build_outputs_and_mkdocs_assets_are_vue_flow_only() -> None:
+    assert JS_PATH.is_file() and JS_PATH.stat().st_size > 0
+    assert CSS_PATH.is_file() and CSS_PATH.stat().st_size > 0
+    assert "process.env.NODE_ENV" not in read_text(JS_PATH)
+
+    mkdocs = read_text(MKDOCS_PATH)
+    graph_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in GRAPH_RUNTIME_ROOT.rglob("*")
+        if path.is_file()
+    )
+    assert "assets/graph-runtime/weconduct-graph.js" in mkdocs
+    assert "assets/graph-runtime/weconduct-graph.css" in mkdocs
+    assert "mermaid" not in mkdocs.lower()
+    assert "mermaid" not in graph_sources.lower()
 
 
 def test_embedded_graph_doc_contains_front_matter_and_live_example() -> None:

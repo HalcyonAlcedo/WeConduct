@@ -6,19 +6,19 @@ doc_id: weconduct:example:control-branch-and-loop
 
 # 条件分支与循环
 
-## 场景
+## 这个示例做什么
 
 初始化计数器，通过条件分支进入循环，并在满足退出条件后读取结果。
 
-## 前置条件
+## 准备工作
 
 不需要外部权限；编辑控制边时必须使用节点声明的 `true/false/loop/done/repeat` 端口。
 
 ## 流程图
 
-<weconduct-graph src="../../assets/graphs/examples/control-branch-and-loop.json" title="条件分支与循环">图示加载失败时，可按节点职责和配置步骤重建流程。</weconduct-graph>
+<weconduct-graph src="../../assets/graphs/examples/control-branch-and-loop.json" title="条件分支与循环">如果图示加载失败，你可以按照下方节点职责说明和配置步骤手动重建这个流程。</weconduct-graph>
 
-## 节点职责
+## 图中使用了哪些节点
 
 - [开始](../components/flow/components/start.md) (`flow.start`)：声明流程入口和初始变量。
 - [写入变量](../components/data/variables/set-variable.md) (`data.set_variable`)：写入运行时变量。
@@ -27,26 +27,26 @@ doc_id: weconduct:example:control-branch-and-loop
 - [条件循环](../components/control/loops/while.md) (`control.while`)：当条件保持为真时重复控制分支。
 - [读取变量](../components/data/variables/get-variable.md) (`data.get_variable`)：读取运行时变量。
 
-## 配置步骤
+## 如何运行
 
-1. 下载并解压项目，打开同名 `.weconduct.json` 主文件。
-2. 检查图中节点配置，把占位 URL、选择器、路径或凭据替换为实际值。
-3. 按前置条件开启最小必要权限，先保存项目，再执行校验和运行。
-4. 需要改动控制结构时，只连接各节点端口表中声明的控制或数据端口。
+1. 下载 ZIP 并解压到你的项目目录，用 WeConduct 打开其中的 `.weconduct.json` 文件。
+2. 逐个检查图中每个节点的配置，将示例中的占位 URL、选择器、文件路径或凭据替换为你自己的实际值。
+3. 根据上方的准备工作，在项目设置中开启必要的权限，然后保存项目、执行校验，确认无误后即可运行。
+4. 如果你调整了节点之间的连线，请确保每条边都连接到了节点端口表中实际声明的控制端口或数据端口。
 
-## 预期结果
+## 运行后应该看到什么
 
 计数器按循环结构递增，完成后读取 `counter`。
 
-## 失败诊断
+## 如果出错怎么办
 
 若图校验失败，检查循环回边是否接到允许的重复入口，以及表达式是否返回布尔值。
 
-保留诊断中的节点 ID、资源键、原始错误文本和会话状态，再判断是配置、权限、资源还是运行环境问题。
+排查时建议记录节点的 ID、资源键和完整的错误信息，先判断是配置问题、权限问题还是运行环境问题，再对症解决。
 
 ## 下载项目
 
 - [下载 control-branch-and-loop.zip](../../downloads/weconduct/0.8.1/control-branch-and-loop.zip)
 - [查看原始 graph-v1 JSON](../../assets/graphs/examples/control-branch-and-loop.json)
 
-下载包锁定 WeConduct 0.8.1。外部站点、凭据和网络响应不随示例分发。
+下载包基于 WeConduct 0.8.1 版本。示例中的 URL、选择器和凭据均为占位值，外部站点和网络响应不随示例分发。

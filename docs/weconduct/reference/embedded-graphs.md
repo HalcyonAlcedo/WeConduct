@@ -13,6 +13,14 @@ doc_id: weconduct:reference:embedded-graphs
 - `src`：指向 `docs/assets/graphs/**/*.json` 的相对 URL。页面内建议使用相对当前 Markdown 的路径。
 - `title`：图示标题，会显示在组件头部，也作为加载和错误状态的上下文说明。
 
+## 阅读操作
+
+- 单击节点只选择节点；双击节点会展开右侧只读元数据面板。
+- 元数据面板展示节点身份、位置、端口和完整配置，对象与数组可以逐层折叠。
+- 点击画布空白处关闭元数据面板；面板右上角按钮可以将其折叠为窄栏。
+- 滚轮缩放限制在 `0.45–1.5`，拖动画布空白区域可以查看当前教学图的局部内容。
+- 节点标题、端口、ID 和配置不会随缩放级别隐藏。
+
 ## JSON 要求
 
 - 文件必须是 `graph-v1` 顶层结构，至少包含 `graph_model_id`、`graph_schema_version`、`nodes`、`edges`、`root_metadata`。

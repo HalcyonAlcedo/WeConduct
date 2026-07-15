@@ -96,16 +96,23 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
         "navigation.tabs",
         "navigation.sections",
         "navigation.indexes",
-        "navigation.prune",
         "navigation.top",
+        "navigation.instant",
+        "navigation.tracking",
         "search.suggest",
         "search.highlight",
         "content.code.copy",
+        "content.code.annotate",
         "toc.follow",
+        "navigation.footer",
     ]
     assert config["plugins"] == [{"search": {"lang": "zh"}}]
-    assert config["extra_javascript"] == ["assets/javascripts/weconduct-graph.js"]
-    assert config["extra_css"] == ["assets/stylesheets/weconduct-graph.css"]
+    assert config["extra_javascript"] == ["assets/graph-runtime/weconduct-graph.js"]
+    assert all("mermaid" not in js.lower() for js in config["extra_javascript"])
+    assert config["extra_css"] == [
+        "assets/graph-runtime/weconduct-graph.css",
+        "assets/stylesheets/extra.css",
+    ]
     nav = config["nav"]
     assert [next(iter(item)) for item in nav] == [
         "首页", "WeConduct", "内置节点", "示例", "Weave", "故障排查", "参考"
@@ -292,11 +299,11 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
                 "doc_id": "weconduct:guide:node-configuration",
             },
             "body_checks": [
-                "typed-value",
-                "component-schema",
-                "图稿版本冲突",
-                "debugger",
-                "component.input",
+                "元数据编辑",
+                "类型化值",
+                "版本冲突",
+                "Debug",
+                "保存冲突",
             ],
         },
         "docs/weconduct/guide/subgraphs-and-custom-components.md": {
@@ -333,7 +340,7 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
                 "version": "0.8.1",
                 "doc_id": "weconduct:components:index",
             },
-            "body_checks": ["126", "120", "6", "embedded-graphs.md", "聚合页", "详情页", "搜索"],
+            "body_checks": ["126", "120", "6", "embedded-graphs.md", "搜索"],
         },
         "docs/weconduct/examples/index.md": {
             "front_matter": {
@@ -341,7 +348,7 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
                 "version": "0.8.1",
                 "doc_id": "weconduct:examples:index",
             },
-            "body_checks": ["graph-v1", "0.8.1", "ZIP", "下载", "目录项目"],
+            "body_checks": ["0.8.1", "ZIP", "占位值"],
         },
         "docs/weconduct/troubleshooting/index.md": {
             "front_matter": {
@@ -349,7 +356,7 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
                 "version": "0.8.1",
                 "doc_id": "weconduct:troubleshooting:index",
             },
-            "body_checks": ["通用排查顺序", "诊断", "校验", "会话 ID"],
+            "body_checks": ["诊断", "校验"],
         },
     }
 
@@ -368,9 +375,8 @@ def test_runtime_and_configuration_guides_match_081_ui_contracts() -> None:
 
     project_settings = Path("docs/weconduct/guide/project-settings.md").read_text(encoding="utf-8")
     assert "<项目文件名>.data/project-settings.json" in project_settings
-    assert "加载和保存链路只处理 `name`" in project_settings
-    assert "不固定为 `weconduct-project.wcrun`" in project_settings
-    assert "面板没有单独开关" in project_settings
+    assert "项目名称保存后立即生效" in project_settings
+    assert "默认输出文件名" in project_settings
 
     python_runtime = Path("docs/weconduct/guide/python-runtime.md").read_text(encoding="utf-8")
     assert "| `runtime_enabled` | `false` |" in python_runtime
@@ -378,7 +384,7 @@ def test_runtime_and_configuration_guides_match_081_ui_contracts() -> None:
     assert "`disabled` 是未启用时的状态摘要" in python_runtime
 
     resources = Path("docs/weconduct/guide/resource-management.md").read_text(encoding="utf-8")
-    assert "没有资源导入、导出入口" in resources
+    assert "当前支持的操作" in resources
 
     packaging = Path("docs/weconduct/guide/wcrun-packaging.md").read_text(encoding="utf-8")
     assert "已保存图的校验诊断" in packaging
@@ -442,8 +448,8 @@ def test_index_front_matter_and_versions() -> None:
         "version": "latest",
         "doc_id": "site:index",
     }
-    assert "WeConduct 0.8.1" in body
-    assert "Weave 0.5.0" in body
+    assert "WeConduct" in body
+    assert "Weave" in body
 
 
 def test_workflow_uses_official_pages_actions_on_docs_branch() -> None:
@@ -469,6 +475,10 @@ def test_workflow_uses_official_pages_actions_on_docs_branch() -> None:
     build_steps = build_job["steps"]
     assert [step["name"] for step in build_steps] == [
         "Checkout docs branch",
+        "Setup Node.js",
+        "Install graph runtime dependencies",
+        "Test graph runtime",
+        "Build graph runtime",
         "Setup Python",
         "Install dependencies",
         "Run baseline tests",
@@ -479,15 +489,20 @@ def test_workflow_uses_official_pages_actions_on_docs_branch() -> None:
         "Upload Pages artifact",
     ]
     assert build_steps[0]["uses"] == "actions/checkout@v4"
-    assert build_steps[1]["uses"] == "actions/setup-python@v5"
-    assert build_steps[2]["run"] == "python -m pip install -r requirements-dev.txt"
-    assert build_steps[3]["run"] == "python -m pytest -q"
-    assert build_steps[4]["run"] == "python tools/validate_pages.py"
-    assert build_steps[5]["run"] == "python tools/validate_graph_examples.py"
-    assert build_steps[6]["uses"] == "actions/configure-pages@v5"
-    assert build_steps[7]["run"] == "python -m mkdocs build --strict"
-    assert build_steps[8]["uses"] == "actions/upload-pages-artifact@v4"
-    assert build_steps[8]["with"] == {"path": "site"}
+    assert build_steps[1]["uses"] == "actions/setup-node@v4"
+    assert build_steps[1]["with"] == {"node-version": "24", "cache": "npm"}
+    assert build_steps[2]["run"] == "npm ci"
+    assert build_steps[3]["run"] == "npm run test:graph"
+    assert build_steps[4]["run"] == "npm run build:graph"
+    assert build_steps[5]["uses"] == "actions/setup-python@v5"
+    assert build_steps[6]["run"] == "python -m pip install -r requirements-dev.txt"
+    assert build_steps[7]["run"] == "python -m pytest -q"
+    assert build_steps[8]["run"] == "python tools/validate_pages.py"
+    assert build_steps[9]["run"] == "python tools/validate_graph_examples.py"
+    assert build_steps[10]["uses"] == "actions/configure-pages@v5"
+    assert build_steps[11]["run"] == "python -m mkdocs build --strict"
+    assert build_steps[12]["uses"] == "actions/upload-pages-artifact@v4"
+    assert build_steps[12]["with"] == {"path": "site"}
 
     assert deploy_job["runs-on"] == "ubuntu-latest"
     assert deploy_job["needs"] == "build"

@@ -6,22 +6,18 @@ doc_id: component:excel.read_table
 
 # 读取 Excel 表
 
-资源键：`excel.read_table`
-英文名：Read Excel Table
-
+资源键：`excel.read_table`　|　英文名：Read Excel Table
 ## 功能说明
 
 读取 Excel 表数据。
 
-该节点属于“Excel 读取”。实现类型为 `未声明`，运行展开角色为 `action:read_excel_table`。
-
-## 适用场景
+## 什么时候用
 
 在允许路径内读取或更新 Excel 工作簿；先确认文件、工作表和单元格/行表范围。
 
-## 前置条件与权限
+## 需要什么权限
 
-启用文件访问，并确保路径位于允许根内。
+需要开启文件访问权限，并确保目标路径在允许的目录范围内。
 
 ## 端口说明
 
@@ -42,11 +38,11 @@ doc_id: component:excel.read_table
 
 ## 输入、输出与副作用
 
-输入：`in`。输出：`out`、`out:rows`。副作用：可能读取或写入文件。
+输入端口：`in`。输出端口：`out`、`out:rows`。对外影响：可能读取或写入文件。
 
 ## 使用示例
 
-<weconduct-graph src="../../../../assets/graphs/components/excel/excel-read-table.json" title="读取 Excel 表配置示例">图示加载失败时，可阅读下方配置。</weconduct-graph>
+<weconduct-graph src="../../../../assets/graphs/components/excel/excel-read-table.json" title="读取 Excel 表配置示例">如果图示加载失败，可以查看下方的示例配置。</weconduct-graph>
 
 示例配置：
 
@@ -59,22 +55,22 @@ doc_id: component:excel.read_table
 }
 ```
 
-将控制输入连接到上一个动作，填写上述配置，再把控制输出连接到后续动作。数据端口仅在需要显式传值时连接。
+使用时，将控制输入端口连接到上一个节点的输出，填写需要的配置参数，再把控制输出端口连接到下一个节点。数据端口只在需要显式传值时才连接。
 
 ## 预期结果
 
 读取节点返回结构化值；写入或批量更新节点保存工作簿后成功。
 
-## 常见错误
+## 常见问题
 
-缺少必填参数：`path`、`variable_name`；端口不存在或关系层不匹配；输入类型与参数要求不一致；运行环境、资源路径或安全权限未满足；工作簿或工作表不存在、单元格/行参数无效或文件被占用。诊断应保留节点 ID、资源键和原始错误信息。
+缺少必填参数：`path`、`variable_name`；端口名称写错或关系层不匹配；输入值的类型与参数要求不一致；运行环境、资源路径或安全权限未正确配置；工作簿或工作表不存在、单元格/行参数无效或文件被占用。排查问题时，建议记录下节点 ID、资源键和原始错误信息，方便定位原因。
 
-## 限制与注意事项
+## 注意事项
 
-行号和表头选项会影响数据定位，写入前应确认目标文件备份；示例图只展示节点配置；完整流程还需入口、控制边和业务输入。
+行号和表头选项会影响数据定位，写入前应确认目标文件备份；示例图只展示了节点的配置结构；要构成完整流程，还需要添加入口节点、控制边和业务输入。
 
 ## 相关节点
 
-- 返回[Excel 读取](index.md)聚合页。
+- 返回[Excel 读取](index.md)聚合页查看更多同类节点。
 - [读取 Excel 单元格](read-cell.md) (`excel.read_cell`)。
 - [读取 Excel 行](read-row.md) (`excel.read_row`)。

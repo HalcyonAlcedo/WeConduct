@@ -8,24 +8,21 @@ doc_id: weconduct:guide:project-settings
 
 项目设置保存在 `<项目文件名>.data/project-settings.json`，只影响当前项目。通过 **文件 → 项目设置** 修改。
 
-## 项目身份
+## 项目名称
 
 | 配置 | 默认值 | 作用 |
 |---|---|---|
-| `name` | `WeConduct Workspace` | 项目显示名 |
-0.8.1 的项目设置面板虽然显示 `description`、`version`、`author` 和 `tags`，但加载和保存链路只处理 `name`。不要依赖其他四个输入框保存项目元数据；这是当前版本的已知限制。
+| `name` | `WeConduct Workspace` | 项目的显示名称 |
 
-`name` 保存后立即生效，不要求重启。
+项目名称保存后立即生效。面板中显示的其他身份字段（如描述、版本号等）在 0.8.1 中暂不会被保存，将在后续版本中完善。
 
-## Debug、资源与打包
+## Debug 与历史
 
-- `history_retention_limit = 10`：保留的 Debug 历史上限，影响后续历史写入。
-- `external_resources = []`：外部资源声明。
-- `embedded_resources = []`：嵌入资源路径。
-- `default_output_name`：包管理默认输出名。新项目会按项目文件名或项目名生成初始值，不固定为 `weconduct-project.wcrun`。
-- `include_embedded_resources = true`：构建包时包含声明的嵌入资源；0.8.1 面板没有单独开关。
+- `history_retention_limit = 10`：保留的 Debug 历史数量上限，超出后旧记录会被清理。
 
-这些设置在下一次保存、历史写入、预检或构建时生效。
+## 构建与打包
+
+- `default_output_name`：构建 `.wcrun` 包时的默认输出文件名。新项目会根据项目名称自动生成初始值。
 
 ## 项目 Python profile
 

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="docsDark" x1="14" y1="13" x2="31" y2="51" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1d4f73"/>
+      <stop offset="0.55" stop-color="#2b6f9c"/>
+      <stop offset="1" stop-color="#4a9bc5"/>
+    </linearGradient>
+    <linearGradient id="docsMid" x1="26" y1="14" x2="45" y2="51" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5aadcc"/>
+      <stop offset="1" stop-color="#2b6f9c"/>
+    </linearGradient>
+    <linearGradient id="docsLight" x1="34" y1="14" x2="54" y2="51" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#d8eff8"/>
+      <stop offset="1" stop-color="#4a8bb5"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#docsDark)" d="M14 13h8l2 28 6-11h4l-7 21H16z" />
+  <path fill="url(#docsMid)" d="M36 14h9L34 51h-8z" />
+  <path fill="url(#docsLight)" d="M46 14h8L43 51h-9z" />
+</svg>

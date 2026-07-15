@@ -8,24 +8,24 @@ doc_id: component-group:control-parallel
 
 覆盖并行分叉与汇合。
 
-## 如何选择
+## 节点速览
 
 | 节点 | 资源键 | 主要用途 |
 |---|---|---|
 | [并行汇合](join.md) | `control.join` | 等待一个或多个输入控制分支后再释放下一步。 |
 | [并行分叉](parallel-fork.md) | `control.parallel_fork` | 将一个控制令牌分发到多个命名控制分支。 |
 
-## 常见组合
+## 典型搭配
 
-可从 `并行汇合 → 并行分叉` 的顺序理解本组能力；实际连线必须按各节点端口和控制语义调整。
+这类节点通常会按 `并行汇合 → 并行分叉` 的顺序串联使用。具体的连线方式取决于每个节点的端口定义和控制流语义，建议在画布中实际连接后运行校验确认。
 
-## 组合图
+## 节点对比图
 
-<weconduct-graph src="../../../../assets/graphs/components/groups/control-parallel.json" title="并行控制节点概览">图示加载失败时，可使用下方节点列表。</weconduct-graph>
+<weconduct-graph src="../../../../assets/graphs/components/groups/control-parallel.json" title="并行控制节点概览">如果图示加载失败，可以使用下方的节点列表查看每个节点的信息。</weconduct-graph>
 
-该图用于比较节点外形、端口和默认配置，不代表可直接运行的完整流程。
+上图展示了本组节点的外观、端口和默认配置，方便你快速对比，但不能直接作为完整流程运行。
 
-## 节点列表
+## 全部节点
 
-- [并行汇合](join.md) (`control.join`)：组件库可见。
-- [并行分叉](parallel-fork.md) (`control.parallel_fork`)：组件库可见。
+- [并行汇合](join.md) (`control.join`)
+- [并行分叉](parallel-fork.md) (`control.parallel_fork`)

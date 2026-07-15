@@ -6,22 +6,18 @@ doc_id: component:session.apply_auth_session
 
 # 应用认证会话
 
-资源键：`session.apply_auth_session`
-英文名：Apply Auth Session
-
+资源键：`session.apply_auth_session`　|　英文名：Apply Auth Session
 ## 功能说明
 
 将认证产物应用到浏览器会话。
 
-该节点属于“页面上下文”。实现类型为 `未声明`，运行展开角色为 `action:apply_auth_session`。
+## 什么时候用
 
-## 适用场景
+当你需要 应用认证会话 功能时使用。
 
-在需要“应用认证会话”能力的流程中使用。
+## 需要什么权限
 
-## 前置条件与权限
-
-不要求额外程序权限；仍需满足图结构、输入类型和项目资源约束。
+该节点不需要额外的程序权限，但仍需要满足图结构、输入类型和项目资源的基本约束。
 
 ## 端口说明
 
@@ -39,11 +35,11 @@ doc_id: component:session.apply_auth_session
 
 ## 输入、输出与副作用
 
-输入：`in`。输出：`out`。副作用：主要更新运行时数据。
+输入端口：`in`。输出端口：`out`。对外影响：更新运行时数据。
 
 ## 使用示例
 
-<weconduct-graph src="../../../../assets/graphs/components/browser/session-apply-auth-session.json" title="应用认证会话配置示例">图示加载失败时，可阅读下方配置。</weconduct-graph>
+<weconduct-graph src="../../../../assets/graphs/components/browser/session-apply-auth-session.json" title="应用认证会话配置示例">如果图示加载失败，可以查看下方的示例配置。</weconduct-graph>
 
 示例配置：
 
@@ -54,23 +50,23 @@ doc_id: component:session.apply_auth_session
 }
 ```
 
-将控制输入连接到上一个动作，填写上述配置，再把控制输出连接到后续动作。数据端口仅在需要显式传值时连接。
+使用时，将控制输入端口连接到上一个节点的输出，填写需要的配置参数，再把控制输出端口连接到下一个节点。数据端口只在需要显式传值时才连接。
 
 ## 预期结果
 
-节点成功后返回 `status = succeeded`，控制流从声明的控制输出继续；无数据输出时通过会话事件和节点结果确认执行。
+节点执行成功后，状态为 `succeeded`，控制流继续向下一个节点传递。如果没有数据输出，可以通过运行日志和节点结果确认执行情况。
 
-## 常见错误
+## 常见问题
 
-端口不存在或关系层不匹配；输入类型与参数要求不一致。诊断应保留节点 ID、资源键和原始错误信息。
+端口名称写错或关系层不匹配；输入值的类型与参数要求不一致。排查问题时，建议记录下节点 ID、资源键和原始错误信息，方便定位原因。
 
-## 限制与注意事项
+## 注意事项
 
-示例图只展示节点配置；完整流程还需入口、控制边和业务输入。
+示例图只展示了节点的配置结构；要构成完整流程，还需要添加入口节点、控制边和业务输入。
 
 ## 相关节点
 
-- 返回[页面上下文](index.md)聚合页。
+- 返回[页面上下文](index.md)聚合页查看更多同类节点。
 - [切换到框架](switch-to-frame.md) (`browser.switch_to_frame`)。
 - [切换到父框架](switch-to-parent-frame.md) (`browser.switch_to_parent_frame`)。
 - [切换到默认内容](switch-to-default-content.md) (`browser.switch_to_default_content`)。

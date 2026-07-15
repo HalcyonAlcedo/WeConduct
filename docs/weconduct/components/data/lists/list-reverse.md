@@ -6,22 +6,18 @@ doc_id: component:data.list_reverse
 
 # 列表反转
 
-资源键：`data.list_reverse`
-英文名：List Reverse
-
+资源键：`data.list_reverse`　|　英文名：List Reverse
 ## 功能说明
 
 反转运行时列表。
 
-该节点属于“列表处理”。实现类型为 `builtin_custom_component`，运行展开角色为 `action:list_reverse`。
-
-## 适用场景
+## 什么时候用
 
 对运行时变量中的列表执行定位、读取或变更；索引从 `0` 开始。
 
-## 前置条件与权限
+## 需要什么权限
 
-不要求额外程序权限；仍需满足图结构、输入类型和项目资源约束。
+该节点不需要额外的程序权限，但仍需要满足图结构、输入类型和项目资源的基本约束。
 
 ## 端口说明
 
@@ -39,11 +35,11 @@ doc_id: component:data.list_reverse
 
 ## 输入、输出与副作用
 
-输入：`in`。输出：`out`、`out:value`。副作用：直接更新原列表变量。
+输入端口：`in`。输出端口：`out`、`out:value`。对外影响：直接更新原列表变量。
 
 ## 使用示例
 
-<weconduct-graph src="../../../../assets/graphs/components/data/data-list-reverse.json" title="列表反转配置示例">图示加载失败时，可阅读下方配置。</weconduct-graph>
+<weconduct-graph src="../../../../assets/graphs/components/data/data-list-reverse.json" title="列表反转配置示例">如果图示加载失败，可以查看下方的示例配置。</weconduct-graph>
 
 示例配置：
 
@@ -53,23 +49,23 @@ doc_id: component:data.list_reverse
 }
 ```
 
-将控制输入连接到上一个动作，填写上述配置，再把控制输出连接到后续动作。数据端口仅在需要显式传值时连接。
+使用时，将控制输入端口连接到上一个节点的输出，填写需要的配置参数，再把控制输出端口连接到下一个节点。数据端口只在需要显式传值时才连接。
 
 ## 预期结果
 
 列表操作完成后返回结果；变更类节点会保留更新后的原列表。
 
-## 常见错误
+## 常见问题
 
-缺少必填参数：`variable_name`；端口不存在或关系层不匹配；输入类型与参数要求不一致；目标变量不是列表、索引越界或待查找值不存在。诊断应保留节点 ID、资源键和原始错误信息。
+缺少必填参数：`variable_name`；端口名称写错或关系层不匹配；输入值的类型与参数要求不一致；目标变量不是列表、索引越界或待查找值不存在。排查问题时，建议记录下节点 ID、资源键和原始错误信息，方便定位原因。
 
-## 限制与注意事项
+## 注意事项
 
-切片的 `end` 遵循不包含结束位置的列表切片语义；示例图只展示节点配置；完整流程还需入口、控制边和业务输入。
+切片的 `end` 遵循不包含结束位置的列表切片语义；示例图只展示了节点的配置结构；要构成完整流程，还需要添加入口节点、控制边和业务输入。
 
 ## 相关节点
 
-- 返回[列表处理](index.md)聚合页。
+- 返回[列表处理](index.md)聚合页查看更多同类节点。
 - [创建列表](create-list.md) (`data.create_list`)。
 - [列表追加](list-append.md) (`data.list_append`)。
 - [列表扩展](list-extend.md) (`data.list_extend`)。

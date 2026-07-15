@@ -19,15 +19,15 @@ DEFAULT_MANIFEST_PATH = ROOT / "data" / "weconduct-0.8.1" / "components.json"
 DEFAULT_GROUPS_PATH = ROOT / "data" / "weconduct-0.8.1" / "component-groups.json"
 REQUIRED_COMPONENT_SECTIONS = [
     "功能说明",
-    "适用场景",
-    "前置条件与权限",
+    "什么时候用",
+    "需要什么权限",
     "端口说明",
     "配置参数",
     "输入、输出与副作用",
     "使用示例",
     "预期结果",
-    "常见错误",
-    "限制与注意事项",
+    "常见问题",
+    "注意事项",
     "相关节点",
 ]
 HEADING_RE = re.compile(r"^#{1,6}\s+(?P<title>.+?)\s*$", re.MULTILINE)

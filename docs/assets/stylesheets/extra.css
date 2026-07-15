@@ -1,0 +1,197 @@
+/* WeConduct Docs — 自定义主题样式 */
+
+/* ===== 品牌配色覆盖 ===== */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #2b6f9c;
+  --md-primary-fg-color--light: #4a8bb5;
+  --md-primary-fg-color--dark: #1d4f73;
+  --md-accent-fg-color: #3f7c57;
+  --md-accent-fg-color--transparent: rgba(63, 124, 87, 0.1);
+  --md-typeset-a-color: #2b6f9c;
+
+  /* 侧边栏 */
+  --md-default-bg-color: #ffffff;
+  --md-footer-bg-color: #1a2a35;
+  --md-footer-bg-color--dark: #131f27;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #3a7bab;
+  --md-primary-fg-color--light: #5a97c4;
+  --md-primary-fg-color--dark: #2a5d82;
+  --md-accent-fg-color: #4f9a6f;
+  --md-accent-fg-color--transparent: rgba(79, 154, 111, 0.1);
+  --md-typeset-a-color: #5a97c4;
+
+  --md-default-bg-color: #111820;
+  --md-footer-bg-color: #0a1218;
+  --md-footer-bg-color--dark: #060c10;
+}
+
+/* ===== 顶部导航栏渐变 ===== */
+.md-header {
+  background: linear-gradient(
+    135deg,
+    var(--md-primary-fg-color),
+    var(--md-primary-fg-color--dark)
+  );
+}
+
+/* ===== 排版优化 ===== */
+.md-typeset {
+  font-size: 0.95rem;
+  line-height: 1.75;
+}
+
+.md-typeset h1 {
+  font-weight: 700;
+  color: var(--md-default-fg-color);
+  letter-spacing: -0.02em;
+  margin-bottom: 0.6em;
+}
+
+.md-typeset h2 {
+  font-weight: 600;
+  margin-top: 2em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.md-typeset h3 {
+  font-weight: 600;
+  margin-top: 1.5em;
+}
+
+.md-typeset p {
+  margin-bottom: 1em;
+}
+
+/* ===== 代码块优化 ===== */
+.md-typeset code {
+  font-size: 0.9em;
+  border-radius: 0.3rem;
+  padding: 0.1em 0.35em;
+}
+
+.md-typeset pre > code {
+  font-size: 0.88em;
+  line-height: 1.6;
+  border-radius: 0.5rem;
+}
+
+/* ===== 表格优化 ===== */
+.md-typeset table:not([class]) {
+  font-size: 0.9rem;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.md-typeset table:not([class]) th {
+  background: var(--md-primary-fg-color);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.md-typeset table:not([class]) tr:nth-child(even) {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ===== 链接样式 ===== */
+.md-typeset a {
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 0.2em;
+  transition: text-decoration-color 0.2s ease;
+}
+
+.md-typeset a:hover {
+  text-decoration-color: currentColor;
+}
+
+/* ===== 侧边栏优化 ===== */
+.md-nav__link {
+  transition: color 0.15s ease;
+}
+
+.md-nav__link--active {
+  font-weight: 600;
+}
+
+/* ===== 公告栏 ===== */
+.md-banner {
+  background: linear-gradient(90deg, #2b6f9c, #3f7c57);
+  color: #ffffff;
+  text-align: center;
+  font-size: 0.85rem;
+}
+
+.md-banner a {
+  color: #ffffff;
+  text-decoration: underline;
+}
+
+/* ===== 页脚 ===== */
+.md-footer {
+  background: var(--md-footer-bg-color);
+}
+
+/* ===== 搜索框高亮 ===== */
+.md-search-result__teaser mark {
+  background: var(--md-accent-fg-color--transparent);
+  color: var(--md-accent-fg-color);
+  font-weight: 600;
+}
+
+/* ===== 返回顶部按钮 ===== */
+.md-top {
+  background: var(--md-primary-fg-color);
+  color: #ffffff;
+}
+
+/* ===== 代码复制按钮 ===== */
+.md-clipboard {
+  color: var(--md-default-fg-color--light);
+}
+
+.md-clipboard:hover {
+  color: var(--md-accent-fg-color);
+}
+
+/* ===== Admonition 美化 ===== */
+.md-typeset .admonition {
+  border-radius: 0.5rem;
+  border-left-width: 0.25rem;
+  font-size: 0.93rem;
+}
+
+/* ===== 移动端优化 ===== */
+@media (max-width: 720px) {
+  .md-typeset {
+    font-size: 0.92rem;
+    line-height: 1.7;
+  }
+
+  .md-typeset h1 {
+    font-size: 1.6rem;
+  }
+
+  .md-typeset h2 {
+    font-size: 1.3rem;
+  }
+}
+
+/* ===== 无障碍：减少动画 ===== */
+@media (prefers-reduced-motion: reduce) {
+  .md-header,
+  .md-typeset a,
+  .md-nav__link,
+  .md-clipboard {
+    transition: none;
+  }
+}

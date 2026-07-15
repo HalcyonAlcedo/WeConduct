@@ -62,10 +62,9 @@ def test_weave_docs_state_current_user_facing_limits() -> None:
     cooperation = (ROOT / "docs/weave/workflows/use-with-weconduct.md").read_text(encoding="utf-8")
     plugins = (ROOT / "docs/weave/guide/plugins.md").read_text(encoding="utf-8")
 
-    assert "内置“网络捕获”面板当前没有“重放”按钮" in network
-    assert "不能在当前内置 UI 里直接新增 Cookie" in storage
+    assert "暂不支持在内置界面中直接重放请求" in network
+    assert "不能创建" in storage
     assert "没有直接同步接口" in cooperation
     assert "只覆盖 0.5.0 的用户操作" in plugins
     assert "插件开发 API" in plugins
-    assert "尚未发布公开 Release 或可下载资产" in install
-    assert "便携产物" in install
+    assert "GitHub Releases" in install
