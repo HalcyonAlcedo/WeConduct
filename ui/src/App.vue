@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useCompilationStore } from '@/stores/compilationStore'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
@@ -8,10 +8,12 @@ import { useDockStore } from '@/stores/dockStore'
 import { useRuntimeStore } from '@/stores/runtimeStore'
 import { useToastStore } from '@/stores/toastStore'
 import { useUpdateStore } from '@/stores/updateStore'
+import { useStartupStore } from '@/stores/startupStore'
 import { useKeyboard } from '@/composables/useKeyboard'
 import CommandBar from '@/components/commandbar/CommandBar.vue'
 import StatusBar from '@/components/common/StatusBar.vue'
 import ToastContainer from '@/components/common/ToastContainer.vue'
+import StartupErrorScreen from '@/components/common/StartupErrorScreen.vue'
 
 const workspace = useWorkspaceStore()
 const compilation = useCompilationStore()
@@ -19,6 +21,10 @@ const graphWs = useGraphWorkspaceStore()
 const graphStore = useGraphStore()
 const toast = useToastStore()
 const updateStore = useUpdateStore()
+const startup = useStartupStore()
+
+/** When true, the app was force-started despite a non-blocking startup anomaly. */
+const forceStarted = ref(false)
 function shouldConfirmDeleteNode(): boolean {
   return ((workspace.snapshot as any)?.graph_workspace?.graph_preferences?.confirm_delete_node) !== false
 }
@@ -66,8 +72,8 @@ function beforeUnload(e: BeforeUnloadEvent) {
   }
 }
 
-onMounted(async () => {
-  await workspace.initialize()
+/** Post-connection bootstrap: update check + full workspace restore. */
+async function runWorkbenchBootstrap() {
   await updateStore.fetchStatus().catch(() => {})
   const shouldCheckUpdates = !!(workspace.snapshot?.preferences as any)?.program_settings?.check_updates_on_startup
   if (shouldCheckUpdates) {
@@ -85,13 +91,48 @@ onMounted(async () => {
     const runtime = useRuntimeStore()
     await runtime.refreshAll()
   }
+}
+
+/** Attempt to connect; on failure, run startup diagnostics to drive the error screen. */
+async function attemptStartup() {
+  await workspace.initialize()
+  if (workspace.connectionState === 'error') {
+    await startup.diagnose(workspace.initError)
+    return
+  }
+  startup.reset()
+  await runWorkbenchBootstrap()
+}
+
+/** 重试 / 恢复后重启：clear connection state and re-run the whole startup flow. */
+async function handleRestart() {
+  forceStarted.value = false
+  workspace.reset()
+  startup.reset()
+  await attemptStartup()
+}
+
+/** 强行启动（异常）：dismiss the blocking screen and proceed into the app. */
+async function handleForceStart() {
+  forceStarted.value = true
+  startup.reset()
+  await runWorkbenchBootstrap()
+}
+
+onMounted(async () => {
+  await attemptStartup()
   window.addEventListener('beforeunload', beforeUnload)
 })
 onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload) })
 </script>
 
 <template>
-  <div class="app-shell">
+  <StartupErrorScreen
+    v-if="startup.hasBlockingError"
+    @restart="handleRestart"
+    @force-start="handleForceStart"
+  />
+  <div v-else class="app-shell">
     <CommandBar />
     <main class="app-main">
       <router-view />

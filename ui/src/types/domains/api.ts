@@ -41,6 +41,45 @@ export interface SourceTemplate {
   source_text: string
 }
 
+// ===== GET /api/startup/diagnostics =====
+
+export type StartupSeverity = 'ok' | 'anomaly' | 'fault' | 'critical'
+
+export interface StartupSubsystemDiagnostic {
+  subsystem: string
+  label: string
+  location: string
+  status: string
+  severity: StartupSeverity
+  error_code: string | null
+  message: string
+  recoverable: boolean
+  recovery_target: string
+}
+
+export interface StartupDiagnosticsResponse {
+  generated_at: string
+  overall_severity: StartupSeverity
+  recoverable_targets: string[]
+  subsystems: StartupSubsystemDiagnostic[]
+  ui_hosting?: UiHosting
+}
+
+// ===== POST /api/startup/recover =====
+
+export interface StartupRecoverResult {
+  target: string
+  status: string
+  location: string
+  backup_path: string | null
+  message: string
+}
+
+export interface StartupRecoverResponse {
+  status: string
+  results: StartupRecoverResult[]
+}
+
 // ===== GET /api/health =====
 
 export interface HealthResponse {

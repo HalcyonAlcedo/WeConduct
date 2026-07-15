@@ -1,6 +1,7 @@
 import json
 import mimetypes
 from copy import deepcopy
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -64,6 +65,272 @@ def migrate_configuration_storage(preferences_path: str | Path) -> dict:
         legacy_preferences=legacy_preferences,
     )
     return {"program": program_result, "graph": graph_result}
+
+
+# ===== Startup diagnostics & recovery =====
+#
+# On startup the desktop shell must be able to report *why* it failed even when
+# the full workbench service cannot be constructed (e.g. a preferences or
+# workspace-state file left behind by a different program version). These
+# helpers probe each persisted file independently and never raise, so the
+# diagnostics endpoint stays available while the rest of the API is dead.
+
+# Severity tiers surfaced to the UI:
+#   "critical" — 无法启动: unrecoverable, the app cannot run.
+#   "fault"    — 故障: corrupt/incompatible config blocks startup, but the app
+#                 can be force-started after backing up + resetting the file.
+#   "anomaly"  — 异常: a startup problem that does not block usage.
+#   "ok"       — subsystem is healthy.
+_STARTUP_SEVERITY_RANK = {"ok": 0, "anomaly": 1, "fault": 2, "critical": 3}
+
+
+def _worst_startup_severity(severities: list[str]) -> str:
+    worst = "ok"
+    for severity in severities:
+        if _STARTUP_SEVERITY_RANK.get(severity, 0) > _STARTUP_SEVERITY_RANK[worst]:
+            worst = severity
+    return worst
+
+
+def _diagnose_workspace_state(path: Path) -> dict:
+    """workspace-state.json is required to build the service; corruption blocks startup."""
+    subsystem = {
+        "subsystem": "workspace_state",
+        "label": "工作区状态",
+        "location": str(path),
+        "status": "ok",
+        "severity": "ok",
+        "error_code": None,
+        "message": "工作区状态正常",
+        "recoverable": False,
+        "recovery_target": "workspace_state",
+    }
+    if not path.exists():
+        subsystem["message"] = "工作区状态文件不存在，将在启动时自动创建"
+        return subsystem
+    try:
+        FileWorkspaceStateStore(path).load()
+    except ValueError as exc:
+        subsystem.update(
+            status="invalid",
+            severity="fault",
+            error_code="workspace_state_invalid",
+            message=str(exc),
+            recoverable=True,
+        )
+    except OSError as exc:
+        subsystem.update(
+            status="unreadable",
+            severity="critical",
+            error_code="workspace_state_unreadable",
+            message=f"无法读取工作区状态文件: {exc}",
+            recoverable=False,
+        )
+    return subsystem
+
+
+def _diagnose_program_configuration(path: Path) -> dict:
+    """preferences.json — tolerated by the loader (falls back to defaults) → anomaly."""
+    subsystem = {
+        "subsystem": "preferences",
+        "label": "首选项配置",
+        "location": str(path),
+        "status": "ok",
+        "severity": "ok",
+        "error_code": None,
+        "message": "首选项配置正常",
+        "recoverable": False,
+        "recovery_target": "preferences",
+    }
+    if not path.exists():
+        subsystem["message"] = "首选项文件不存在，将使用默认配置"
+        return subsystem
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        subsystem.update(
+            status="unreadable",
+            severity="critical",
+            error_code="preferences_unreadable",
+            message=f"无法读取首选项文件: {exc}",
+            recoverable=False,
+        )
+        return subsystem
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        subsystem.update(
+            status="invalid_json",
+            severity="anomaly",
+            error_code="preferences_invalid_json",
+            message=f"首选项文件不是合法 JSON（将回退默认配置）: {exc}",
+            recoverable=True,
+        )
+        return subsystem
+    if not FileProgramConfigurationRepository.is_current_payload(payload):
+        subsystem.update(
+            status="incompatible",
+            severity="anomaly",
+            error_code="preferences_incompatible_format",
+            message="首选项文件为旧版本或不兼容格式，将迁移/回退默认配置",
+            recoverable=True,
+        )
+    return subsystem
+
+
+def _diagnose_graph_configuration(path: Path) -> dict:
+    """graph-preferences.json — tolerated by the loader → anomaly."""
+    subsystem = {
+        "subsystem": "graph_preferences",
+        "label": "图编辑器配置",
+        "location": str(path),
+        "status": "ok",
+        "severity": "ok",
+        "error_code": None,
+        "message": "图编辑器配置正常",
+        "recoverable": False,
+        "recovery_target": "graph_preferences",
+    }
+    if not path.exists():
+        subsystem["message"] = "图配置文件不存在，将使用默认配置"
+        return subsystem
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        subsystem.update(
+            status="unreadable",
+            severity="anomaly",
+            error_code="graph_preferences_unreadable",
+            message=f"无法读取图配置文件（将回退默认配置）: {exc}",
+            recoverable=True,
+        )
+        return subsystem
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        subsystem.update(
+            status="invalid_json",
+            severity="anomaly",
+            error_code="graph_preferences_invalid_json",
+            message=f"图配置文件不是合法 JSON（将回退默认配置）: {exc}",
+            recoverable=True,
+        )
+        return subsystem
+    if not FileGraphConfigurationRepository.is_current_payload(payload):
+        subsystem.update(
+            status="incompatible",
+            severity="anomaly",
+            error_code="graph_preferences_incompatible_format",
+            message="图配置文件为旧版本或不兼容格式，将迁移/回退默认配置",
+            recoverable=True,
+        )
+    return subsystem
+
+
+def build_startup_diagnostics(
+    preferences_path: str | Path,
+    workspace_state_path: str | Path | None = None,
+) -> dict:
+    """Probe every persisted startup file and classify the overall severity."""
+    preferences_path = Path(preferences_path)
+    workspace_state_path = (
+        Path(workspace_state_path)
+        if workspace_state_path is not None
+        else preferences_path.with_name("workspace-state.json")
+    )
+    graph_path = preferences_path.with_name("graph-preferences.json")
+
+    subsystems = [
+        _diagnose_workspace_state(workspace_state_path),
+        _diagnose_program_configuration(preferences_path),
+        _diagnose_graph_configuration(graph_path),
+    ]
+    overall_severity = _worst_startup_severity([s["severity"] for s in subsystems])
+    recoverable_targets = [
+        s["recovery_target"] for s in subsystems if s["recoverable"]
+    ]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "overall_severity": overall_severity,
+        "recoverable_targets": recoverable_targets,
+        "subsystems": subsystems,
+    }
+
+
+def _backup_corrupt_file(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = path.with_name(f"{path.name}.corrupt-{timestamp}.bak")
+    counter = 1
+    while backup_path.exists():
+        backup_path = path.with_name(f"{path.name}.corrupt-{timestamp}-{counter}.bak")
+        counter += 1
+    backup_path.write_bytes(path.read_bytes())
+    return str(backup_path)
+
+
+def recover_startup_target(
+    target: str,
+    preferences_path: str | Path,
+    workspace_state_path: str | Path | None = None,
+) -> dict:
+    """Back up and reset a corrupt startup file so the app can start on defaults."""
+    preferences_path = Path(preferences_path)
+    registry = build_builtin_configuration_registry()
+
+    if target == "workspace_state":
+        path = (
+            Path(workspace_state_path)
+            if workspace_state_path is not None
+            else preferences_path.with_name("workspace-state.json")
+        )
+        backup = _backup_corrupt_file(path)
+        # Remove the corrupt file; the workbench service rebuilds a valid default
+        # workspace state on next load.
+        if path.exists():
+            path.unlink()
+        return {
+            "target": target,
+            "status": "reset",
+            "location": str(path),
+            "backup_path": backup,
+            "message": "已备份并重置工作区状态，将在启动时重建默认状态",
+        }
+
+    if target == "preferences":
+        path = preferences_path
+        backup = _backup_corrupt_file(path)
+        repository = FileProgramConfigurationRepository(path)
+        ConfigurationService(
+            registry=registry,
+            repositories={"program": repository},
+        ).reset(scope="program")
+        return {
+            "target": target,
+            "status": "reset",
+            "location": str(path),
+            "backup_path": backup,
+            "message": "已备份并重置首选项为默认配置",
+        }
+
+    if target == "graph_preferences":
+        path = preferences_path.with_name("graph-preferences.json")
+        backup = _backup_corrupt_file(path)
+        repository = FileGraphConfigurationRepository(path)
+        ConfigurationService(
+            registry=registry,
+            repositories={"graph": repository},
+        ).reset(scope="graph")
+        return {
+            "target": target,
+            "status": "reset",
+            "location": str(path),
+            "backup_path": backup,
+            "message": "已备份并重置图编辑器配置为默认配置",
+        }
+
+    raise ValueError(f"unknown recovery target: {target}")
 
 
 class ApiServerClosingError(ValueError):
@@ -147,14 +414,27 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self) -> None:  # noqa: N802
-        try:
-            service = self._get_service()
-        except ValueError as exc:
-            self._write_workspace_state_error(exc)
-            return
         parsed_url = urlparse(self.path)
         query_params = parse_qs(parsed_url.query)
         request_path = parsed_url.path
+
+        # Startup diagnostics must stay reachable even when the workbench service
+        # cannot be constructed, so it runs before _get_service().
+        if request_path == "/api/startup/diagnostics":
+            self._handle_startup_diagnostics()
+            return
+
+        try:
+            service = self._get_service()
+        except ValueError as exc:
+            # /api/health is a liveness probe: report a degraded (but reachable)
+            # status with structured startup diagnostics instead of a bare error,
+            # so the UI can render the dedicated startup error screen.
+            if request_path == "/api/health":
+                self._write_degraded_health(exc)
+                return
+            self._write_workspace_state_error(exc)
+            return
         if self.path == "/api/health":
             payload = dict(service.get_runtime_health())
             payload["ui_hosting"] = self._build_ui_hosting_metadata()
@@ -549,6 +829,12 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             if not self._require_api_token():
                 return
             self._handle_host_read_file()
+            return
+
+        # Startup recovery must stay reachable even when the workbench service
+        # cannot be constructed, so it runs before _get_service().
+        if self.path == "/api/startup/recover":
+            self._handle_startup_recover()
             return
 
         try:
@@ -2352,6 +2638,76 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         ).encode("utf-8")
         self.wfile.write(body)
         self.wfile.flush()
+
+    def _handle_startup_diagnostics(self) -> None:
+        report = build_startup_diagnostics(
+            self._resolve_preferences_path(),
+            self._resolve_workspace_state_path(),
+        )
+        report["ui_hosting"] = self._build_ui_hosting_metadata()
+        self._write_json(HTTPStatus.OK, report)
+
+    def _handle_startup_recover(self) -> None:
+        try:
+            payload = self._read_optional_json_request_body() or {}
+            targets = payload.get("targets")
+            preferences_path = self._resolve_preferences_path()
+            workspace_state_path = self._resolve_workspace_state_path()
+            if targets is None:
+                # No explicit targets: recover everything the diagnostics flagged.
+                report = build_startup_diagnostics(
+                    preferences_path, workspace_state_path
+                )
+                targets = report["recoverable_targets"]
+            if not isinstance(targets, list) or not all(
+                isinstance(target, str) for target in targets
+            ):
+                raise ValueError("field must be a list of strings when provided: targets")
+        except ValueError as exc:
+            self._write_invalid_request_error(exc)
+            return
+
+        results: list[dict] = []
+        try:
+            for target in targets:
+                results.append(
+                    recover_startup_target(
+                        target, preferences_path, workspace_state_path
+                    )
+                )
+        except ValueError as exc:
+            self._write_invalid_request_error(exc)
+            return
+        except OSError as exc:
+            self._write_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {
+                    "error": "startup_recovery_failed",
+                    "message": f"恢复操作失败: {exc}",
+                    "results": results,
+                },
+            )
+            return
+
+        self._write_json(
+            HTTPStatus.OK,
+            {"status": "recovered", "results": results},
+        )
+
+    def _write_degraded_health(self, exc: ValueError) -> None:
+        self._write_json(
+            HTTPStatus.OK,
+            {
+                "status": "degraded",
+                "service": "weconduct-api",
+                "message": str(exc),
+                "startup_diagnostics": build_startup_diagnostics(
+                    self._resolve_preferences_path(),
+                    self._resolve_workspace_state_path(),
+                ),
+                "ui_hosting": self._build_ui_hosting_metadata(),
+            },
+        )
 
     def _read_json_request_body(self) -> dict:
         content_length = int(self.headers.get("Content-Length", "0"))

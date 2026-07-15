@@ -6,6 +6,9 @@ const registeredShortcuts = vi.hoisted(() => [] as any[])
 
 const workspaceState = vi.hoisted(() => ({
   initialize: vi.fn().mockResolvedValue(undefined),
+  reset: vi.fn(),
+  connectionState: 'connected' as string,
+  initError: null as unknown,
   snapshot: {
     preferences: {
       program_settings: {
@@ -57,6 +60,13 @@ const updateState = vi.hoisted(() => ({
   checkForUpdates: vi.fn().mockResolvedValue(null),
 }))
 
+const startupState = vi.hoisted(() => ({
+  hasBlockingError: false,
+  phase: 'idle' as string,
+  diagnose: vi.fn().mockResolvedValue(undefined),
+  reset: vi.fn(),
+}))
+
 vi.mock('@/composables/useKeyboard', () => ({
   useKeyboard: (shortcuts: any[]) => {
     registeredShortcuts.splice(0, registeredShortcuts.length, ...shortcuts)
@@ -83,6 +93,9 @@ vi.mock('@/stores/toastStore', () => ({
 vi.mock('@/stores/updateStore', () => ({
   useUpdateStore: () => updateState,
 }))
+vi.mock('@/stores/startupStore', () => ({
+  useStartupStore: () => startupState,
+}))
 vi.mock('@/stores/dockStore', () => ({
   useDockStore: () => ({
     restorePanel: vi.fn(),
@@ -96,6 +109,9 @@ vi.mock('@/components/common/StatusBar.vue', () => ({
 }))
 vi.mock('@/components/common/ToastContainer.vue', () => ({
   default: defineComponent({ setup() { return () => h('div', 'toast') } }),
+}))
+vi.mock('@/components/common/StartupErrorScreen.vue', () => ({
+  default: defineComponent({ setup() { return () => h('div', 'startup-error') } }),
 }))
 
 import App from './App.vue'

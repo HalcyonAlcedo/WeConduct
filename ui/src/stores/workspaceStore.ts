@@ -14,6 +14,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   // --- State ---
   const connectionState = ref<ConnectionState>('disconnected')
   const connectionError = ref<string | null>(null)
+  /** Raw error object from the last failed initialize(), for startup diagnostics. */
+  const initError = ref<unknown>(null)
   const health = ref<HealthResponse | null>(null)
   const snapshot = ref<SnapshotResponse | null>(null)
   const isInitialized = ref(false)
@@ -51,6 +53,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (isInitialized.value) return
     connectionState.value = 'connecting'
     connectionError.value = null
+    initError.value = null
 
     try {
       const [healthData, snapshotData] = await Promise.all([
@@ -69,6 +72,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     } catch (err) {
       connectionState.value = 'error'
       connectionError.value = err instanceof Error ? err.message : 'Failed to connect'
+      initError.value = err
       console.error('[WorkspaceStore] Initialization failed:', err)
       useProjectDiagnosticsStore().ingestApiError(err, { source: 'workspace', operation: 'workspace.initialize' })
     }
@@ -91,6 +95,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function reset() {
     connectionState.value = 'disconnected'
     connectionError.value = null
+    initError.value = null
     health.value = null
     snapshot.value = null
     isInitialized.value = false
@@ -100,6 +105,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   return {
     connectionState,
     connectionError,
+    initError,
     health,
     snapshot,
     isInitialized,

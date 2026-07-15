@@ -50,6 +50,8 @@ import type {
   PythonRuntimeGetResponse,
   PythonRuntimeActionResponse,
   PythonRuntimeExportResponse,
+  StartupDiagnosticsResponse,
+  StartupRecoverResponse,
 } from '@/types/domains/api'
 
 const API_BASE = '/api'
@@ -445,6 +447,31 @@ export function postPythonRuntimeExportBundle(body: { output_path: string; packa
 
 export function postSecurityEnableRequired(body: { confirm_high_risk: boolean }): Promise<import('@/types/domains/api').SecurityEnableRequiredResponse> {
   return request('/workbench/project/security/enable-required', { method: 'POST', body: JSON.stringify(body) })
+}
+
+// ===== Startup diagnostics & recovery =====
+
+/**
+ * Fetch the startup diagnostics report. Uses a bare fetch (not `request`) so it
+ * does NOT emit a `weconduct:api-error` event — this endpoint is itself the
+ * error-reporting path and stays reachable even when the workbench service is
+ * dead. Throws on transport failure (backend fully unreachable) so the caller
+ * can fall back to a client-side "critical" classification.
+ */
+export async function fetchStartupDiagnostics(): Promise<StartupDiagnosticsResponse> {
+  const res = await fetch(`${API_BASE}/startup/diagnostics`, {
+    headers: { 'Content-Type': 'application/json' },
+  })
+  const body = await res.json()
+  if (!res.ok) throw new ApiError(res.status, body)
+  return body as StartupDiagnosticsResponse
+}
+
+export function postStartupRecover(targets?: string[]): Promise<StartupRecoverResponse> {
+  return request<StartupRecoverResponse>('/startup/recover', {
+    method: 'POST',
+    body: JSON.stringify(targets ? { targets } : {}),
+  })
 }
 
 export { ApiError }
