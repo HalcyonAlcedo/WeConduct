@@ -186,13 +186,32 @@ weconduct-graph .wc-graph-fallback {
 }
 
 @media (max-width: 720px) {
+  weconduct-graph {
+    max-width: 100%;
+    min-width: 0;
+  }
+
   weconduct-graph .wc-graph {
-    min-height: 15rem;
+    aspect-ratio: auto;
+    width: 100%;
+    min-width: 0;
+    min-height: 20rem;
+    height: 20rem;
   }
 
   weconduct-graph .wc-graph-header {
-    align-items: flex-start;
-    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.65rem 0.7rem;
+  }
+
+  weconduct-graph .wc-graph-controls {
+    flex-shrink: 0;
+    gap: 0.3rem;
+  }
+
+  weconduct-graph .wc-graph-control {
+    width: 1.75rem;
+    height: 1.75rem;
   }
 }
 

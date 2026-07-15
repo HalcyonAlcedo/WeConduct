@@ -271,6 +271,17 @@ def validate_page_scope(page: dict[str, Any]) -> list[str]:
             errors.append(f"{relative_path} version mismatch: {version!r} expected '0.5.0'")
         return errors
 
+    if relative_path.startswith("reference/"):
+        if product != "site":
+            errors.append(f"{relative_path} product mismatch: {product!r} expected 'site'")
+        if version != "latest":
+            errors.append(f"{relative_path} version mismatch: {version!r} expected 'latest'")
+        if not isinstance(doc_id, str) or not doc_id.startswith("site:reference:"):
+            errors.append(
+                f"{relative_path} doc_id mismatch: {doc_id!r} expected prefix 'site:reference:'"
+            )
+        return errors
+
     errors.append(f"{relative_path} is outside supported product roots")
     return errors
 

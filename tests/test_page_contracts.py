@@ -117,6 +117,11 @@ def build_minimal_fixture(root: Path) -> tuple[Path, Path, Path]:
         {"product": "weave", "version": "0.5.0", "doc_id": "weave:overview"},
         ["# Weave"],
     )
+    write_markdown(
+        docs_root / "reference" / "status.md",
+        {"product": "site", "version": "latest", "doc_id": "site:reference:status"},
+        ["# Status"],
+    )
     return docs_root, manifest_path, groups_path
 
 
@@ -131,7 +136,7 @@ def test_validate_pages_accepts_valid_fixture(tmp_path: Path) -> None:
         str(groups_path),
     )
     assert result.returncode == 0, result.stderr or result.stdout
-    assert "pages=4" in result.stdout
+    assert "pages=5" in result.stdout
     assert "missing_component_pages=0" in result.stdout
     assert "missing_group_pages=0" in result.stdout
 

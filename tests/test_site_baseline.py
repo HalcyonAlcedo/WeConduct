@@ -156,8 +156,8 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
         target_path = docs_root / target_file
         assert target_path.exists(), f"{label} -> {target} 不存在"
         if target_file != "index.md":
-            assert target_file.startswith(("weconduct/", "weave/")), (
-                f"{label} -> {target} 未落在 weconduct/ 或 weave/ 下"
+            assert target_file.startswith(("weconduct/", "weave/", "reference/")), (
+                f"{label} -> {target} 未落在产品或站点参考目录下"
             )
         if fragment:
             anchors = collect_markdown_anchors(target_file)

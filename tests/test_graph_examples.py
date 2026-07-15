@@ -493,7 +493,12 @@ def test_embedded_graph_javascript_contains_required_api_and_interactions() -> N
     script = read_text(JS_PATH)
 
     assert 'customElements.define("weconduct-graph"' in script
-    assert "fetch(src" in script or "fetch(this.getAttribute(\"src\")" in script
+    assert "fetch(resolveGraphSource(src)" in script
+    assert 'assetMarker = "assets/graphs/"' in script
+    stylesheet = CSS_PATH.read_text(encoding="utf-8")
+    assert "@media (max-width: 720px)" in stylesheet
+    assert "aspect-ratio: auto" in stylesheet
+    assert "max-width: 100%" in stylesheet
     assert "AbortController" in script or "_requestToken" in script
     assert "createElementNS(SVG_NS, \"svg\")" in script
     assert "aria-label" in script

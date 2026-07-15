@@ -45,6 +45,24 @@
     return graph;
   }
 
+  function resolveGraphSource(source) {
+    const normalized = String(source || "").replace(/\\/g, "/");
+    const assetMarker = "assets/graphs/";
+    const markerIndex = normalized.indexOf(assetMarker);
+    if (markerIndex < 0) {
+      return source;
+    }
+    const scripts = Array.from(document.scripts || []);
+    const loader = scripts.find((script) =>
+      typeof script.src === "string" && script.src.includes("assets/javascripts/weconduct-graph.js")
+    );
+    if (!loader) {
+      return source;
+    }
+    const siteRoot = loader.src.split("assets/javascripts/weconduct-graph.js", 1)[0];
+    return `${siteRoot}${normalized.slice(markerIndex)}`;
+  }
+
   class WeConductGraphElement extends HTMLElement {
     static get observedAttributes() {
       return ["src", "title"];
@@ -125,7 +143,10 @@
       this.renderLoading(title);
 
       try {
-        const response = await fetch(src, { cache: "no-store", signal: controller.signal });
+        const response = await fetch(resolveGraphSource(src), {
+          cache: "no-store",
+          signal: controller.signal,
+        });
         if (!response.ok) {
           throw new Error(`加载失败：HTTP ${response.status}`);
         }
