@@ -1,0 +1,65 @@
+{
+  "graph_model_id": "graph:docs:component:browser.set_input_files",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-browser-set-input-files-1",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.set_input_files:1",
+      "expansion_role": "action:set_input_files",
+      "display_name": "设置上传文件",
+      "node_kind": "browser.set_input_files",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.selector"
+        },
+        {
+          "port_id": "in:path",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.path"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "path": "output/example.txt"
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

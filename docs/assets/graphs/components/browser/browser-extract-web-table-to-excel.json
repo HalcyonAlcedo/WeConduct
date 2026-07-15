@@ -1,0 +1,60 @@
+{
+  "graph_model_id": "graph:docs:component:browser.extract_web_table_to_excel",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-browser-extract-web-table-to-excel-1",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.extract_web_table_to_excel:1",
+      "expansion_role": "action:extract_web_table_to_excel",
+      "display_name": "提取网页表格到 Excel",
+      "node_kind": "browser.extract_web_table_to_excel",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.selector"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "path": "output/example.xlsx",
+        "sheet_name": "Sheet1"
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

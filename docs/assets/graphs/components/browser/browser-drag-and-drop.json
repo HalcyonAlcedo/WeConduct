@@ -1,0 +1,65 @@
+{
+  "graph_model_id": "graph:docs:component:browser.drag_and_drop",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-browser-drag-and-drop-1",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.drag_and_drop:1",
+      "expansion_role": "action:drag_and_drop",
+      "display_name": "拖放",
+      "node_kind": "browser.drag_and_drop",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:source_selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.source_selector"
+        },
+        {
+          "port_id": "in:target_selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.target_selector"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "source_selector": "#example",
+        "target_selector": "#example"
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

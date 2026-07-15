@@ -1,0 +1,60 @@
+{
+  "graph_model_id": "graph:docs:component:browser.keyboard_type",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-browser-keyboard-type-1",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.keyboard_type:1",
+      "expansion_role": "action:keyboard_type",
+      "display_name": "键盘输入",
+      "node_kind": "browser.keyboard_type",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:text",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.text"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "text": "example",
+        "delay_ms": 0
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}
