@@ -182,6 +182,8 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
             "body_checks": [
                 "Ctrl+Z",
                 "Ctrl+Y",
+                "Ctrl+C",
+                "Ctrl+V",
                 "复制节点",
                 "粘贴节点",
                 "元数据编辑",
