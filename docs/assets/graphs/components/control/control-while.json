@@ -1,0 +1,70 @@
+{
+  "graph_model_id": "graph:docs:component:control.while",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-control-while-1",
+      "lowered_kind": "control",
+      "source_anchor_ref": "docs:control.while:1",
+      "expansion_role": "control:while",
+      "display_name": "条件循环",
+      "node_kind": "control.while",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "repeat",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.repeat"
+        },
+        {
+          "port_id": "condition",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.condition"
+        },
+        {
+          "port_id": "loop",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.loop"
+        },
+        {
+          "port_id": "done",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.done"
+        }
+      ],
+      "node_config": {
+        "expression": "1 == 1"
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

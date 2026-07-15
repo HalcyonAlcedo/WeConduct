@@ -1,0 +1,56 @@
+{
+  "graph_model_id": "graph:docs:component:flow.start",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-flow-start-1",
+      "lowered_kind": "control",
+      "source_anchor_ref": "docs:flow.start:1",
+      "expansion_role": "flow:start",
+      "display_name": "开始",
+      "node_kind": "flow.start",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:variables",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.variables"
+        }
+      ],
+      "node_config": {
+        "initial_variables": {},
+        "browser_config": {
+          "headless": true,
+          "slow_mo_ms": 0
+        }
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

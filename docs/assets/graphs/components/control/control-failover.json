@@ -1,0 +1,64 @@
+{
+  "graph_model_id": "graph:docs:component:control.failover",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-control-failover-1",
+      "lowered_kind": "control",
+      "source_anchor_ref": "docs:control.failover:1",
+      "expansion_role": "control:failover",
+      "display_name": "故障切换",
+      "node_kind": "control.failover",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "primary",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.primary"
+        },
+        {
+          "port_id": "fallback:backup",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.fallback:backup"
+        },
+        {
+          "port_id": "failed",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.failed"
+        }
+      ],
+      "node_config": {
+        "fallback_expression": "1 == 1"
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}
