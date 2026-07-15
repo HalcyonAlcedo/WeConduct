@@ -1,0 +1,269 @@
+{
+  "graph_model_id": "graph:docs:group:browser-state-and-content",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-browser-element-screenshot-1",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.element_screenshot:1",
+      "expansion_role": "action:element_screenshot",
+      "display_name": "元素截图",
+      "node_kind": "browser.element_screenshot",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.selector"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "path": "output/example.txt"
+      }
+    },
+    {
+      "node_id": "node-browser-exists-2",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.exists:2",
+      "expansion_role": "action:exists",
+      "display_name": "元素存在",
+      "node_kind": "browser.exists",
+      "position": {
+        "x": 350,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.selector"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "variable_name": "result"
+      }
+    },
+    {
+      "node_id": "node-browser-get-html-3",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.get_html:3",
+      "expansion_role": "action:get_html",
+      "display_name": "读取 HTML",
+      "node_kind": "browser.get_html",
+      "position": {
+        "x": 640,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.selector"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "variable_name": "result"
+      }
+    },
+    {
+      "node_id": "node-browser-get-inner-html-4",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.get_inner_html:4",
+      "expansion_role": "action:get_inner_html",
+      "display_name": "读取内部 HTML",
+      "node_kind": "browser.get_inner_html",
+      "position": {
+        "x": 60,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.selector"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "variable_name": "result"
+      }
+    },
+    {
+      "node_id": "node-browser-is-checked-5",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.is_checked:5",
+      "expansion_role": "action:is_checked",
+      "display_name": "元素已勾选",
+      "node_kind": "browser.is_checked",
+      "position": {
+        "x": 350,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.selector"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "variable_name": "result"
+      }
+    },
+    {
+      "node_id": "node-browser-is-enabled-6",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.is_enabled:6",
+      "expansion_role": "action:is_enabled",
+      "display_name": "元素可用",
+      "node_kind": "browser.is_enabled",
+      "position": {
+        "x": 640,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.selector"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "variable_name": "result"
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

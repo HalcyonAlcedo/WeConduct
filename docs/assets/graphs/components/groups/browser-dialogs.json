@@ -1,0 +1,147 @@
+{
+  "graph_model_id": "graph:docs:group:browser-dialogs",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-dialog-handle-dialogs-1",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:dialog.handle_dialogs:1",
+      "expansion_role": "action:handle_dialogs",
+      "display_name": "处理对话框",
+      "node_kind": "dialog.handle_dialogs",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "clear_after": false
+      }
+    },
+    {
+      "node_id": "node-dialog-set-agent-config-2",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:dialog.set_agent_config:2",
+      "expansion_role": "action:set_agent_config",
+      "display_name": "设置对话框代理配置",
+      "node_kind": "dialog.set_agent_config",
+      "position": {
+        "x": 350,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "default_action": "accept",
+        "prompt_text": "example"
+      }
+    },
+    {
+      "node_id": "node-dialog-switch-dialog-mode-3",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:dialog.switch_dialog_mode:3",
+      "expansion_role": "action:switch_dialog_mode",
+      "display_name": "切换对话框模式",
+      "node_kind": "dialog.switch_dialog_mode",
+      "position": {
+        "x": 640,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "mode": "auto"
+      }
+    },
+    {
+      "node_id": "node-dialog-watch-dialogs-4",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:dialog.watch_dialogs:4",
+      "expansion_role": "action:watch_dialogs",
+      "display_name": "监听对话框",
+      "node_kind": "dialog.watch_dialogs",
+      "position": {
+        "x": 60,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:dialogs",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.dialogs"
+        }
+      ],
+      "node_config": {
+        "timeout": 0,
+        "variable_name": "result"
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

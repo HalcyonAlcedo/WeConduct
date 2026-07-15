@@ -1,0 +1,199 @@
+{
+  "graph_model_id": "graph:docs:group:browser-page-context",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-browser-open-frame-page-1",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.open_frame_page:1",
+      "expansion_role": "action:open_frame_page",
+      "display_name": "打开框架页面",
+      "node_kind": "browser.open_frame_page",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "name": "result",
+        "url_contains": "example",
+        "index": -1
+      }
+    },
+    {
+      "node_id": "node-browser-set-extra-headers-2",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.set_extra_headers:2",
+      "expansion_role": "action:set_extra_headers",
+      "display_name": "设置额外请求头",
+      "node_kind": "browser.set_extra_headers",
+      "position": {
+        "x": 350,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "headers": {}
+      }
+    },
+    {
+      "node_id": "node-browser-set-user-agent-3",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.set_user_agent:3",
+      "expansion_role": "action:set_user_agent",
+      "display_name": "设置 User-Agent",
+      "node_kind": "browser.set_user_agent",
+      "position": {
+        "x": 640,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "user_agent": "example"
+      }
+    },
+    {
+      "node_id": "node-browser-switch-to-default-content-4",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.switch_to_default_content:4",
+      "expansion_role": "action:switch_to_default_content",
+      "display_name": "切换到默认内容",
+      "node_kind": "browser.switch_to_default_content",
+      "position": {
+        "x": 60,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {}
+    },
+    {
+      "node_id": "node-browser-switch-to-frame-5",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.switch_to_frame:5",
+      "expansion_role": "action:switch_to_frame",
+      "display_name": "切换到框架",
+      "node_kind": "browser.switch_to_frame",
+      "position": {
+        "x": 350,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "name": "result",
+        "url_contains": "example",
+        "index": -1
+      }
+    },
+    {
+      "node_id": "node-browser-switch-to-parent-frame-6",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.switch_to_parent_frame:6",
+      "expansion_role": "action:switch_to_parent_frame",
+      "display_name": "切换到父框架",
+      "node_kind": "browser.switch_to_parent_frame",
+      "position": {
+        "x": 640,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {}
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

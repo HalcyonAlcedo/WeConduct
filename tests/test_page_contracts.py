@@ -272,7 +272,7 @@ def test_allow_incomplete_only_waives_missing_pages(tmp_path: Path) -> None:
     assert "0.8.1" in f"{malformed_result.stdout}\n{malformed_result.stderr}"
 
 
-def test_actual_repo_allow_incomplete_exits_zero_and_reports_missing_pages() -> None:
+def test_actual_repo_page_validation_reports_complete_component_catalog() -> None:
     result = run_validate_cli(
         "--docs-root",
         str(ROOT / "docs"),
@@ -283,5 +283,5 @@ def test_actual_repo_allow_incomplete_exits_zero_and_reports_missing_pages() -> 
         "--allow-incomplete",
     )
     assert result.returncode == 0, result.stderr or result.stdout
-    assert "missing_component_pages=126" in result.stdout
-    assert "missing_group_pages=25" in result.stdout
+    assert "missing_component_pages=0" in result.stdout
+    assert "missing_group_pages=0" in result.stdout

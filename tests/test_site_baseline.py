@@ -138,11 +138,17 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
     assert nav_targets["加载 .wcrun"] == "weconduct/guide/wcrun-loading.md"
     assert nav_targets["安全权限"] == "weconduct/reference/security-permissions.md"
     assert nav_targets["资源与安全"] == "weconduct/concepts/resources-and-security.md"
-    assert nav_targets["内置节点"] == "weconduct/components/index.md"
+    assert nav_targets["节点总览"] == "weconduct/components/index.md"
     assert nav_targets["示例"] == "weconduct/examples/index.md"
     assert nav_targets["Weave"] == "weave/index.md"
     assert nav_targets["故障排查"] == "weconduct/troubleshooting/index.md"
     assert nav_targets["参考"] == "weconduct/reference/embedded-graphs.md"
+
+    group_catalog = read_json("data/weconduct-0.8.1/component-groups.json")
+    nav_target_values = set(nav_targets.values())
+    for group in group_catalog["groups"]:
+        expected_path = group["index_path"].removeprefix("docs/")
+        assert expected_path in nav_target_values, f"聚合页未进入导航: {expected_path}"
 
     docs_root = ROOT / "docs"
     for label, target in collect_nav_targets(nav):
@@ -352,6 +358,39 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
         assert front_matter == page_contract["front_matter"]
         for needle in page_contract["body_checks"]:
             assert needle in body, f"{relative_path} 缺少关键信息 {needle!r}"
+
+
+def test_runtime_and_configuration_guides_match_081_ui_contracts() -> None:
+    execution_history = Path("docs/weconduct/guide/execution-history.md").read_text(encoding="utf-8")
+    assert "**任务执行** 面板" in execution_history
+    assert "**输出 → 历史** 显示的是编译历史" in execution_history
+    assert "不是完整节点事件、诊断或变量快照归档" in execution_history
+
+    project_settings = Path("docs/weconduct/guide/project-settings.md").read_text(encoding="utf-8")
+    assert "<项目文件名>.data/project-settings.json" in project_settings
+    assert "加载和保存链路只处理 `name`" in project_settings
+    assert "不固定为 `weconduct-project.wcrun`" in project_settings
+    assert "面板没有单独开关" in project_settings
+
+    python_runtime = Path("docs/weconduct/guide/python-runtime.md").read_text(encoding="utf-8")
+    assert "| `runtime_enabled` | `false` |" in python_runtime
+    assert "| `package_embed_mode` | `wheelhouse_rebuild` |" in python_runtime
+    assert "`disabled` 是未启用时的状态摘要" in python_runtime
+
+    resources = Path("docs/weconduct/guide/resource-management.md").read_text(encoding="utf-8")
+    assert "没有资源导入、导出入口" in resources
+
+    packaging = Path("docs/weconduct/guide/wcrun-packaging.md").read_text(encoding="utf-8")
+    assert "已保存图的校验诊断" in packaging
+    assert "必需外部资源是否缺少绑定" in packaging
+
+    loading = Path("docs/weconduct/guide/wcrun-loading.md").read_text(encoding="utf-8")
+    assert "实际路径字符串" in loading
+    assert "仅支持 `initial_variable`" in loading
+
+    permissions = Path("docs/weconduct/reference/security-permissions.md").read_text(encoding="utf-8")
+    assert "用户 `Downloads` 和 `custom_roots`" in permissions
+    assert "不会自动把用户 `Documents` 加入允许根" in permissions
 
 
 def test_docs_do_not_expose_internal_task_labels() -> None:

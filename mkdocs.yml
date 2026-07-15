@@ -101,7 +101,37 @@ nav:
           - 构建 .wcrun: weconduct/guide/wcrun-packaging.md
           - 加载 .wcrun: weconduct/guide/wcrun-loading.md
           - 安全权限: weconduct/reference/security-permissions.md
-  - 内置节点: weconduct/components/index.md
+  - 内置节点:
+      - 节点总览: weconduct/components/index.md
+      - 流程与控制:
+          - 流程与组件边界: weconduct/components/flow/components/index.md
+          - 分支控制: weconduct/components/control/branching/index.md
+          - 循环控制: weconduct/components/control/loops/index.md
+          - 并行控制: weconduct/components/control/parallel/index.md
+          - 可靠性控制: weconduct/components/control/reliability/index.md
+      - 浏览器:
+          - 页面导航: weconduct/components/browser/navigation/index.md
+          - 页面交互: weconduct/components/browser/interaction/index.md
+          - 等待条件: weconduct/components/browser/waits/index.md
+          - 页面上下文: weconduct/components/browser/page-context/index.md
+          - 页面状态与内容: weconduct/components/browser/state-and-content/index.md
+          - 存储与 Cookie: weconduct/components/browser/storage-and-cookies/index.md
+          - 网络与下载: weconduct/components/browser/network-and-downloads/index.md
+          - 脚本与提取: weconduct/components/browser/scripts-and-extraction/index.md
+          - 对话框处理: weconduct/components/browser/dialogs/index.md
+      - 数据:
+          - 变量读写: weconduct/components/data/variables/index.md
+          - 页面取值: weconduct/components/data/page-values/index.md
+          - 转换与表达式: weconduct/components/data/conversion-and-expressions/index.md
+          - 列表处理: weconduct/components/data/lists/index.md
+      - 文件与集成:
+          - 文本与 CSV 文件: weconduct/components/files/text-and-csv/index.md
+          - Excel 读取: weconduct/components/excel/read/index.md
+          - Excel 写入与更新: weconduct/components/excel/write-and-update/index.md
+          - HTTP 请求: weconduct/components/http/index.md
+          - Python 执行: weconduct/components/python/index.md
+          - 时间处理: weconduct/components/time/index.md
+      - 兼容与内部节点: weconduct/components/internal/compatibility/index.md
   - 示例: weconduct/examples/index.md
   - Weave: weave/index.md
   - 故障排查: weconduct/troubleshooting/index.md

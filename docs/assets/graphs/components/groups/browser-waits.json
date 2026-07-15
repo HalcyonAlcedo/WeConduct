@@ -1,0 +1,268 @@
+{
+  "graph_model_id": "graph:docs:group:browser-waits",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-browser-wait-for-attribute-1",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.wait_for_attribute:1",
+      "expansion_role": "action:wait_for_attribute",
+      "display_name": "等待属性",
+      "node_kind": "browser.wait_for_attribute",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.selector"
+        },
+        {
+          "port_id": "in:attribute",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.attribute"
+        },
+        {
+          "port_id": "in:value",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.value"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "attribute": "example",
+        "value": "example",
+        "match_mode": "equals",
+        "timeout": 10000
+      }
+    },
+    {
+      "node_id": "node-browser-wait-for-element-2",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.wait_for_element:2",
+      "expansion_role": "action:wait_for_element",
+      "display_name": "等待元素",
+      "node_kind": "browser.wait_for_element",
+      "position": {
+        "x": 350,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.selector"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "timeout": 10000
+      }
+    },
+    {
+      "node_id": "node-browser-wait-for-navigation-3",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.wait_for_navigation:3",
+      "expansion_role": "action:wait_for_navigation",
+      "display_name": "等待导航",
+      "node_kind": "browser.wait_for_navigation",
+      "position": {
+        "x": 640,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:url_pattern",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.url_pattern"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "url_pattern": "example",
+        "timeout": 15000
+      }
+    },
+    {
+      "node_id": "node-browser-wait-for-popup-4",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.wait_for_popup:4",
+      "expansion_role": "action:wait_for_popup",
+      "display_name": "等待弹窗",
+      "node_kind": "browser.wait_for_popup",
+      "position": {
+        "x": 60,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "timeout": 10000,
+        "activate": true,
+        "variable_name": "result"
+      }
+    },
+    {
+      "node_id": "node-browser-wait-for-text-5",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.wait_for_text:5",
+      "expansion_role": "action:wait_for_text",
+      "display_name": "等待文本",
+      "node_kind": "browser.wait_for_text",
+      "position": {
+        "x": 350,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.selector"
+        },
+        {
+          "port_id": "in:text",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.text"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "selector": "#example",
+        "text": "example",
+        "match_mode": "contains",
+        "timeout": 10000
+      }
+    },
+    {
+      "node_id": "node-browser-wait-for-timeout-6",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:browser.wait_for_timeout:6",
+      "expansion_role": "action:wait_for_timeout",
+      "display_name": "等待超时",
+      "node_kind": "browser.wait_for_timeout",
+      "position": {
+        "x": 640,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "timeout": 0
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

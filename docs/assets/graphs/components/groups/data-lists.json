@@ -1,0 +1,278 @@
+{
+  "graph_model_id": "graph:docs:group:data-lists",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-data-create-list-1",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:data.create_list:1",
+      "expansion_role": "action:create_list",
+      "display_name": "创建列表",
+      "node_kind": "data.create_list",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "variable_name": "result",
+        "items": []
+      }
+    },
+    {
+      "node_id": "node-data-list-append-2",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:data.list_append:2",
+      "expansion_role": "action:list_append",
+      "display_name": "列表追加",
+      "node_kind": "data.list_append",
+      "position": {
+        "x": 350,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:value",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.value"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "variable_name": "result",
+        "value": null
+      }
+    },
+    {
+      "node_id": "node-data-list-extend-3",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:data.list_extend:3",
+      "expansion_role": "action:list_extend",
+      "display_name": "列表扩展",
+      "node_kind": "data.list_extend",
+      "position": {
+        "x": 640,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:items",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.items"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "variable_name": "result",
+        "items": []
+      }
+    },
+    {
+      "node_id": "node-data-list-get-4",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:data.list_get:4",
+      "expansion_role": "action:list_get",
+      "display_name": "列表读取",
+      "node_kind": "data.list_get",
+      "position": {
+        "x": 60,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:index",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.index"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "variable_name": "result",
+        "index": 0,
+        "output_variable_name": "result"
+      }
+    },
+    {
+      "node_id": "node-data-list-index-5",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:data.list_index:5",
+      "expansion_role": "action:list_index",
+      "display_name": "列表索引",
+      "node_kind": "data.list_index",
+      "position": {
+        "x": 350,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:value",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.value"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "variable_name": "result",
+        "value": null,
+        "output_variable_name": "result"
+      }
+    },
+    {
+      "node_id": "node-data-list-insert-6",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:data.list_insert:6",
+      "expansion_role": "action:list_insert",
+      "display_name": "列表插入",
+      "node_kind": "data.list_insert",
+      "position": {
+        "x": 640,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:index",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.index"
+        },
+        {
+          "port_id": "in:value",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.value"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "variable_name": "result",
+        "index": 0,
+        "value": null
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

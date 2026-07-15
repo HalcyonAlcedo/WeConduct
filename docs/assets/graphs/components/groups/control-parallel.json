@@ -1,0 +1,113 @@
+{
+  "graph_model_id": "graph:docs:group:control-parallel",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-control-join-1",
+      "lowered_kind": "control",
+      "source_anchor_ref": "docs:control.join:1",
+      "expansion_role": "control:join",
+      "display_name": "并行汇合",
+      "node_kind": "control.join",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in:left",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.branch:left"
+        },
+        {
+          "port_id": "in:right",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.branch:right"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "branches": [
+          {
+            "key": "left",
+            "label": "Left"
+          },
+          {
+            "key": "right",
+            "label": "Right"
+          }
+        ],
+        "mode": "all",
+        "quorum": null
+      }
+    },
+    {
+      "node_id": "node-control-parallel-fork-2",
+      "lowered_kind": "control",
+      "source_anchor_ref": "docs:control.parallel_fork:2",
+      "expansion_role": "control:parallel_fork",
+      "display_name": "并行分叉",
+      "node_kind": "control.parallel_fork",
+      "position": {
+        "x": 350,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "branch:left",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.branch:left"
+        },
+        {
+          "port_id": "branch:right",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.branch:right"
+        }
+      ],
+      "node_config": {
+        "branches": [
+          {
+            "key": "left",
+            "label": "Left"
+          },
+          {
+            "key": "right",
+            "label": "Right"
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

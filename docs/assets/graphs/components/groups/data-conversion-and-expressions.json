@@ -1,0 +1,209 @@
+{
+  "graph_model_id": "graph:docs:group:data-conversion-and-expressions",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-data-convert-value-1",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:data.convert_value:1",
+      "expansion_role": "action:convert_value",
+      "display_name": "转换变量类型",
+      "node_kind": "data.convert_value",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:source_value",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.source_value"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "source_value": null,
+        "target_type": "string",
+        "variable_name": "result",
+        "in_place": false,
+        "source_variable_name": "example"
+      }
+    },
+    {
+      "node_id": "node-data-evaluate-expression-2",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:data.evaluate_expression:2",
+      "expansion_role": "action:evaluate_expression",
+      "display_name": "计算表达式",
+      "node_kind": "data.evaluate_expression",
+      "position": {
+        "x": 350,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:expression",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.expression"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "expression": "1 == 1",
+        "variable_name": "result"
+      }
+    },
+    {
+      "node_id": "node-data-map-3",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:data.map:3",
+      "expansion_role": "action:map",
+      "display_name": "数据映射",
+      "node_kind": "data.map",
+      "position": {
+        "x": 640,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:source",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.source"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "source": null,
+        "variable_name": "result",
+        "mode": "map"
+      }
+    },
+    {
+      "node_id": "node-data-regex-replace-4",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:data.regex_replace:4",
+      "expansion_role": "action:regex_replace",
+      "display_name": "正则替换",
+      "node_kind": "data.regex_replace",
+      "position": {
+        "x": 60,
+        "y": 270
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:text",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.text"
+        },
+        {
+          "port_id": "in:pattern",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.pattern"
+        },
+        {
+          "port_id": "in:replacement",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.replacement"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "text": "example",
+        "pattern": "example",
+        "replacement": "example",
+        "variable_name": "result"
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}
