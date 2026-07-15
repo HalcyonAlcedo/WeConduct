@@ -132,7 +132,35 @@ nav:
           - Python 执行: weconduct/components/python/index.md
           - 时间处理: weconduct/components/time/index.md
       - 兼容与内部节点: weconduct/components/internal/compatibility/index.md
-  - 示例: weconduct/examples/index.md
-  - Weave: weave/index.md
+  - 示例:
+      - 示例总览: weconduct/examples/index.md
+      - 浏览器表单自动化: weconduct/examples/browser-form-automation.md
+      - 网页表格导出 Excel: weconduct/examples/browser-table-to-excel.md
+      - 浏览器认证会话: weconduct/examples/browser-auth-session.md
+      - 列表整理与统计: weconduct/examples/data-list-processing.md
+      - CSV 读取与文本输出: weconduct/examples/file-csv-transformation.md
+      - 条件分支与循环: weconduct/examples/control-branch-and-loop.md
+      - 并行、重试与故障切换: weconduct/examples/parallel-retry-failover.md
+      - HTTP 与 Python 处理: weconduct/examples/http-and-python-processing.md
+      - 自定义组件边界: weconduct/examples/custom-component.md
+      - .wcrun 打包工作流: weconduct/examples/wcrun-package-workflow.md
+  - Weave:
+      - Weave 总览: weave/index.md
+      - 开始使用:
+          - 安装与更新: weave/getting-started/install-and-update.md
+          - 工作区: weave/guide/workspaces.md
+          - 浏览器会话: weave/guide/browser-sessions.md
+      - 页面分析:
+          - 页面树与搜索: weave/guide/page-tree-and-search.md
+          - 节点详情与选择器: weave/guide/node-details-and-selectors.md
+          - 叠加层与检查模式: weave/guide/overlay-and-inspect-mode.md
+      - 浏览器工具:
+          - 网络捕获与重放: weave/guide/network-capture-and-replay.md
+          - 拦截规则: weave/guide/intercept-rules.md
+          - 浏览器存储: weave/guide/browser-storage.md
+          - 布局与设置: weave/guide/layout-and-settings.md
+          - 插件: weave/guide/plugins.md
+      - 与 WeConduct 配合: weave/workflows/use-with-weconduct.md
+      - Weave 故障排查: weave/troubleshooting/index.md
   - 故障排查: weconduct/troubleshooting/index.md
   - 参考: weconduct/reference/embedded-graphs.md
