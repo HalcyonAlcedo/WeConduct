@@ -1,0 +1,215 @@
+{
+  "graph_model_id": "graph:docs:example:file-csv-transformation",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-1",
+      "lowered_kind": "control",
+      "source_anchor_ref": "docs:example:file-csv-transformation:1",
+      "expansion_role": "flow:start",
+      "display_name": "开始",
+      "node_kind": "flow.start",
+      "position": {
+        "x": 60,
+        "y": 70
+      },
+      "ports": [
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:variables",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.variables"
+        }
+      ],
+      "node_config": {
+        "initial_variables": {},
+        "browser_config": {
+          "headless": true,
+          "slow_mo_ms": 0
+        }
+      }
+    },
+    {
+      "node_id": "node-2",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:example:file-csv-transformation:2",
+      "expansion_role": "action:read_csv_table",
+      "display_name": "读取 CSV 表",
+      "node_kind": "file.read_csv_table",
+      "position": {
+        "x": 350,
+        "y": 70
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:rows",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.rows"
+        }
+      ],
+      "node_config": {
+        "path": "sample/input.csv",
+        "encoding": "utf-8",
+        "has_header": true,
+        "variable_name": "rows"
+      }
+    },
+    {
+      "node_id": "node-3",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:example:file-csv-transformation:3",
+      "expansion_role": "action:map",
+      "display_name": "数据映射",
+      "node_kind": "data.map",
+      "position": {
+        "x": 640,
+        "y": 70
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:source",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.source"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "source": null,
+        "variable_name": "csv_rows",
+        "mode": "map"
+      }
+    },
+    {
+      "node_id": "node-4",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:example:file-csv-transformation:4",
+      "expansion_role": "action:write_text_file",
+      "display_name": "写入文本文件",
+      "node_kind": "file.write_text_file",
+      "position": {
+        "x": 930,
+        "y": 70
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:content",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.content"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "path": "output/summary.txt",
+        "encoding": "utf-8",
+        "content": "CSV 已读取，结果位于变量 rows。"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "edge-1",
+      "relation_layer": "control",
+      "from_node_id": "node-1",
+      "to_node_id": "node-2",
+      "from_port_id": "out",
+      "to_port_id": "in"
+    },
+    {
+      "edge_id": "edge-2",
+      "relation_layer": "control",
+      "from_node_id": "node-2",
+      "to_node_id": "node-3",
+      "from_port_id": "out",
+      "to_port_id": "in"
+    },
+    {
+      "edge_id": "edge-3",
+      "relation_layer": "control",
+      "from_node_id": "node-3",
+      "to_node_id": "node-4",
+      "from_port_id": "out",
+      "to_port_id": "in"
+    },
+    {
+      "edge_id": "edge-4",
+      "relation_layer": "data",
+      "from_node_id": "node-2",
+      "to_node_id": "node-3",
+      "from_port_id": "out:rows",
+      "to_port_id": "in:source"
+    },
+    {
+      "edge_id": "edge-5",
+      "relation_layer": "data",
+      "from_node_id": "node-3",
+      "to_node_id": "node-4",
+      "from_port_id": "out:value",
+      "to_port_id": "in:content"
+    }
+  ],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

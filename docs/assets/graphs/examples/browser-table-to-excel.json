@@ -1,0 +1,145 @@
+{
+  "graph_model_id": "graph:docs:example:browser-table-to-excel",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-1",
+      "lowered_kind": "control",
+      "source_anchor_ref": "docs:example:browser-table-to-excel:1",
+      "expansion_role": "flow:start",
+      "display_name": "开始",
+      "node_kind": "flow.start",
+      "position": {
+        "x": 60,
+        "y": 70
+      },
+      "ports": [
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:variables",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.variables"
+        }
+      ],
+      "node_config": {
+        "initial_variables": {},
+        "browser_config": {
+          "headless": true,
+          "slow_mo_ms": 0
+        }
+      }
+    },
+    {
+      "node_id": "node-2",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:example:browser-table-to-excel:2",
+      "expansion_role": "action:navigate",
+      "display_name": "导航",
+      "node_kind": "browser.navigate",
+      "position": {
+        "x": 350,
+        "y": 70
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:url",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.url"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "url": "https://example.com/table"
+      }
+    },
+    {
+      "node_id": "node-3",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:example:browser-table-to-excel:3",
+      "expansion_role": "action:extract_web_table_to_excel",
+      "display_name": "提取网页表格到 Excel",
+      "node_kind": "browser.extract_web_table_to_excel",
+      "position": {
+        "x": 640,
+        "y": 70
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:selector",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.selector"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        }
+      ],
+      "node_config": {
+        "selector": "table",
+        "path": "output/table.xlsx",
+        "sheet_name": "Data"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "edge-1",
+      "relation_layer": "control",
+      "from_node_id": "node-1",
+      "to_node_id": "node-2",
+      "from_port_id": "out",
+      "to_port_id": "in"
+    },
+    {
+      "edge_id": "edge-2",
+      "relation_layer": "control",
+      "from_node_id": "node-2",
+      "to_node_id": "node-3",
+      "from_port_id": "out",
+      "to_port_id": "in"
+    }
+  ],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

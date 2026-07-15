@@ -1,0 +1,242 @@
+{
+  "graph_model_id": "graph:docs:example:data-list-processing",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-1",
+      "lowered_kind": "control",
+      "source_anchor_ref": "docs:example:data-list-processing:1",
+      "expansion_role": "flow:start",
+      "display_name": "开始",
+      "node_kind": "flow.start",
+      "position": {
+        "x": 60,
+        "y": 70
+      },
+      "ports": [
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:variables",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.variables"
+        }
+      ],
+      "node_config": {
+        "initial_variables": {},
+        "browser_config": {
+          "headless": true,
+          "slow_mo_ms": 0
+        }
+      }
+    },
+    {
+      "node_id": "node-2",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:example:data-list-processing:2",
+      "expansion_role": "action:create_list",
+      "display_name": "创建列表",
+      "node_kind": "data.create_list",
+      "position": {
+        "x": 350,
+        "y": 70
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "variable_name": "numbers",
+        "items": [
+          3,
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "node_id": "node-3",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:example:data-list-processing:3",
+      "expansion_role": "action:list_append",
+      "display_name": "列表追加",
+      "node_kind": "data.list_append",
+      "position": {
+        "x": 640,
+        "y": 70
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "in:value",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.value"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "variable_name": "numbers",
+        "value": 4
+      }
+    },
+    {
+      "node_id": "node-4",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:example:data-list-processing:4",
+      "expansion_role": "action:list_sort",
+      "display_name": "列表排序",
+      "node_kind": "data.list_sort",
+      "position": {
+        "x": 930,
+        "y": 70
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "variable_name": "numbers"
+      }
+    },
+    {
+      "node_id": "node-5",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:example:data-list-processing:5",
+      "expansion_role": "action:list_length",
+      "display_name": "列表长度",
+      "node_kind": "data.list_length",
+      "position": {
+        "x": 60,
+        "y": 280
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "out:value",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.value"
+        }
+      ],
+      "node_config": {
+        "variable_name": "numbers",
+        "output_variable_name": "count"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "edge-1",
+      "relation_layer": "control",
+      "from_node_id": "node-1",
+      "to_node_id": "node-2",
+      "from_port_id": "out",
+      "to_port_id": "in"
+    },
+    {
+      "edge_id": "edge-2",
+      "relation_layer": "control",
+      "from_node_id": "node-2",
+      "to_node_id": "node-3",
+      "from_port_id": "out",
+      "to_port_id": "in"
+    },
+    {
+      "edge_id": "edge-3",
+      "relation_layer": "control",
+      "from_node_id": "node-3",
+      "to_node_id": "node-4",
+      "from_port_id": "out",
+      "to_port_id": "in"
+    },
+    {
+      "edge_id": "edge-4",
+      "relation_layer": "control",
+      "from_node_id": "node-4",
+      "to_node_id": "node-5",
+      "from_port_id": "out",
+      "to_port_id": "in"
+    }
+  ],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.6.2",
+      "built_with_app_version": "0.8.1",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.8.1",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}
