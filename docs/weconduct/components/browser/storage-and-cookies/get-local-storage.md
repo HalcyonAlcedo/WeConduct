@@ -6,7 +6,7 @@ doc_id: component:browser.get_local_storage
 
 # 读取本地存储
 
-资源键：`browser.get_local_storage`  
+资源键：`browser.get_local_storage`
 英文名：Get Local Storage
 
 ## 功能说明

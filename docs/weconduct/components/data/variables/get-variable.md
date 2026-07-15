@@ -6,7 +6,7 @@ doc_id: component:data.get_variable
 
 # 读取变量
 
-资源键：`data.get_variable`  
+资源键：`data.get_variable`
 英文名：Get Variable
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:browser.is_visible
 
 # 元素可见
 
-资源键：`browser.is_visible`  
+资源键：`browser.is_visible`
 英文名：Is Visible
 
 ## 功能说明

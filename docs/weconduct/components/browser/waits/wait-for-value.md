@@ -6,7 +6,7 @@ doc_id: component:browser.wait_for_value
 
 # 等待值
 
-资源键：`browser.wait_for_value`  
+资源键：`browser.wait_for_value`
 英文名：Wait For Value
 
 ## 功能说明

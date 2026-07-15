@@ -6,7 +6,7 @@ doc_id: component:browser.clear_local_storage
 
 # 清空本地存储
 
-资源键：`browser.clear_local_storage`  
+资源键：`browser.clear_local_storage`
 英文名：Clear Local Storage
 
 ## 功能说明

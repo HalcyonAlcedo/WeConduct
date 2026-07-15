@@ -6,7 +6,7 @@ doc_id: component:data.get_element_count
 
 # 读取元素数量
 
-资源键：`data.get_element_count`  
+资源键：`data.get_element_count`
 英文名：Get Element Count
 
 ## 功能说明

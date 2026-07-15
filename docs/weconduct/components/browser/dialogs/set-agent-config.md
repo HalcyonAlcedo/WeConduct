@@ -6,7 +6,7 @@ doc_id: component:dialog.set_agent_config
 
 # 设置对话框代理配置
 
-资源键：`dialog.set_agent_config`  
+资源键：`dialog.set_agent_config`
 英文名：Set Dialog Agent Config
 
 ## 功能说明

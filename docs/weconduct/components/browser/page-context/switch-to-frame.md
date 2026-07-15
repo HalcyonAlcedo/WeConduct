@@ -6,7 +6,7 @@ doc_id: component:browser.switch_to_frame
 
 # 切换到框架
 
-资源键：`browser.switch_to_frame`  
+资源键：`browser.switch_to_frame`
 英文名：Switch To Frame
 
 ## 功能说明

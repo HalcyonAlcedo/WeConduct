@@ -6,7 +6,7 @@ doc_id: component:data.get_attribute
 
 # 读取属性
 
-资源键：`data.get_attribute`  
+资源键：`data.get_attribute`
 英文名：Get Attribute
 
 ## 功能说明

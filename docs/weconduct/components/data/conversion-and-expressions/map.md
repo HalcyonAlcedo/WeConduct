@@ -6,7 +6,7 @@ doc_id: component:data.map
 
 # 数据映射
 
-资源键：`data.map`  
+资源键：`data.map`
 英文名：Data Map
 
 ## 功能说明

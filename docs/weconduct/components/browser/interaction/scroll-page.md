@@ -6,7 +6,7 @@ doc_id: component:browser.scroll_page
 
 # 滚动页面
 
-资源键：`browser.scroll_page`  
+资源键：`browser.scroll_page`
 英文名：Scroll Page
 
 ## 功能说明

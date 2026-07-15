@@ -12,4 +12,3 @@ doc_id: weave:reference:known-limitations:0.5.0
 - 存储面板不能新增 Cookie，也没有一键清空全部 Local/Session Storage 的按钮。
 - 插件文档只覆盖发现、启用、状态和面板使用，不提供插件开发说明。
 - 更新依赖手工退出程序并替换 `Weave.exe` 或整个便携目录；没有内置自动更新。
-

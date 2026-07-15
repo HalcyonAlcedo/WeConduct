@@ -6,7 +6,7 @@ doc_id: component:browser.extract_web_table_to_excel
 
 # 提取网页表格到 Excel
 
-资源键：`browser.extract_web_table_to_excel`  
+资源键：`browser.extract_web_table_to_excel`
 英文名：Extract Web Table To Excel
 
 ## 功能说明

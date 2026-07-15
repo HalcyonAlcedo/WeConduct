@@ -6,7 +6,7 @@ doc_id: component:browser.get_html
 
 # 读取 HTML
 
-资源键：`browser.get_html`  
+资源键：`browser.get_html`
 英文名：Get HTML
 
 ## 功能说明

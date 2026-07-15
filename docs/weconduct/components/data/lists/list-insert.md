@@ -6,7 +6,7 @@ doc_id: component:data.list_insert
 
 # 列表插入
 
-资源键：`data.list_insert`  
+资源键：`data.list_insert`
 英文名：List Insert
 
 ## 功能说明

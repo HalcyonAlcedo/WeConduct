@@ -6,7 +6,7 @@ doc_id: component:file.read_csv_table
 
 # 读取 CSV 表
 
-资源键：`file.read_csv_table`  
+资源键：`file.read_csv_table`
 英文名：Read CSV Table
 
 ## 功能说明

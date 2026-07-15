@@ -37,4 +37,3 @@ doc_id: weconduct:reference:project-format
 ## 兼容与迁移
 
 旧单文件项目会进入迁移路径；`.wcrun` 是独立的只读包格式。手工编辑前关闭 WeConduct，并备份根文件和整个 `.data` 目录。
-

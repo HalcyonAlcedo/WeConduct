@@ -6,7 +6,7 @@ doc_id: component:session.apply_auth_session
 
 # 应用认证会话
 
-资源键：`session.apply_auth_session`  
+资源键：`session.apply_auth_session`
 英文名：Apply Auth Session
 
 ## 功能说明

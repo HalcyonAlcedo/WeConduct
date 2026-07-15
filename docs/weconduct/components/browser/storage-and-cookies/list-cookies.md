@@ -6,7 +6,7 @@ doc_id: component:browser.list_cookies
 
 # 列出 Cookie
 
-资源键：`browser.list_cookies`  
+资源键：`browser.list_cookies`
 英文名：List Cookies
 
 ## 功能说明

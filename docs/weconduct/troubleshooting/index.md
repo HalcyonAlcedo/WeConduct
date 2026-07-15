@@ -21,4 +21,3 @@ doc_id: weconduct:troubleshooting:index
 3. 先修第一条 `error` 或 `fatal`，信息级 `*.completed` 不是失败。
 4. 保存项目后重新校验；打包预检固定读取已保存项目。
 5. 仍无法定位时，保留原始错误文本、操作顺序和最小项目。
-

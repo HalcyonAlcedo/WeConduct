@@ -6,7 +6,7 @@ doc_id: component:browser.wait_for_url_change
 
 # 等待 URL 变化
 
-资源键：`browser.wait_for_url_change`  
+资源键：`browser.wait_for_url_change`
 英文名：Wait For URL Change
 
 ## 功能说明

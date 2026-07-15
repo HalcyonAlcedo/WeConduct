@@ -6,7 +6,7 @@ doc_id: component:control.end_foreach
 
 # 结束遍历
 
-资源键：`control.end_foreach`  
+资源键：`control.end_foreach`
 英文名：End Foreach
 
 ## 功能说明

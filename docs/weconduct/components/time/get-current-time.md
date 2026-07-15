@@ -6,7 +6,7 @@ doc_id: component:time.get_current_time
 
 # 获取当前时间
 
-资源键：`time.get_current_time`  
+资源键：`time.get_current_time`
 英文名：Get Current Time
 
 ## 功能说明

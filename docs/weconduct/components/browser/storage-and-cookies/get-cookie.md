@@ -6,7 +6,7 @@ doc_id: component:browser.get_cookie
 
 # 读取 Cookie
 
-资源键：`browser.get_cookie`  
+资源键：`browser.get_cookie`
 英文名：Get Cookie
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:excel.write_row
 
 # 写入 Excel 行
 
-资源键：`excel.write_row`  
+资源键：`excel.write_row`
 英文名：Write Excel Row
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:browser.switch_to_default_content
 
 # 切换到默认内容
 
-资源键：`browser.switch_to_default_content`  
+资源键：`browser.switch_to_default_content`
 英文名：Switch To Default Content
 
 ## 功能说明

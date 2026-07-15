@@ -6,7 +6,7 @@ doc_id: component:browser.wait_for_request
 
 # 等待请求
 
-资源键：`browser.wait_for_request`  
+资源键：`browser.wait_for_request`
 英文名：Wait For Request
 
 ## 功能说明

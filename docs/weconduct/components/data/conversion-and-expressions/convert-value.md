@@ -6,7 +6,7 @@ doc_id: component:data.convert_value
 
 # 转换变量类型
 
-资源键：`data.convert_value`  
+资源键：`data.convert_value`
 英文名：Convert Value
 
 ## 功能说明

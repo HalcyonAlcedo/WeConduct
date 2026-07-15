@@ -6,7 +6,7 @@ doc_id: component:file.read_csv_row
 
 # 读取 CSV 行
 
-资源键：`file.read_csv_row`  
+资源键：`file.read_csv_row`
 英文名：Read CSV Row
 
 ## 功能说明

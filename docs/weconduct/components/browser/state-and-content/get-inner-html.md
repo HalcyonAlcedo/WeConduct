@@ -6,7 +6,7 @@ doc_id: component:browser.get_inner_html
 
 # 读取内部 HTML
 
-资源键：`browser.get_inner_html`  
+资源键：`browser.get_inner_html`
 英文名：Get Inner HTML
 
 ## 功能说明

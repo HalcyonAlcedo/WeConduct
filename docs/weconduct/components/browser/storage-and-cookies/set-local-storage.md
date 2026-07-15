@@ -6,7 +6,7 @@ doc_id: component:browser.set_local_storage
 
 # 写入本地存储
 
-资源键：`browser.set_local_storage`  
+资源键：`browser.set_local_storage`
 英文名：Set Local Storage
 
 ## 功能说明

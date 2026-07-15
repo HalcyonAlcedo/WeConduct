@@ -6,7 +6,7 @@ doc_id: component:browser.remove_local_storage
 
 # 删除本地存储
 
-资源键：`browser.remove_local_storage`  
+资源键：`browser.remove_local_storage`
 英文名：Remove Local Storage
 
 ## 功能说明

@@ -83,6 +83,23 @@ def test_generator_is_deterministic_and_graphs_use_manifest_ports(tmp_path: Path
     }
     assert first_files == second_files
 
+    markdown_files = {
+        path: content
+        for path, content in first_files.items()
+        if path.suffix == ".md"
+    }
+    for path, content in markdown_files.items():
+        assert content.endswith(b"\n") and not content.endswith(b"\n\n"), (
+            f"{path.as_posix()} 必须且只能保留一个 EOF 换行"
+        )
+        text = content.decode("utf-8")
+        trailing_lines = [
+            index
+            for index, line in enumerate(text.splitlines(), start=1)
+            if line != line.rstrip()
+        ]
+        assert not trailing_lines, f"{path.as_posix()} 存在尾随空格: {trailing_lines}"
+
     manifest = {item["resource_key"]: item for item in json.loads(kwargs["manifest_path"].read_text(encoding="utf-8"))}
     for graph_path in (first_docs / "assets" / "graphs" / "components").rglob("*.json"):
         payload = json.loads(graph_path.read_text(encoding="utf-8"))

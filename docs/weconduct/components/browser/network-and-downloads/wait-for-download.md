@@ -6,7 +6,7 @@ doc_id: component:browser.wait_for_download
 
 # 等待下载
 
-资源键：`browser.wait_for_download`  
+资源键：`browser.wait_for_download`
 英文名：Wait For Download
 
 ## 功能说明

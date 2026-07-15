@@ -6,7 +6,7 @@ doc_id: component:control.foreach_break
 
 # 遍历中断
 
-资源键：`control.foreach_break`  
+资源键：`control.foreach_break`
 英文名：Foreach Break
 
 ## 功能说明

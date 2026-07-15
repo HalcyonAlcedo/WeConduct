@@ -6,7 +6,7 @@ doc_id: component:browser.hover
 
 # 悬停
 
-资源键：`browser.hover`  
+资源键：`browser.hover`
 英文名：Hover
 
 ## 功能说明

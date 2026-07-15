@@ -6,7 +6,7 @@ doc_id: component:browser.fill
 
 # 填入
 
-资源键：`browser.fill`  
+资源键：`browser.fill`
 英文名：Fill
 
 ## 功能说明

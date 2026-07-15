@@ -6,7 +6,7 @@ doc_id: component:data.list_sort
 
 # 列表排序
 
-资源键：`data.list_sort`  
+资源键：`data.list_sort`
 英文名：List Sort
 
 ## 功能说明

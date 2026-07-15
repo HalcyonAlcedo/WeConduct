@@ -6,7 +6,7 @@ doc_id: component:data.list_get
 
 # 列表读取
 
-资源键：`data.list_get`  
+资源键：`data.list_get`
 英文名：List Get
 
 ## 功能说明

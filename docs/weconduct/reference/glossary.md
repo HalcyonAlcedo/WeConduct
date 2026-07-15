@@ -18,4 +18,3 @@ doc_id: weconduct:reference:glossary
 - **运行时准备**：标准运行或 Debug 前的图、安全权限、资源和 Python 环境检查。
 - **`.wcrun`**：从已保存项目构建的只读运行包。
 - **外部绑定**：加载 `.wcrun` 后为未嵌入资源提供实际路径的会话配置。
-

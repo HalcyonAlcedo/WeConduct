@@ -6,7 +6,7 @@ doc_id: component:browser.delete_cookie
 
 # 删除 Cookie
 
-资源键：`browser.delete_cookie`  
+资源键：`browser.delete_cookie`
 英文名：Delete Cookie
 
 ## 功能说明

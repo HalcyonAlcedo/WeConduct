@@ -6,7 +6,7 @@ doc_id: component:excel.read_table
 
 # 读取 Excel 表
 
-资源键：`excel.read_table`  
+资源键：`excel.read_table`
 英文名：Read Excel Table
 
 ## 功能说明

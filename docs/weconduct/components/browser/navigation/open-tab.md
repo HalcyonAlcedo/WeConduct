@@ -6,7 +6,7 @@ doc_id: component:browser.open_tab
 
 # 打开标签页
 
-资源键：`browser.open_tab`  
+资源键：`browser.open_tab`
 英文名：Open Tab
 
 ## 功能说明

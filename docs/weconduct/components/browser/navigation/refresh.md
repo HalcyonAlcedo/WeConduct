@@ -6,7 +6,7 @@ doc_id: component:browser.refresh
 
 # 刷新
 
-资源键：`browser.refresh`  
+资源键：`browser.refresh`
 英文名：Refresh
 
 ## 功能说明

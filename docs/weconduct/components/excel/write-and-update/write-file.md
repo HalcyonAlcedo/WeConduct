@@ -6,7 +6,7 @@ doc_id: component:excel.write_file
 
 # 写入 Excel 文件
 
-资源键：`excel.write_file`  
+资源键：`excel.write_file`
 英文名：Write Excel File
 
 ## 功能说明

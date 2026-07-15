@@ -6,7 +6,7 @@ doc_id: component:control.retry
 
 # 重试
 
-资源键：`control.retry`  
+资源键：`control.retry`
 英文名：Retry
 
 ## 功能说明

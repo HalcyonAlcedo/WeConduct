@@ -6,7 +6,7 @@ doc_id: component:browser.wait_for_attribute
 
 # 等待属性
 
-资源键：`browser.wait_for_attribute`  
+资源键：`browser.wait_for_attribute`
 英文名：Wait For Attribute
 
 ## 功能说明

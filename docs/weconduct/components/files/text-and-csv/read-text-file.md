@@ -6,7 +6,7 @@ doc_id: component:file.read_text_file
 
 # 读取文本文件
 
-资源键：`file.read_text_file`  
+资源键：`file.read_text_file`
 英文名：Read Text File
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:call_blueprint
 
 # 调用蓝图
 
-资源键：`call_blueprint`  
+资源键：`call_blueprint`
 英文名：Call Blueprint
 
 ## 功能说明

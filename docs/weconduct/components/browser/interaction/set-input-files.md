@@ -6,7 +6,7 @@ doc_id: component:browser.set_input_files
 
 # 设置上传文件
 
-资源键：`browser.set_input_files`  
+资源键：`browser.set_input_files`
 英文名：Set Input Files
 
 ## 功能说明

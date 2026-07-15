@@ -6,7 +6,7 @@ doc_id: component:excel.write_table
 
 # 写入 Excel 表
 
-资源键：`excel.write_table`  
+资源键：`excel.write_table`
 英文名：Write Excel Table
 
 ## 功能说明

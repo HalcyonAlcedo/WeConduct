@@ -6,7 +6,7 @@ doc_id: component:browser.exists
 
 # 元素存在
 
-资源键：`browser.exists`  
+资源键：`browser.exists`
 英文名：Exists
 
 ## 功能说明

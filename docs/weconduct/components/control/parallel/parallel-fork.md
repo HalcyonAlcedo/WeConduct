@@ -6,7 +6,7 @@ doc_id: component:control.parallel_fork
 
 # 并行分叉
 
-资源键：`control.parallel_fork`  
+资源键：`control.parallel_fork`
 英文名：Parallel Fork
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:excel.read_cell
 
 # 读取 Excel 单元格
 
-资源键：`excel.read_cell`  
+资源键：`excel.read_cell`
 英文名：Read Excel Cell
 
 ## 功能说明

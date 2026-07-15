@@ -6,7 +6,7 @@ doc_id: component:graph.call_subgraph
 
 # 调用子图
 
-资源键：`graph.call_subgraph`  
+资源键：`graph.call_subgraph`
 英文名：Call Subgraph
 
 ## 功能说明

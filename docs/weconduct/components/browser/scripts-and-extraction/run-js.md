@@ -6,7 +6,7 @@ doc_id: component:browser.run_js
 
 # 运行 JS
 
-资源键：`browser.run_js`  
+资源键：`browser.run_js`
 英文名：Run JS
 
 ## 功能说明

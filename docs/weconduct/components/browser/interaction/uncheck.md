@@ -6,7 +6,7 @@ doc_id: component:browser.uncheck
 
 # 取消勾选
 
-资源键：`browser.uncheck`  
+资源键：`browser.uncheck`
 英文名：Uncheck
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:browser.hotkey
 
 # 快捷键
 
-资源键：`browser.hotkey`  
+资源键：`browser.hotkey`
 英文名：Hotkey
 
 ## 功能说明

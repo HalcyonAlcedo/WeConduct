@@ -6,7 +6,7 @@ doc_id: component:control.foreach_continue
 
 # 遍历继续
 
-资源键：`control.foreach_continue`  
+资源键：`control.foreach_continue`
 英文名：Foreach Continue
 
 ## 功能说明

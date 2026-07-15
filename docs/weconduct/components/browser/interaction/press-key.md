@@ -6,7 +6,7 @@ doc_id: component:browser.press_key
 
 # 按键
 
-资源键：`browser.press_key`  
+资源键：`browser.press_key`
 英文名：Press Key
 
 ## 功能说明

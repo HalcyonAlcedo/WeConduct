@@ -6,7 +6,7 @@ doc_id: component:control.jump_to_step
 
 # 跳转步骤
 
-资源键：`control.jump_to_step`  
+资源键：`control.jump_to_step`
 英文名：Jump To Step
 
 ## 功能说明

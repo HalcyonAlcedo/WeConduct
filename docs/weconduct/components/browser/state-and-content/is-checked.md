@@ -6,7 +6,7 @@ doc_id: component:browser.is_checked
 
 # 元素已勾选
 
-资源键：`browser.is_checked`  
+资源键：`browser.is_checked`
 英文名：Is Checked
 
 ## 功能说明

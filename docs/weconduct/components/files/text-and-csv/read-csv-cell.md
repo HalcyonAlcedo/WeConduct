@@ -6,7 +6,7 @@ doc_id: component:file.read_csv_cell
 
 # 读取 CSV 单元格
 
-资源键：`file.read_csv_cell`  
+资源键：`file.read_csv_cell`
 英文名：Read CSV Cell
 
 ## 功能说明

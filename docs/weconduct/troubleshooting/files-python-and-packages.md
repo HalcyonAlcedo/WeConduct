@@ -45,4 +45,3 @@ package.security.requirement_blocked
 ## 外部资源仍未就绪
 
 0.8.1 的外部绑定值会解析为绝对路径，绑定目标只支持 `initial_variable`。输入真实路径字符串后重新检查运行就绪状态。
-

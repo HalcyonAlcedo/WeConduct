@@ -6,7 +6,7 @@ doc_id: component:data.get_value
 
 # 读取值
 
-资源键：`data.get_value`  
+资源键：`data.get_value`
 英文名：Get Value
 
 ## 功能说明

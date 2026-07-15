@@ -6,7 +6,7 @@ doc_id: component:browser.download_file
 
 # 下载文件
 
-资源键：`browser.download_file`  
+资源键：`browser.download_file`
 英文名：Download File
 
 ## 功能说明

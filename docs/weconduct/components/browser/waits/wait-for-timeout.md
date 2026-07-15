@@ -6,7 +6,7 @@ doc_id: component:browser.wait_for_timeout
 
 # 等待超时
 
-资源键：`browser.wait_for_timeout`  
+资源键：`browser.wait_for_timeout`
 英文名：Wait For Timeout
 
 ## 功能说明

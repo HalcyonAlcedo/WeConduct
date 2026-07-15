@@ -6,7 +6,7 @@ doc_id: component:browser.wait_for_response
 
 # 等待响应
 
-资源键：`browser.wait_for_response`  
+资源键：`browser.wait_for_response`
 英文名：Wait For Response
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:component.output
 
 # 组件输出
 
-资源键：`component.output`  
+资源键：`component.output`
 英文名：Component Output
 
 ## 功能说明

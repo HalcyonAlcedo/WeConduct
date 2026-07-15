@@ -6,7 +6,7 @@ doc_id: component:data.decrement_variable
 
 # 变量递减
 
-资源键：`data.decrement_variable`  
+资源键：`data.decrement_variable`
 英文名：Decrement Variable
 
 ## 功能说明

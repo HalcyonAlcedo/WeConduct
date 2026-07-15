@@ -6,7 +6,7 @@ doc_id: component:control.while
 
 # 条件循环
 
-资源键：`control.while`  
+资源键：`control.while`
 英文名：While
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:python.run
 
 # 运行 Python
 
-资源键：`python.run`  
+资源键：`python.run`
 英文名：Run Python
 
 ## 功能说明

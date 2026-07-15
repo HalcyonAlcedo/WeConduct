@@ -6,7 +6,7 @@ doc_id: component:browser.set_cookie
 
 # 写入 Cookie
 
-资源键：`browser.set_cookie`  
+资源键：`browser.set_cookie`
 英文名：Set Cookie
 
 ## 功能说明

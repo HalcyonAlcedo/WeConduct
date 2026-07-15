@@ -6,7 +6,7 @@ doc_id: component:component.input
 
 # 组件输入
 
-资源键：`component.input`  
+资源键：`component.input`
 英文名：Component Input
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:data.set_variable
 
 # 写入变量
 
-资源键：`data.set_variable`  
+资源键：`data.set_variable`
 英文名：Set Variable
 
 ## 功能说明

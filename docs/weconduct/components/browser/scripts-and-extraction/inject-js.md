@@ -6,7 +6,7 @@ doc_id: component:browser.inject_js
 
 # 注入 JS
 
-资源键：`browser.inject_js`  
+资源键：`browser.inject_js`
 英文名：Inject JS
 
 ## 功能说明

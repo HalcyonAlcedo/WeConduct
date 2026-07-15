@@ -6,7 +6,7 @@ doc_id: component:browser.navigate
 
 # 导航
 
-资源键：`browser.navigate`  
+资源键：`browser.navigate`
 英文名：Navigate
 
 ## 功能说明

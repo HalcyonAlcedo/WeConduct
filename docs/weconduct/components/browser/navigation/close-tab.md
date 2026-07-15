@@ -6,7 +6,7 @@ doc_id: component:browser.close_tab
 
 # 关闭标签页
 
-资源键：`browser.close_tab`  
+资源键：`browser.close_tab`
 英文名：Close Tab
 
 ## 功能说明

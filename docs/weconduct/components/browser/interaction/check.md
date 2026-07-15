@@ -6,7 +6,7 @@ doc_id: component:browser.check
 
 # 勾选
 
-资源键：`browser.check`  
+资源键：`browser.check`
 英文名：Check
 
 ## 功能说明

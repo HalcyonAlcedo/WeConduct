@@ -6,7 +6,7 @@ doc_id: component:data.regex_replace
 
 # 正则替换
 
-资源键：`data.regex_replace`  
+资源键：`data.regex_replace`
 英文名：Regex Replace
 
 ## 功能说明

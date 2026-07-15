@@ -6,7 +6,7 @@ doc_id: component:browser.extract_web_table
 
 # 提取网页表格
 
-资源键：`browser.extract_web_table`  
+资源键：`browser.extract_web_table`
 英文名：Extract Web Table
 
 ## 功能说明

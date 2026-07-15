@@ -6,7 +6,7 @@ doc_id: component:browser.click
 
 # 点击
 
-资源键：`browser.click`  
+资源键：`browser.click`
 英文名：Click
 
 ## 功能说明

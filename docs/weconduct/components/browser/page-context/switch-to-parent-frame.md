@@ -6,7 +6,7 @@ doc_id: component:browser.switch_to_parent_frame
 
 # 切换到父框架
 
-资源键：`browser.switch_to_parent_frame`  
+资源键：`browser.switch_to_parent_frame`
 英文名：Switch To Parent Frame
 
 ## 功能说明

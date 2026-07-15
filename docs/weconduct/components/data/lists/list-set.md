@@ -6,7 +6,7 @@ doc_id: component:data.list_set
 
 # 列表写入
 
-资源键：`data.list_set`  
+资源键：`data.list_set`
 英文名：List Set
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:browser.open_frame_page
 
 # 打开框架页面
 
-资源键：`browser.open_frame_page`  
+资源键：`browser.open_frame_page`
 英文名：Open Frame Page
 
 ## 功能说明

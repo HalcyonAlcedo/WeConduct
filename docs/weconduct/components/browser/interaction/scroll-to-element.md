@@ -6,7 +6,7 @@ doc_id: component:browser.scroll_to_element
 
 # 滚动到元素
 
-资源键：`browser.scroll_to_element`  
+资源键：`browser.scroll_to_element`
 英文名：Scroll To Element
 
 ## 功能说明

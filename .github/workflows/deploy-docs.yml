@@ -34,26 +34,14 @@ jobs:
       - name: Run baseline tests
         run: python -m pytest -q
 
+      - name: Validate documentation pages
+        run: python tools/validate_pages.py
+
+      - name: Validate graph examples
+        run: python tools/validate_graph_examples.py
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
-
-      - name: Run page validator when available
-        shell: pwsh
-        run: |
-          if (Test-Path "validate_pages.py") {
-            python validate_pages.py
-          } else {
-            Write-Host "Pending validate_pages.py: file not found"
-          }
-
-      - name: Run graph validator when available
-        shell: pwsh
-        run: |
-          if (Test-Path "validate_graph_examples.py") {
-            python validate_graph_examples.py
-          } else {
-            Write-Host "Pending validate_graph_examples.py: file not found"
-          }
 
       - name: Build site
         run: python -m mkdocs build --strict

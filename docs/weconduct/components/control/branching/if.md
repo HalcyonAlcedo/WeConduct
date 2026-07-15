@@ -6,7 +6,7 @@ doc_id: component:control.if
 
 # 条件分支
 
-资源键：`control.if`  
+资源键：`control.if`
 英文名：If
 
 ## 功能说明

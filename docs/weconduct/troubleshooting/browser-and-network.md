@@ -38,4 +38,3 @@ browser.selector_required
 - 当前 URL、frame 层级和选择器
 - 权限字段实际值
 - 原始错误码、超时值和目标请求摘要
-

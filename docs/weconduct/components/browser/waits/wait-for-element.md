@@ -6,7 +6,7 @@ doc_id: component:browser.wait_for_element
 
 # 等待元素
 
-资源键：`browser.wait_for_element`  
+资源键：`browser.wait_for_element`
 英文名：Wait For Element
 
 ## 功能说明

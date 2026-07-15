@@ -278,7 +278,7 @@ def write_detail_page(
         "---", "product: weconduct", f"version: {VERSION}",
         f"doc_id: component:{component['resource_key']}", "---", "",
         f"# {component['display_name_zh']}", "",
-        f"资源键：`{component['resource_key']}`  ",
+        f"资源键：`{component['resource_key']}`",
         f"英文名：{component['display_name']}", "",
         "## 功能说明", "", component["description_zh"], "",
         f"该节点属于“{group['title_zh']}”。实现类型为 `{component.get('implementation_kind') or '未声明'}`，运行展开角色为 `{component['expansion_role']}`。",

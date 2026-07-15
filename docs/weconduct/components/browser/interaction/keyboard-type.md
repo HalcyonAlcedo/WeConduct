@@ -6,7 +6,7 @@ doc_id: component:browser.keyboard_type
 
 # 键盘输入
 
-资源键：`browser.keyboard_type`  
+资源键：`browser.keyboard_type`
 英文名：Keyboard Type
 
 ## 功能说明

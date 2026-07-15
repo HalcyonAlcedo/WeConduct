@@ -404,6 +404,21 @@ def test_docs_do_not_expose_internal_task_labels() -> None:
     assert not offenders, "发现用户可见内部任务引用:\n" + "\n".join(offenders)
 
 
+def test_markdown_source_has_clean_line_endings() -> None:
+    offenders: list[str] = []
+    for path in sorted((ROOT / "docs").rglob("*.md")):
+        content = path.read_bytes()
+        relative_path = path.relative_to(ROOT).as_posix()
+        if not content.endswith(b"\n") or content.endswith(b"\n\n"):
+            offenders.append(f"{relative_path}: EOF 换行数量不正确")
+        text = content.decode("utf-8")
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if line != line.rstrip():
+                offenders.append(f"{relative_path}:{line_number}: 存在尾随空格")
+
+    assert not offenders, "Markdown 源文件格式不干净:\n" + "\n".join(offenders)
+
+
 def test_weave_product_metadata_baseline() -> None:
     payload = read_json("data/weave-0.5.0/product.json")
 
@@ -457,9 +472,9 @@ def test_workflow_uses_official_pages_actions_on_docs_branch() -> None:
         "Setup Python",
         "Install dependencies",
         "Run baseline tests",
+        "Validate documentation pages",
+        "Validate graph examples",
         "Configure GitHub Pages",
-        "Run page validator when available",
-        "Run graph validator when available",
         "Build site",
         "Upload Pages artifact",
     ]
@@ -467,13 +482,9 @@ def test_workflow_uses_official_pages_actions_on_docs_branch() -> None:
     assert build_steps[1]["uses"] == "actions/setup-python@v5"
     assert build_steps[2]["run"] == "python -m pip install -r requirements-dev.txt"
     assert build_steps[3]["run"] == "python -m pytest -q"
-    assert build_steps[4]["uses"] == "actions/configure-pages@v5"
-    assert build_steps[5]["shell"] == "pwsh"
-    assert 'if (Test-Path "validate_pages.py")' in build_steps[5]["run"]
-    assert "Pending validate_pages.py" in build_steps[5]["run"]
-    assert build_steps[6]["shell"] == "pwsh"
-    assert 'if (Test-Path "validate_graph_examples.py")' in build_steps[6]["run"]
-    assert "Pending validate_graph_examples.py" in build_steps[6]["run"]
+    assert build_steps[4]["run"] == "python tools/validate_pages.py"
+    assert build_steps[5]["run"] == "python tools/validate_graph_examples.py"
+    assert build_steps[6]["uses"] == "actions/configure-pages@v5"
     assert build_steps[7]["run"] == "python -m mkdocs build --strict"
     assert build_steps[8]["uses"] == "actions/upload-pages-artifact@v4"
     assert build_steps[8]["with"] == {"path": "site"}

@@ -6,7 +6,7 @@ doc_id: component:browser.recognize_captcha
 
 # 识别验证码
 
-资源键：`browser.recognize_captcha`  
+资源键：`browser.recognize_captcha`
 英文名：Recognize Captcha
 
 ## 功能说明

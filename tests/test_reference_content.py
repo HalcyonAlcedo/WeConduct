@@ -65,12 +65,12 @@ def test_hidden_version_manifests_reserve_future_switcher() -> None:
         assert payload["current"] == version
         assert payload["switcher_enabled"] is False
         assert payload["versions"] == [
-            {
-                "version": version,
-                "path": f"/{product}/",
-                "latest": True,
-            }
-        ]
+                {
+                    "version": version,
+                    "path": f"/WeConduct/{product}/",
+                    "latest": True,
+                }
+            ]
 
 
 def test_reference_pages_include_real_contract_terms() -> None:

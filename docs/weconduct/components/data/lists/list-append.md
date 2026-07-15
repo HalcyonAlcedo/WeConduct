@@ -6,7 +6,7 @@ doc_id: component:data.list_append
 
 # 列表追加
 
-资源键：`data.list_append`  
+资源键：`data.list_append`
 英文名：List Append
 
 ## 功能说明

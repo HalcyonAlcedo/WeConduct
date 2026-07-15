@@ -42,4 +42,3 @@ git diff --check
 ## 版本预留
 
 `versions/weconduct.json` 和 `versions/weave.json` 已分别保存当前版本元数据，`switcher_enabled` 为 `false`。WeConduct 从 `1.0.0` 开始支持多版本时，可在不改变当前产品根 URL 的前提下启用切换器。
-

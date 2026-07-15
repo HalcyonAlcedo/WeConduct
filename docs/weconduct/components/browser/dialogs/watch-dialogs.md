@@ -6,7 +6,7 @@ doc_id: component:dialog.watch_dialogs
 
 # 监听对话框
 
-资源键：`dialog.watch_dialogs`  
+资源键：`dialog.watch_dialogs`
 英文名：Watch Dialogs
 
 ## 功能说明

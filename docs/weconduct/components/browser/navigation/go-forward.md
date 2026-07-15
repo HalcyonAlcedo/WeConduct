@@ -6,7 +6,7 @@ doc_id: component:browser.go_forward
 
 # 前进
 
-资源键：`browser.go_forward`  
+资源键：`browser.go_forward`
 英文名：Go Forward
 
 ## 功能说明

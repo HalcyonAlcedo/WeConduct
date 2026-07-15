@@ -6,7 +6,7 @@ doc_id: component:browser.go_back
 
 # 后退
 
-资源键：`browser.go_back`  
+资源键：`browser.go_back`
 英文名：Go Back
 
 ## 功能说明

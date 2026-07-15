@@ -6,7 +6,7 @@ doc_id: component:browser.element_screenshot
 
 # 元素截图
 
-资源键：`browser.element_screenshot`  
+资源键：`browser.element_screenshot`
 英文名：Element Screenshot
 
 ## 功能说明

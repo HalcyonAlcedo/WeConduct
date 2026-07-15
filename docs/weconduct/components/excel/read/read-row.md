@@ -6,7 +6,7 @@ doc_id: component:excel.read_row
 
 # 读取 Excel 行
 
-资源键：`excel.read_row`  
+资源键：`excel.read_row`
 英文名：Read Excel Row
 
 ## 功能说明

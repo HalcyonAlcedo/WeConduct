@@ -6,7 +6,7 @@ doc_id: component:excel.update_cells
 
 # 更新 Excel 单元格
 
-资源键：`excel.update_cells`  
+资源键：`excel.update_cells`
 英文名：Update Excel Cells
 
 ## 功能说明

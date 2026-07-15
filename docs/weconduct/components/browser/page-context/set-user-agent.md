@@ -6,7 +6,7 @@ doc_id: component:browser.set_user_agent
 
 # 设置 User-Agent
 
-资源键：`browser.set_user_agent`  
+资源键：`browser.set_user_agent`
 英文名：Set User Agent
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:data.list_reverse
 
 # 列表反转
 
-资源键：`data.list_reverse`  
+资源键：`data.list_reverse`
 英文名：List Reverse
 
 ## 功能说明

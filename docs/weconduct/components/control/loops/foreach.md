@@ -6,7 +6,7 @@ doc_id: component:control.foreach
 
 # 遍历
 
-资源键：`control.foreach`  
+资源键：`control.foreach`
 英文名：Foreach
 
 ## 功能说明

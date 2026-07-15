@@ -6,7 +6,7 @@ doc_id: component:data.create_list
 
 # 创建列表
 
-资源键：`data.create_list`  
+资源键：`data.create_list`
 英文名：Create List
 
 ## 功能说明

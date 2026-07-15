@@ -6,7 +6,7 @@ doc_id: component:file.write_text_file
 
 # 写入文本文件
 
-资源键：`file.write_text_file`  
+资源键：`file.write_text_file`
 英文名：Write Text File
 
 ## 功能说明

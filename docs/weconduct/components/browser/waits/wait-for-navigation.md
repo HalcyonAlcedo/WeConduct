@@ -6,7 +6,7 @@ doc_id: component:browser.wait_for_navigation
 
 # 等待导航
 
-资源键：`browser.wait_for_navigation`  
+资源键：`browser.wait_for_navigation`
 英文名：Wait For Navigation
 
 ## 功能说明

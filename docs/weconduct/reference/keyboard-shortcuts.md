@@ -26,4 +26,3 @@ doc_id: weconduct:reference:keyboard-shortcuts
 帮助窗口显示 `Ctrl+O` 和 `Ctrl+N`，但 0.8.1 全局快捷键注册中没有对应打开项目或新建项目处理器。请使用 **文件** 菜单。
 
 Debug 变量的普通输入框按 `Enter` 提交；对象和数组编辑框使用 `Ctrl+Enter` 提交。历史变量和历史快照只读。
-

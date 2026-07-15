@@ -6,7 +6,7 @@ doc_id: component:dialog.switch_dialog_mode
 
 # 切换对话框模式
 
-资源键：`dialog.switch_dialog_mode`  
+资源键：`dialog.switch_dialog_mode`
 英文名：Switch Dialog Mode
 
 ## 功能说明

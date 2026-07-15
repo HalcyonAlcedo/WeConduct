@@ -6,7 +6,7 @@ doc_id: component:control.switch
 
 # 多路分支
 
-资源键：`control.switch`  
+资源键：`control.switch`
 英文名：Switch
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:excel.write_cell
 
 # 写入 Excel 单元格
 
-资源键：`excel.write_cell`  
+资源键：`excel.write_cell`
 英文名：Write Excel Cell
 
 ## 功能说明

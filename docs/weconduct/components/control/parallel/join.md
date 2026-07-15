@@ -6,7 +6,7 @@ doc_id: component:control.join
 
 # 并行汇合
 
-资源键：`control.join`  
+资源键：`control.join`
 英文名：Join
 
 ## 功能说明

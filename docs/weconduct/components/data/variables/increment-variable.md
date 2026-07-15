@@ -6,7 +6,7 @@ doc_id: component:data.increment_variable
 
 # 变量递增
 
-资源键：`data.increment_variable`  
+资源键：`data.increment_variable`
 英文名：Increment Variable
 
 ## 功能说明

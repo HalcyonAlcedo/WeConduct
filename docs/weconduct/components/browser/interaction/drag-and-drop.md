@@ -6,7 +6,7 @@ doc_id: component:browser.drag_and_drop
 
 # 拖放
 
-资源键：`browser.drag_and_drop`  
+资源键：`browser.drag_and_drop`
 英文名：Drag And Drop
 
 ## 功能说明

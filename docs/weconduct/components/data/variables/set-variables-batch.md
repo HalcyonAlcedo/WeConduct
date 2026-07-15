@@ -6,7 +6,7 @@ doc_id: component:data.set_variables_batch
 
 # 批量写入变量
 
-资源键：`data.set_variables_batch`  
+资源键：`data.set_variables_batch`
 英文名：Set Variables Batch
 
 ## 功能说明

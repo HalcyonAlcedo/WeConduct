@@ -6,7 +6,7 @@ doc_id: component:excel.update_batch
 
 # 批量更新 Excel
 
-资源键：`excel.update_batch`  
+资源键：`excel.update_batch`
 英文名：Update Excel Batch
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:control.failover
 
 # 故障切换
 
-资源键：`control.failover`  
+资源键：`control.failover`
 英文名：Failover
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:data.list_slice
 
 # 列表切片
 
-资源键：`data.list_slice`  
+资源键：`data.list_slice`
 英文名：List Slice
 
 ## 功能说明

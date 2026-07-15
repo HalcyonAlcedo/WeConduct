@@ -6,7 +6,7 @@ doc_id: component:browser.select_option
 
 # 选择选项
 
-资源键：`browser.select_option`  
+资源键：`browser.select_option`
 英文名：Select Option
 
 ## 功能说明

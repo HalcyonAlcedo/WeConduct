@@ -6,7 +6,7 @@ doc_id: component:browser.is_enabled
 
 # 元素可用
 
-资源键：`browser.is_enabled`  
+资源键：`browser.is_enabled`
 英文名：Is Enabled
 
 ## 功能说明

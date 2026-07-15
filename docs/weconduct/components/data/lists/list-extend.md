@@ -6,7 +6,7 @@ doc_id: component:data.list_extend
 
 # 列表扩展
 
-资源键：`data.list_extend`  
+资源键：`data.list_extend`
 英文名：List Extend
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:data.list_remove
 
 # 列表移除
 
-资源键：`data.list_remove`  
+资源键：`data.list_remove`
 英文名：List Remove
 
 ## 功能说明

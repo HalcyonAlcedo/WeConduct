@@ -6,7 +6,7 @@ doc_id: component:browser.wait_for_text
 
 # 等待文本
 
-资源键：`browser.wait_for_text`  
+资源键：`browser.wait_for_text`
 英文名：Wait For Text
 
 ## 功能说明

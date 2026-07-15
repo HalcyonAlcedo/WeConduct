@@ -6,7 +6,7 @@ doc_id: component:data.get_text
 
 # 读取文本
 
-资源键：`data.get_text`  
+资源键：`data.get_text`
 英文名：Get Text
 
 ## 功能说明

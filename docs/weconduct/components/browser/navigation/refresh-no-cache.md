@@ -6,7 +6,7 @@ doc_id: component:browser.refresh_no_cache
 
 # 无缓存刷新
 
-资源键：`browser.refresh_no_cache`  
+资源键：`browser.refresh_no_cache`
 英文名：Refresh No Cache
 
 ## 功能说明

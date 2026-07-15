@@ -6,7 +6,7 @@ doc_id: component:dialog.handle_dialogs
 
 # 处理对话框
 
-资源键：`dialog.handle_dialogs`  
+资源键：`dialog.handle_dialogs`
 英文名：Handle Dialogs
 
 ## 功能说明

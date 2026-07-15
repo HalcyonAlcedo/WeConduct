@@ -6,7 +6,7 @@ doc_id: component:browser.set_session_storage
 
 # 写入会话存储
 
-资源键：`browser.set_session_storage`  
+资源键：`browser.set_session_storage`
 英文名：Set Session Storage
 
 ## 功能说明

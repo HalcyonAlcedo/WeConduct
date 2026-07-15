@@ -6,7 +6,7 @@ doc_id: component:flow.start
 
 # 开始
 
-资源键：`flow.start`  
+资源键：`flow.start`
 英文名：Start
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:browser.switch_tab
 
 # 切换标签页
 
-资源键：`browser.switch_tab`  
+资源键：`browser.switch_tab`
 英文名：Switch Tab
 
 ## 功能说明

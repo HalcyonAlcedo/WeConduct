@@ -6,7 +6,7 @@ doc_id: component:data.list_index
 
 # 列表索引
 
-资源键：`data.list_index`  
+资源键：`data.list_index`
 英文名：List Index
 
 ## 功能说明

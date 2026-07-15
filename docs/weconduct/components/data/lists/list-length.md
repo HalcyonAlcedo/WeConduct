@@ -6,7 +6,7 @@ doc_id: component:data.list_length
 
 # 列表长度
 
-资源键：`data.list_length`  
+资源键：`data.list_length`
 英文名：List Length
 
 ## 功能说明

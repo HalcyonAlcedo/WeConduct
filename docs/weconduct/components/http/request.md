@@ -6,7 +6,7 @@ doc_id: component:http.request
 
 # HTTP 请求
 
-资源键：`http.request`  
+资源键：`http.request`
 英文名：HTTP Request
 
 ## 功能说明

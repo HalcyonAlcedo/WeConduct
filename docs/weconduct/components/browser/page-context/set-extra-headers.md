@@ -6,7 +6,7 @@ doc_id: component:browser.set_extra_headers
 
 # 设置额外请求头
 
-资源键：`browser.set_extra_headers`  
+资源键：`browser.set_extra_headers`
 英文名：Set Extra Headers
 
 ## 功能说明

@@ -6,7 +6,7 @@ doc_id: component:browser.get_session_storage
 
 # 读取会话存储
 
-资源键：`browser.get_session_storage`  
+资源键：`browser.get_session_storage`
 英文名：Get Session Storage
 
 ## 功能说明

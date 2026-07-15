@@ -6,7 +6,7 @@ doc_id: component:data.evaluate_expression
 
 # 计算表达式
 
-资源键：`data.evaluate_expression`  
+资源键：`data.evaluate_expression`
 英文名：Evaluate Expression
 
 ## 功能说明
