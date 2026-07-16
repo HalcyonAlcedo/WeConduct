@@ -307,7 +307,10 @@ function onEdgesChange(changes: any[]) {
   }
 }
 function onViewportChange(vp: { x: number; y: number; zoom: number }) {
-  // Compute viewport center in flow coordinates
+  // Cache the raw pan/zoom transform so the exact view can be restored after a
+  // canvas remount (tab switch within the same dock zone).
+  workspace.setRawViewport(vp)
+  // Compute viewport center in flow coordinates (used for placing new nodes).
   const el = (document.querySelector('.vf-canvas') as HTMLElement)
   const w = el?.clientWidth || 800
   const h = el?.clientHeight || 600
@@ -315,6 +318,10 @@ function onViewportChange(vp: { x: number; y: number; zoom: number }) {
   const cy = (h / 2 - vp.y) / vp.zoom
   workspace.updateViewport({ x: Math.round(cx), y: Math.round(cy), zoom: vp.zoom })
 }
+
+// On mount, restore the cached view if we have one; otherwise fit-view.
+const cachedRawViewport = computed(() => workspace.rawViewport)
+const hasCachedViewport = computed(() => cachedRawViewport.value !== null)
 </script>
 
 <template>
@@ -329,7 +336,7 @@ function onViewportChange(vp: { x: number; y: number; zoom: number }) {
       v-else
       v-bind="graphData"
       :node-types="nodeTypes"
-      :default-viewport="{ x: 0, y: 0, zoom: 0.5 }"
+      :default-viewport="cachedRawViewport ?? { x: 0, y: 0, zoom: 0.5 }"
       :nodes-draggable="workspace.isGraphEditable"
       :nodes-connectable="workspace.isGraphEditable"
       :edges-updatable="workspace.isGraphEditable"
@@ -339,7 +346,7 @@ function onViewportChange(vp: { x: number; y: number; zoom: number }) {
       :min-zoom="0.1"
       :snap-to-grid="graphPreferences.snap_to_grid"
       :snap-grid="[10, 10]"
-      :fit-view-on-init="true"
+      :fit-view-on-init="!hasCachedViewport"
       class="vf-canvas"
       @node-click="onNodeClick"
       @node-double-click="onNodeDoubleClick"

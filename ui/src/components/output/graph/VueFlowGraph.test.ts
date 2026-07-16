@@ -57,6 +57,8 @@ const graphWorkspaceState = vi.hoisted(() => ({
   pasteNode: vi.fn(),
   pushUndo: vi.fn(),
   markChanged: vi.fn(),
+  rawViewport: null as { x: number; y: number; zoom: number } | null,
+  setRawViewport: vi.fn(),
 }))
 
 const graphStoreState = vi.hoisted(() => ({
@@ -115,8 +117,8 @@ vi.mock('@/stores/toastStore', () => ({
 }))
 vi.mock('@vue-flow/core', () => ({
   VueFlow: defineComponent({
-    props: ['snapToGrid', 'snapGrid'],
-    emits: ['node-context-menu'],
+    props: ['snapToGrid', 'snapGrid', 'defaultViewport', 'fitViewOnInit'],
+    emits: ['node-context-menu', 'viewport-change'],
     setup(props, { emit, slots }) {
       vueFlowState.props = props as Record<string, unknown>
       return () => h('div', [
@@ -126,6 +128,10 @@ vi.mock('@vue-flow/core', () => ({
             node: { id: 'node-a' },
             event: { preventDefault() {}, clientX: 10, clientY: 20 },
           }),
+        }),
+        h('button', {
+          class: 'emit-viewport-change',
+          onClick: () => emit('viewport-change', { x: 12, y: 34, zoom: 1.7 }),
         }),
         slots.default?.(),
       ])
@@ -180,6 +186,7 @@ describe('VueFlowGraph', () => {
       confirm_delete_node: true,
     }
     graphWorkspaceState.addNode.mockResolvedValue('node-new')
+    graphWorkspaceState.rawViewport = null
   })
 
   it('根据 graph_preferences 控制 snap-to-grid 与 Background 显示', async () => {
@@ -217,5 +224,32 @@ describe('VueFlowGraph', () => {
 
     expect((window as any).__openDeleteConfirm).not.toHaveBeenCalled()
     expect(graphWorkspaceState.removeNode).toHaveBeenCalledWith('node-a')
+  })
+
+  it('viewport 变化时缓存原始变换，供 remount 恢复', async () => {
+    const wrapper = mount(VueFlowGraph)
+    await nextTick()
+
+    await wrapper.get('.emit-viewport-change').trigger('click')
+
+    expect(graphWorkspaceState.setRawViewport).toHaveBeenCalledWith({ x: 12, y: 34, zoom: 1.7 })
+  })
+
+  it('无缓存视口时 fit-view-on-init 为 true、使用默认视口', async () => {
+    graphWorkspaceState.rawViewport = null
+    mount(VueFlowGraph)
+    await nextTick()
+
+    expect(vueFlowState.props?.fitViewOnInit).toBe(true)
+    expect(vueFlowState.props?.defaultViewport).toEqual({ x: 0, y: 0, zoom: 0.5 })
+  })
+
+  it('存在缓存视口时 remount 恢复该视口且不再 fit-view', async () => {
+    graphWorkspaceState.rawViewport = { x: 12, y: 34, zoom: 1.7 }
+    mount(VueFlowGraph)
+    await nextTick()
+
+    expect(vueFlowState.props?.fitViewOnInit).toBe(false)
+    expect(vueFlowState.props?.defaultViewport).toEqual({ x: 12, y: 34, zoom: 1.7 })
   })
 })

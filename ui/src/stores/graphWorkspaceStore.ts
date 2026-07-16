@@ -371,6 +371,12 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   let pasteCounter = 0
   function updateViewport(v: { x: number; y: number; zoom: number }) { viewport.value = v }
 
+  // Raw VueFlow pan/zoom transform, cached so the exact view survives a
+  // canvas remount (e.g. switching to another tab in the same dock zone and
+  // back). null means "no cached view yet" → fall back to fit-view-on-init.
+  const rawViewport = ref<{ x: number; y: number; zoom: number } | null>(null)
+  function setRawViewport(v: { x: number; y: number; zoom: number }) { rawViewport.value = { ...v } }
+
   function cacheParameterSchema(resourceKey: string, schema?: Record<string, ParameterFieldSchema>) {
     if (schema) parameterSchemas.value[resourceKey] = { ...parameterSchemas.value[resourceKey], ...schema }
   }
@@ -443,5 +449,6 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     syncStatus, syncError, syncSource, scheduleAutoSync,
     parameterSchemas, cacheParameterSchema,
     viewport, updateViewport,
+    rawViewport, setRawViewport,
   }
 })
