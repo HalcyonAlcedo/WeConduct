@@ -2945,7 +2945,14 @@ def test_start_runtime_session_allows_after_async_debug_completion() -> None:
     session_id = start_result["debug_session"]["session_id"]
     assert start_result["debug_session"]["status"] == "paused"
 
-    continue_result = service.continue_debug_session_async(session_id=session_id)
+    # Generous settle window: _await_debug_execution_settle returns as soon as
+    # the session reaches a terminal status, so this adds no latency to the
+    # normal case but removes flakiness when the worker is CPU-starved under
+    # full-suite parallel load.
+    continue_result = service.continue_debug_session_async(
+        session_id=session_id,
+        settle_timeout_ms=5000,
+    )
 
     assert continue_result["debug_session"]["status"] == "completed"
     assert service.list_debug_sessions()["sessions"] == []
@@ -3358,12 +3365,14 @@ def test_debug_history_sessions_are_persisted_under_project_storage_root(tmp_pat
 
     assert history_payload["sessions"][0]["session_id"] == session_id
     history_file = history_payload["sessions"][0]["history_file"]
-    assert history_file.endswith(".msgpack")
+    assert history_file == session_id
     assert (
         project_path.parent
         / "debug-history-project.weconduct.data"
         / "debug-history"
+        / "sessions"
         / history_file
+        / "manifest.json"
     ).exists()
 
 

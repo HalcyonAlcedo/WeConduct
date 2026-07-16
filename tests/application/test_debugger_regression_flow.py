@@ -308,7 +308,14 @@ def test_debug_regression_runtime_can_start_after_debug_completion() -> None:
 
     start_result = service.start_debug_session_async(graph_document_payload=None)
     session_id = start_result["debug_session"]["session_id"]
-    continue_result = service.continue_debug_session_async(session_id=session_id)
+    # Wait deterministically for the worker to settle. _await_debug_execution_settle
+    # returns as soon as the session reaches a terminal status, so a generous
+    # timeout adds no latency to the normal case but removes flakiness when the
+    # worker is starved of CPU under full-suite parallel load.
+    continue_result = service.continue_debug_session_async(
+        session_id=session_id,
+        settle_timeout_ms=5000,
+    )
 
     assert continue_result["debug_session"]["status"] == "completed"
     runtime_result = service.start_runtime_session(graph_document_payload=None)
@@ -323,7 +330,12 @@ def test_debug_regression_completed_session_rejects_stale_pause_request() -> Non
 
     start_result = service.start_debug_session_async(graph_document_payload=None)
     session_id = start_result["debug_session"]["session_id"]
-    continue_result = service.continue_debug_session_async(session_id=session_id)
+    # Generous settle window: returns immediately on terminal status, so this
+    # only widens tolerance under CPU-starved parallel runs (see companion test).
+    continue_result = service.continue_debug_session_async(
+        session_id=session_id,
+        settle_timeout_ms=5000,
+    )
 
     assert continue_result["debug_session"]["status"] == "completed"
     assert service.list_debug_sessions()["sessions"] == []

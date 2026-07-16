@@ -418,6 +418,15 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         query_params = parse_qs(parsed_url.query)
         request_path = parsed_url.path
 
+        # Static UI assets (index.html, JS, CSS) must be served WITHOUT the
+        # workbench service. Otherwise a corrupt workspace-state/preferences file
+        # makes _get_service() throw for "/" too, the SPA never boots, and the
+        # dedicated startup error screen can never render. This has no service or
+        # token dependency and ignores /api/ paths, so it is safe up front.
+        if not request_path.startswith("/api/"):
+            if self._try_serve_ui_asset():
+                return
+
         # Startup diagnostics must stay reachable even when the workbench service
         # cannot be constructed, so it runs before _get_service().
         if request_path == "/api/startup/diagnostics":
