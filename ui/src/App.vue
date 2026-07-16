@@ -9,6 +9,7 @@ import { useRuntimeStore } from '@/stores/runtimeStore'
 import { useToastStore } from '@/stores/toastStore'
 import { useUpdateStore } from '@/stores/updateStore'
 import { useStartupStore } from '@/stores/startupStore'
+import { useThemeStore } from '@/stores/themeStore'
 import { useKeyboard } from '@/composables/useKeyboard'
 import CommandBar from '@/components/commandbar/CommandBar.vue'
 import StatusBar from '@/components/common/StatusBar.vue'
@@ -16,6 +17,7 @@ import ToastContainer from '@/components/common/ToastContainer.vue'
 import StartupErrorScreen from '@/components/common/StartupErrorScreen.vue'
 
 const workspace = useWorkspaceStore()
+const theme = useThemeStore()
 const compilation = useCompilationStore()
 const graphWs = useGraphWorkspaceStore()
 const graphStore = useGraphStore()
@@ -74,6 +76,8 @@ function beforeUnload(e: BeforeUnloadEvent) {
 
 /** Post-connection bootstrap: update check + full workspace restore. */
 async function runWorkbenchBootstrap() {
+  // Seed theme from the configured default (no-op if the user has a local override).
+  theme.initFromConfig((workspace.snapshot?.preferences as any)?.program_settings?.theme)
   await updateStore.fetchStatus().catch(() => {})
   const shouldCheckUpdates = !!(workspace.snapshot?.preferences as any)?.program_settings?.check_updates_on_startup
   if (shouldCheckUpdates) {

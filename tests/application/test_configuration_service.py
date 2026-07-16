@@ -193,6 +193,7 @@ def test_builtin_registry_exposes_only_active_fields_with_consumers() -> None:
         "auto_open_node_on_drop",
         "confirm_delete_node",
         "show_inline_config_summary",
+        "edge_line_style",
     }
     assert registry.get_field(
         scope="project",
@@ -282,19 +283,16 @@ def test_program_configuration_migration_converts_legacy_file_once(tmp_path: Pat
     )
 
     assert first["status"] == "migrated"
-    assert first["diagnostics"] == [
-        {
-            "category": "configuration.migration.unregistered_field",
-            "path": "/program_settings/theme",
-            "severity": "info",
-        }
-    ]
+    assert first["diagnostics"] == []
     assert second["status"] == "already_current"
     assert preferences_path.with_suffix(".json.0.8.0.bak").exists() is True
     assert repository.load() == {
         "ui": {
             "default_window_size": {"width": 1280, "height": 720},
             "resource_language": "zh-CN",
+            "theme": "dark",
+            "language": "zh-CN",
+            "font_scale": 1.0,
         },
         "workspace": {
             "default_project_directory": None,
@@ -330,6 +328,7 @@ def test_program_configuration_migration_converts_legacy_file_once(tmp_path: Pat
             "python_executable_path": None,
             "timeout_seconds": 60,
             "capture_stdout_stderr": True,
+            "sandbox_mode": "restricted",
             "variable_apply_mode": "staged",
             "blocked_import_modules": ["ctypes", "importlib", "multiprocessing", "os", "socket", "subprocess"],
             "default_python_version_spec": ">=3.11",

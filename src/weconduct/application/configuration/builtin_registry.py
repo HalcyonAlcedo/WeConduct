@@ -34,9 +34,17 @@ def _register_program_fields(registry: ConfigurationRegistry) -> None:
         scope="program",
         domain="ui",
         consumer="desktop_shell.launcher",
+        field_consumers={
+            "theme": "themeStore.applyTheme",
+            "language": "main.ts.i18n.locale",
+            "font_scale": "styles.tokens.fontScale",
+        },
         fields=(
             ("default_window_size", "object", {"width": 1440, "height": 900}),
             ("resource_language", "enum", "zh-CN", ("zh-CN", "en-US")),
+            ("theme", "enum", "system", ("light", "dark", "system")),
+            ("language", "enum", "zh-CN", ("zh-CN", "en-US", "ja-JP")),
+            ("font_scale", "float", 1.0),
         ),
     )
     _register_fields(
@@ -106,6 +114,7 @@ def _register_program_fields(registry: ConfigurationRegistry) -> None:
             ("python_executable_path", "nullable_string", None),
             ("timeout_seconds", "integer", 60),
             ("capture_stdout_stderr", "boolean", True),
+            ("sandbox_mode", "enum", "restricted", ("restricted",)),
             ("variable_apply_mode", "enum", "staged", ("staged", "immediate")),
             (
                 "blocked_import_modules",
@@ -252,6 +261,7 @@ def _register_graph_fields(registry: ConfigurationRegistry) -> None:
             "auto_open_node_on_drop": "VueFlowGraph.onDrop",
             "confirm_delete_node": "VueFlowGraph/App.deleteNode",
             "show_inline_config_summary": "BaseNode.configSections",
+            "edge_line_style": "graphStore.toVueFlow.edgeType",
         },
         fields=(
             ("save_conflict_policy", "enum", "prefer_current_graph", ("prefer_current_graph", "strict")),
@@ -262,6 +272,7 @@ def _register_graph_fields(registry: ConfigurationRegistry) -> None:
             ("auto_open_node_on_drop", "boolean", True),
             ("confirm_delete_node", "boolean", True),
             ("show_inline_config_summary", "boolean", True),
+            ("edge_line_style", "enum", "smoothstep", ("smoothstep", "straight", "bezier")),
         ),
     )
     _register_fields(

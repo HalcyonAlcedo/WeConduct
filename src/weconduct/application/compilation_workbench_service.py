@@ -13872,6 +13872,7 @@ class CompilationWorkbenchService:
                 "show_inline_config_summary",
                 True,
             ),
+            "edge_line_style": graph_settings.get("edge_line_style", "smoothstep"),
         }
 
     def _build_runtime_execution_settings(self) -> dict:

@@ -221,6 +221,10 @@ class ConfigurationService:
             not isinstance(value, int) or isinstance(value, bool)
         ):
             raise ValueError(f"configuration field must be integer: {config_field.key}")
+        if config_field.field_type == "float" and (
+            not isinstance(value, (int, float)) or isinstance(value, bool)
+        ):
+            raise ValueError(f"configuration field must be a number: {config_field.key}")
         if config_field.field_type == "string_list" and (
             not isinstance(value, list)
             or any(not isinstance(item, str) or not item.strip() for item in value)

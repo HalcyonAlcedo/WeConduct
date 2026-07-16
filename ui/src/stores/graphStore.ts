@@ -15,7 +15,16 @@ export const useGraphStore = defineStore('graph', () => {
   const selectedNodeId = ref<string | null>(null)
 
   /** Convert WeConduct GraphModel to Vue Flow nodes with dagre layout */
-  function toVueFlow(graph: GraphModel): { nodes: Node[]; edges: Edge[] } {
+  // Map the edge_line_style preference to a VueFlow edge type.
+  // 'bezier' → VueFlow 'default' (bezier curve); others map 1:1.
+  function resolveEdgeType(edgeLineStyle?: string): string {
+    if (edgeLineStyle === 'straight') return 'straight'
+    if (edgeLineStyle === 'bezier') return 'default'
+    return 'smoothstep'
+  }
+
+  function toVueFlow(graph: GraphModel, edgeLineStyle?: string): { nodes: Node[]; edges: Edge[] } {
+    const edgeType = resolveEdgeType(edgeLineStyle)
     if (!graph.nodes.length) {
       return { nodes: [], edges: [] }
     }
@@ -69,7 +78,7 @@ export const useGraphStore = defineStore('graph', () => {
       target: edge.to_node_id,
       sourceHandle: edge.from_port_id || undefined,
       targetHandle: edge.to_port_id || undefined,
-      type: 'smoothstep',
+      type: edgeType,
       class: `vf-edge-${edge.relation_layer}`,
       style: edgeStyle(edge.relation_layer),
     }))

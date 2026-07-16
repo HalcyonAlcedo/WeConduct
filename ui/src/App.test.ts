@@ -96,6 +96,15 @@ vi.mock('@/stores/updateStore', () => ({
 vi.mock('@/stores/startupStore', () => ({
   useStartupStore: () => startupState,
 }))
+vi.mock('@/stores/themeStore', () => ({
+  useThemeStore: () => ({
+    mode: 'light',
+    preference: 'system',
+    toggle: vi.fn(),
+    setPreference: vi.fn(),
+    initFromConfig: vi.fn(),
+  }),
+}))
 vi.mock('@/stores/dockStore', () => ({
   useDockStore: () => ({
     restorePanel: vi.fn(),

@@ -23,7 +23,8 @@ const workspace = useGraphWorkspaceStore()
 const debugStore = useDebugStore()
 const shellWorkspace = useWorkspaceStore()
 
-const showMedium = computed(() => (workspace.viewport.zoom) >= 0.35)
+// Node title is always visible (minimal title-only zoom tier removed);
+// richer detail (ports, config, badges) still gates on the detail threshold.
 const showDetail = computed(() => (workspace.viewport.zoom) >= 0.75)
 const graphPreferences = computed(() => {
   const prefs = (shellWorkspace.snapshot as any)?.graph_workspace?.graph_preferences
@@ -258,7 +259,7 @@ async function applyBranches() {
 
       <div class="vf-node-main">
         <div class="vf-node-body">
-          <span v-if="showMedium" class="vf-node-label">{{ data.label }}</span>
+          <span class="vf-node-label">{{ data.label }}</span>
           <div v-if="showDetail && graphPreferences.show_inline_config_summary && configSections.length" class="vf-config">
             <template v-for="(sec, si) in configSections" :key="si">
               <div v-if="sec.section" class="vf-cfg-section">{{ sec.section }}</div>

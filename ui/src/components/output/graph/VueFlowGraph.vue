@@ -237,7 +237,7 @@ const graphData = computed(() => {
     compilationModel: compilation.outcome?.graph_model,
   })
   if (!model) return { nodes: [], edges: [] }
-  return graphStore.toVueFlow(model)
+  return graphStore.toVueFlow(model, graphPreferences.value.edge_line_style)
 })
 
 const isWorkspaceEmpty = computed(() =>
@@ -252,6 +252,7 @@ const graphPreferences = computed(() => {
     grid_enabled: prefs?.grid_enabled ?? true,
     auto_open_node_on_drop: prefs?.auto_open_node_on_drop ?? true,
     confirm_delete_node: prefs?.confirm_delete_node ?? true,
+    edge_line_style: prefs?.edge_line_style ?? 'smoothstep',
   }
 })
 

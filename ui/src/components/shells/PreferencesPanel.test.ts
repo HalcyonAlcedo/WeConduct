@@ -170,7 +170,8 @@ describe('PreferencesPanel', () => {
     })
 
     await nextTick()
-    await wrapper.get('.pref-nav-item:nth-child(4)').trigger('click')
+    // Nav order after governance cleanup: 程序设置 / 安全设置 / Python 运行时设置 / 节点图设置.
+    await wrapper.get('.pref-nav-item:nth-child(3)').trigger('click')
     await nextTick()
 
     expect(wrapper.text()).toContain('调试变量应用策略')

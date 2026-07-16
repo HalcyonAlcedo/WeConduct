@@ -4,9 +4,11 @@ import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { postPreferences, postPreferencesReset, fetchPreferences, postPreferencesPreview, postFileDialog, fetchConfigValues, patchConfigValues, resetConfigValues } from '@/services/api'
 import type { PreferencesUpdateRequest } from '@/types/domains/api'
 import { useToastStore } from '@/stores/toastStore'
+import { useThemeStore } from '@/stores/themeStore'
 
 const workspace = useWorkspaceStore()
 const toast = useToastStore()
+const theme = useThemeStore()
 const active = ref('general')
 
 interface FieldDef { key: string; label: string; type: 'text' | 'number' | 'bool' | 'select' | 'object' | 'json' | 'directory_list' | 'string_list'; options?: string[]; hint?: string }
@@ -15,13 +17,8 @@ const FIELD_DEFS: Record<string, FieldDef[]> = {
   general: [
     { key: 'language', label: '语言', type: 'select', options: ['zh-CN', 'en-US', 'ja-JP'] }, { key: 'resource_language', label: '资源语言', type: 'select', options: ['zh-CN', 'en-US'] },
     { key: 'theme', label: '主题', type: 'select', options: ['light', 'dark', 'system'] }, { key: 'default_window_size', label: '默认窗口尺寸', type: 'object', hint: '宽度 × 高度（像素）' },
-    { key: 'startup_action', label: '启动行为', type: 'select', options: ['restore_last_workspace'] }, { key: 'default_project_directory', label: '默认项目目录', type: 'text' },
+    { key: 'language', label: '界面语言', type: 'select', options: ['zh-CN', 'en-US', 'ja-JP'] }, { key: 'default_project_directory', label: '默认项目目录', type: 'text' },
     { key: 'recent_project_limit', label: '最近项目上限', type: 'number' }, { key: 'preferences_auto_save', label: '自动保存', type: 'bool' }, { key: 'check_updates_on_startup', label: '启动时检查更新', type: 'bool' }, { key: 'font_scale', label: '字体缩放', type: 'number' },
-  ],
-  compile: [
-    { key: 'default_source_kind', label: '默认源类型', type: 'select', options: ['graph_workspace'] }, { key: 'diagnostic_level', label: '诊断级别', type: 'select', options: ['error', 'warning', 'info', 'debug'] },
-    { key: 'block_on_disabled_components', label: '禁用组件阻断编译', type: 'bool' }, { key: 'allow_degraded_compile', label: '允许降级编译', type: 'bool' },
-    { key: 'stop_on_first_error', label: '首个错误即停止', type: 'bool' }, { key: 'emit_runtime_plan', label: '生成运行时计划', type: 'bool' }, { key: 'emit_debug_plan', label: '生成调试计划', type: 'bool' },
   ],
   security: [
     { key: 'confirm_high_risk_actions', label: '确认高风险操作', type: 'bool' }, { key: 'show_security_warnings_in_runtime', label: '运行时显示安全警告', type: 'bool' },
@@ -62,17 +59,15 @@ const FIELD_DEFS: Record<string, FieldDef[]> = {
     { key: 'show_disabled_resource_badge', label: '显示禁用资源徽章', type: 'bool' }, { key: 'snap_to_grid', label: '吸附网格', type: 'bool' },
     { key: 'grid_enabled', label: '网格启用', type: 'bool' }, { key: 'auto_open_node_on_drop', label: '拖放后自动打开节点', type: 'bool' },
     { key: 'confirm_delete_node', label: '删除节点确认', type: 'bool' }, { key: 'show_inline_config_summary', label: '显示内联配置摘要', type: 'bool' },
+    { key: 'edge_line_style', label: '连线样式', type: 'select', options: ['smoothstep', 'straight', 'bezier'], hint: 'smoothstep 平滑折线 / straight 直线 / bezier 曲线' },
     { key: 'save_conflict_policy', label: '保存冲突策略', type: 'select', options: ['prefer_current_graph', 'strict'] },
-  ],
-  other: [
-    { key: 'workspace_draft_recovery_enabled', label: '工作区草稿恢复', type: 'bool' }, { key: 'workspace_draft_recovery_ttl_minutes', label: '草稿恢复 TTL（分钟）', type: 'number' },
   ],
 }
 
-const SECTION_MAP: Record<string, string> = { general: 'program_settings', compile: 'compile_settings', security: 'security_settings', python: 'python_runtime_settings', nodegraph: 'graph_settings', other: 'other_settings' }
-const CATS = [{ key: 'general', label: '程序设置' }, { key: 'compile', label: '编译设置' }, { key: 'security', label: '安全设置' }, { key: 'python', label: 'Python 运行时设置' }, { key: 'nodegraph', label: '节点图设置' }, { key: 'other', label: '其他设置' }]
+const SECTION_MAP: Record<string, string> = { general: 'program_settings', security: 'security_settings', python: 'python_runtime_settings', nodegraph: 'graph_settings' }
+const CATS = [{ key: 'general', label: '程序设置' }, { key: 'security', label: '安全设置' }, { key: 'python', label: 'Python 运行时设置' }, { key: 'nodegraph', label: '节点图设置' }]
 
-const form = reactive<Record<string, Record<string, any>>>({ program_settings: {}, compile_settings: {}, security_settings: {}, python_runtime_settings: {}, graph_settings: {}, other_settings: {} })
+const form = reactive<Record<string, Record<string, any>>>({ program_settings: {}, security_settings: {}, python_runtime_settings: {}, graph_settings: {} })
 const saveState = reactive<Record<string, 'idle' | 'saving' | 'saved' | 'error'>>({}); const saveError = reactive<Record<string, string>>({})
 
 function normalizeRoots(value: unknown): string[] { if (!Array.isArray(value)) return []; const result: string[] = []; for (const item of value) { if (typeof item !== 'string') continue; const n = item.trim(); if (!n || result.includes(n)) continue; result.push(n) } return result }
@@ -263,7 +258,16 @@ async function doReset(section: string) {
 
 function saveStatusLabel(section: string): string { const s = saveState[section]; if (s === 'saving') return '保存中…'; if (s === 'saved') return '已保存'; if (s === 'error') return '保存失败'; return '' }
 function getField(section: string, key: string): any { return form[section]?.[key] }
-function setField(section: string, key: string, value: any) { if (form[section]) { form[section][key] = value; onFieldChange(section) } }
+function setField(section: string, key: string, value: any) {
+  if (form[section]) {
+    form[section][key] = value
+    // Theme is applied live as an explicit user override.
+    if (section === 'program_settings' && key === 'theme') {
+      theme.setPreference(value)
+    }
+    onFieldChange(section)
+  }
+}
 function toggleBool(section: string, key: string) { setField(section, key, !getField(section, key)) }
 const currentSection = computed(() => SECTION_MAP[active.value] || 'program_settings')
 const currentFields = computed(() => {
