@@ -109,6 +109,7 @@ nav:
           - Debug 快照: weconduct/guide/debug-snapshots.md
       - 配置、资源与打包:
           - 程序设置: weconduct/guide/program-settings.md
+          - 语言包（界面/资源语言）: weconduct/guide/language-packs.md
           - 项目设置: weconduct/guide/project-settings.md
           - Python 运行时: weconduct/guide/python-runtime.md
           - 资源管理: weconduct/guide/resource-management.md
