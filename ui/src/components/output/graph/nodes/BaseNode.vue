@@ -27,6 +27,17 @@ const shellWorkspace = useWorkspaceStore()
 // Node title is always visible (minimal title-only zoom tier removed);
 // richer detail (ports, config, badges) still gates on the detail threshold.
 const showDetail = computed(() => (workspace.viewport.zoom) >= 0.75)
+
+/** Scale up the node title when zoomed out so nodes stay identifiable. */
+const titleZoomStyle = computed(() => {
+  const zoom = workspace.viewport.zoom
+  if (zoom >= 0.75) return {}
+  const scale = Math.min(0.75 / Math.max(zoom, 0.15), 4)
+  return {
+    fontSize: `${scale}em`,
+    fontWeight: '700',
+  }
+})
 const graphPreferences = computed(() => {
   const prefs = (shellWorkspace.snapshot as any)?.graph_workspace?.graph_preferences
   return {
@@ -268,7 +279,7 @@ async function applyBranches() {
 
       <div class="vf-node-main">
         <div class="vf-node-body">
-          <span class="vf-node-label">{{ displayLabel }}</span>
+          <span class="vf-node-label" :style="titleZoomStyle">{{ displayLabel }}</span>
           <div v-if="showDetail && graphPreferences.show_inline_config_summary && configSections.length" class="vf-config">
             <template v-for="(sec, si) in configSections" :key="si">
               <div v-if="sec.section" class="vf-cfg-section">{{ tr('nodegraph.base.field.' + sec.section, sec.section) }}</div>
