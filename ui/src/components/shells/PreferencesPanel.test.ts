@@ -3,16 +3,26 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 
-const apiMocks = vi.hoisted(() => ({
-  postPreferences: vi.fn(),
-  postPreferencesReset: vi.fn(),
-  fetchPreferences: vi.fn(),
-  postPreferencesPreview: vi.fn(),
-  postFileDialog: vi.fn(),
-  fetchConfigValues: vi.fn(),
-  patchConfigValues: vi.fn(),
-  resetConfigValues: vi.fn(),
-}))
+const apiMocks = vi.hoisted(() => {
+  class MockApiError extends Error {
+    status: number
+    body: unknown
+    constructor(status: number, body: unknown) { super('mock'); this.status = status; this.body = body }
+  }
+  return {
+    postPreferences: vi.fn(),
+    postPreferencesReset: vi.fn(),
+    fetchPreferences: vi.fn(),
+    postPreferencesPreview: vi.fn(),
+    postFileDialog: vi.fn(),
+    fetchConfigValues: vi.fn(),
+    patchConfigValues: vi.fn(),
+    resetConfigValues: vi.fn(),
+    fetchLanguages: vi.fn(),
+    fetchLanguagePack: vi.fn(),
+    ApiError: MockApiError,
+  }
+})
 
 vi.mock('@/services/api', () => ({
   postPreferences: apiMocks.postPreferences,
@@ -23,6 +33,9 @@ vi.mock('@/services/api', () => ({
   fetchConfigValues: apiMocks.fetchConfigValues,
   patchConfigValues: apiMocks.patchConfigValues,
   resetConfigValues: apiMocks.resetConfigValues,
+  fetchLanguages: apiMocks.fetchLanguages,
+  fetchLanguagePack: apiMocks.fetchLanguagePack,
+  ApiError: apiMocks.ApiError,
 }))
 
 import PreferencesPanel from './PreferencesPanel.vue'
@@ -75,6 +88,9 @@ describe('PreferencesPanel', () => {
       scope: 'graph',
       values: {},
     })
+    apiMocks.fetchLanguages.mockResolvedValue({ languages: [] })
+    apiMocks.fetchLanguagePack.mockResolvedValue({ locale: 'zh-CN', messages: {} })
+    try { localStorage.clear() } catch { /* jsdom */ }
   })
 
   it('挂载时不会改写 workspace.snapshot.preferences 原对象', async () => {

@@ -105,6 +105,25 @@ vi.mock('@/stores/themeStore', () => ({
     initFromConfig: vi.fn(),
   }),
 }))
+vi.mock('@/stores/fontScaleStore', () => ({
+  useFontScaleStore: () => ({
+    scale: 1,
+    setScale: vi.fn(),
+    initFromConfig: vi.fn(),
+  }),
+}))
+vi.mock('@/stores/languageStore', () => ({
+  useLanguageStore: () => ({
+    locale: 'zh-CN',
+    resource: 'zh-CN',
+    available: [],
+    loading: false,
+    refreshAvailable: vi.fn().mockResolvedValue(undefined),
+    setLocale: vi.fn().mockResolvedValue(true),
+    setResourceLocale: vi.fn().mockResolvedValue(true),
+    initFromConfig: vi.fn().mockResolvedValue(undefined),
+  }),
+}))
 vi.mock('@/stores/dockStore', () => ({
   useDockStore: () => ({
     restorePanel: vi.fn(),

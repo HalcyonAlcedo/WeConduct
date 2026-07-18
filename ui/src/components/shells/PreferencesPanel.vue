@@ -5,20 +5,54 @@ import { postPreferences, postPreferencesReset, fetchPreferences, postPreference
 import type { PreferencesUpdateRequest } from '@/types/domains/api'
 import { useToastStore } from '@/stores/toastStore'
 import { useThemeStore } from '@/stores/themeStore'
+import { useFontScaleStore } from '@/stores/fontScaleStore'
+import { useLanguageStore } from '@/stores/languageStore'
+import { SOURCE_LOCALE } from '@/i18n'
 
 const workspace = useWorkspaceStore()
 const toast = useToastStore()
 const theme = useThemeStore()
+const fontScale = useFontScaleStore()
+const language = useLanguageStore()
 const active = ref('general')
 
-interface FieldDef { key: string; label: string; type: 'text' | 'number' | 'bool' | 'select' | 'object' | 'json' | 'directory_list' | 'string_list'; options?: string[]; hint?: string }
+// Built-in source locale (needs no pack) + every discovered external pack.
+// Chinese is the hardcoded source, so it is always selectable even with no packs on disk.
+// Field-aware: 界面语言 and 资源语言 share the same discovered-pack list but each
+// keeps its own persisted-but-missing locale visible.
+function languageOptionsFor(fieldKey: string): { value: string; label: string }[] {
+  const options: { value: string; label: string }[] = [{ value: SOURCE_LOCALE, label: '简体中文（内置）' }]
+  for (const pack of language.available) {
+    if (pack.locale === SOURCE_LOCALE) continue
+    options.push({ value: pack.locale, label: pack.display_name || pack.locale })
+  }
+  // If the persisted locale has no pack on disk, keep it visible (marked missing)
+  // so the dropdown reflects the stored value instead of silently mismatching.
+  const current = getField('program_settings', fieldKey)
+  if (typeof current === 'string' && current && !options.some(o => o.value === current)) {
+    options.push({ value: current, label: `${current}（未安装）` })
+  }
+  return options
+}
+
+interface FieldDef { key: string; label: string; type: 'text' | 'number' | 'bool' | 'select' | 'object' | 'json' | 'directory_list' | 'string_list' | 'font_scale' | 'language'; options?: string[]; hint?: string }
+
+// Font scale presets: numeric multiplier (persisted) → percentage label (shown).
+const FONT_SCALE_PRESETS: { value: number; label: string }[] = [
+  { value: 0.85, label: '85%' },
+  { value: 1.0, label: '100%' },
+  { value: 1.15, label: '115%' },
+  { value: 1.25, label: '125%' },
+  { value: 1.5, label: '150%' },
+]
 
 const FIELD_DEFS: Record<string, FieldDef[]> = {
   general: [
-    { key: 'language', label: '语言', type: 'select', options: ['zh-CN', 'en-US', 'ja-JP'] }, { key: 'resource_language', label: '资源语言', type: 'select', options: ['zh-CN', 'en-US'] },
+    { key: 'language', label: '界面语言', type: 'language', hint: '主界面语言。内置简体中文；其他语言需在程序目录 languages/ 放置语言包' },
+    { key: 'resource_language', label: '资源语言', type: 'language', hint: '各模块/节点内容的语言，与界面语言独立配置' },
     { key: 'theme', label: '主题', type: 'select', options: ['light', 'dark', 'system'] }, { key: 'default_window_size', label: '默认窗口尺寸', type: 'object', hint: '宽度 × 高度（像素）' },
-    { key: 'language', label: '界面语言', type: 'select', options: ['zh-CN', 'en-US', 'ja-JP'] }, { key: 'default_project_directory', label: '默认项目目录', type: 'text' },
-    { key: 'recent_project_limit', label: '最近项目上限', type: 'number' }, { key: 'preferences_auto_save', label: '自动保存', type: 'bool' }, { key: 'check_updates_on_startup', label: '启动时检查更新', type: 'bool' }, { key: 'font_scale', label: '字体缩放', type: 'number' },
+    { key: 'default_project_directory', label: '默认项目目录', type: 'text' },
+    { key: 'recent_project_limit', label: '最近项目上限', type: 'number' }, { key: 'preferences_auto_save', label: '自动保存', type: 'bool' }, { key: 'check_updates_on_startup', label: '启动时检查更新', type: 'bool' }, { key: 'font_scale', label: '字体缩放', type: 'font_scale' },
   ],
   security: [
     { key: 'confirm_high_risk_actions', label: '确认高风险操作', type: 'bool' }, { key: 'show_security_warnings_in_runtime', label: '运行时显示安全警告', type: 'bool' },
@@ -102,7 +136,7 @@ async function loadGraphPreferences() {
     }
   } catch {}
 }
-onMounted(async () => { initForm(); await loadGraphPreferences() })
+onMounted(async () => { initForm(); await loadGraphPreferences(); language.refreshAvailable().catch(() => {}) })
 watch(() => workspace.snapshot?.preferences, () => initForm(), { deep: true })
 watch(() => (workspace.snapshot as any)?.graph_workspace?.graph_preferences, () => {
   form.graph_settings = {
@@ -261,9 +295,18 @@ function getField(section: string, key: string): any { return form[section]?.[ke
 function setField(section: string, key: string, value: any) {
   if (form[section]) {
     form[section][key] = value
-    // Theme is applied live as an explicit user override.
+    // Theme, font scale & language are applied live as explicit user overrides.
     if (section === 'program_settings' && key === 'theme') {
       theme.setPreference(value)
+    }
+    if (section === 'program_settings' && key === 'font_scale') {
+      fontScale.setScale(Number(value))
+    }
+    if (section === 'program_settings' && key === 'language') {
+      language.setLocale(String(value)).catch(() => {})
+    }
+    if (section === 'program_settings' && key === 'resource_language') {
+      language.setResourceLocale(String(value)).catch(() => {})
     }
     onFieldChange(section)
   }
@@ -289,6 +332,8 @@ const currentFields = computed(() => {
           <template v-if="f.type === 'bool'"><label class="pref-check-label"><input type="checkbox" :checked="!!getField(currentSection, f.key)" @change="toggleBool(currentSection, f.key)" />{{ getField(currentSection, f.key) ? '是' : '否' }}</label></template>
           <input v-else-if="f.type === 'number'" type="number" class="pref-input pref-input-num" :value="getField(currentSection, f.key) ?? ''" @input="setField(currentSection, f.key, ($event.target as HTMLInputElement).valueAsNumber)" />
           <select v-else-if="f.type === 'select'" class="pref-input" :value="getField(currentSection, f.key) || f.options?.[0] || ''" @change="setField(currentSection, f.key, ($event.target as HTMLSelectElement).value)"><option v-for="o in f.options" :key="o" :value="o">{{ o }}</option></select>
+          <select v-else-if="f.type === 'language'" class="pref-input" :value="getField(currentSection, f.key) || 'zh-CN'" @change="setField(currentSection, f.key, ($event.target as HTMLSelectElement).value)"><option v-for="o in languageOptionsFor(f.key)" :key="o.value" :value="o.value">{{ o.label }}</option></select>
+          <select v-else-if="f.type === 'font_scale'" class="pref-input" :value="String(Number(getField(currentSection, f.key) ?? 1))" @change="setField(currentSection, f.key, Number(($event.target as HTMLSelectElement).value))"><option v-for="o in FONT_SCALE_PRESETS" :key="o.value" :value="String(o.value)">{{ o.label }}</option></select>
           <template v-else-if="f.type === 'object' && f.key === 'default_window_size'"><input type="number" class="pref-input pref-input-num" placeholder="宽度" :value="(getField(currentSection, 'default_window_size') || {}).width ?? ''" @input="(e: Event) => { const ws = { ...(form[currentSection]?.default_window_size || {}), width: (e.target as HTMLInputElement).valueAsNumber }; setField(currentSection, 'default_window_size', ws) }" /><span class="pref-obj-sep">×</span><input type="number" class="pref-input pref-input-num" placeholder="高度" :value="(getField(currentSection, 'default_window_size') || {}).height ?? ''" @input="(e: Event) => { const ws = { ...(form[currentSection]?.default_window_size || {}), height: (e.target as HTMLInputElement).valueAsNumber }; setField(currentSection, 'default_window_size', ws) }" /></template>
           <!-- Directory list editor -->
           <div v-else-if="f.type === 'directory_list'" class="pref-roots-editor">

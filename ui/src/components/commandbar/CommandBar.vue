@@ -17,6 +17,7 @@ import {
 } from '@/services/api'
 import type { RecentProject, PendingGraphUpgrade } from '@/types/domains/api'
 import WebControlConverter from '@/components/shells/WebControlConverter.vue'
+import { t } from '@/i18n'
 
 const workspace = useWorkspaceStore()
 const compilation = useCompilationStore()
@@ -191,9 +192,9 @@ async function doOpenRecent(fp: string) { dialogLoading.value = true; try { awai
 async function doRemoveRecent(fp: string) { try { await postRecentProjectRemove({ project_path: fp }); recentProjects.value = recentProjects.value.filter(r => r.project_path !== fp) } catch(e:any){ toast.error('移除失败', e?.message) } }
 
 const projectLabel = computed(() => {
-  if (!workspace.isConnected) return '未连接'
-  const name = workspace.projectName ?? '未加载项目'
-  return isWcrunPackage.value ? `📦 ${name} (只读)` : name
+  if (!workspace.isConnected) return t('framework.commandBar.project.disconnected', '未连接')
+  const name = workspace.projectName ?? t('framework.commandBar.project.noProject', '未加载项目')
+  return isWcrunPackage.value ? t('framework.commandBar.project.readonlyPackage', `📦 ${name} (只读)`, { name }) : name
 })
 
 const connectionDotClass = computed(() => {
@@ -305,69 +306,69 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
     <!-- Menu Area -->
     <nav class="cmd-menu" aria-label="主菜单">
       <div class="cmd-menu-item" @mouseenter="activeMenu !== null ? activeMenu = 'file' : null">
-        <button class="cmd-item" @click="toggleMenu('file')">文件</button>
+        <button class="cmd-item" @click="toggleMenu('file')">{{ t('framework.commandBar.menu.file', '文件') }}</button>
         <div v-if="activeMenu === 'file'" class="cmd-dropdown" @mouseleave="closeMenu">
-          <button @click="openDialog('new')">新建项目</button>
-          <button @click="openDialog('open')">打开项目文件</button>
-          <button @click="openDialog('recent')">最近项目</button>
+          <button @click="openDialog('new')">{{ t('framework.commandBar.file.new', '新建项目') }}</button>
+          <button @click="openDialog('open')">{{ t('framework.commandBar.file.open', '打开项目文件') }}</button>
+          <button @click="openDialog('recent')">{{ t('framework.commandBar.file.recent', '最近项目') }}</button>
           <hr>
-          <button @click="openDialog('importGraph')">导入节点图 JSON</button>
-          <button @click="closeMenu(); showConverter = true">转换 WebControl</button>
-          <button @click="handleManualGraphUpgrade()">手动升级节点图</button>
+          <button @click="openDialog('importGraph')">{{ t('framework.commandBar.file.importGraph', '导入节点图 JSON') }}</button>
+          <button @click="closeMenu(); showConverter = true">{{ t('framework.commandBar.file.convertWebControl', '转换 WebControl') }}</button>
+          <button @click="handleManualGraphUpgrade()">{{ t('framework.commandBar.file.manualUpgrade', '手动升级节点图') }}</button>
           <hr>
-          <button @click="dock.restorePanel('projectSettings'); closeMenu()">项目设置</button>
-          <button @click="dock.restorePanel('packageManager'); closeMenu()">.wcrun 包管理</button>
-          <button @click="openDialog('save')">保存</button>
-          <button @click="openDialog('saveas')">另存为</button>
+          <button @click="dock.restorePanel('projectSettings'); closeMenu()">{{ t('framework.commandBar.file.projectSettings', '项目设置') }}</button>
+          <button @click="dock.restorePanel('packageManager'); closeMenu()">{{ t('framework.commandBar.file.packageManager', '.wcrun 包管理') }}</button>
+          <button @click="openDialog('save')">{{ t('framework.commandBar.file.save', '保存') }}</button>
+          <button @click="openDialog('saveas')">{{ t('framework.commandBar.file.saveAs', '另存为') }}</button>
           <hr>
-          <button @click="dock.restorePanel('preferences'); closeMenu()">首选项</button>
+          <button @click="dock.restorePanel('preferences'); closeMenu()">{{ t('framework.commandBar.file.preferences', '首选项') }}</button>
         </div>
       </div>
       <div class="cmd-menu-item" @mouseenter="activeMenu !== null ? activeMenu = 'edit' : null">
-        <button class="cmd-item" @click="toggleMenu('edit')">编辑</button>
+        <button class="cmd-item" @click="toggleMenu('edit')">{{ t('framework.commandBar.menu.edit', '编辑') }}</button>
         <div v-if="activeMenu === 'edit'" class="cmd-dropdown" @mouseleave="closeMenu">
-          <button @click="graphWs.undo(); closeMenu()">撤销 Ctrl+Z</button>
-          <button @click="graphWs.redo(); closeMenu()">重做 Ctrl+Y</button>
+          <button @click="graphWs.undo(); closeMenu()">{{ t('framework.commandBar.edit.undo', '撤销 Ctrl+Z') }}</button>
+          <button @click="graphWs.redo(); closeMenu()">{{ t('framework.commandBar.edit.redo', '重做 Ctrl+Y') }}</button>
         </div>
       </div>
       <div class="cmd-menu-item" @mouseenter="activeMenu !== null ? activeMenu = 'view' : null">
-        <button class="cmd-item" @click="toggleMenu('view')">视图</button>
+        <button class="cmd-item" @click="toggleMenu('view')">{{ t('framework.commandBar.menu.view', '视图') }}</button>
         <div v-if="activeMenu === 'view'" class="cmd-dropdown" @mouseleave="closeMenu">
           <button v-for="p in dock.allPanels.filter(p => p.id !== 'preferences' && p.id !== 'projectSettings' && p.id !== 'packageManager')" :key="p.id" @click="dock.isPanelVisible(p.id) ? dock.closePanel(p.id) : dock.restorePanel(p.id); closeMenu()">
             {{ dock.isPanelVisible(p.id) ? '✓' : '○' }} {{ p.title }}
           </button>
           <hr>
-          <button @click="dock.addToZone('graph','center'); dock.addToZone('components','left'); dock.addToZone('source','bottom'); dock.addToZone('output','bottom'); closeMenu()">恢复默认布局</button>
+          <button @click="dock.addToZone('graph','center'); dock.addToZone('components','left'); dock.addToZone('source','bottom'); dock.addToZone('output','bottom'); closeMenu()">{{ t('framework.commandBar.view.restoreLayout', '恢复默认布局') }}</button>
           <hr>
           <button @click="theme.toggle(); closeMenu()">
-            {{ theme.mode === 'light' ? '深色主题' : '浅色主题' }}
+            {{ theme.mode === 'light' ? t('framework.commandBar.view.darkTheme', '深色主题') : t('framework.commandBar.view.lightTheme', '浅色主题') }}
           </button>
         </div>
       </div>
       <div class="cmd-menu-item" @mouseenter="activeMenu !== null ? activeMenu = 'compile' : null">
-        <button class="cmd-item" @click="toggleMenu('compile')">编译</button>
+        <button class="cmd-item" @click="toggleMenu('compile')">{{ t('framework.commandBar.menu.compile', '编译') }}</button>
         <div v-if="activeMenu === 'compile'" class="cmd-dropdown" @mouseleave="closeMenu">
           <button :disabled="debugStore.isDebugActive && !runtime.isRuntimeActive" @click="handleRuntimeCommand(); closeMenu()">
-            {{ runtime.isRuntimeActive ? '终止运行' : '运行 Ctrl+Enter' }}
+            {{ runtime.isRuntimeActive ? t('framework.commandBar.compile.abort', '终止运行') : t('framework.commandBar.compile.run', '运行 Ctrl+Enter') }}
           </button>
-          <button @click="dock.restorePanel('preferences'); closeMenu()">编译选项</button>
+          <button @click="dock.restorePanel('preferences'); closeMenu()">{{ t('framework.commandBar.compile.options', '编译选项') }}</button>
         </div>
       </div>
       <div class="cmd-menu-item" @mouseenter="activeMenu !== null ? activeMenu = 'help' : null">
-        <button class="cmd-item" @click="toggleMenu('help')">帮助</button>
+        <button class="cmd-item" @click="toggleMenu('help')">{{ t('framework.commandBar.menu.help', '帮助') }}</button>
         <div v-if="activeMenu === 'help'" class="cmd-dropdown" @mouseleave="closeMenu">
-          <button @click="openDialog('about')">关于 WeConduct</button>
-          <button @click="openDialog('updateCheck')">检查更新</button>
-          <button @click="openDialog('shortcuts')">键盘快捷键</button>
+          <button @click="openDialog('about')">{{ t('framework.commandBar.help.about', '关于 WeConduct') }}</button>
+          <button @click="openDialog('updateCheck')">{{ t('framework.commandBar.help.checkUpdate', '检查更新') }}</button>
+          <button @click="openDialog('shortcuts')">{{ t('framework.commandBar.help.shortcuts', '键盘快捷键') }}</button>
         </div>
       </div>
     </nav>
 
     <!-- Toolbar Area -->
     <div class="cmd-toolbar" role="toolbar" aria-label="工具栏">
-      <button :class="['tb-btn', runtime.isRuntimeActive && !runtime.isRunStarting ? 'danger' : 'primary']" :disabled="runtime.isRunStarting || (runtime.isRuntimeActive ? !runtime.canAbortRuntime : (!graphWs.hasGraph || debugStore.isDebugActive))" :title="runtime.isRunStarting ? '正在启动' : runtime.isRuntimeActive ? '终止运行' : '运行 (Ctrl+Enter)'" @click="handleRuntimeCommand()">
+      <button :class="['tb-btn', runtime.isRuntimeActive && !runtime.isRunStarting ? 'danger' : 'primary']" :disabled="runtime.isRunStarting || (runtime.isRuntimeActive ? !runtime.canAbortRuntime : (!graphWs.hasGraph || debugStore.isDebugActive))" :title="runtime.isRunStarting ? t('framework.commandBar.toolbar.starting', '正在启动') : runtime.isRuntimeActive ? t('framework.commandBar.compile.abort', '终止运行') : t('framework.commandBar.toolbar.runTitle', '运行 (Ctrl+Enter)')" @click="handleRuntimeCommand()">
         <span class="tb-icon">{{ runtime.isRunStarting ? '…' : runtime.isRuntimeActive ? '■' : '▶' }}</span>
-        {{ runtime.isRunStarting ? '启动中' : runtime.runtimeLiveStatus === 'aborting' ? '终止中' : runtime.runtimeLiveStatus === 'settling' ? '确认中' : runtime.isRuntimeActive ? '终止' : '运行' }}
+        {{ runtime.isRunStarting ? t('framework.commandBar.toolbar.startingShort', '启动中') : runtime.runtimeLiveStatus === 'aborting' ? t('framework.commandBar.toolbar.aborting', '终止中') : runtime.runtimeLiveStatus === 'settling' ? t('framework.commandBar.toolbar.settling', '确认中') : runtime.isRuntimeActive ? t('framework.commandBar.toolbar.abortShort', '终止') : t('framework.commandBar.toolbar.runShort', '运行') }}
       </button>
       <span class="tb-brand">WeConduct</span>
       <span class="tb-divider"></span>
@@ -376,11 +377,11 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
 
     <!-- Right -->
     <div class="cmd-right">
-      <button class="theme-btn" :title="theme.mode === 'light' ? '切换深色主题' : '切换浅色主题'" @click="theme.toggle()">
+      <button class="theme-btn" :title="theme.mode === 'light' ? t('framework.commandBar.theme.switchToDark', '切换深色主题') : t('framework.commandBar.theme.switchToLight', '切换浅色主题')" @click="theme.toggle()">
         {{ theme.mode === 'light' ? '☀' : '☾' }}
       </button>
       <span :class="['conn-dot', connectionDotClass]"></span>
-      <span class="conn-text">{{ connectionDotClass === 'dot-green' ? '已连接' : '离线' }}</span>
+      <span class="conn-text">{{ connectionDotClass === 'dot-green' ? t('framework.commandBar.connection.connected', '已连接') : t('framework.commandBar.connection.offline', '离线') }}</span>
     </div>
 
     <!-- Dialog Modals -->
@@ -389,16 +390,16 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
         <div class="dlg-box">
           <div class="dlg-header">
             <span class="dlg-title">
-              <template v-if="activeDialog === 'new'">新建项目</template>
-              <template v-else-if="activeDialog === 'open'">打开项目</template>
-              <template v-else-if="activeDialog === 'recent'">最近项目</template>
-              <template v-else-if="activeDialog === 'save'">保存</template>
-              <template v-else-if="activeDialog === 'saveas'">另存为</template>
-              <template v-else-if="activeDialog === 'about'">关于 WeConduct</template>
-              <template v-else-if="activeDialog === 'updateCheck'">检查更新</template>
-              <template v-else-if="activeDialog === 'importGraph'">导入节点图 JSON</template>
-              <template v-else-if="activeDialog === 'confirmDelete'">确认删除</template>
-              <template v-else-if="activeDialog === 'shortcuts'">键盘快捷键</template>
+              <template v-if="activeDialog === 'new'">{{ t('framework.commandBar.file.new', '新建项目') }}</template>
+              <template v-else-if="activeDialog === 'open'">{{ t('framework.commandBar.dialog.openTitle', '打开项目') }}</template>
+              <template v-else-if="activeDialog === 'recent'">{{ t('framework.commandBar.file.recent', '最近项目') }}</template>
+              <template v-else-if="activeDialog === 'save'">{{ t('framework.commandBar.file.save', '保存') }}</template>
+              <template v-else-if="activeDialog === 'saveas'">{{ t('framework.commandBar.file.saveAs', '另存为') }}</template>
+              <template v-else-if="activeDialog === 'about'">{{ t('framework.commandBar.help.about', '关于 WeConduct') }}</template>
+              <template v-else-if="activeDialog === 'updateCheck'">{{ t('framework.commandBar.help.checkUpdate', '检查更新') }}</template>
+              <template v-else-if="activeDialog === 'importGraph'">{{ t('framework.commandBar.file.importGraph', '导入节点图 JSON') }}</template>
+              <template v-else-if="activeDialog === 'confirmDelete'">{{ t('framework.commandBar.dialog.confirmDeleteTitle', '确认删除') }}</template>
+              <template v-else-if="activeDialog === 'shortcuts'">{{ t('framework.commandBar.help.shortcuts', '键盘快捷键') }}</template>
             </span>
             <button class="dlg-close" @click="closeDialog">✕</button>
           </div>
@@ -406,103 +407,103 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
             <!-- New: project name + directory -->
             <template v-if="activeDialog === 'new'">
               <div class="dlg-field">
-                <label class="dlg-field-lbl">项目名称</label>
-                <input v-model="dialogInput" class="dlg-input" placeholder="输入项目名称" @keyup.enter="doNew()" />
+                <label class="dlg-field-lbl">{{ t('framework.commandBar.dialog.projectName', '项目名称') }}</label>
+                <input v-model="dialogInput" class="dlg-input" :placeholder="t('framework.commandBar.dialog.projectNamePlaceholder', '输入项目名称')" @keyup.enter="doNew()" />
               </div>
               <div class="dlg-field">
-                <label class="dlg-field-lbl">项目目录</label>
+                <label class="dlg-field-lbl">{{ t('framework.commandBar.dialog.projectDir', '项目目录') }}</label>
                 <div class="dlg-path-row">
-                  <input v-model="dialogPath" class="dlg-input" placeholder="默认为系统首选项中的项目目录" @keyup.enter="doNew()" />
-                  <button class="dlg-pick-btn" @click="pickFilePath('open_folder')" title="选择目录">📁</button>
+                  <input v-model="dialogPath" class="dlg-input" :placeholder="t('framework.commandBar.dialog.projectDirPlaceholder', '默认为系统首选项中的项目目录')" @keyup.enter="doNew()" />
+                  <button class="dlg-pick-btn" @click="pickFilePath('open_folder')" :title="t('framework.commandBar.dialog.pickDir', '选择目录')">📁</button>
                 </div>
               </div>
-              <div class="dlg-actions"><button class="dlg-act-btn" @click="doNew()" :disabled="dialogLoading">确定</button></div>
+              <div class="dlg-actions"><button class="dlg-act-btn" @click="doNew()" :disabled="dialogLoading">{{ t('framework.commandBar.dialog.confirm', '确定') }}</button></div>
             </template>
             <!-- SaveAs: text input -->
             <template v-else-if="activeDialog === 'saveas'">
-              <div class="dlg-path-row"><input v-model="dialogInput" class="dlg-input" placeholder="新文件路径，例如 I:\\...\\project.weconduct.json" @keyup.enter="doSaveAs()" /><button class="dlg-pick-btn" @click="pickFile('save_file')" title="选择文件">…</button></div>
-              <div class="dlg-actions"><button class="dlg-act-btn" @click="doSaveAs()" :disabled="dialogLoading">确定</button></div>
+              <div class="dlg-path-row"><input v-model="dialogInput" class="dlg-input" :placeholder="t('framework.commandBar.dialog.saveAsPlaceholder', '新文件路径，例如 I:\\...\\project.weconduct.json')" @keyup.enter="doSaveAs()" /><button class="dlg-pick-btn" @click="pickFile('save_file')" :title="t('framework.commandBar.dialog.pickFile', '选择文件')">…</button></div>
+              <div class="dlg-actions"><button class="dlg-act-btn" @click="doSaveAs()" :disabled="dialogLoading">{{ t('framework.commandBar.dialog.confirm', '确定') }}</button></div>
             </template>
             <!-- Open: text input -->
             <template v-else-if="activeDialog === 'open'">
-              <div class="dlg-path-row"><input v-model="dialogInput" class="dlg-input" placeholder="完整项目文件路径，例如 I:\\...\\project.weconduct.json" @keyup.enter="doOpen()" /><button class="dlg-pick-btn" @click="pickFile('open_file')" title="选择项目文件">…</button></div>
-              <div class="dlg-actions"><button class="dlg-act-btn" @click="doOpen" :disabled="dialogLoading">打开项目文件</button></div>
+              <div class="dlg-path-row"><input v-model="dialogInput" class="dlg-input" :placeholder="t('framework.commandBar.dialog.openPlaceholder', '完整项目文件路径，例如 I:\\...\\project.weconduct.json')" @keyup.enter="doOpen()" /><button class="dlg-pick-btn" @click="pickFile('open_file')" :title="t('framework.commandBar.dialog.pickProjectFile', '选择项目文件')">…</button></div>
+              <div class="dlg-actions"><button class="dlg-act-btn" @click="doOpen" :disabled="dialogLoading">{{ t('framework.commandBar.dialog.openProjectFile', '打开项目文件') }}</button></div>
             </template>
             <!-- Import Graph -->
             <template v-else-if="activeDialog === 'importGraph'">
-              <div class="dlg-path-row"><button class="dlg-pick-btn" @click="pickImportFile">选择 JSON 文件…</button></div>
-              <textarea v-model="importJson" class="dlg-textarea" placeholder="在此粘贴节点图 JSON（GraphModel），或点击上方按钮选择 JSON 文件..." rows="8"></textarea>
-              <div class="dlg-actions"><button class="dlg-act-btn" @click="doImportGraph" :disabled="dialogLoading || !importJson.trim()">导入</button></div>
+              <div class="dlg-path-row"><button class="dlg-pick-btn" @click="pickImportFile">{{ t('framework.commandBar.dialog.pickJsonFile', '选择 JSON 文件…') }}</button></div>
+              <textarea v-model="importJson" class="dlg-textarea" :placeholder="t('framework.commandBar.dialog.importGraphPlaceholder', '在此粘贴节点图 JSON（GraphModel），或点击上方按钮选择 JSON 文件...')" rows="8"></textarea>
+              <div class="dlg-actions"><button class="dlg-act-btn" @click="doImportGraph" :disabled="dialogLoading || !importJson.trim()">{{ t('framework.commandBar.dialog.import', '导入') }}</button></div>
             </template>
             <!-- Save: confirm -->
             <template v-else-if="activeDialog === 'save'">
-              <p>保存当前项目</p>
-              <div class="dlg-actions"><button class="dlg-act-btn" @click="doSave" :disabled="dialogLoading">保存</button></div>
+              <p>{{ t('framework.commandBar.dialog.saveCurrentProject', '保存当前项目') }}</p>
+              <div class="dlg-actions"><button class="dlg-act-btn" @click="doSave" :disabled="dialogLoading">{{ t('framework.commandBar.menu.file.save', '保存') }}</button></div>
             </template>
             <!-- Recent -->
             <template v-else-if="activeDialog === 'recent'">
-              <div v-if="!recentProjects.length" class="dlg-meta">暂无最近项目</div>
+              <div v-if="!recentProjects.length" class="dlg-meta">{{ t('framework.commandBar.dialog.noRecent', '暂无最近项目') }}</div>
               <div v-for="r in recentProjects" :key="r.project_path" class="dlg-recent-row">
                 <div class="dlg-recent-info" @click="doOpenRecent(r.project_path)">
                   <span class="dlg-recent-name">{{ r.project_name }}</span>
                   <span class="dlg-recent-path" :title="r.project_path">{{ r.project_path }}</span>
                 </div>
-                <button class="dlg-recent-rm" @click.stop="doRemoveRecent(r.project_path)" title="从列表中移除">✕</button>
+                <button class="dlg-recent-rm" @click.stop="doRemoveRecent(r.project_path)" :title="t('framework.commandBar.dialog.removeFromList', '从列表中移除')">✕</button>
               </div>
             </template>
             <!-- About -->
             <template v-else-if="activeDialog === 'about'">
               <p><strong>WeConduct</strong></p>
-              <p class="dlg-meta">版本: {{ workspace.health?.api_version ?? '0.8.1' }}</p>
-              <p class="dlg-meta">更新状态: {{ updateStore.status?.check_status ?? 'idle' }}</p>
-              <p class="dlg-meta">最新版本: {{ updateStore.status?.latest_version ?? '—' }}</p>
-              <p class="dlg-meta">最近检查: {{ updateStore.status?.last_checked_at ?? '—' }}</p>
-              <p class="dlg-meta">运行模式: {{ workspace.health?.host_mode ?? '—' }}</p>
-              <p class="dlg-meta">工作区会话: {{ workspace.health?.workspace_session_id ?? '—' }}</p>
+              <p class="dlg-meta">{{ t('framework.commandBar.about.version', '版本') }}: {{ workspace.health?.api_version ?? '—' }}</p>
+              <p class="dlg-meta">{{ t('framework.commandBar.about.updateStatus', '更新状态') }}: {{ updateStore.status?.check_status ?? 'idle' }}</p>
+              <p class="dlg-meta">{{ t('framework.commandBar.about.latestVersion', '最新版本') }}: {{ updateStore.status?.latest_version ?? '—' }}</p>
+              <p class="dlg-meta">{{ t('framework.commandBar.about.lastChecked', '最近检查') }}: {{ updateStore.status?.last_checked_at ?? '—' }}</p>
+              <p class="dlg-meta">{{ t('framework.commandBar.about.hostMode', '运行模式') }}: {{ workspace.health?.host_mode ?? '—' }}</p>
+              <p class="dlg-meta">{{ t('framework.commandBar.about.workspaceSession', '工作区会话') }}: {{ workspace.health?.workspace_session_id ?? '—' }}</p>
               <div class="dlg-actions">
-                <button class="dlg-act-btn" @click="openReleasePage">打开发布页面</button>
+                <button class="dlg-act-btn" @click="openReleasePage">{{ t('framework.commandBar.about.openReleasePage', '打开发布页面') }}</button>
               </div>
               <template v-if="workspace.projectName">
                 <hr class="dlg-hr">
-                <p class="dlg-meta"><strong>项目: {{ workspace.projectName }}</strong></p>
+                <p class="dlg-meta"><strong>{{ t('framework.commandBar.about.project', '项目') }}: {{ workspace.projectName }}</strong></p>
                 <p class="dlg-meta">Schema: {{ workspace.projectFileSchemaVersion || workspace.snapshot?.project?.project_file_schema_version || '—' }}</p>
-                <p class="dlg-meta">类型: {{ workspace.isDirectoryProject ? '目录化项目 (新)' : '单体文件 (旧)' }}</p>
-                <p class="dlg-meta" v-if="workspace.mainGraphPath">主图: {{ workspace.mainGraphPath }}</p>
-                <p class="dlg-meta" v-if="workspace.projectResourcesIndexPath">资源索引: {{ workspace.projectResourcesIndexPath }}</p>
+                <p class="dlg-meta">{{ t('framework.commandBar.about.type', '类型') }}: {{ workspace.isDirectoryProject ? t('framework.commandBar.about.dirProject', '目录化项目 (新)') : t('framework.commandBar.about.fileProject', '单体文件 (旧)') }}</p>
+                <p class="dlg-meta" v-if="workspace.mainGraphPath">{{ t('framework.commandBar.about.mainGraph', '主图') }}: {{ workspace.mainGraphPath }}</p>
+                <p class="dlg-meta" v-if="workspace.projectResourcesIndexPath">{{ t('framework.commandBar.about.resourceIndex', '资源索引') }}: {{ workspace.projectResourcesIndexPath }}</p>
               </template>
             </template>
             <template v-else-if="activeDialog === 'updateCheck'">
-              <p class="dlg-meta">当前版本: {{ updateStore.status?.current_version ?? workspace.health?.api_version ?? '—' }}</p>
-              <p class="dlg-meta">最新版本: {{ updateStore.status?.latest_version ?? '—' }}</p>
-              <p class="dlg-meta">状态: {{ updateStore.isChecking ? 'checking' : (updateStore.status?.check_status ?? 'idle') }}</p>
-              <p class="dlg-meta">最近检查: {{ updateStore.status?.last_checked_at ?? '—' }}</p>
-              <p class="dlg-meta" v-if="updateStore.status?.check_error">错误: {{ updateStore.status?.check_error }}</p>
+              <p class="dlg-meta">{{ t('framework.commandBar.about.currentVersion', '当前版本') }}: {{ updateStore.status?.current_version ?? workspace.health?.api_version ?? '—' }}</p>
+              <p class="dlg-meta">{{ t('framework.commandBar.about.latestVersion', '最新版本') }}: {{ updateStore.status?.latest_version ?? '—' }}</p>
+              <p class="dlg-meta">{{ t('framework.commandBar.about.status', '状态') }}: {{ updateStore.isChecking ? 'checking' : (updateStore.status?.check_status ?? 'idle') }}</p>
+              <p class="dlg-meta">{{ t('framework.commandBar.about.lastChecked', '最近检查') }}: {{ updateStore.status?.last_checked_at ?? '—' }}</p>
+              <p class="dlg-meta" v-if="updateStore.status?.check_error">{{ t('framework.commandBar.about.error', '错误') }}: {{ updateStore.status?.check_error }}</p>
               <div class="dlg-actions">
                 <button class="dlg-act-btn" @click="updateStore.checkForUpdates(true)" :disabled="updateStore.isChecking">
-                  {{ updateStore.isChecking ? '检查中…' : '重新检查' }}
+                  {{ updateStore.isChecking ? t('framework.commandBar.update.checking', '检查中…') : t('framework.commandBar.update.recheck', '重新检查') }}
                 </button>
-                <button class="dlg-act-btn" @click="openReleasePage">打开发布页面</button>
+                <button class="dlg-act-btn" @click="openReleasePage">{{ t('framework.commandBar.about.openReleasePage', '打开发布页面') }}</button>
               </div>
             </template>
             <!-- Confirm Delete -->
             <template v-else-if="activeDialog === 'confirmDelete'">
-              <p>确定删除选中的节点及其关联连线？此操作可撤销。</p>
+              <p>{{ t('framework.commandBar.dialog.confirmDeleteText', '确定删除选中的节点及其关联连线？此操作可撤销。') }}</p>
               <div class="dlg-actions">
-                <button class="dlg-act-btn" style="background:var(--state-error);border-color:var(--state-error)" @click="pendingConfirm?.(); closeDialog()">删除</button>
-                <button class="dlg-act-btn" style="background:transparent;color:var(--text-secondary);border-color:var(--border-default)" @click="closeDialog()">取消</button>
+                <button class="dlg-act-btn" style="background:var(--state-error);border-color:var(--state-error)" @click="pendingConfirm?.(); closeDialog()">{{ t('framework.commandBar.dialog.delete', '删除') }}</button>
+                <button class="dlg-act-btn" style="background:transparent;color:var(--text-secondary);border-color:var(--border-default)" @click="closeDialog()">{{ t('framework.commandBar.dialog.cancel', '取消') }}</button>
               </div>
             </template>
             <!-- Shortcuts -->
             <template v-else-if="activeDialog === 'shortcuts'">
-              <div class="dlg-kv"><kbd>Ctrl+Enter</kbd><span>运行</span></div>
-              <div class="dlg-kv"><kbd>Ctrl+Z</kbd><span>撤销</span></div>
-              <div class="dlg-kv"><kbd>Ctrl+Y</kbd><span>重做</span></div>
-              <div class="dlg-kv"><kbd>Ctrl+K</kbd><span>清空源输入</span></div>
-              <div class="dlg-kv"><kbd>Ctrl+S</kbd><span>保存</span></div>
-              <div class="dlg-kv"><kbd>Ctrl+O</kbd><span>打开项目</span></div>
-              <div class="dlg-kv"><kbd>Ctrl+N</kbd><span>新建项目</span></div>
-              <div class="dlg-kv"><kbd>Ctrl+B</kbd><span>打开组件库</span></div>
-              <div class="dlg-kv"><kbd>Ctrl+E</kbd><span>打开源输入</span></div>
+              <div class="dlg-kv"><kbd>Ctrl+Enter</kbd><span>{{ t('framework.commandBar.shortcuts.run', '运行') }}</span></div>
+              <div class="dlg-kv"><kbd>Ctrl+Z</kbd><span>{{ t('framework.commandBar.shortcuts.undo', '撤销') }}</span></div>
+              <div class="dlg-kv"><kbd>Ctrl+Y</kbd><span>{{ t('framework.commandBar.shortcuts.redo', '重做') }}</span></div>
+              <div class="dlg-kv"><kbd>Ctrl+K</kbd><span>{{ t('framework.commandBar.shortcuts.clearSource', '清空源输入') }}</span></div>
+              <div class="dlg-kv"><kbd>Ctrl+S</kbd><span>{{ t('framework.commandBar.shortcuts.save', '保存') }}</span></div>
+              <div class="dlg-kv"><kbd>Ctrl+O</kbd><span>{{ t('framework.commandBar.shortcuts.openProject', '打开项目') }}</span></div>
+              <div class="dlg-kv"><kbd>Ctrl+N</kbd><span>{{ t('framework.commandBar.shortcuts.newProject', '新建项目') }}</span></div>
+              <div class="dlg-kv"><kbd>Ctrl+B</kbd><span>{{ t('framework.commandBar.shortcuts.openComponents', '打开组件库') }}</span></div>
+              <div class="dlg-kv"><kbd>Ctrl+E</kbd><span>{{ t('framework.commandBar.shortcuts.openSource', '打开源输入') }}</span></div>
             </template>
           </div>
         </div>
@@ -511,7 +512,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
 
     <!-- WebControl Converter -->
     <WebControlConverter v-if="showConverter" @close="showConverter = false" />
-    <Teleport to="body"><div v-if="showUpgradeDialog" class="upg-overlay"><div class="upg-box"><div class="upg-hd">节点图版本升级</div><div class="upg-body"><p>图数据版本 <strong>{{ upgradeInfo?.compatibility?.graph_data_version }}</strong> → 程序版本 <strong>{{ upgradeInfo?.compatibility?.current_app_version }}</strong></p><p class="upg-meta">创建时版本: {{ upgradeInfo?.compatibility?.built_with_app_version }} · 最低加载: {{ upgradeInfo?.compatibility?.minimum_loader_app_version }}</p><div v-if="upgradeInfo?.documents?.length"><p class="upg-meta">涉及文档:</p><div v-for="d in upgradeInfo.documents" :key="d.document_id" class="upg-doc-item">{{ d.display_name || d.document_id }} <small>({{ d.document_role }})</small></div></div><template v-if="upgradeInfo?.status === 'upgrade_available'"><div class="upg-actions"><button class="upg-btn upg-btn-primary" @click="handleGraphUpgrade('upgrade_and_load')">升级并加载</button><button class="upg-btn" @click="handleGraphUpgrade('force_load')">跳过升级</button></div></template><template v-else><div class="upg-actions"><button class="upg-btn upg-btn-primary" @click="handleGraphUpgrade('force_load')">强制加载</button><button class="upg-btn" @click="showUpgradeDialog = false">取消</button></div></template></div></div></div></Teleport>
+    <Teleport to="body"><div v-if="showUpgradeDialog" class="upg-overlay"><div class="upg-box"><div class="upg-hd">{{ t('framework.commandBar.upgrade.title', '节点图版本升级') }}</div><div class="upg-body"><p>{{ t('framework.commandBar.upgrade.dataVersion', '图数据版本') }} <strong>{{ upgradeInfo?.compatibility?.graph_data_version }}</strong> → {{ t('framework.commandBar.upgrade.appVersion', '程序版本') }} <strong>{{ upgradeInfo?.compatibility?.current_app_version }}</strong></p><p class="upg-meta">{{ t('framework.commandBar.upgrade.builtWith', '创建时版本') }}: {{ upgradeInfo?.compatibility?.built_with_app_version }} · {{ t('framework.commandBar.upgrade.minimumLoader', '最低加载') }}: {{ upgradeInfo?.compatibility?.minimum_loader_app_version }}</p><div v-if="upgradeInfo?.documents?.length"><p class="upg-meta">{{ t('framework.commandBar.upgrade.involvedDocuments', '涉及文档') }}:</p><div v-for="d in upgradeInfo.documents" :key="d.document_id" class="upg-doc-item">{{ d.display_name || d.document_id }} <small>({{ d.document_role }})</small></div></div><template v-if="upgradeInfo?.status === 'upgrade_available'"><div class="upg-actions"><button class="upg-btn upg-btn-primary" @click="handleGraphUpgrade('upgrade_and_load')">{{ t('framework.commandBar.upgrade.upgradeAndLoad', '升级并加载') }}</button><button class="upg-btn" @click="handleGraphUpgrade('force_load')">{{ t('framework.commandBar.upgrade.skipUpgrade', '跳过升级') }}</button></div></template><template v-else><div class="upg-actions"><button class="upg-btn upg-btn-primary" @click="handleGraphUpgrade('force_load')">{{ t('framework.commandBar.upgrade.forceLoad', '强制加载') }}</button><button class="upg-btn" @click="showUpgradeDialog = false">{{ t('framework.commandBar.dialog.cancel', '取消') }}</button></div></template></div></div></div></Teleport>
   </header>
 </template>
 

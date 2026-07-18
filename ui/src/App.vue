@@ -10,6 +10,8 @@ import { useToastStore } from '@/stores/toastStore'
 import { useUpdateStore } from '@/stores/updateStore'
 import { useStartupStore } from '@/stores/startupStore'
 import { useThemeStore } from '@/stores/themeStore'
+import { useFontScaleStore } from '@/stores/fontScaleStore'
+import { useLanguageStore } from '@/stores/languageStore'
 import { useKeyboard } from '@/composables/useKeyboard'
 import CommandBar from '@/components/commandbar/CommandBar.vue'
 import StatusBar from '@/components/common/StatusBar.vue'
@@ -18,6 +20,8 @@ import StartupErrorScreen from '@/components/common/StartupErrorScreen.vue'
 
 const workspace = useWorkspaceStore()
 const theme = useThemeStore()
+const fontScale = useFontScaleStore()
+const language = useLanguageStore()
 const compilation = useCompilationStore()
 const graphWs = useGraphWorkspaceStore()
 const graphStore = useGraphStore()
@@ -76,8 +80,15 @@ function beforeUnload(e: BeforeUnloadEvent) {
 
 /** Post-connection bootstrap: update check + full workspace restore. */
 async function runWorkbenchBootstrap() {
-  // Seed theme from the configured default (no-op if the user has a local override).
+  // Seed theme + font scale + language from configured defaults (no-op if the user has a local override).
   theme.initFromConfig((workspace.snapshot?.preferences as any)?.program_settings?.theme)
+  fontScale.initFromConfig((workspace.snapshot?.preferences as any)?.program_settings?.font_scale)
+  // Language seed is async (fetches the external packs); don't block the rest of bootstrap on it.
+  // UI language (界面语言) and resource language (资源语言) are independent axes.
+  language.initFromConfig(
+    (workspace.snapshot?.preferences as any)?.program_settings?.language,
+    (workspace.snapshot?.preferences as any)?.program_settings?.resource_language,
+  ).catch(() => {})
   await updateStore.fetchStatus().catch(() => {})
   const shouldCheckUpdates = !!(workspace.snapshot?.preferences as any)?.program_settings?.check_updates_on_startup
   if (shouldCheckUpdates) {

@@ -41,9 +41,18 @@ def _register_program_fields(registry: ConfigurationRegistry) -> None:
         },
         fields=(
             ("default_window_size", "object", {"width": 1440, "height": 900}),
-            ("resource_language", "enum", "zh-CN", ("zh-CN", "en-US")),
+            # Resource language is a free-form string for the same reason as
+            # `language` below: it selects an external, runtime-loaded pack
+            # (drives per-module/node-graph content + backend display_name_i18n),
+            # so any on-disk locale must validate. Independent of the UI language.
+            ("resource_language", "string", "zh-CN"),
             ("theme", "enum", "system", ("light", "dark", "system")),
-            ("language", "enum", "zh-CN", ("zh-CN", "en-US", "ja-JP")),
+            # UI locale is a free-form string, not a fixed enum: language packs
+            # are external (loaded from the program's languages/ dir at runtime),
+            # so any on-disk locale must validate. "zh-CN" is the built-in source
+            # locale (hardcoded Chinese fallback) and needs no pack. The UI
+            # resolves availability at runtime and degrades to the source locale.
+            ("language", "string", "zh-CN"),
             ("font_scale", "float", 1.0),
         ),
     )

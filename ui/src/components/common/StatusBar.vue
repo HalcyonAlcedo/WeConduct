@@ -2,16 +2,17 @@
 import { computed } from 'vue'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useCompilationStore } from '@/stores/compilationStore'
+import { t } from '@/i18n'
 
 const workspace = useWorkspaceStore()
 const compilation = useCompilationStore()
 
 const statusText = computed(() => {
-  if (!workspace.isConnected) return '✕ 离线'
-  if (compilation.isCompiling) return '◉ 编译中…'
-  if (compilation.compilePhase === 'completed') return '✓ 编译成功'
-  if (compilation.compilePhase === 'failed') return '✕ 编译失败'
-  return '✓ 就绪'
+  if (!workspace.isConnected) return t('framework.statusBar.status.offline', '✕ 离线')
+  if (compilation.isCompiling) return t('framework.statusBar.status.compiling', '◉ 编译中…')
+  if (compilation.compilePhase === 'completed') return t('framework.statusBar.status.compileSuccess', '✓ 编译成功')
+  if (compilation.compilePhase === 'failed') return t('framework.statusBar.status.compileFailed', '✕ 编译失败')
+  return t('framework.statusBar.status.ready', '✓ 就绪')
 })
 
 const statusClass = computed(() => {
@@ -28,18 +29,20 @@ const projectLabel = computed(() => {
 
 const compileCountLabel = computed(() => {
   const n = workspace.compileCounter
-  return n > 0 ? `编译 #${n}` : '未编译'
+  return n > 0
+    ? t('framework.statusBar.compileCount', `编译 #${n}`, { n })
+    : t('framework.statusBar.notCompiled', '未编译')
 })
 
 const lastCompileTimeLabel = computed(() => {
-  const t = workspace.lastCompileTime
-  if (!t) return null
+  const iso = workspace.lastCompileTime
+  if (!iso) return null
   // Format ISO datetime to a shorter form
   try {
-    const d = new Date(t)
+    const d = new Date(iso)
     return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   } catch {
-    return t.slice(0, 19)
+    return iso.slice(0, 19)
   }
 })
 
@@ -61,7 +64,7 @@ const productLabel = computed(() => {
 
 const limitedBrowserLabel = computed(() => {
   if (!workspace.isLimitedBrowser) return null
-  return '⚠ 受限浏览器模式 — 缺少 WebView2 Runtime，部分功能不可用'
+  return t('framework.statusBar.limitedBrowser', '⚠ 受限浏览器模式 — 缺少 WebView2 Runtime，部分功能不可用')
 })
 </script>
 
@@ -76,7 +79,7 @@ const limitedBrowserLabel = computed(() => {
     <span class="status-divider">|</span>
     <span class="status-item">{{ projectLabel }}</span>
     <span class="status-divider">|</span>
-    <span class="status-item">诊断: {{ diagCount }}</span>
+    <span class="status-item">{{ t('framework.statusBar.diagnostics', `诊断: ${diagCount}`, { count: diagCount }) }}</span>
     <span class="status-divider">|</span>
     <span class="status-item">{{ sourceLines }}</span>
     <span class="status-divider">|</span>

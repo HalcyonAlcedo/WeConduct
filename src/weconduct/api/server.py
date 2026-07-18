@@ -67,6 +67,152 @@ def migrate_configuration_storage(preferences_path: str | Path) -> dict:
     return {"program": program_result, "graph": graph_result}
 
 
+# ===== Language packs (external, filesystem-loaded) =====
+#
+# UI text uses a Chinese-source-as-fallback model: zh-CN is the hardcoded
+# literal in the components and is NEVER a language pack. Other languages are
+# authored externally (by anyone) as a folder under the program directory's
+# `languages/` subdir and loaded at runtime. This keeps official maintenance to
+# zero and lets third parties add languages by dropping in a folder.
+#
+# Pack layout (per locale):
+#   languages/<locale>/manifest.json   {locale, display_name, author?, version?}
+#   languages/<locale>/**/*.json        namespaced message trees (any depth)
+#
+# Every *.json (except manifest.json) is deep-merged into one message tree. The
+# folder structure is purely for maintainability (per-module files); it does not
+# affect key namespaces — keys are whatever the JSON contents declare.
+
+LANGUAGES_DIRECTORY_NAME = "languages"
+
+
+def _languages_directory(preferences_path: Path) -> Path:
+    return Path(preferences_path).parent / LANGUAGES_DIRECTORY_NAME
+
+
+def _read_language_manifest(locale_dir: Path) -> dict | None:
+    manifest_path = locale_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    locale = payload.get("locale")
+    if not isinstance(locale, str) or not locale.strip():
+        # Fall back to the directory name as the locale identifier.
+        locale = locale_dir.name
+    display_name = payload.get("display_name")
+    if not isinstance(display_name, str) or not display_name.strip():
+        display_name = locale
+    manifest = {"locale": locale, "display_name": display_name}
+    for optional_key in ("author", "version", "description"):
+        value = payload.get(optional_key)
+        if isinstance(value, str) and value.strip():
+            manifest[optional_key] = value
+    return manifest
+
+
+def list_available_languages(preferences_path: Path) -> list[dict]:
+    """Scan the languages directory and return manifests for valid packs."""
+    directory = _languages_directory(preferences_path)
+    if not directory.is_dir():
+        return []
+    manifests: list[dict] = []
+    for entry in sorted(directory.iterdir(), key=lambda p: p.name):
+        if not entry.is_dir():
+            continue
+        manifest = _read_language_manifest(entry)
+        if manifest is not None:
+            manifests.append(manifest)
+    return manifests
+
+
+def _deep_merge_into(target: dict, source: dict) -> None:
+    for key, value in source.items():
+        if (
+            isinstance(value, dict)
+            and isinstance(target.get(key), dict)
+        ):
+            _deep_merge_into(target[key], value)
+        else:
+            target[key] = value
+
+
+def _namespace_for_pack_file(locale_dir: Path, json_path: Path) -> list[str]:
+    """Derive the message-tree namespace from a pack file's relative path.
+
+    ``framework.json``               -> ``["framework"]``
+    ``nodegraph/execution.json``     -> ``["nodegraph", "execution"]``
+    ``framework.commandBar.json``    -> ``["framework", "commandBar"]``
+    ``preferences.json``             -> ``["preferences"]``
+
+    Directory separators AND dots in the filename both introduce namespace
+    levels, so a large namespace can be split across sibling files
+    (``framework.commandBar.json`` + ``framework.statusBar.json``) or nested
+    folders interchangeably. Translators author flat/nested keys inside each
+    module file without repeating the module prefix; the loader nests the
+    content under the path-derived namespace so it matches the frontend
+    ``t()`` keys.
+    """
+    relative = json_path.relative_to(locale_dir)
+    segments: list[str] = list(relative.parts[:-1])
+    # The filename (minus the trailing ``.json``) contributes one segment per
+    # dot-delimited part, e.g. ``framework.commandBar`` -> framework, commandBar.
+    filename = relative.parts[-1]
+    if filename.endswith(".json"):
+        filename = filename[: -len(".json")]
+    segments.extend(part for part in filename.split(".") if part)
+    return segments
+
+
+def load_language_pack(preferences_path: Path, locale: str) -> dict | None:
+    """Merge every JSON (except manifest) under languages/<locale>/.
+
+    Each file's content is nested under the namespace derived from its path
+    (see :func:`_namespace_for_pack_file`), then deep-merged into the tree.
+    Returns the merged message tree, or None if the locale pack is absent.
+    """
+    directory = _languages_directory(preferences_path)
+    # Resolve the locale to an actual pack directory (match manifest locale or
+    # directory name); iterating manifests avoids trusting the locale string as
+    # a filesystem path, so a traversal payload never reaches ``/`` operations.
+    if not directory.is_dir():
+        return None
+    locale_dir: Path | None = None
+    for entry in directory.iterdir():
+        if not entry.is_dir():
+            continue
+        manifest = _read_language_manifest(entry)
+        if manifest is not None and manifest["locale"] == locale:
+            locale_dir = entry
+            break
+    if locale_dir is None:
+        return None
+    merged: dict = {}
+    for json_path in sorted(locale_dir.rglob("*.json")):
+        if json_path.name == "manifest.json":
+            continue
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        namespace = _namespace_for_pack_file(locale_dir, json_path)
+        scoped: dict = {}
+        cursor = scoped
+        for segment in namespace:
+            child: dict = {}
+            cursor[segment] = child
+            cursor = child
+        cursor.update(payload)
+        _deep_merge_into(merged, scoped)
+    return merged
+
+
 # ===== Startup diagnostics & recovery =====
 #
 # On startup the desktop shell must be able to report *why* it failed even when
@@ -584,6 +730,37 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 {
                     "recent_projects": result["recent_projects"],
                 },
+            )
+            return
+
+        if request_path == "/api/workbench/languages":
+            manifests = list_available_languages(self._resolve_preferences_path())
+            self._write_json(
+                HTTPStatus.OK,
+                {"languages": manifests},
+            )
+            return
+
+        if request_path.startswith("/api/workbench/languages/"):
+            locale = unquote(request_path[len("/api/workbench/languages/"):]).strip()
+            if not locale:
+                self._write_invalid_request_error(
+                    ValueError("path parameter must be a non-empty string: locale")
+                )
+                return
+            messages = load_language_pack(self._resolve_preferences_path(), locale)
+            if messages is None:
+                self._write_json(
+                    HTTPStatus.NOT_FOUND,
+                    {
+                        "error": "language.pack_not_found",
+                        "message": f"no language pack found for locale: {locale}",
+                    },
+                )
+                return
+            self._write_json(
+                HTTPStatus.OK,
+                {"locale": locale, "messages": messages},
             )
             return
 

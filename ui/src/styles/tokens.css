@@ -53,12 +53,15 @@
   --font-ui:    "Inter", "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-mono:  "JetBrains Mono", "Cascadia Code", "Consolas", "SF Mono", monospace;
 
-  /* ===== Font Size (professional compact scale) ===== */
-  --text-caption:  10px;
-  --text-small:    11px;
-  --text-body:     12px;
-  --text-code:     13px;
-  --text-panel:    12px;
+  /* ===== Font Size (professional compact scale) =====
+     All sizes derive from a user-adjustable --font-scale multiplier
+     (see fontScaleStore); base sizes stay fixed, scale applies uniformly. */
+  --font-scale: 1;
+  --text-caption:  calc(10px * var(--font-scale));
+  --text-small:    calc(11px * var(--font-scale));
+  --text-body:     calc(12px * var(--font-scale));
+  --text-code:     calc(13px * var(--font-scale));
+  --text-panel:    calc(12px * var(--font-scale));
 
   /* ===== Spacing (4px grid) ===== */
   --space-xs:  4px;

@@ -474,4 +474,34 @@ export function postStartupRecover(targets?: string[]): Promise<StartupRecoverRe
   })
 }
 
+// ===== 0.8.2: Language packs (external, runtime-loaded) =====
+
+/** One entry from `GET /api/workbench/languages` — a discovered pack manifest. */
+export interface LanguageManifest {
+  locale: string
+  display_name: string
+  author?: string
+  version?: string
+  description?: string
+}
+
+export interface LanguagesResponse {
+  languages: LanguageManifest[]
+}
+
+export interface LanguagePackResponse {
+  locale: string
+  messages: Record<string, unknown>
+}
+
+/** List the language packs discovered in the program's `languages/` directory. */
+export function fetchLanguages(): Promise<LanguagesResponse> {
+  return request<LanguagesResponse>('/workbench/languages')
+}
+
+/** Load the merged message tree for one locale (null-safe via 404 handling in caller). */
+export function fetchLanguagePack(locale: string): Promise<LanguagePackResponse> {
+  return request<LanguagePackResponse>(`/workbench/languages/${encodeURIComponent(locale)}`)
+}
+
 export { ApiError }
