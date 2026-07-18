@@ -8,7 +8,7 @@ import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
 import MonacoEditor from '@/components/input/MonacoEditor.vue'
 import { postFileDialog, postGraphNormalize } from '@/services/api'
 import { useToastStore } from '@/stores/toastStore'
-import { t } from '@/i18n'
+import { t, tr } from '@/i18n'
 
 const graphStore = useGraphStore()
 const workspace = useGraphWorkspaceStore()
@@ -231,7 +231,7 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
       <div v-if="selectedNode.node_kind === 'graph.call_subgraph'" class="mep-section"><h5>{{ t('framework.metadataEditor.subgraph.title', '目标子图 Schema') }}</h5><div v-if="!targetSubgraph" class="mep-empty-cfg">{{ t('framework.metadataEditor.subgraph.notFound', '未找到目标子图资源') }}</div><template v-else><div class="mep-schema-block"><h6>{{ t('framework.metadataEditor.subgraph.inputSchema', '输入 Schema') }}</h6><div v-for="f in schemaFields(targetSubgraph.input_schema)" :key="f.key" class="mep-schema-row"><span class="mep-schema-key">{{ f.key }}</span><span class="mep-schema-type">{{ f.type }}</span><span v-if="f.required" class="mep-schema-req">{{ t('framework.metadataEditor.schema.required', '必填') }}</span></div></div><div class="mep-schema-block"><h6>{{ t('framework.metadataEditor.subgraph.outputSchema', '输出 Schema') }}</h6><div v-for="f in schemaFields(targetSubgraph.output_schema)" :key="f.key" class="mep-schema-row"><span class="mep-schema-key">{{ f.key }}</span><span class="mep-schema-type">{{ f.type }}</span></div></div></template></div>
       <div class="mep-section"><h5>{{ t('framework.metadataEditor.config.title', '节点配置 (node_config)') }}</h5><div class="mep-config">
         <!-- Generic fields -->
-        <div v-for="f in paramFields.filter(p => p.type !== 'object-map' && p.type !== 'typed-value' && p.type !== 'branch-list' && p.type !== 'code' && p.type !== 'component-schema')" :key="f.key" class="mep-cfg-row"><label :title="f.key">{{ f.key }}</label>
+        <div v-for="f in paramFields.filter(p => p.type !== 'object-map' && p.type !== 'typed-value' && p.type !== 'branch-list' && p.type !== 'code' && p.type !== 'component-schema')" :key="f.key" class="mep-cfg-row"><label :title="f.key">{{ tr('nodegraph.base.field.' + f.key, f.key) }}</label>
           <span v-if="isFieldBound(f.key)" class="mep-bound">{{ getCfgVal(f.key) }} <em>⇠ {{ isFieldBound(f.key)!.nodeName }}:{{ isFieldBound(f.key)!.portId }}</em></span>
           <template v-else>
             <select v-if="f.options" class="mep-cfg-input" :value="String(getCfgVal(f.key) ?? f.options[0])" :disabled="!workspace.isGraphEditable" @change="setCfgVal(f.key, ($event.target as HTMLSelectElement).value)"><option v-for="o in f.options" :key="o" :value="o">{{ o }}</option></select>
@@ -242,7 +242,7 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
           </template>
         </div>
         <!-- Typed-value -->
-        <div v-for="f in paramFields.filter(p => p.type === 'typed-value')" :key="f.key" class="mep-cfg-row"><label :title="f.key">{{ f.key }}</label>
+        <div v-for="f in paramFields.filter(p => p.type === 'typed-value')" :key="f.key" class="mep-cfg-row"><label :title="f.key">{{ tr('nodegraph.base.field.' + f.key, f.key) }}</label>
           <template v-if="isFieldBound(f.key)"><span class="mep-bound">{{ typeof getCfgVal(f.key) === 'object' ? JSON.stringify(getCfgVal(f.key)) : getCfgVal(f.key) }} <em>⇠ {{ isFieldBound(f.key)!.nodeName }}:{{ isFieldBound(f.key)!.portId }}</em></span></template>
           <template v-else>
             <select class="mep-type-sel" :value="getSelectedType(f.key)" :disabled="!workspace.isGraphEditable" @change="changeValueType(f.key, ($event.target as HTMLSelectElement).value as ValueType)"><option v-for="t in VALUE_TYPES" :key="t" :value="t">{{ t }}</option></select>
@@ -254,9 +254,9 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
           </template>
         </div>
         <!-- Code -->
-        <div v-for="f in paramFields.filter(p => p.type === 'code')" :key="f.key" class="mep-code-row"><label class="mep-code-label">{{ f.key }}</label><div class="mep-code-editor"><MonacoEditor :model-value="String(getCfgVal(f.key) ?? '')" :language="selectedNode?.node_kind === 'python.run' ? 'python' : 'javascript'" :read-only="!workspace.isGraphEditable" @update:model-value="setCfgVal(f.key, $event)" /></div></div>
+        <div v-for="f in paramFields.filter(p => p.type === 'code')" :key="f.key" class="mep-code-row"><label class="mep-code-label">{{ tr('nodegraph.base.field.' + f.key, f.key) }}</label><div class="mep-code-editor"><MonacoEditor :model-value="String(getCfgVal(f.key) ?? '')" :language="selectedNode?.node_kind === 'python.run' ? 'python' : 'javascript'" :read-only="!workspace.isGraphEditable" @update:model-value="setCfgVal(f.key, $event)" /></div></div>
         <!-- Component-schema -->
-        <template v-for="f in paramFields.filter(p => p.type === 'component-schema')" :key="f.key"><div class="mep-cfg-section">{{ f.key }}</div>
+        <template v-for="f in paramFields.filter(p => p.type === 'component-schema')" :key="f.key"><div class="mep-cfg-section">{{ tr('nodegraph.base.field.' + f.key, f.key) }}</div>
           <div v-for="(e, ei) in getSchemaEntries(f.key)" :key="ei" class="mep-cs-row">
             <input :value="e.name" class="mep-br-key" :placeholder="t('framework.metadataEditor.schema.fieldNamePlaceholder', '字段名')" :disabled="!workspace.isGraphEditable" @change="updateSchemaEntry(f.key, ei, { name: ($event.target as HTMLInputElement).value })" />
             <select class="mep-cfg-input" style="width:70px" v-model="e.type" :disabled="!workspace.isGraphEditable" @change="updateSchemaEntry(f.key, ei, { type: ($event.target as HTMLSelectElement).value })"><option value="string">string</option><option value="number">number</option><option value="boolean">boolean</option><option value="array">array</option><option value="object">object</option></select>
@@ -269,12 +269,12 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
           <button v-if="workspace.isGraphEditable" class="mep-br-norm" :disabled="normalizing" @click="normalizeGraph()">{{ normalizing ? t('framework.metadataEditor.syncing', '同步中…') : t('framework.metadataEditor.syncPorts', '🔄 同步端口') }}</button>
         </template>
         <!-- Branch-list -->
-        <template v-for="f in paramFields.filter(p => p.type === 'branch-list')" :key="f.key"><div class="mep-cfg-section">{{ f.key }}</div>
+        <template v-for="f in paramFields.filter(p => p.type === 'branch-list')" :key="f.key"><div class="mep-cfg-section">{{ tr('nodegraph.base.field.' + f.key, f.key) }}</div>
           <div v-for="(b, bi) in getBranches(f.key)" :key="bi" class="mep-br-row"><input class="mep-br-key" :value="b.key" :disabled="!workspace.isGraphEditable" @change="updateBranchKey(f.key, bi, ($event.target as HTMLInputElement).value)" placeholder="key" /><input class="mep-br-label" :value="b.label" :disabled="!workspace.isGraphEditable" @change="updateBranchLabel(f.key, bi, ($event.target as HTMLInputElement).value)" placeholder="label" /><button v-if="workspace.isGraphEditable" class="mep-om-del" @click="deleteBranch(f.key, bi)">✕</button></div>
           <button v-if="workspace.isGraphEditable" class="mep-om-add" @click="addBranch(f.key)">{{ t('framework.metadataEditor.branch.addBranch', '+ 新增分支') }}</button><button v-if="workspace.isGraphEditable" class="mep-br-norm" :disabled="normalizing" @click="normalizeGraph()">{{ normalizing ? t('framework.metadataEditor.syncing', '同步中…') : t('framework.metadataEditor.syncPorts', '🔄 同步端口') }}</button>
         </template>
         <!-- Object-map -->
-        <template v-for="omf in objectMapFields" :key="omf.key"><div class="mep-cfg-section">{{ omf.key }}</div>
+        <template v-for="omf in objectMapFields" :key="omf.key"><div class="mep-cfg-section">{{ tr('nodegraph.base.field.' + omf.key, omf.key) }}</div>
           <div v-for="entry in objectMapEntries(omf.key)" :key="entry.key" class="mep-om-row">
             <template v-if="renamingEntry?.fieldKey === omf.key && renamingEntry?.subKey === entry.key"><input class="mep-om-key-input" :value="renamingEntry.tempName" :disabled="!workspace.isGraphEditable" @input="renamingEntry!.tempName = ($event.target as HTMLInputElement).value" @keyup.enter="finishRename()" @keyup.escape="cancelRename()" @blur="finishRename()" /></template>
             <span v-else class="mep-om-key" @dblclick="workspace.isGraphEditable && startRename(omf.key, entry.key)" :title="workspace.isGraphEditable ? t('framework.metadataEditor.objectMap.dblclickRename', '双击重命名') : ''">{{ entry.key }}</span>
@@ -291,27 +291,27 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
           <button v-if="workspace.isGraphEditable" class="mep-om-add" @click="addObjectMapKey(omf.key)">{{ t('framework.metadataEditor.objectMap.addEntry', '+ 新增条目') }}</button>
         </template>
         <!-- Debugger config -->
-        <div v-if="selectedNode" class="mep-cfg-section">debugger</div>
+        <div v-if="selectedNode" class="mep-cfg-section">{{ tr('nodegraph.base.field.debugger', 'debugger') }}</div>
         <template v-if="selectedNode">
           <div class="mep-cfg-row"><label>{{ t('framework.metadataEditor.debugger.breakpointEnabled', '断点 enabled') }}</label>
             <input type="checkbox" :checked="!!debuggerCfg.breakpoint?.enabled" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'enabled', ($event.target as HTMLInputElement).checked)" />
           </div>
           <div class="mep-cfg-row" v-if="debuggerCfg.breakpoint?.enabled">
-            <label>pause_timing</label>
+            <label>{{ tr('nodegraph.base.field.pause_timing', 'pause_timing') }}</label>
             <select class="mep-cfg-input" :value="debuggerCfg.breakpoint?.pause_timing || 'before'" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'pause_timing', ($event.target as HTMLSelectElement).value)">
               <option value="before">before</option><option value="after">after</option><option value="both">both</option>
             </select>
           </div>
           <div class="mep-cfg-row" v-if="debuggerCfg.breakpoint?.enabled">
-            <label>expression</label>
+            <label>{{ tr('nodegraph.base.field.expression', 'expression') }}</label>
             <input :value="debuggerCfg.breakpoint?.expression || ''" class="mep-cfg-input" :placeholder="t('framework.metadataEditor.debugger.expressionPlaceholder', '条件表达式')" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'expression', ($event.target as HTMLInputElement).value)" />
           </div>
           <div class="mep-cfg-row" v-if="debuggerCfg.breakpoint?.enabled">
-            <label>hit_count</label>
+            <label>{{ tr('nodegraph.base.field.hit_count', 'hit_count') }}</label>
             <input type="number" :value="debuggerCfg.breakpoint?.hit_count ?? 0" class="mep-cfg-input" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'hit_count', Number(($event.target as HTMLInputElement).value))" />
           </div>
           <div class="mep-cfg-row" v-if="debuggerCfg.breakpoint?.enabled">
-            <label>once</label>
+            <label>{{ tr('nodegraph.base.field.once', 'once') }}</label>
             <input type="checkbox" :checked="!!debuggerCfg.breakpoint?.once" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'once', ($event.target as HTMLInputElement).checked)" />
           </div>
           <div class="mep-cfg-row"><label>{{ t('framework.metadataEditor.debugger.recordFrameEnabled', '记录帧 enabled') }}</label>
@@ -320,8 +320,8 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
         </template>
 
         <!-- Extra config -->
-        <template v-for="(sec, si) in extraConfigSections" :key="si"><div v-if="sec.section" class="mep-cfg-section">{{ sec.section }}</div>
-          <div v-for="f in sec.rows" :key="f.path" class="mep-cfg-row"><label :title="f.path">{{ f.key }}</label>
+        <template v-for="(sec, si) in extraConfigSections" :key="si"><div v-if="sec.section" class="mep-cfg-section">{{ tr('nodegraph.base.field.' + sec.section, sec.section) }}</div>
+          <div v-for="f in sec.rows" :key="f.path" class="mep-cfg-row"><label :title="f.path">{{ tr('nodegraph.base.field.' + f.key, f.key) }}</label>
             <span v-if="isFieldBound(f.path)" class="mep-bound">{{ f.value }} <em>⇠ {{ isFieldBound(f.path)!.nodeName }}:{{ isFieldBound(f.path)!.portId }}</em></span>
             <template v-else>
               <span v-if="f.type === 'string'" style="display:flex;gap:2px;flex:1"><input class="mep-cfg-input" :value="String(f.value ?? '')" :disabled="!workspace.isGraphEditable" @change="setCfgVal(f.path, ($event.target as HTMLInputElement).value)" /><button v-if="getParamSchema(f.key)?.editor_kind === 'path'" class="mep-path-btn" @click="pickPathForField(f.path)">…</button></span>

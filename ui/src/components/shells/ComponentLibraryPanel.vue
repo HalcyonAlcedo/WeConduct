@@ -5,7 +5,7 @@ import { useResourceStore } from '@/stores/resourceStore'
 import { useToastStore } from '@/stores/toastStore'
 import { fetchComponentLibrary } from '@/services/api'
 import type { ComponentLibraryItem } from '@/types/domains/api'
-import { t } from '@/i18n'
+import { t, resourceLocale } from '@/i18n'
 
 const workspace = useGraphWorkspaceStore()
 const resource = useResourceStore()
@@ -47,7 +47,7 @@ watch(searchQuery, (q) => {
   suggestions.value = allItems.filter(i =>
     i.display_name.toLowerCase().includes(lower) ||
     i.resource_key.toLowerCase().includes(lower) ||
-    (i.display_name_i18n?.['zh-CN'] || '').includes(lower)
+    (i.display_name_i18n?.[resourceLocale.value] || '').includes(lower)
   ).slice(0, 8)
   showSuggestions.value = suggestions.value.length > 0
   // Debounced server search
@@ -99,12 +99,14 @@ function taxonomyLabel(tax: string | undefined) {
 }
 
 function displayName(c: ComponentLibraryItem) {
-  return c.display_name_i18n?.['zh-CN'] || c.display_name
+  return c.display_name_i18n?.[resourceLocale.value] || c.display_name
 }
 
 function itemTooltip(c: ComponentLibraryItem) {
-  const desc = c.description_i18n?.['zh-CN'] || c.description || ''
-  return `${c.display_name}\n${c.resource_key}\n${desc}`
+  const locale = resourceLocale.value
+  const desc = c.description_i18n?.[locale] || c.description || ''
+  const name = c.display_name_i18n?.[locale] || c.display_name
+  return `${name}\n${c.resource_key}\n${desc}`
 }
 </script>
 <template>

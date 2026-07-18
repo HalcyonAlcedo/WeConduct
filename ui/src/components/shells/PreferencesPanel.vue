@@ -7,6 +7,8 @@ import { useToastStore } from '@/stores/toastStore'
 import { useThemeStore } from '@/stores/themeStore'
 import { useFontScaleStore } from '@/stores/fontScaleStore'
 import { useLanguageStore } from '@/stores/languageStore'
+import { useResourceStore } from '@/stores/resourceStore'
+import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { SOURCE_LOCALE, t } from '@/i18n'
 
 const workspace = useWorkspaceStore()
@@ -14,6 +16,12 @@ const toast = useToastStore()
 const theme = useThemeStore()
 const fontScale = useFontScaleStore()
 const language = useLanguageStore()
+const resource = useResourceStore()
+const graphWs = useGraphWorkspaceStore()
+// Resource locale the resource list + graph were last resolved under. When a
+// save changes resource_language, the backend re-localizes display names, so we
+// refetch resources and reload the graph to pull the new names.
+const appliedResourceLang = ref<string | null>(null)
 const active = ref('general')
 
 // Built-in source locale (needs no pack) + every discovered external pack.
@@ -63,7 +71,10 @@ const FONT_SCALE_PRESETS: { value: number; label: string }[] = [
   { value: 1.5, label: '150%' },
 ]
 
-const FIELD_DEFS: Record<string, FieldDef[]> = {
+// Computed (not a plain const) so labels/hints re-resolve when the UI locale
+// changes live — `t()` is reactive, but only if re-invoked. A once-evaluated
+// const would freeze the strings at mount and only update on remount.
+const FIELD_DEFS = computed<Record<string, FieldDef[]>>(() => ({
   general: [
     { key: 'language', label: t('framework.preferences.general.language', '界面语言'), type: 'language', hint: t('framework.preferences.general.languageHint', '主界面语言。内置简体中文；其他语言需在程序目录 languages/ 放置语言包') },
     { key: 'resource_language', label: t('framework.preferences.general.resourceLanguage', '资源语言'), type: 'language', hint: t('framework.preferences.general.resourceLanguageHint', '各模块/节点内容的语言，与界面语言独立配置') },
@@ -113,10 +124,10 @@ const FIELD_DEFS: Record<string, FieldDef[]> = {
     { key: 'edge_line_style', label: t('framework.preferences.nodegraph.edgeLineStyle', '连线样式'), type: 'select', options: ['smoothstep', 'straight', 'bezier'], hint: t('framework.preferences.nodegraph.edgeLineStyleHint', 'smoothstep 平滑折线 / straight 直线 / bezier 曲线') },
     { key: 'save_conflict_policy', label: t('framework.preferences.nodegraph.saveConflictPolicy', '保存冲突策略'), type: 'select', options: ['prefer_current_graph', 'strict'] },
   ],
-}
+}))
 
 const SECTION_MAP: Record<string, string> = { general: 'program_settings', security: 'security_settings', python: 'python_runtime_settings', nodegraph: 'graph_settings' }
-const CATS = [{ key: 'general', label: t('framework.preferences.cats.general', '程序设置') }, { key: 'security', label: t('framework.preferences.cats.security', '安全设置') }, { key: 'python', label: t('framework.preferences.cats.python', 'Python 运行时设置') }, { key: 'nodegraph', label: t('framework.preferences.cats.nodegraph', '节点图设置') }]
+const CATS = computed(() => [{ key: 'general', label: t('framework.preferences.cats.general', '程序设置') }, { key: 'security', label: t('framework.preferences.cats.security', '安全设置') }, { key: 'python', label: t('framework.preferences.cats.python', 'Python 运行时设置') }, { key: 'nodegraph', label: t('framework.preferences.cats.nodegraph', '节点图设置') }])
 
 const form = reactive<Record<string, Record<string, any>>>({ program_settings: {}, security_settings: {}, python_runtime_settings: {}, graph_settings: {} })
 const saveState = reactive<Record<string, 'idle' | 'saving' | 'saved' | 'error'>>({}); const saveError = reactive<Record<string, string>>({})
@@ -139,6 +150,11 @@ function initForm() {
   form.graph_settings = {
     ...form.graph_settings,
     ...normalizeGraphPreferences((workspace.snapshot as any)?.graph_workspace?.graph_preferences),
+  }
+  // Seed the baseline so the first save only refreshes resources if the user
+  // actually changed the resource language (not on an unrelated field save).
+  if (appliedResourceLang.value === null) {
+    appliedResourceLang.value = (form.program_settings?.resource_language as string) ?? SOURCE_LOCALE
   }
 }
 async function loadGraphPreferences() {
@@ -205,10 +221,26 @@ async function doSave(section: string) {
       }
     } catch {}
     await workspace.refreshSnapshot()
+    if (section === 'program_settings') await applyResourceLanguageRefresh()
   } catch (e: any) {
     if (e?.body?.error === 'high_risk_confirmation_required') { confirmDialog.value = { section, changes: e.body.high_risk_changes || [] }; saveState[section] = 'idle'; return }
     saveState[section] = 'error'; saveError[section] = e?.message || t('framework.preferences.saveFailed', '保存失败')
   }
+}
+
+/**
+ * After a program_settings save persists a new `resource_language`, re-fetch the
+ * resource list and reload the graph so backend-localized display names (via
+ * `display_name_i18n`) update live. No-op when the resource language is
+ * unchanged. Reloading the graph re-resolves node names but discards unsaved
+ * canvas layout/selection — acceptable for an explicit language switch.
+ */
+async function applyResourceLanguageRefresh() {
+  const current = (form.program_settings?.resource_language as string) ?? SOURCE_LOCALE
+  if (current === appliedResourceLang.value) return
+  appliedResourceLang.value = current
+  await resource.refreshAll()
+  try { await graphWs.loadGraph(undefined, { forceRefresh: true }) } catch {}
 }
 
 async function confirmHighRiskSave() {
@@ -331,7 +363,7 @@ function setField(section: string, key: string, value: any) {
 function toggleBool(section: string, key: string) { setField(section, key, !getField(section, key)) }
 const currentSection = computed(() => SECTION_MAP[active.value] || 'program_settings')
 const currentFields = computed(() => {
-  const fields = FIELD_DEFS[active.value] || []
+  const fields = FIELD_DEFS.value[active.value] || []
   const sectionState = (prefsState.value as any)?.[currentSection.value]
   if (!sectionState || typeof sectionState !== 'object') return fields
   return fields.filter(field => sectionState[field.key] === 'active')

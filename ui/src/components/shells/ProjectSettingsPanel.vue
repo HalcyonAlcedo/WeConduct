@@ -364,7 +364,8 @@ async function enableSecurityRequirements() {
   } finally { secEnabling.value = false }
 }
 
-const NAV: { key: typeof active.value; label: string }[] = [{ key: 'identity', label: t('framework.projectSettings.nav.identity', '项目信息') }, { key: 'runtime', label: t('framework.projectSettings.nav.runtime', '运行默认值') }, { key: 'packaging', label: t('framework.projectSettings.nav.packaging', '资源与打包') }, { key: 'compile', label: t('framework.projectSettings.nav.compile', '编译规则') }, { key: 'pythonRuntime', label: t('framework.projectSettings.nav.pythonRuntime', 'Python 运行时') }, { key: 'status', label: t('framework.projectSettings.nav.status', '状态与诊断') }]
+// computed (not const) so nav labels re-localize live on UI language change.
+const NAV = computed<{ key: typeof active.value; label: string }[]>(() => [{ key: 'identity', label: t('framework.projectSettings.nav.identity', '项目信息') }, { key: 'runtime', label: t('framework.projectSettings.nav.runtime', '运行默认值') }, { key: 'packaging', label: t('framework.projectSettings.nav.packaging', '资源与打包') }, { key: 'compile', label: t('framework.projectSettings.nav.compile', '编译规则') }, { key: 'pythonRuntime', label: t('framework.projectSettings.nav.pythonRuntime', 'Python 运行时') }, { key: 'status', label: t('framework.projectSettings.nav.status', '状态与诊断') }])
 
 onMounted(load)
 watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) load() })

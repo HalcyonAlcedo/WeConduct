@@ -9,7 +9,7 @@ import { useToastStore } from '@/stores/toastStore'
 import { PARAM_TEMPLATES } from '@/config/fieldTemplates'
 import type { FieldTemplate } from '@/config/fieldTemplates'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
-import { t, tr } from '@/i18n'
+import { t, tr, resourceLocale } from '@/i18n'
 
 const toast = useToastStore()
 
@@ -68,6 +68,14 @@ const isDisabled = computed(() => { const nk = props.data.nodeKind; if (!nk) ret
 const isCompatibility = computed(() => { const nk = props.data.nodeKind; if (!nk) return false; return COMPAT_KINDS.has(nk) })
 const kindLabel = computed(() => { switch (props.data.kind) { case 'execution': return tr('nodegraph.base.kind.execution', '执行'); case 'control': return tr('nodegraph.base.kind.control', '控制'); case 'observe': return tr('nodegraph.base.kind.observe', '观察'); case 'bridge': return tr('nodegraph.base.kind.bridge', '桥接'); default: return props.data.kind } })
 const kindClass = computed(() => `node-${props.data.kind}`)
+
+const displayLabel = computed(() => {
+  const nk = props.data.nodeKind
+  if (!nk) return props.data.label
+  const comp = resource.components?.find(c => c.resource_key === nk)
+  if (!comp?.display_name_i18n) return props.data.label
+  return comp.display_name_i18n[resourceLocale.value] || comp.display_name || props.data.label
+})
 
 // Config grouped by parent key: flat values directly, object values under section header
 interface CfgRow { path: string; key: string; display: string; editable: boolean; value: unknown }
@@ -260,12 +268,12 @@ async function applyBranches() {
 
       <div class="vf-node-main">
         <div class="vf-node-body">
-          <span class="vf-node-label">{{ data.label }}</span>
+          <span class="vf-node-label">{{ displayLabel }}</span>
           <div v-if="showDetail && graphPreferences.show_inline_config_summary && configSections.length" class="vf-config">
             <template v-for="(sec, si) in configSections" :key="si">
-              <div v-if="sec.section" class="vf-cfg-section">{{ sec.section }}</div>
+              <div v-if="sec.section" class="vf-cfg-section">{{ tr('nodegraph.base.field.' + sec.section, sec.section) }}</div>
               <div v-for="e in sec.rows" :key="e.path" class="vf-cfg-row">
-                <span class="vf-cfg-key">{{ e.key }}</span>
+                <span class="vf-cfg-key">{{ tr('nodegraph.base.field.' + e.key, e.key) }}</span>
                 <input v-if="e.editable && typeof e.value === 'boolean'" :disabled="!workspace.isGraphEditable" type="checkbox" :checked="!!e.value" @change="updateConfigField(e.path, String(($event.target as HTMLInputElement).checked))" @mousedown.stop @click.stop />
                 <select v-else-if="e.editable && getFieldTemplate(e.key)?.options" class="vf-cfg-input" :disabled="!workspace.isGraphEditable" :value="String(e.value ?? '')" @change="updateConfigField(e.path, ($event.target as HTMLSelectElement).value)" @mousedown.stop @click.stop style="flex:1">
                   <option v-for="o in getFieldTemplate(e.key)!.options" :key="o" :value="o">{{ o }}</option>

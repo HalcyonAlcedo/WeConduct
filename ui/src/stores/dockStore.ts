@@ -61,6 +61,17 @@ export const useDockStore = defineStore('dock', () => {
     }
   }
 
+  /**
+   * Update a registered panel's display title in place. Zone entries are the
+   * same object references as `allPanels`, so mutating here updates the panel
+   * tab bars, the maximized-title, and the View menu simultaneously. Used to
+   * re-localize titles when the UI language changes without a remount.
+   */
+  function setPanelTitle(panelId: string, title: string) {
+    const panel = allPanels.value.find(p => p.id === panelId)
+    if (panel) panel.title = title
+  }
+
   function addToZone(panelId: string, zone: DockZone) {
     const panel = allPanels.value.find(p => p.id === panelId)
     if (!panel) return
@@ -149,7 +160,7 @@ export const useDockStore = defineStore('dock', () => {
   return {
     zones, leftWidth, rightWidth, bottomHeight,
     draggingPanelId, dropZone, allPanels,
-    register, addToZone, removeFromZone, activatePanel,
+    register, setPanelTitle, addToZone, removeFromZone, activatePanel,
     isPanelVisible, findPanelZone, movePanel,
     startDrag, endDrag, setDropZone, dropOnZone,
     closePanel, restorePanel, visiblePanels,
