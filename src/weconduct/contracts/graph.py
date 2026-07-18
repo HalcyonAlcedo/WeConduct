@@ -2,6 +2,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from weconduct._version import APP_VERSION
+
 
 class GraphPosition(BaseModel):
     x: float
@@ -63,9 +65,9 @@ def create_empty_graph_model(graph_model_id: str, compilation_id: str | None) ->
         root_metadata={
             "graph_compatibility": {
                 "graph_data_version": "0.6.2",
-                "built_with_app_version": "0.8.1",
+                "built_with_app_version": APP_VERSION,
                 "minimum_loader_app_version": "0.5.2",
-                "last_upgraded_by_app_version": "0.8.1",
+                "last_upgraded_by_app_version": APP_VERSION,
                 "upgrade_history": [],
             }
         },

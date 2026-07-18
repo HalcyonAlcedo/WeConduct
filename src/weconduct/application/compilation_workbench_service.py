@@ -16,6 +16,7 @@ import zipfile
 
 from pydantic import ValidationError
 
+from weconduct._version import APP_VERSION
 from weconduct.compiler import CompilerFacade
 from weconduct.compiler.errors import CompilationAbortedError
 from weconduct.compiler.sources.legacy_webcontrol import (
@@ -85,7 +86,7 @@ SUPPORTED_SOURCE_KINDS = [
     "webcontrol_main_flow",
     "webcontrol_blueprint",
 ]
-CURRENT_API_VERSION = "0.8.2"
+CURRENT_API_VERSION = APP_VERSION
 SUPPORTED_STAGE_NAMES = ["parse", "bind", "validate", "normalize", "lower", "emit"]
 COMPILE_STATUSES = ["succeeded", "failed", "unsupported"]
 DIAGNOSTIC_SEVERITIES = ["info", "warning", "degraded", "error", "fatal"]
