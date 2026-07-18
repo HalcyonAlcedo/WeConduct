@@ -15,6 +15,9 @@ import build_document_catalog
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DOCS_ROOT = ROOT / "docs"
+# Well-formed semantic version "X.Y.Z" (weconduct pages validate format, not a
+# pinned literal — see version handling in validate_page()).
+_WECONDUCT_VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
 DEFAULT_MANIFEST_PATH = ROOT / "data" / "weconduct-0.8.1" / "components.json"
 DEFAULT_GROUPS_PATH = ROOT / "data" / "weconduct-0.8.1" / "component-groups.json"
 REQUIRED_COMPONENT_SECTIONS = [
@@ -260,8 +263,15 @@ def validate_page_scope(page: dict[str, Any]) -> list[str]:
     if relative_path.startswith("weconduct/"):
         if product != "weconduct":
             errors.append(f"{relative_path} product mismatch: {product!r} expected 'weconduct'")
-        if version != "0.8.1":
-            errors.append(f"{relative_path} version mismatch: {version!r} expected '0.8.1'")
+        # Version is validated for FORMAT (well-formed X.Y.Z), not pinned to a
+        # single literal: the product ships frequently and pages are updated
+        # incrementally, so requiring every page to share one version would
+        # force a full-site rewrite on each bump. A page declares the version it
+        # documents; the format check still catches typos/missing versions.
+        if not _WECONDUCT_VERSION_RE.fullmatch(str(version)):
+            errors.append(
+                f"{relative_path} version malformed: {version!r} expected semver 'X.Y.Z'"
+            )
         return errors
 
     if relative_path.startswith("weave/"):

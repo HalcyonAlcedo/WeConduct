@@ -255,11 +255,14 @@ def test_allow_incomplete_only_waives_missing_pages(tmp_path: Path) -> None:
     assert "missing_component_pages=1" in result.stdout
     assert "missing_group_pages=1" in result.stdout
 
+    # weconduct page version is validated for FORMAT, not a pinned literal
+    # (pages may document different versions). A malformed version is still
+    # rejected; a different-but-well-formed version (e.g. 0.8.0) is accepted.
     write_markdown(
         docs_root / "weconduct" / "components" / "browser" / "navigation" / "index.md",
         {
             "product": "weconduct",
-            "version": "0.8.0",
+            "version": "not-a-version",
             "doc_id": "component-group:browser-navigation",
         },
         ["# 页面导航"],
@@ -274,7 +277,7 @@ def test_allow_incomplete_only_waives_missing_pages(tmp_path: Path) -> None:
         "--allow-incomplete",
     )
     assert malformed_result.returncode != 0
-    assert "0.8.1" in f"{malformed_result.stdout}\n{malformed_result.stderr}"
+    assert "version malformed" in f"{malformed_result.stdout}\n{malformed_result.stderr}"
 
 
 def test_actual_repo_page_validation_reports_complete_component_catalog() -> None:
