@@ -350,7 +350,7 @@ const PROGRAM_SECTION_DOMAINS: Record<string, string[]> = { program_settings: ['
 function legacyPreferences(values: Record<string, Record<string, unknown>>): PreferencesResponse { return { preferences: { preferences_file_version: 2, program_settings: { ...(values.ui || {}), ...(values.workspace || {}), ...(values.updates || {}) }, compile_settings: {}, security_settings: values.security || {}, python_runtime_settings: values.python_defaults || {}, graph_settings: {}, other_settings: {} } } }
 function configurationOperations(section: string, values: Record<string, unknown>) {
   const domains = PROGRAM_SECTION_DOMAINS[section] || []
-  const known = new Map<string, string>([['default_window_size', 'ui'], ['resource_language', 'ui'], ['default_project_directory', 'workspace'], ['recent_project_limit', 'workspace'], ['preferences_auto_save', 'workspace'], ['check_updates_on_startup', 'updates']])
+  const known = new Map<string, string>([['default_window_size', 'ui'], ['theme', 'ui'], ['language', 'ui'], ['resource_language', 'ui'], ['font_scale', 'ui'], ['default_project_directory', 'workspace'], ['recent_project_limit', 'workspace'], ['preferences_auto_save', 'workspace'], ['check_updates_on_startup', 'updates']])
   return Object.entries(values).flatMap(([key, value]) => {
     const domain = known.get(key) || (domains.includes('security') ? 'security' : domains.includes('python_defaults') ? 'python_defaults' : undefined)
     return domain ? [{ op: 'replace', path: `/${domain}/${key}`, value }] : []
@@ -487,6 +487,8 @@ export interface LanguageManifest {
 
 export interface LanguagesResponse {
   languages: LanguageManifest[]
+  /** Absolute path to the program's `languages/` directory (for "open data dir"). */
+  languages_directory?: string
 }
 
 export interface LanguagePackResponse {

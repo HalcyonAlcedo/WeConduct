@@ -45,6 +45,8 @@ export const useLanguageStore = defineStore('language', () => {
   // Active resource locale (independent of the UI locale).
   const resource = ref<string>(getStored(RESOURCE_STORAGE_KEY) ?? SOURCE_LOCALE)
   const available = ref<LanguageManifest[]>([])
+  // Absolute path to the program's languages/ dir (for the "open data dir" button).
+  const directory = ref<string>('')
   // Locales whose pack has already been fetched + registered this session.
   const loaded = ref<Set<string>>(new Set([SOURCE_LOCALE]))
   const loading = ref(false)
@@ -58,6 +60,9 @@ export const useLanguageStore = defineStore('language', () => {
     try {
       const result = await fetchLanguages()
       available.value = result.languages
+      if (typeof result.languages_directory === 'string') {
+        directory.value = result.languages_directory
+      }
     } catch {
       available.value = []
     }
@@ -165,6 +170,7 @@ export const useLanguageStore = defineStore('language', () => {
     locale,
     resource,
     available,
+    directory,
     loading,
     refreshAvailable,
     setLocale,

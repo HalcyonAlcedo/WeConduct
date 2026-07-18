@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { t } from '@/i18n'
 
 defineOptions({ name: 'DebugValueTree' })
 
@@ -49,7 +50,7 @@ const scalarText = computed(() => {
         :value="childValue"
         :depth="depth + 1"
       />
-      <span v-if="!entries.length" class="dvt-empty">空</span>
+      <span v-if="!entries.length" class="dvt-empty">{{ t('framework.debug.valueTree.empty', '空') }}</span>
     </div>
   </details>
   <div v-else class="dvt-scalar">

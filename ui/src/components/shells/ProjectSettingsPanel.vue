@@ -6,6 +6,7 @@ import { fetchConfigValues, patchConfigValues, fetchPythonRuntime, postOpenPath,
 } from '@/services/api'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useToastStore } from '@/stores/toastStore'
+import { t } from '@/i18n'
 import type {
   ConfigPatchOperation,
   GraphEntrypointRuntimeValues,
@@ -235,7 +236,7 @@ async function load() {
     secSummary.value = (workspace.snapshot as any)?.security_requirement_summary || null
     saveState.value = 'idle'
   } catch (e: any) {
-    toast.error('加载失败', e?.message)
+    toast.error(t('framework.projectSettings.toast.loadFailed', '加载失败'), e?.message)
   } finally {
     loading.value = false
   }
@@ -267,7 +268,7 @@ async function save() {
     markSaved()
   } catch (e: any) {
     saveState.value = 'error'
-    toast.error('保存失败', e?.message)
+    toast.error(t('framework.projectSettings.toast.saveFailed', '保存失败'), e?.message)
   }
 }
 
@@ -285,64 +286,64 @@ async function saveRuntimeDefaults() {
     markSaved()
   } catch (e: any) {
     saveState.value = 'error'
-    toast.error('保存失败', e?.message)
+    toast.error(t('framework.projectSettings.toast.saveFailed', '保存失败'), e?.message)
   }
 }
 
 const st = computed(() => (workspace.snapshot?.project_settings || {}) as ProjectSettingsSnapshot)
 const isWcrun = computed(() => (st.value as any)?.source_of_truth === 'wcrun_package')
 const sectionReadonly = computed(() => isWcrun.value && active.value !== 'runtime')
-const sourceLabel = computed(() => isWcrun.value ? '📦 .wcrun 包 (只读)' : '📁 项目目录')
-const dirtyLabel = computed(() => st.value?.is_dirty ? '● 未保存' : '● 已保存')
+const sourceLabel = computed(() => isWcrun.value ? t('framework.projectSettings.header.sourceWcrun', '📦 .wcrun 包 (只读)') : t('framework.projectSettings.header.sourceProject', '📁 项目目录'))
+const dirtyLabel = computed(() => st.value?.is_dirty ? t('framework.projectSettings.header.dirty', '● 未保存') : t('framework.projectSettings.header.clean', '● 已保存'))
 
-async function openProjectDir() { const dir = (st.value as any).project_file_path || (st.value as any).session_dir; if (!dir) { toast.info('', '当前无项目目录路径'); return }; try { const path = dir.includes('.weconduct.json') ? dir.slice(0, Math.max(dir.lastIndexOf('\\'), dir.lastIndexOf('/'))) : dir; const r = await postOpenPath({ path }); if (r.status === 'opened') toast.success('已打开', r.path) } catch (e: any) { if (e?.status === 503) toast.info('', '当前运行环境不支持系统打开目录'); else toast.error('打开失败', e?.message) } }
+async function openProjectDir() { const dir = (st.value as any).project_file_path || (st.value as any).session_dir; if (!dir) { toast.info('', t('framework.projectSettings.toast.noProjectDir', '当前无项目目录路径')); return }; try { const path = dir.includes('.weconduct.json') ? dir.slice(0, Math.max(dir.lastIndexOf('\\'), dir.lastIndexOf('/'))) : dir; const r = await postOpenPath({ path }); if (r.status === 'opened') toast.success(t('framework.projectSettings.toast.opened', '已打开'), r.path) } catch (e: any) { if (e?.status === 503) toast.info('', t('framework.projectSettings.toast.openDirUnsupported', '当前运行环境不支持系统打开目录')); else toast.error(t('framework.projectSettings.toast.openFailed', '打开失败'), e?.message) } }
 
 // Python runtime helpers
 const pythonReadonly = computed(() => isWcrun.value)
 const actionDisabled = computed(() => isWcrun.value || !pythonProfile.runtime_enabled || !!actionLoading.value)
 const exportDisabled = computed(() => actionDisabled.value || pythonProfile.package_embed_mode === 'none')
 const healthStatusLabel = computed(() => {
-  const labels: Record<string, string> = { disabled: '已禁用', unknown: '未知', ready: '就绪', missing: '缺失', broken: '异常', stale: '过期' }
+  const labels: Record<string, string> = { disabled: t('framework.projectSettings.healthStatus.disabled', '已禁用'), unknown: t('framework.projectSettings.healthStatus.unknown', '未知'), ready: t('framework.projectSettings.healthStatus.ready', '就绪'), missing: t('framework.projectSettings.healthStatus.missing', '缺失'), broken: t('framework.projectSettings.healthStatus.broken', '异常'), stale: t('framework.projectSettings.healthStatus.stale', '过期') }
   return labels[runtimeStatus.health_status ?? ''] ?? (runtimeStatus.health_status ?? '—')
 })
 
 async function pickPythonPath(field: 'custom_python_path' | 'requirements_file_path' | 'lock_file_path') {
   try {
-    const labels: Record<string, string> = { custom_python_path: '选择 Python 可执行文件', requirements_file_path: '选择 requirements.txt', lock_file_path: '选择锁定文件' }
-    const r = await postFileDialog({ mode: 'open_file', title: labels[field] || '选择文件' })
+    const labels: Record<string, string> = { custom_python_path: t('framework.projectSettings.fileDialog.pickPython', '选择 Python 可执行文件'), requirements_file_path: t('framework.projectSettings.fileDialog.pickRequirements', '选择 requirements.txt'), lock_file_path: t('framework.projectSettings.fileDialog.pickLockFile', '选择锁定文件') }
+    const r = await postFileDialog({ mode: 'open_file', title: labels[field] || t('framework.projectSettings.fileDialog.pickFile', '选择文件') })
     if (r.status === 'selected' && r.paths.length) (pythonProfile as any)[field] = r.paths[0]
-  } catch (e: any) { if (e?.status === 503) toast.info('', workspace.isLimitedBrowser ? '受限浏览器模式：系统文件选择器不可用' : '当前运行环境不支持系统文件选择器') }
+  } catch (e: any) { if (e?.status === 503) toast.info('', workspace.isLimitedBrowser ? t('framework.projectSettings.toast.limitedBrowserFileDialog', '受限浏览器模式：系统文件选择器不可用') : t('framework.projectSettings.toast.fileDialogUnsupported', '当前运行环境不支持系统文件选择器')) }
 }
 
 async function doHealthCheck() {
   actionLoading.value = 'health-check'; try {
-    await save(); if (saveState.value === 'error') { toast.error('保存项目设置失败，已中止 Python runtime 操作'); return }
-    const r = await postPythonRuntimeHealthCheck(); Object.assign(runtimeStatus, r.runtime_status); toast.success('健康检查完成', `状态: ${r.runtime_status.health_status}`)
-  } catch (e: any) { toast.error('健康检查失败', e?.message) } finally { actionLoading.value = null }
+    await save(); if (saveState.value === 'error') { toast.error(t('framework.projectSettings.toast.saveAbortedRuntime', '保存项目设置失败，已中止 Python runtime 操作')); return }
+    const r = await postPythonRuntimeHealthCheck(); Object.assign(runtimeStatus, r.runtime_status); toast.success(t('framework.projectSettings.toast.healthCheckDone', '健康检查完成'), t('framework.projectSettings.toast.statusValue', `状态: ${r.runtime_status.health_status}`, { status: r.runtime_status.health_status }))
+  } catch (e: any) { toast.error(t('framework.projectSettings.toast.healthCheckFailed', '健康检查失败'), e?.message) } finally { actionLoading.value = null }
 }
 async function doPrepare() {
   actionLoading.value = 'prepare'; try {
-    await save(); if (saveState.value === 'error') { toast.error('保存项目设置失败，已中止 Python runtime 操作'); return }
-    const r = await postPythonRuntimePrepare(); Object.assign(pythonProfile, r.python_runtime_profile); Object.assign(runtimeStatus, r.runtime_status); toast.success('运行时已准备', `状态: ${r.runtime_status.health_status}`)
-  } catch (e: any) { toast.error('准备失败', e?.message) } finally { actionLoading.value = null }
+    await save(); if (saveState.value === 'error') { toast.error(t('framework.projectSettings.toast.saveAbortedRuntime', '保存项目设置失败，已中止 Python runtime 操作')); return }
+    const r = await postPythonRuntimePrepare(); Object.assign(pythonProfile, r.python_runtime_profile); Object.assign(runtimeStatus, r.runtime_status); toast.success(t('framework.projectSettings.toast.runtimePrepared', '运行时已准备'), t('framework.projectSettings.toast.statusValue', `状态: ${r.runtime_status.health_status}`, { status: r.runtime_status.health_status }))
+  } catch (e: any) { toast.error(t('framework.projectSettings.toast.prepareFailed', '准备失败'), e?.message) } finally { actionLoading.value = null }
 }
 async function doRebuild() {
   actionLoading.value = 'rebuild'; try {
-    await save(); if (saveState.value === 'error') { toast.error('保存项目设置失败，已中止 Python runtime 操作'); return }
-    const r = await postPythonRuntimeRebuild(); Object.assign(pythonProfile, r.python_runtime_profile); Object.assign(runtimeStatus, r.runtime_status); toast.success('运行时已重建', `状态: ${r.runtime_status.health_status}`)
-  } catch (e: any) { toast.error('重建失败', e?.message) } finally { actionLoading.value = null }
+    await save(); if (saveState.value === 'error') { toast.error(t('framework.projectSettings.toast.saveAbortedRuntime', '保存项目设置失败，已中止 Python runtime 操作')); return }
+    const r = await postPythonRuntimeRebuild(); Object.assign(pythonProfile, r.python_runtime_profile); Object.assign(runtimeStatus, r.runtime_status); toast.success(t('framework.projectSettings.toast.runtimeRebuilt', '运行时已重建'), t('framework.projectSettings.toast.statusValue', `状态: ${r.runtime_status.health_status}`, { status: r.runtime_status.health_status }))
+  } catch (e: any) { toast.error(t('framework.projectSettings.toast.rebuildFailed', '重建失败'), e?.message) } finally { actionLoading.value = null }
 }
 async function doClear() {
   actionLoading.value = 'clear'; try {
-    await save(); if (saveState.value === 'error') { toast.error('保存项目设置失败，已中止 Python runtime 操作'); return }
-    const r = await postPythonRuntimeClear(); Object.assign(runtimeStatus, r.runtime_status); toast.success('运行时已清理', `状态: ${r.runtime_status.health_status}`)
-  } catch (e: any) { toast.error('清理失败', e?.message) } finally { actionLoading.value = null }
+    await save(); if (saveState.value === 'error') { toast.error(t('framework.projectSettings.toast.saveAbortedRuntime', '保存项目设置失败，已中止 Python runtime 操作')); return }
+    const r = await postPythonRuntimeClear(); Object.assign(runtimeStatus, r.runtime_status); toast.success(t('framework.projectSettings.toast.runtimeCleared', '运行时已清理'), t('framework.projectSettings.toast.statusValue', `状态: ${r.runtime_status.health_status}`, { status: r.runtime_status.health_status }))
+  } catch (e: any) { toast.error(t('framework.projectSettings.toast.clearFailed', '清理失败'), e?.message) } finally { actionLoading.value = null }
 }
 async function doExportBundle() {
   actionLoading.value = 'export'; try {
-    await save(); if (saveState.value === 'error') { toast.error('保存项目设置失败，已中止 Python runtime 操作'); return }
-    const r = await postFileDialog({ mode: 'save_file', title: '选择 Python 运行时导出路径', default_path: 'python-runtime-export.zip', file_types: ['Zip 存档 (*.zip)'] }); if (r.status !== 'selected' || !r.paths.length) { actionLoading.value = null; return }; const exportResult = await postPythonRuntimeExportBundle({ output_path: r.paths[0] }); toast.success('导出成功', `已导出至 ${exportResult.export_bundle.output_path}`)
-  } catch (e: any) { toast.error('导出失败', e?.message) } finally { actionLoading.value = null }
+    await save(); if (saveState.value === 'error') { toast.error(t('framework.projectSettings.toast.saveAbortedRuntime', '保存项目设置失败，已中止 Python runtime 操作')); return }
+    const r = await postFileDialog({ mode: 'save_file', title: t('framework.projectSettings.fileDialog.pickExportPath', '选择 Python 运行时导出路径'), default_path: 'python-runtime-export.zip', file_types: [t('framework.projectSettings.fileDialog.zipArchive', 'Zip 存档 (*.zip)')] }); if (r.status !== 'selected' || !r.paths.length) { actionLoading.value = null; return }; const exportResult = await postPythonRuntimeExportBundle({ output_path: r.paths[0] }); toast.success(t('framework.projectSettings.toast.exportDone', '导出成功'), t('framework.projectSettings.toast.exportedTo', `已导出至 ${exportResult.export_bundle.output_path}`, { path: exportResult.export_bundle.output_path }))
+  } catch (e: any) { toast.error(t('framework.projectSettings.toast.exportFailed', '导出失败'), e?.message) } finally { actionLoading.value = null }
 }
 
 async function enableSecurityRequirements() {
@@ -350,20 +351,20 @@ async function enableSecurityRequirements() {
   try {
     const r = await postSecurityEnableRequired({ confirm_high_risk: true })
     if (r.status === 'updated') {
-      toast.success('安全设置已更新', '所有必需的安全选项已开启')
+      toast.success(t('framework.projectSettings.toast.securityUpdated', '安全设置已更新'), t('framework.projectSettings.toast.securityAllEnabled', '所有必需的安全选项已开启'))
       secSummary.value = r.security_requirement_summary
       await workspace.refreshSnapshot()
     }
   } catch (e: any) {
     if (e?.body?.error === 'high_risk_confirmation_required') {
-      toast.info('需要确认', '请在首选项安全设置中手动确认高风险变更')
+      toast.info(t('framework.projectSettings.toast.confirmRequired', '需要确认'), t('framework.projectSettings.toast.confirmHighRiskHint', '请在首选项安全设置中手动确认高风险变更'))
     } else {
-      toast.error('开启失败', e?.message)
+      toast.error(t('framework.projectSettings.toast.enableFailed', '开启失败'), e?.message)
     }
   } finally { secEnabling.value = false }
 }
 
-const NAV: { key: typeof active.value; label: string }[] = [{ key: 'identity', label: '项目信息' }, { key: 'runtime', label: '运行默认值' }, { key: 'packaging', label: '资源与打包' }, { key: 'compile', label: '编译规则' }, { key: 'pythonRuntime', label: 'Python 运行时' }, { key: 'status', label: '状态与诊断' }]
+const NAV: { key: typeof active.value; label: string }[] = [{ key: 'identity', label: t('framework.projectSettings.nav.identity', '项目信息') }, { key: 'runtime', label: t('framework.projectSettings.nav.runtime', '运行默认值') }, { key: 'packaging', label: t('framework.projectSettings.nav.packaging', '资源与打包') }, { key: 'compile', label: t('framework.projectSettings.nav.compile', '编译规则') }, { key: 'pythonRuntime', label: t('framework.projectSettings.nav.pythonRuntime', 'Python 运行时') }, { key: 'status', label: t('framework.projectSettings.nav.status', '状态与诊断') }]
 
 onMounted(load)
 watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) load() })
@@ -371,203 +372,203 @@ watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) lo
 <template>
   <div class="psp-root">
     <div class="psp-hd">
-      <span>项目设置</span><span class="psp-source">{{ sourceLabel }}</span><span :class="st.is_dirty ? 'psp-dirty' : 'psp-clean'">{{ dirtyLabel }}</span>
-      <span v-if="saveState === 'saving'" class="psp-st-saving">保存中…</span><span v-else-if="saveState === 'saved'" class="psp-st-saved">已保存</span><span v-else-if="saveState === 'error'" class="psp-st-err">错误</span>
-      <button class="psp-open-dir" @click="openProjectDir" :disabled="!st.project_file_path && !st.session_dir" title="打开项目目录">📂 打开目录</button>
+      <span>{{ t('framework.projectSettings.header.title', '项目设置') }}</span><span class="psp-source">{{ sourceLabel }}</span><span :class="st.is_dirty ? 'psp-dirty' : 'psp-clean'">{{ dirtyLabel }}</span>
+      <span v-if="saveState === 'saving'" class="psp-st-saving">{{ t('framework.projectSettings.header.saving', '保存中…') }}</span><span v-else-if="saveState === 'saved'" class="psp-st-saved">{{ t('framework.projectSettings.header.saved', '已保存') }}</span><span v-else-if="saveState === 'error'" class="psp-st-err">{{ t('framework.projectSettings.header.error', '错误') }}</span>
+      <button class="psp-open-dir" @click="openProjectDir" :disabled="!st.project_file_path && !st.session_dir" :title="t('framework.projectSettings.header.openDirTitle', '打开项目目录')">{{ t('framework.projectSettings.header.openDir', '📂 打开目录') }}</button>
     </div>
-    <div v-if="isWcrun" class="psp-readonly-banner">📦 .wcrun 包已加载 — 仅运行默认值可编辑，其余为只读</div>
+    <div v-if="isWcrun" class="psp-readonly-banner">{{ t('framework.projectSettings.banner.wcrunReadonly', '📦 .wcrun 包已加载 — 仅运行默认值可编辑，其余为只读') }}</div>
     <div v-if="secSummary && !secSummary.ready" class="psp-sec-banner">
-      <div class="psp-sec-title">⚠ 安全设置不足 — 当前软件安全设置不足以运行该项目</div>
+      <div class="psp-sec-title">{{ t('framework.projectSettings.security.insufficientTitle', '⚠ 安全设置不足 — 当前软件安全设置不足以运行该项目') }}</div>
       <div class="psp-sec-entries">
         <div v-for="e in secSummary.blocked_entries" :key="e.field" class="psp-sec-entry">
           <span>{{ e.display_name }}</span>
-          <span class="psp-sec-req">需要开启</span>
+          <span class="psp-sec-req">{{ t('framework.projectSettings.security.needEnable', '需要开启') }}</span>
         </div>
       </div>
       <button class="psp-sec-enable-btn" :disabled="secEnabling" @click="enableSecurityRequirements">
-        {{ secEnabling ? '开启中…' : '🔓 一键开启所需安全选项' }}
+        {{ secEnabling ? t('framework.projectSettings.security.enabling', '开启中…') : t('framework.projectSettings.security.enableAll', '🔓 一键开启所需安全选项') }}
       </button>
     </div>
     <div class="psp-body" v-if="!loading">
       <div class="psp-nav"><button v-for="n in NAV" :key="n.key" :class="['psp-nav-item', { active: active === n.key }]" @click="active = n.key">{{ n.label }}</button></div>
       <div class="psp-content">
         <template v-if="active === 'identity'">
-          <div class="psp-field"><label>项目 ID</label><code class="psp-ro">{{ workspace.projectId || '—' }}</code></div>
-          <div class="psp-field"><label>项目名称</label><input v-model="settings.project_identity.name" class="psp-input" :disabled="sectionReadonly" /></div>
-          <div class="psp-field"><label>描述</label><textarea v-model="identityDesc" class="psp-input psp-textarea" rows="2" placeholder="项目描述" :disabled="sectionReadonly" /></div>
-          <div class="psp-field"><label>版本</label><input v-model="identityVersion" class="psp-input" placeholder="0.1.0" :disabled="sectionReadonly" /></div>
-          <div class="psp-field"><label>作者</label><input v-model="identityAuthor" class="psp-input" placeholder="作者" :disabled="sectionReadonly" /></div>
-          <div class="psp-field"><label>标签</label><div class="psp-tags"><span v-for="(t, i) in tags" :key="i" class="psp-tag">{{ t }}<button v-if="!sectionReadonly" class="psp-tag-rm" @click="removeTag(i)">×</button></span><input v-if="!sectionReadonly" v-model="tagInput" class="psp-tag-input" placeholder="新增标签" @keyup.enter="addTag" style="width:80px" /></div></div>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.identity.projectId', '项目 ID') }}</label><code class="psp-ro">{{ workspace.projectId || '—' }}</code></div>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.identity.name', '项目名称') }}</label><input v-model="settings.project_identity.name" class="psp-input" :disabled="sectionReadonly" /></div>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.identity.description', '描述') }}</label><textarea v-model="identityDesc" class="psp-input psp-textarea" rows="2" :placeholder="t('framework.projectSettings.identity.descriptionPlaceholder', '项目描述')" :disabled="sectionReadonly" /></div>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.identity.version', '版本') }}</label><input v-model="identityVersion" class="psp-input" placeholder="0.1.0" :disabled="sectionReadonly" /></div>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.identity.author', '作者') }}</label><input v-model="identityAuthor" class="psp-input" :placeholder="t('framework.projectSettings.identity.authorPlaceholder', '作者')" :disabled="sectionReadonly" /></div>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.identity.tags', '标签') }}</label><div class="psp-tags"><span v-for="(tag, i) in tags" :key="i" class="psp-tag">{{ tag }}<button v-if="!sectionReadonly" class="psp-tag-rm" @click="removeTag(i)">×</button></span><input v-if="!sectionReadonly" v-model="tagInput" class="psp-tag-input" :placeholder="t('framework.projectSettings.identity.addTag', '新增标签')" @keyup.enter="addTag" style="width:80px" /></div></div>
         </template>
         <template v-else-if="active === 'runtime'">
-          <h5>初始变量</h5>
-          <div v-for="(v, i) in variables" :key="i" class="psp-var-row"><input v-model="v.key" class="psp-input" placeholder="变量名" @change="syncVars()" style="width:120px" :disabled="runtimeControlsDisabled" /><input v-model="v.value" class="psp-input" placeholder="值" @change="syncVars()" style="flex:1" :disabled="runtimeControlsDisabled" /><button class="psp-rm" @click="removeVar(i)" :disabled="runtimeControlsDisabled">✕</button></div>
-          <button class="psp-add" @click="addVar" :disabled="runtimeControlsDisabled">+ 新增变量</button>
-          <h5 style="margin-top:14px">浏览器配置</h5>
+          <h5>{{ t('framework.projectSettings.runtime.initialVariables', '初始变量') }}</h5>
+          <div v-for="(v, i) in variables" :key="i" class="psp-var-row"><input v-model="v.key" class="psp-input" :placeholder="t('framework.projectSettings.runtime.varName', '变量名')" @change="syncVars()" style="width:120px" :disabled="runtimeControlsDisabled" /><input v-model="v.value" class="psp-input" :placeholder="t('framework.projectSettings.runtime.varValue', '值')" @change="syncVars()" style="flex:1" :disabled="runtimeControlsDisabled" /><button class="psp-rm" @click="removeVar(i)" :disabled="runtimeControlsDisabled">✕</button></div>
+          <button class="psp-add" @click="addVar" :disabled="runtimeControlsDisabled">{{ t('framework.projectSettings.runtime.addVar', '+ 新增变量') }}</button>
+          <h5 style="margin-top:14px">{{ t('framework.projectSettings.runtime.browserConfig', '浏览器配置') }}</h5>
           <div class="psp-field"><label>headless</label><input type="checkbox" v-model="settings.entrypoint_runtime.browser_config.headless" :disabled="runtimeControlsDisabled" /></div>
           <div class="psp-field"><label>slow_mo_ms</label><input type="number" v-model.number="settings.entrypoint_runtime.browser_config.slow_mo_ms" class="psp-input" style="width:100px" :disabled="runtimeControlsDisabled" /></div>
-          <h5 style="margin-top:14px">执行默认值</h5>
-          <div class="psp-field"><label>超时(ms)</label><input type="number" v-model.number="settings.entrypoint_runtime.execution_defaults.default_timeout_ms" class="psp-input" style="width:100px" :disabled="executionDefaultsReadonly" /></div>
-          <div class="psp-field"><label>重试次数</label><input type="number" v-model.number="settings.entrypoint_runtime.execution_defaults.default_retry_count" class="psp-input" style="width:80px" :disabled="executionDefaultsReadonly" /></div>
-          <button class="psp-btn-save" @click="saveRuntimeDefaults" :disabled="saveState === 'saving'" style="margin-top:14px">仅保存运行默认值</button>
+          <h5 style="margin-top:14px">{{ t('framework.projectSettings.runtime.executionDefaults', '执行默认值') }}</h5>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.runtime.timeoutMs', '超时(ms)') }}</label><input type="number" v-model.number="settings.entrypoint_runtime.execution_defaults.default_timeout_ms" class="psp-input" style="width:100px" :disabled="executionDefaultsReadonly" /></div>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.runtime.retryCount', '重试次数') }}</label><input type="number" v-model.number="settings.entrypoint_runtime.execution_defaults.default_retry_count" class="psp-input" style="width:80px" :disabled="executionDefaultsReadonly" /></div>
+          <button class="psp-btn-save" @click="saveRuntimeDefaults" :disabled="saveState === 'saving'" style="margin-top:14px">{{ t('framework.projectSettings.runtime.saveRuntimeOnly', '仅保存运行默认值') }}</button>
         </template>
         <template v-else-if="active === 'packaging'">
-          <h5>打包设置</h5>
-          <div class="psp-field"><label>默认输出名</label><input v-model="settings.packaging.default_output_name" class="psp-input" placeholder="demo.wcrun" :disabled="sectionReadonly" /></div>
-          <h5 style="margin-top:14px">External 资源</h5>
-          <div v-if="!settings.external_resources.length && !sectionReadonly" class="psp-empty">暂无 external 资源声明</div>
-          <div v-for="(er, i) in settings.external_resources" :key="i" class="psp-var-row"><input :value="(er as any).resource_id || (er as any).bind_key || ''" class="psp-input" placeholder="resource_id" style="width:100px" :disabled="sectionReadonly" @change="(er as any).resource_id = ($event.target as HTMLInputElement).value" /><input :value="(er as any).kind || ''" class="psp-input" placeholder="kind" style="width:70px" :disabled="sectionReadonly" @change="(er as any).kind = ($event.target as HTMLInputElement).value" /><input :value="(er as any).description || ''" class="psp-input" placeholder="描述" style="flex:1" :disabled="sectionReadonly" @change="(er as any).description = ($event.target as HTMLInputElement).value" /><button v-if="!sectionReadonly" class="psp-rm" @click="settings.external_resources.splice(i,1)">✕</button></div>
-          <button v-if="!sectionReadonly" class="psp-add" @click="settings.external_resources.push({ resource_id: '', kind: 'file', description: '' })">+ 新增 external 资源</button>
-          <h5 style="margin-top:14px">Embedded 资源</h5>
-          <div v-if="!settings.resource_policy.embedded_resources?.length && !sectionReadonly" class="psp-empty">暂无 embedded 资源</div>
+          <h5>{{ t('framework.projectSettings.packaging.title', '打包设置') }}</h5>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.packaging.defaultOutputName', '默认输出名') }}</label><input v-model="settings.packaging.default_output_name" class="psp-input" placeholder="demo.wcrun" :disabled="sectionReadonly" /></div>
+          <h5 style="margin-top:14px">{{ t('framework.projectSettings.packaging.externalResources', 'External 资源') }}</h5>
+          <div v-if="!settings.external_resources.length && !sectionReadonly" class="psp-empty">{{ t('framework.projectSettings.packaging.noExternal', '暂无 external 资源声明') }}</div>
+          <div v-for="(er, i) in settings.external_resources" :key="i" class="psp-var-row"><input :value="(er as any).resource_id || (er as any).bind_key || ''" class="psp-input" placeholder="resource_id" style="width:100px" :disabled="sectionReadonly" @change="(er as any).resource_id = ($event.target as HTMLInputElement).value" /><input :value="(er as any).kind || ''" class="psp-input" placeholder="kind" style="width:70px" :disabled="sectionReadonly" @change="(er as any).kind = ($event.target as HTMLInputElement).value" /><input :value="(er as any).description || ''" class="psp-input" :placeholder="t('framework.projectSettings.packaging.descriptionPlaceholder', '描述')" style="flex:1" :disabled="sectionReadonly" @change="(er as any).description = ($event.target as HTMLInputElement).value" /><button v-if="!sectionReadonly" class="psp-rm" @click="settings.external_resources.splice(i,1)">✕</button></div>
+          <button v-if="!sectionReadonly" class="psp-add" @click="settings.external_resources.push({ resource_id: '', kind: 'file', description: '' })">{{ t('framework.projectSettings.packaging.addExternal', '+ 新增 external 资源') }}</button>
+          <h5 style="margin-top:14px">{{ t('framework.projectSettings.packaging.embeddedResources', 'Embedded 资源') }}</h5>
+          <div v-if="!settings.resource_policy.embedded_resources?.length && !sectionReadonly" class="psp-empty">{{ t('framework.projectSettings.packaging.noEmbedded', '暂无 embedded 资源') }}</div>
           <div v-for="(p, i) in settings.resource_policy.embedded_resources" :key="i" class="psp-var-row"><input :value="p" class="psp-input" style="flex:1" :disabled="sectionReadonly" @change="settings.resource_policy.embedded_resources[i] = ($event.target as HTMLInputElement).value" /><button v-if="!sectionReadonly" class="psp-rm" @click="settings.resource_policy.embedded_resources.splice(i,1)">✕</button></div>
-          <button v-if="!sectionReadonly" class="psp-add" @click="settings.resource_policy.embedded_resources.push('')">+ 新增 embedded 资源</button>
+          <button v-if="!sectionReadonly" class="psp-add" @click="settings.resource_policy.embedded_resources.push('')">{{ t('framework.projectSettings.packaging.addEmbedded', '+ 新增 embedded 资源') }}</button>
         </template>
         <template v-else-if="active === 'compile'">
-          <div class="psp-field"><label>真值来源</label><select v-model="settings.compile_profile.source_of_truth" class="psp-input" :disabled="sectionReadonly"><option value="saved_project_only">saved_project_only</option></select></div>
-          <div class="psp-field"><label>注入运行默认值</label><input type="checkbox" v-model="settings.compile_profile.inject_project_runtime_defaults_into_main_flow_start" :disabled="runtimeInjectionReadonly" /></div>
-          <div class="psp-field"><label>调试历史保留上限</label><input type="number" v-model.number="settings.debug_profile!.history_retention_limit" class="psp-input" style="width:100px" min="1" :disabled="sectionReadonly" /></div>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.compile.sourceOfTruth', '真值来源') }}</label><select v-model="settings.compile_profile.source_of_truth" class="psp-input" :disabled="sectionReadonly"><option value="saved_project_only">saved_project_only</option></select></div>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.compile.injectRuntimeDefaults', '注入运行默认值') }}</label><input type="checkbox" v-model="settings.compile_profile.inject_project_runtime_defaults_into_main_flow_start" :disabled="runtimeInjectionReadonly" /></div>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.compile.historyRetentionLimit', '调试历史保留上限') }}</label><input type="number" v-model.number="settings.debug_profile!.history_retention_limit" class="psp-input" style="width:100px" min="1" :disabled="sectionReadonly" /></div>
         </template>
         <template v-else-if="active === 'pythonRuntime'">
           <!-- Status banner -->
           <div class="psp-runtime-banner" :class="`psp-runtime-banner--${runtimeStatus.health_status || 'unknown'}`">
-            <span>运行时状态: <strong>{{ healthStatusLabel }}</strong></span>
+            <span>{{ t('framework.projectSettings.pythonRuntime.runtimeStatusLabel', '运行时状态') }}: <strong>{{ healthStatusLabel }}</strong></span>
             <span v-if="runtimeStatus.health_message" class="psp-runtime-msg">{{ runtimeStatus.health_message }}</span>
           </div>
 
-          <h5>运行时状态</h5>
+          <h5>{{ t('framework.projectSettings.pythonRuntime.runtimeStatus', '运行时状态') }}</h5>
           <div class="psp-state-grid">
-            <div><span>健康状态</span><code>{{ healthStatusLabel }}</code></div>
-            <div><span>运行时根目录</span><code class="psp-path">{{ runtimeStatus.runtime_root || '—' }}</code></div>
-            <div><span>Python 可执行文件</span><code class="psp-path">{{ runtimeStatus.python_executable || '—' }}</code></div>
-            <div><span>Manifest 哈希</span><code>{{ runtimeStatus.manifest_hash || '—' }}</code></div>
-            <div><span>缓存位置模式</span><code>{{ runtimeStatus.cache_location_mode || '—' }}</code></div>
-            <div><span>项目缓存模式</span><code>{{ runtimeStatus.project_cache_mode || '—' }}</code></div>
-            <div><span>包嵌入模式</span><code>{{ pythonProfile.package_embed_mode || '—' }}</code></div>
+            <div><span>{{ t('framework.projectSettings.pythonRuntime.healthStatus', '健康状态') }}</span><code>{{ healthStatusLabel }}</code></div>
+            <div><span>{{ t('framework.projectSettings.pythonRuntime.runtimeRoot', '运行时根目录') }}</span><code class="psp-path">{{ runtimeStatus.runtime_root || '—' }}</code></div>
+            <div><span>{{ t('framework.projectSettings.pythonRuntime.pythonExecutable', 'Python 可执行文件') }}</span><code class="psp-path">{{ runtimeStatus.python_executable || '—' }}</code></div>
+            <div><span>{{ t('framework.projectSettings.pythonRuntime.manifestHash', 'Manifest 哈希') }}</span><code>{{ runtimeStatus.manifest_hash || '—' }}</code></div>
+            <div><span>{{ t('framework.projectSettings.pythonRuntime.cacheLocationMode', '缓存位置模式') }}</span><code>{{ runtimeStatus.cache_location_mode || '—' }}</code></div>
+            <div><span>{{ t('framework.projectSettings.pythonRuntime.projectCacheMode', '项目缓存模式') }}</span><code>{{ runtimeStatus.project_cache_mode || '—' }}</code></div>
+            <div><span>{{ t('framework.projectSettings.pythonRuntime.packageEmbedMode', '包嵌入模式') }}</span><code>{{ pythonProfile.package_embed_mode || '—' }}</code></div>
             <div><span>Materialized Hash</span><code class="psp-path">{{ pythonProfile.materialized_runtime_hash || '—' }}</code></div>
           </div>
 
-          <h5 style="margin-top:14px">基本设置</h5>
-          <div class="psp-field"><label>启用运行时</label><input type="checkbox" v-model="pythonProfile.runtime_enabled" :disabled="isWcrun" /></div>
-          <div class="psp-field"><label>Python 版本</label>
+          <h5 style="margin-top:14px">{{ t('framework.projectSettings.pythonRuntime.basicSettings', '基本设置') }}</h5>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.pythonRuntime.enableRuntime', '启用运行时') }}</label><input type="checkbox" v-model="pythonProfile.runtime_enabled" :disabled="isWcrun" /></div>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.pythonRuntime.pythonVersion', 'Python 版本') }}</label>
             <select v-model="pythonProfile.python_version_spec" class="psp-input" :disabled="pythonReadonly" style="max-width:120px">
               <option value="3.10">3.10</option><option value="3.11">3.11</option><option value="3.12">3.12</option><option value="3.13">3.13</option>
             </select>
           </div>
-          <div class="psp-field"><label>解释器策略</label>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.pythonRuntime.interpreterStrategy', '解释器策略') }}</label>
             <select v-model="pythonProfile.interpreter_strategy" class="psp-input" :disabled="pythonReadonly" style="max-width:160px">
               <option value="bundled">bundled</option><option value="system">system</option><option value="custom_path">custom_path</option>
             </select>
           </div>
           <div class="psp-field" v-if="pythonProfile.interpreter_strategy === 'custom_path'">
-            <label>自定义路径</label>
+            <label>{{ t('framework.projectSettings.pythonRuntime.customPath', '自定义路径') }}</label>
             <div class="psp-path-row">
-              <input v-model="pythonProfile.custom_python_path" class="psp-input" placeholder="Python 可执行文件路径" :disabled="pythonReadonly" />
+              <input v-model="pythonProfile.custom_python_path" class="psp-input" :placeholder="t('framework.projectSettings.pythonRuntime.customPathPlaceholder', 'Python 可执行文件路径')" :disabled="pythonReadonly" />
               <button class="psp-pick-btn" @click="pickPythonPath('custom_python_path')" :disabled="pythonReadonly">…</button>
             </div>
           </div>
 
-          <h5 style="margin-top:14px">缓存设置</h5>
-          <div class="psp-field"><label>缓存位置模式</label>
+          <h5 style="margin-top:14px">{{ t('framework.projectSettings.pythonRuntime.cacheSettings', '缓存设置') }}</h5>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.pythonRuntime.cacheLocationMode', '缓存位置模式') }}</label>
             <select v-model="pythonProfile.cache_location_mode" class="psp-input" :disabled="pythonReadonly" style="max-width:180px">
               <option value="software_cache">software_cache</option><option value="project_cache">project_cache</option>
             </select>
           </div>
-          <div class="psp-field"><label>项目缓存模式</label>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.pythonRuntime.projectCacheMode', '项目缓存模式') }}</label>
             <select v-model="pythonProfile.project_cache_mode" class="psp-input" :disabled="pythonReadonly" style="max-width:200px">
               <option value="full_venv">full_venv</option><option value="wheelhouse_rebuild">wheelhouse_rebuild</option>
             </select>
           </div>
 
-          <h5 style="margin-top:14px">依赖配置</h5>
-          <div class="psp-field"><label>需求来源模式</label>
+          <h5 style="margin-top:14px">{{ t('framework.projectSettings.pythonRuntime.dependencyConfig', '依赖配置') }}</h5>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.pythonRuntime.requirementsSourceMode', '需求来源模式') }}</label>
             <select v-model="pythonProfile.requirements_source_mode" class="psp-input" :disabled="pythonReadonly" style="max-width:200px">
               <option value="inline">inline</option><option value="requirements_txt">requirements_txt</option><option value="lock_file">lock_file</option>
             </select>
           </div>
           <template v-if="pythonProfile.requirements_source_mode === 'inline'">
-            <div class="psp-field"><label>内联依赖</label>
+            <div class="psp-field"><label>{{ t('framework.projectSettings.pythonRuntime.inlineDependencies', '内联依赖') }}</label>
               <div class="psp-vars-list">
                 <div v-for="(_r, i) in pythonProfile.requirements_inline" :key="i" class="psp-var-row">
                   <input v-model="pythonProfile.requirements_inline[i]" class="psp-input" placeholder="package==version" :disabled="pythonReadonly" />
                   <button v-if="!pythonReadonly" class="psp-rm" @click="pythonProfile.requirements_inline.splice(i, 1)">✕</button>
                 </div>
-                <button v-if="!pythonReadonly" class="psp-add" @click="pythonProfile.requirements_inline.push('')">+ 新增依赖</button>
+                <button v-if="!pythonReadonly" class="psp-add" @click="pythonProfile.requirements_inline.push('')">{{ t('framework.projectSettings.pythonRuntime.addDependency', '+ 新增依赖') }}</button>
               </div>
             </div>
           </template>
           <div class="psp-field" v-if="pythonProfile.requirements_source_mode === 'requirements_txt'">
             <label>requirements.txt</label>
             <div class="psp-path-row">
-              <input v-model="pythonProfile.requirements_file_path" class="psp-input" placeholder="requirements.txt 路径" :disabled="pythonReadonly" />
+              <input v-model="pythonProfile.requirements_file_path" class="psp-input" :placeholder="t('framework.projectSettings.pythonRuntime.requirementsPathPlaceholder', 'requirements.txt 路径')" :disabled="pythonReadonly" />
               <button class="psp-pick-btn" @click="pickPythonPath('requirements_file_path')" :disabled="pythonReadonly">…</button>
             </div>
           </div>
           <div class="psp-field" v-if="pythonProfile.requirements_source_mode === 'lock_file'">
-            <label>锁定文件</label>
+            <label>{{ t('framework.projectSettings.pythonRuntime.lockFile', '锁定文件') }}</label>
             <div class="psp-path-row">
-              <input v-model="pythonProfile.lock_file_path" class="psp-input" placeholder="Pipfile.lock / poetry.lock 路径" :disabled="pythonReadonly" />
+              <input v-model="pythonProfile.lock_file_path" class="psp-input" :placeholder="t('framework.projectSettings.pythonRuntime.lockFilePathPlaceholder', 'Pipfile.lock / poetry.lock 路径')" :disabled="pythonReadonly" />
               <button class="psp-pick-btn" @click="pickPythonPath('lock_file_path')" :disabled="pythonReadonly">…</button>
             </div>
           </div>
 
-          <h5 style="margin-top:14px">索引配置</h5>
-          <div class="psp-field"><label>索引策略</label>
+          <h5 style="margin-top:14px">{{ t('framework.projectSettings.pythonRuntime.indexConfig', '索引配置') }}</h5>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.pythonRuntime.indexStrategy', '索引策略') }}</label>
             <select v-model="pythonProfile.index_strategy" class="psp-input" :disabled="pythonReadonly" style="max-width:120px">
               <option value="default">default</option><option value="custom">custom</option>
             </select>
           </div>
           <div class="psp-field" v-if="pythonProfile.index_strategy === 'custom'">
-            <label>自定义索引 URL</label>
+            <label>{{ t('framework.projectSettings.pythonRuntime.customIndexUrl', '自定义索引 URL') }}</label>
             <input v-model="pythonProfile.custom_index_url" class="psp-input" placeholder="https://pypi.example.com/simple" :disabled="pythonReadonly" />
           </div>
 
-          <h5 style="margin-top:14px">运行时行为</h5>
-          <div class="psp-field"><label>运行前自动准备</label><input type="checkbox" v-model="pythonProfile.auto_prepare_on_run" :disabled="pythonReadonly" /></div>
-          <div class="psp-field"><label>包嵌入模式</label>
+          <h5 style="margin-top:14px">{{ t('framework.projectSettings.pythonRuntime.runtimeBehavior', '运行时行为') }}</h5>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.pythonRuntime.autoPrepareOnRun', '运行前自动准备') }}</label><input type="checkbox" v-model="pythonProfile.auto_prepare_on_run" :disabled="pythonReadonly" /></div>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.pythonRuntime.packageEmbedMode', '包嵌入模式') }}</label>
             <select v-model="pythonProfile.package_embed_mode" class="psp-input" :disabled="pythonReadonly" style="max-width:200px">
               <option value="none">none</option><option value="wheelhouse_rebuild">wheelhouse_rebuild</option><option value="full_venv">full_venv</option>
             </select>
           </div>
 
           <!-- Action buttons -->
-          <h5 style="margin-top:14px">操作</h5>
+          <h5 style="margin-top:14px">{{ t('framework.projectSettings.pythonRuntime.actions', '操作') }}</h5>
           <div class="psp-runtime-actions">
             <button class="psp-runtime-btn" :disabled="actionDisabled || actionLoading === 'health-check'" @click="doHealthCheck">
-              {{ actionLoading === 'health-check' ? '检查中…' : '健康检查' }}
+              {{ actionLoading === 'health-check' ? t('framework.projectSettings.pythonRuntime.checking', '检查中…') : t('framework.projectSettings.pythonRuntime.healthCheck', '健康检查') }}
             </button>
             <button class="psp-runtime-btn" :disabled="actionDisabled || actionLoading === 'prepare'" @click="doPrepare">
-              {{ actionLoading === 'prepare' ? '准备中…' : '准备' }}
+              {{ actionLoading === 'prepare' ? t('framework.projectSettings.pythonRuntime.preparing', '准备中…') : t('framework.projectSettings.pythonRuntime.prepare', '准备') }}
             </button>
             <button class="psp-runtime-btn" :disabled="actionDisabled || actionLoading === 'rebuild'" @click="doRebuild">
-              {{ actionLoading === 'rebuild' ? '重建中…' : '重建' }}
+              {{ actionLoading === 'rebuild' ? t('framework.projectSettings.pythonRuntime.rebuilding', '重建中…') : t('framework.projectSettings.pythonRuntime.rebuild', '重建') }}
             </button>
             <button class="psp-runtime-btn" :disabled="actionDisabled || actionLoading === 'clear'" @click="doClear">
-              {{ actionLoading === 'clear' ? '清理中…' : '清理' }}
+              {{ actionLoading === 'clear' ? t('framework.projectSettings.pythonRuntime.clearing', '清理中…') : t('framework.projectSettings.pythonRuntime.clear', '清理') }}
             </button>
             <button class="psp-runtime-btn" :disabled="exportDisabled || actionLoading === 'export'" @click="doExportBundle">
-              {{ actionLoading === 'export' ? '导出中…' : '导出' }}
+              {{ actionLoading === 'export' ? t('framework.projectSettings.pythonRuntime.exporting', '导出中…') : t('framework.projectSettings.pythonRuntime.export', '导出') }}
             </button>
           </div>
-          <div v-if="isWcrun" class="psp-field-hint">📦 .wcrun 包已加载 — Python 运行时设置与操作均不可用</div>
-          <div v-else-if="!pythonProfile.runtime_enabled" class="psp-field-hint">启用运行时后，操作按钮可用</div>
-          <div v-else-if="pythonProfile.package_embed_mode === 'none'" class="psp-field-hint">包嵌入模式为 "none" 时，导出不可用</div>
+          <div v-if="isWcrun" class="psp-field-hint">{{ t('framework.projectSettings.pythonRuntime.hintWcrun', '📦 .wcrun 包已加载 — Python 运行时设置与操作均不可用') }}</div>
+          <div v-else-if="!pythonProfile.runtime_enabled" class="psp-field-hint">{{ t('framework.projectSettings.pythonRuntime.hintEnableFirst', '启用运行时后，操作按钮可用') }}</div>
+          <div v-else-if="pythonProfile.package_embed_mode === 'none'" class="psp-field-hint">{{ t('framework.projectSettings.pythonRuntime.hintExportUnavailable', '包嵌入模式为 "none" 时，导出不可用') }}</div>
         </template>
         <template v-else-if="active === 'status'">
           <div class="psp-state-grid">
-            <div><span>真值来源</span><code>{{ st.source_of_truth || '—' }}</code></div><div><span>状态来源</span><code>{{ st.state_source || '—' }}</code></div><div><span>Schema 版本</span><code>{{ st.project_settings_schema_version || '—' }}</code></div><div><span>是否 dirty</span><code>{{ st.is_dirty ? '是' : '否' }}</code></div>
-            <div v-if="st.project_file_path"><span>项目文件</span><code class="psp-path">{{ st.project_file_path }}</code></div><div v-if="st.project_settings_path"><span>设置文件</span><code class="psp-path">{{ st.project_settings_path }}</code></div><div v-if="st.session_dir"><span>会话目录</span><code class="psp-path">{{ st.session_dir }}</code></div>
-            <div><span>External 资源</span><code>{{ st.has_external_resources ? '是' : '否' }}</code></div><div><span>Embedded 资源数</span><code>{{ st.embedded_resource_count ?? '—' }}</code></div><div><span>External 资源数</span><code>{{ st.external_resource_count ?? '—' }}</code></div><div><span>默认输出名</span><code>{{ st.package_default_output_name || '—' }}</code></div>
-            <div v-if="st.main_graph_compatibility"><span>图数据版本</span><code>{{ st.main_graph_compatibility.graph_data_version || '—' }}</code></div>
-            <div v-if="st.main_graph_compatibility"><span>创建时版本</span><code>{{ st.main_graph_compatibility.built_with_app_version || '—' }}</code></div>
-            <div v-if="st.main_graph_compatibility"><span>最低加载版本</span><code>{{ st.main_graph_compatibility.minimum_loader_app_version || '—' }}</code></div>
-            <div v-if="st.main_graph_compatibility"><span>最近升级版本</span><code>{{ st.main_graph_compatibility.last_upgraded_by_app_version || '—' }}</code></div>
-            <div v-if="st.main_graph_compatibility"><span>历史无版本图</span><code>{{ st.main_graph_compatibility.is_legacy_unversioned ? '是' : '否' }}</code></div>
+            <div><span>{{ t('framework.projectSettings.status.sourceOfTruth', '真值来源') }}</span><code>{{ st.source_of_truth || '—' }}</code></div><div><span>{{ t('framework.projectSettings.status.stateSource', '状态来源') }}</span><code>{{ st.state_source || '—' }}</code></div><div><span>{{ t('framework.projectSettings.status.schemaVersion', 'Schema 版本') }}</span><code>{{ st.project_settings_schema_version || '—' }}</code></div><div><span>{{ t('framework.projectSettings.status.isDirty', '是否 dirty') }}</span><code>{{ st.is_dirty ? t('framework.projectSettings.common.yes', '是') : t('framework.projectSettings.common.no', '否') }}</code></div>
+            <div v-if="st.project_file_path"><span>{{ t('framework.projectSettings.status.projectFile', '项目文件') }}</span><code class="psp-path">{{ st.project_file_path }}</code></div><div v-if="st.project_settings_path"><span>{{ t('framework.projectSettings.status.settingsFile', '设置文件') }}</span><code class="psp-path">{{ st.project_settings_path }}</code></div><div v-if="st.session_dir"><span>{{ t('framework.projectSettings.status.sessionDir', '会话目录') }}</span><code class="psp-path">{{ st.session_dir }}</code></div>
+            <div><span>{{ t('framework.projectSettings.status.externalResources', 'External 资源') }}</span><code>{{ st.has_external_resources ? t('framework.projectSettings.common.yes', '是') : t('framework.projectSettings.common.no', '否') }}</code></div><div><span>{{ t('framework.projectSettings.status.embeddedResourceCount', 'Embedded 资源数') }}</span><code>{{ st.embedded_resource_count ?? '—' }}</code></div><div><span>{{ t('framework.projectSettings.status.externalResourceCount', 'External 资源数') }}</span><code>{{ st.external_resource_count ?? '—' }}</code></div><div><span>{{ t('framework.projectSettings.status.defaultOutputName', '默认输出名') }}</span><code>{{ st.package_default_output_name || '—' }}</code></div>
+            <div v-if="st.main_graph_compatibility"><span>{{ t('framework.projectSettings.status.graphDataVersion', '图数据版本') }}</span><code>{{ st.main_graph_compatibility.graph_data_version || '—' }}</code></div>
+            <div v-if="st.main_graph_compatibility"><span>{{ t('framework.projectSettings.status.builtWithVersion', '创建时版本') }}</span><code>{{ st.main_graph_compatibility.built_with_app_version || '—' }}</code></div>
+            <div v-if="st.main_graph_compatibility"><span>{{ t('framework.projectSettings.status.minimumLoaderVersion', '最低加载版本') }}</span><code>{{ st.main_graph_compatibility.minimum_loader_app_version || '—' }}</code></div>
+            <div v-if="st.main_graph_compatibility"><span>{{ t('framework.projectSettings.status.lastUpgradedVersion', '最近升级版本') }}</span><code>{{ st.main_graph_compatibility.last_upgraded_by_app_version || '—' }}</code></div>
+            <div v-if="st.main_graph_compatibility"><span>{{ t('framework.projectSettings.status.legacyUnversioned', '历史无版本图') }}</span><code>{{ st.main_graph_compatibility.is_legacy_unversioned ? t('framework.projectSettings.common.yes', '是') : t('framework.projectSettings.common.no', '否') }}</code></div>
           </div>
         </template>
       </div>
     </div>
-    <div class="psp-ft"><button class="psp-btn-save" @click="save" :disabled="saveState === 'saving' || isWcrun">{{ isWcrun ? '.wcrun 只读' : '保存全部设置' }}</button></div>
+    <div class="psp-ft"><button class="psp-btn-save" @click="save" :disabled="saveState === 'saving' || isWcrun">{{ isWcrun ? t('framework.projectSettings.footer.wcrunReadonly', '.wcrun 只读') : t('framework.projectSettings.footer.saveAll', '保存全部设置') }}</button></div>
   </div>
 </template>
 <style scoped>

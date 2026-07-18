@@ -9,6 +9,7 @@ import { postGraphValidate, postGraphCompile, postCreateEmptyCustomComponent } f
 import { useResourceStore } from '@/stores/resourceStore'
 import VueFlowGraph from './VueFlowGraph.vue'
 import type { CompilationRequest } from '@/types/domains/compilation'
+import { t } from '@/i18n'
 
 const workspace = useGraphWorkspaceStore()
 const graphStore = useGraphStore()
@@ -34,14 +35,14 @@ async function createCustomComponent() {
   if (!name) return
   try {
     const r = await postCreateEmptyCustomComponent(name)
-    toast.success('已创建', r.resource.display_name)
+    toast.success(t('framework.graph.panel.toast.created', '已创建'), r.resource.display_name)
     await resource.refreshAll()
     const docId = `custom_node_graph:${r.resource.resource_id}`
     await workspace.loadGraph(docId)
     await workspace.syncSource()
     await workspace.refreshGraphDocuments()
     showNewCompDlg.value = false; newCompName.value = ''
-  } catch (e: any) { toast.error('创建失败', e?.message) }
+  } catch (e: any) { toast.error(t('framework.graph.panel.toast.createFailed', '创建失败'), e?.message) }
 }
 
 
@@ -59,8 +60,8 @@ async function handleSave() {
   await workspace.saveGraph(workspace.graphModel as unknown as Record<string, unknown>)
 }
 async function handleValidate() {
-  if (!selectedModel.value) { toast.info('', '当前图为空'); return }
-  if (selectedSource.value === 'compilation') { toast.info('', '请先保存为工作区图'); return }
+  if (!selectedModel.value) { toast.info('', t('framework.graph.panel.toast.graphEmpty', '当前图为空')); return }
+  if (selectedSource.value === 'compilation') { toast.info('', t('framework.graph.panel.toast.saveFirst', '请先保存为工作区图')); return }
   try {
     const r = await postGraphValidate(selectedModel.value as unknown as Record<string, unknown>)
     // On valid: show passing state; on failure: bridge diagnostics to output tabs
@@ -109,17 +110,17 @@ async function handleValidate() {
       }
       compilation.compilePhase = 'failed'
     }
-    toast.info('校验完成', r.status === 'valid' ? '校验通过' : `${r.summary.error_count} 条错误 — 查看诊断标签页`)
+    toast.info(t('framework.graph.panel.toast.validateDone', '校验完成'), r.status === 'valid' ? t('framework.graph.panel.toast.validatePassed', '校验通过') : t('framework.graph.panel.toast.validateErrors', `${r.summary.error_count} 条错误 — 查看诊断标签页`, { n: r.summary.error_count }))
   } catch (e: any) {
     const body = e?.body
     const msg = body?.message || body?.error || e?.message
     if (body) { compilation.compilePhase = 'failed'; compilation.compileError = msg }
-    toast.error('校验失败', msg)
+    toast.error(t('framework.graph.panel.toast.validateFailed', '校验失败'), msg)
   }
 }
 async function handleCompile() {
-  if (!selectedModel.value) { toast.info('', '当前图为空'); return }
-  if (selectedSource.value === 'compilation') { toast.info('', '请先保存为工作区图'); return }
+  if (!selectedModel.value) { toast.info('', t('framework.graph.panel.toast.graphEmpty', '当前图为空')); return }
+  if (selectedSource.value === 'compilation') { toast.info('', t('framework.graph.panel.toast.saveFirst', '请先保存为工作区图')); return }
   try {
     const r = await postGraphCompile(selectedModel.value as unknown as Record<string, unknown>)
     if (r.outcome) {
@@ -130,10 +131,10 @@ async function handleCompile() {
       compilation.compilePhase = r.status === 'succeeded' ? 'completed' : 'failed'
     }
     if (r.status === 'succeeded') {
-      toast.success('编译完成', `节点: ${r.view.graph_stats.node_count}`)
+      toast.success(t('framework.graph.panel.toast.compileDone', '编译完成'), t('framework.graph.panel.toast.compileNodeCount', `节点: ${r.view.graph_stats.node_count}`, { n: r.view.graph_stats.node_count }))
     } else {
       const diag = r.view.primary_diagnostic
-      toast.error('编译失败', diag ? `${diag.message} — 查看诊断标签页` : '查看诊断标签页')
+      toast.error(t('framework.graph.panel.toast.compileFailed', '编译失败'), diag ? t('framework.graph.panel.toast.diagnosticWithMessage', `${diag.message} — 查看诊断标签页`, { message: diag.message }) : t('framework.graph.panel.toast.seeDiagnostics', '查看诊断标签页'))
     }
   } catch (e: any) {
     const body = e?.body
@@ -148,7 +149,7 @@ async function handleCompile() {
       }
     }
     const msg = e?.body?.details?.primary_diagnostic?.message || e?.body?.message || e?.body?.error || e?.message
-    toast.error('编译失败', msg)
+    toast.error(t('framework.graph.panel.toast.compileFailed', '编译失败'), msg)
   }
 }
 </script>
@@ -157,26 +158,26 @@ async function handleCompile() {
   <div class="gcp">
     <div class="gcp-bar">
       <select class="gcp-graph-sel" :value="workspace.currentDocumentId || ''" @change="switchGraph(($event.target as HTMLSelectElement).value)">
-        <option value="">📄 主图</option>
+        <option value="">📄 {{ t('framework.graph.panel.mainGraph', '主图') }}</option>
         <option v-for="d in workspace.graphDocuments.filter(x => x.document_role === 'custom_node_graph')" :key="d.document_id" :value="d.document_id">🔧 {{ d.display_name || d.document_id }}</option>
       </select>
-      <button class="gcp-btn" @click="showNewCompDlg = true" title="新建用户组件">+</button>
-      <span class="gcp-info">节点: {{ nodeCount }} · 边: {{ edgeCount }}</span>
+      <button class="gcp-btn" @click="showNewCompDlg = true" :title="t('framework.graph.panel.newComponent', '新建用户组件')">+</button>
+      <span class="gcp-info">{{ t('framework.graph.panel.nodes', '节点') }}: {{ nodeCount }} · {{ t('framework.graph.panel.edges', '边') }}: {{ edgeCount }}</span>
       <span v-if="workspace.isLoaded" class="gcp-rev">rev: {{ workspace.saveRevision }}</span>
-      <span v-if="!workspace.lastCompileMatches" class="gcp-warn">⚠ 未同步</span>
+      <span v-if="!workspace.lastCompileMatches" class="gcp-warn">⚠ {{ t('framework.graph.panel.notSynced', '未同步') }}</span>
       <span class="gcp-actions">
-        <button class="gcp-btn" @click="handleValidate">校验</button>
-        <button class="gcp-btn" @click="handleCompile">编译</button>
-        <button class="gcp-btn save" @click="handleSave" :disabled="!workspace.isGraphEditable" :title="workspace.isGraphEditable ? '保存' : '.wcrun 只读'">保存</button>
+        <button class="gcp-btn" @click="handleValidate">{{ t('framework.graph.panel.validate', '校验') }}</button>
+        <button class="gcp-btn" @click="handleCompile">{{ t('framework.graph.panel.compile', '编译') }}</button>
+        <button class="gcp-btn save" @click="handleSave" :disabled="!workspace.isGraphEditable" :title="workspace.isGraphEditable ? t('framework.graph.panel.save', '保存') : t('framework.graph.panel.readonly', '.wcrun 只读')">{{ t('framework.graph.panel.save', '保存') }}</button>
       </span>
     </div>
     <VueFlowGraph />
     <Teleport to="body">
       <div v-if="showNewCompDlg" class="gcp-dlg-overlay" @click.self="showNewCompDlg = false">
         <div class="gcp-dlg-box">
-          <div class="gcp-dlg-hd">新建用户组件<span class="gcp-dlg-close" @click="showNewCompDlg = false">✕</span></div>
-          <div class="gcp-dlg-body"><input v-model="newCompName" class="gcp-dlg-input" placeholder="组件名称" @keyup.enter="createCustomComponent" /></div>
-          <div class="gcp-dlg-ft"><button class="gcp-dlg-btn" @click="createCustomComponent" :disabled="!newCompName.trim()">创建</button></div>
+          <div class="gcp-dlg-hd">{{ t('framework.graph.panel.newComponent', '新建用户组件') }}<span class="gcp-dlg-close" @click="showNewCompDlg = false">✕</span></div>
+          <div class="gcp-dlg-body"><input v-model="newCompName" class="gcp-dlg-input" :placeholder="t('framework.graph.panel.componentNamePlaceholder', '组件名称')" @keyup.enter="createCustomComponent" /></div>
+          <div class="gcp-dlg-ft"><button class="gcp-dlg-btn" @click="createCustomComponent" :disabled="!newCompName.trim()">{{ t('framework.graph.panel.create', '创建') }}</button></div>
         </div>
       </div>
     </Teleport>

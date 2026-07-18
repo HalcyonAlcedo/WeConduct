@@ -4,6 +4,7 @@ import { useProjectDiagnosticsStore } from '@/stores/projectDiagnosticsStore'
 import { useGraphStore } from '@/stores/graphStore'
 import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
 import type { DiagnosticSeverity, Diagnostic } from '@/types/domains/diagnostics'
+import { t } from '@/i18n'
 
 const projectDiagnostics = useProjectDiagnosticsStore()
 const graphStore = useGraphStore()
@@ -83,11 +84,11 @@ function severityClass(s: string) { return `sev-${s}` }
 
 function severityLabel(s: string) {
   switch (s) {
-    case 'fatal': return '致命'
-    case 'error': return '错误'
-    case 'degraded': return '降级'
-    case 'warning': return '警告'
-    case 'info': return '信息'
+    case 'fatal': return t('framework.diagnostics.severity.fatal', '致命')
+    case 'error': return t('framework.diagnostics.severity.error', '错误')
+    case 'degraded': return t('framework.diagnostics.severity.degraded', '降级')
+    case 'warning': return t('framework.diagnostics.severity.warning', '警告')
+    case 'info': return t('framework.diagnostics.severity.info', '信息')
     default: return s
   }
 }
@@ -116,28 +117,28 @@ async function copyToClipboard(text: string) {
 }
 function formatStructuredReadable(data: unknown): string {
   if (Array.isArray(data)) {
-    return data.map((entry, i) => `--- 第 ${i + 1} 条 ---\n${formatEntryStructured(entry)}`).join('\n\n')
+    return data.map((entry, i) => `--- ${t('framework.diagnostics.copy.entryHeader', `第 ${i + 1} 条`, { n: i + 1 })} ---\n${formatEntryStructured(entry)}`).join('\n\n')
   }
   return formatEntryStructured(data as Diagnostic)
 }
 
 function formatEntryStructured(entry: Diagnostic): string {
   const lines: string[] = []
-  if (entry.diagnostic_id) lines.push(`诊断 ID: ${entry.diagnostic_id}`)
-  lines.push(`严重度: ${severityLabel(entry.severity)} (${entry.severity})`)
-  lines.push(`阶段: ${entry.stage}`)
-  lines.push(`分类: ${entry.category}`)
-  lines.push(`信息: ${entry.message}`)
-  if (entry.object_ref) lines.push(`对象引用: ${entry.object_ref}`)
-  if (entry.trace_ref) lines.push(`追踪引用: ${entry.trace_ref}`)
+  if (entry.diagnostic_id) lines.push(`${t('framework.diagnostics.copy.diagnosticId', '诊断 ID')}: ${entry.diagnostic_id}`)
+  lines.push(`${t('framework.diagnostics.copy.severity', '严重度')}: ${severityLabel(entry.severity)} (${entry.severity})`)
+  lines.push(`${t('framework.diagnostics.copy.stage', '阶段')}: ${entry.stage}`)
+  lines.push(`${t('framework.diagnostics.copy.category', '分类')}: ${entry.category}`)
+  lines.push(`${t('framework.diagnostics.copy.message', '信息')}: ${entry.message}`)
+  if (entry.object_ref) lines.push(`${t('framework.diagnostics.copy.objectRef', '对象引用')}: ${entry.object_ref}`)
+  if (entry.trace_ref) lines.push(`${t('framework.diagnostics.copy.traceRef', '追踪引用')}: ${entry.trace_ref}`)
   if (entry.stage_extension && Object.keys(entry.stage_extension).length) {
-    lines.push('扩展信息:')
+    lines.push(`${t('framework.diagnostics.copy.stageExtension', '扩展信息')}:`)
     for (const [k, v] of Object.entries(entry.stage_extension)) {
       lines.push(`  ${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
     }
   }
   if (entry.degraded_extension && Object.keys(entry.degraded_extension).length) {
-    lines.push('降级信息:')
+    lines.push(`${t('framework.diagnostics.copy.degradedExtension', '降级信息')}:`)
     for (const [k, v] of Object.entries(entry.degraded_extension)) {
       lines.push(`  ${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
     }
@@ -191,7 +192,7 @@ function locateNodeFromDiagnostic(entry?: Diagnostic) {
   try { (window as any).__panToNode?.(nodeId) } catch {}
 }
 function formatDiagnosticForCopy(g: { stage: string; category: string; severity: string; message: string; count: number }): string {
-  return `[${severityLabel(g.severity)}] ${g.stage}/${g.category}: ${g.message} (${g.count} 条)`
+  return `[${severityLabel(g.severity)}] ${g.stage}/${g.category}: ${g.message} (${t('framework.diagnostics.copy.count', `${g.count} 条`, { n: g.count })})`
 }
 function formatEntryForCopy(entry: Diagnostic): string {
   let text = `[${severityLabel(entry.severity)}] ${entry.stage}/${entry.category}: ${entry.message}`
@@ -208,29 +209,29 @@ function formatEntryForCopy(entry: Diagnostic): string {
     <PlaceholderBanner
       v-if="!hasAnyActivity"
       type="empty"
-      title="编译或运行后查看诊断信息"
-      description="运行编译或执行任务以生成诊断结果"
+      :title="t('framework.diagnostics.empty.needActivity.title', '编译或运行后查看诊断信息')"
+      :description="t('framework.diagnostics.empty.needActivity.description', '运行编译或执行任务以生成诊断结果')"
     />
 
     <PlaceholderBanner
       v-else-if="!hasDiagnostics"
       type="empty"
-      title="无诊断信息"
-      description="编译与运行均未产生诊断条目"
+      :title="t('framework.diagnostics.empty.none.title', '无诊断信息')"
+      :description="t('framework.diagnostics.empty.none.description', '编译与运行均未产生诊断条目')"
     />
 
     <template v-else>
       <div class="dt-toolbar">
         <select class="dt-select" v-model="severityFilter">
-          <option value="all">全部严重度</option>
-          <option value="fatal">致命</option>
-          <option value="error">错误</option>
-          <option value="degraded">降级</option>
-          <option value="warning">警告</option>
-          <option value="info">信息</option>
+          <option value="all">{{ t('framework.diagnostics.filter.severity.all', '全部严重度') }}</option>
+          <option value="fatal">{{ t('framework.diagnostics.severity.fatal', '致命') }}</option>
+          <option value="error">{{ t('framework.diagnostics.severity.error', '错误') }}</option>
+          <option value="degraded">{{ t('framework.diagnostics.severity.degraded', '降级') }}</option>
+          <option value="warning">{{ t('framework.diagnostics.severity.warning', '警告') }}</option>
+          <option value="info">{{ t('framework.diagnostics.severity.info', '信息') }}</option>
         </select>
         <select class="dt-select" v-model="stageFilter">
-          <option value="all">全部阶段</option>
+          <option value="all">{{ t('framework.diagnostics.filter.stage.all', '全部阶段') }}</option>
           <option value="parse">Parse</option>
           <option value="bind">Bind</option>
           <option value="validate">Validate</option>
@@ -239,11 +240,11 @@ function formatEntryForCopy(entry: Diagnostic): string {
           <option value="emit">Emit</option>
         </select>
         <select class="dt-select" v-model="sortBy">
-          <option value="severity">按严重度</option>
-          <option value="stage">按阶段</option>
-          <option value="count">按数量</option>
+          <option value="severity">{{ t('framework.diagnostics.sort.bySeverity', '按严重度') }}</option>
+          <option value="stage">{{ t('framework.diagnostics.sort.byStage', '按阶段') }}</option>
+          <option value="count">{{ t('framework.diagnostics.sort.byCount', '按数量') }}</option>
         </select>
-        <input class="dt-search" type="text" v-model="searchQuery" placeholder="搜索诊断…" />
+        <input class="dt-search" type="text" v-model="searchQuery" :placeholder="t('framework.diagnostics.searchPlaceholder', '搜索诊断…')" />
       </div>
 
       <div class="dt-scroll">
@@ -251,11 +252,11 @@ function formatEntryForCopy(entry: Diagnostic): string {
           <thead>
             <tr>
               <th class="col-exp"></th>
-              <th class="col-sev">严重度</th>
-              <th class="col-stage">阶段</th>
-              <th class="col-cat">分类</th>
-              <th class="col-msg">信息</th>
-              <th class="col-count">计数</th>
+              <th class="col-sev">{{ t('framework.diagnostics.table.severity', '严重度') }}</th>
+              <th class="col-stage">{{ t('framework.diagnostics.table.stage', '阶段') }}</th>
+              <th class="col-cat">{{ t('framework.diagnostics.table.category', '分类') }}</th>
+              <th class="col-msg">{{ t('framework.diagnostics.table.message', '信息') }}</th>
+              <th class="col-count">{{ t('framework.diagnostics.table.count', '计数') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -301,7 +302,7 @@ function formatEntryForCopy(entry: Diagnostic): string {
                           <span>{{ extSummary(entry.stage_extension) }}</span>
                         </div>
                         <div v-if="entry.degraded_extension" class="dt-entry-meta degraded">
-                          <span>降级原因: {{ extSummary(entry.degraded_extension) }}</span>
+                          <span>{{ t('framework.diagnostics.detail.degradedReason', '降级原因') }}: {{ extSummary(entry.degraded_extension) }}</span>
                         </div>
                       </div>
                     </div>
@@ -314,7 +315,7 @@ function formatEntryForCopy(entry: Diagnostic): string {
       </div>
 
       <div class="dt-summary" v-if="groups.length > 0">
-        {{ groups.length }} 组诊断 ({{ groups.reduce((s, g) => s + g.count, 0) }} 条)
+        {{ t('framework.diagnostics.summary', '{groups} 组诊断 ({total} 条)', { groups: groups.length, total: groups.reduce((s, g) => s + g.count, 0) }) }}
       </div>
     </template>
 
@@ -322,9 +323,9 @@ function formatEntryForCopy(entry: Diagnostic): string {
     <Teleport to="body">
       <div v-if="ctxMenu" class="dt-ctx-overlay" @click="closeCtxMenu" @contextmenu.prevent="closeCtxMenu">
         <div class="dt-ctx-box" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }">
-          <button class="dt-ctx-btn" @click="copyToClipboard(ctxMenu.text)">📋 复制内容</button>
-          <button v-if="ctxMenu.structured" class="dt-ctx-btn" @click="copyStructured()">📋 复制结构化数据</button>
-          <button v-if="diagnosticHasNodeRef(ctxMenu.entry)" class="dt-ctx-btn" @click="locateNodeFromDiagnostic(ctxMenu.entry)">📍 定位节点</button>
+          <button class="dt-ctx-btn" @click="copyToClipboard(ctxMenu.text)">{{ t('framework.diagnostics.ctxMenu.copyContent', '📋 复制内容') }}</button>
+          <button v-if="ctxMenu.structured" class="dt-ctx-btn" @click="copyStructured()">{{ t('framework.diagnostics.ctxMenu.copyStructured', '📋 复制结构化数据') }}</button>
+          <button v-if="diagnosticHasNodeRef(ctxMenu.entry)" class="dt-ctx-btn" @click="locateNodeFromDiagnostic(ctxMenu.entry)">{{ t('framework.diagnostics.ctxMenu.locateNode', '📍 定位节点') }}</button>
         </div>
       </div>
     </Teleport>

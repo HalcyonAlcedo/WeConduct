@@ -11,6 +11,7 @@ import {
   fetchExecutionHistory,
 } from '@/services/api'
 import type { ExecutionHistoryResponse } from '@/types/domains/api'
+import { t } from '@/i18n'
 
 const toast = useToastStore()
 const workspace = useWorkspaceStore()
@@ -33,18 +34,18 @@ onMounted(async () => {
   try { execHistory.value = await fetchExecutionHistory() } catch {}
 })
 
-async function rtDetail(id: string) { try { const r = await fetchRuntimeSession(id); runtime.setActiveRt(r) } catch(e:any){toast.error('查询失败',e?.message)} }
+async function rtDetail(id: string) { try { const r = await fetchRuntimeSession(id); runtime.setActiveRt(r) } catch(e:any){toast.error(t('framework.taskExecution.toast.queryFailed', '查询失败'),e?.message)} }
 async function dbStart() {
-  if (!graphWs.hasGraph) { toast.info('', '当前图为空，无法调试'); return }
+  if (!graphWs.hasGraph) { toast.info('', t('framework.taskExecution.toast.emptyGraphDebug', '当前图为空，无法调试')); return }
   loading.value='db-start'
   const r = await debugStore.startDebugSession(graphBody())
   if (r.phase === 'started') {
-    toast.success('已启动', r.sessionId ?? '')
+    toast.success(t('framework.taskExecution.toast.started', '已启动'), r.sessionId ?? '')
   } else if (r.phase === 'started_with_sync_warning') {
-    toast.success('已启动', r.sessionId ?? '')
-    toast.error('面板同步失败', r.syncError ?? '')
+    toast.success(t('framework.taskExecution.toast.started', '已启动'), r.sessionId ?? '')
+    toast.error(t('framework.taskExecution.toast.panelSyncFailed', '面板同步失败'), r.syncError ?? '')
   } else {
-    toast.error('启动失败', r.startError ?? '')
+    toast.error(t('framework.taskExecution.toast.startFailed', '启动失败'), r.startError ?? '')
   }
   loading.value=''
 }
@@ -53,11 +54,11 @@ async function dbDetail(id: string) {
     await debugStore.loadActiveSession(id)
     await debugStore.loadProjection(id, 'live')
     await debugStore.loadEvents(id)
-  } catch (e: any) { toast.error('查询失败', e?.message) }
+  } catch (e: any) { toast.error(t('framework.taskExecution.toast.queryFailed', '查询失败'), e?.message) }
 }
 
 async function startAndRun() {
-  if (!graphWs.hasGraph) { toast.info('', '当前图为空，无法执行'); return }
+  if (!graphWs.hasGraph) { toast.info('', t('framework.taskExecution.toast.emptyGraphRun', '当前图为空，无法执行')); return }
   loading.value = 'start-run'
   // Auto-open output panel and switch to Runtime tab
   const dock = useDockStore()
@@ -70,16 +71,16 @@ async function startAndRun() {
     )
     try { execHistory.value = await fetchExecutionHistory() } catch {}
     if (result.success) {
-      toast.success('运行完成', result.message)
+      toast.success(t('framework.taskExecution.toast.runCompleted', '运行完成'), result.message)
     } else if ((result as any).securityBlocked) {
-      toast.error('安全设置不足', result.message)
+      toast.error(t('framework.taskExecution.toast.securityInsufficient', '安全设置不足'), result.message)
       // Auto-open project settings for user to enable security requirements
       dock.restorePanel('projectSettings')
     } else {
-      toast.error('运行失败', result.message)
+      toast.error(t('framework.taskExecution.toast.runFailed', '运行失败'), result.message)
     }
   } catch (e: any) {
-    toast.error('运行失败', e?.message)
+    toast.error(t('framework.taskExecution.toast.runFailed', '运行失败'), e?.message)
   }
   finally { loading.value = '' }
 }
@@ -87,8 +88,8 @@ async function startAndRun() {
 async function abortRun() {
   loading.value = 'runtime-abort'
   const result = await runtime.abortActiveRun()
-  if (result.success) toast.success('运行已终止')
-  else if (runtime.runtimeLiveStatus !== 'aborting') toast.error('终止失败', result.message)
+  if (result.success) toast.success(t('framework.taskExecution.toast.runAborted', '运行已终止'))
+  else if (runtime.runtimeLiveStatus !== 'aborting') toast.error(t('framework.taskExecution.toast.abortFailed', '终止失败'), result.message)
   try { execHistory.value = await fetchExecutionHistory() } catch {}
   loading.value = ''
 }
@@ -99,9 +100,9 @@ async function abortRun() {
     <div class="tep-bar">
       <button class="tep-btn" @click="dbStart" :disabled="!!loading || debugStore.isDebugActive || runtime.isRuntimeActive">Debug Start</button>
       <button v-if="runtime.isRuntimeActive" class="tep-btn danger" @click="abortRun" :disabled="runtime.isRunStarting || !runtime.canAbortRuntime || runtime.runtimeLiveStatus === 'aborting'">
-        {{ runtime.isRunStarting ? '… 正在启动' : runtime.runtimeLiveStatus === 'settling' ? '… 正在确认' : runtime.runtimeLiveStatus === 'aborting' ? '■ 正在终止' : '■ 终止' }}
+        {{ runtime.isRunStarting ? t('framework.taskExecution.button.starting', '… 正在启动') : runtime.runtimeLiveStatus === 'settling' ? t('framework.taskExecution.button.confirming', '… 正在确认') : runtime.runtimeLiveStatus === 'aborting' ? t('framework.taskExecution.button.aborting', '■ 正在终止') : t('framework.taskExecution.button.abort', '■ 终止') }}
       </button>
-      <button v-else class="tep-btn primary" @click="startAndRun" :disabled="!!loading || debugStore.isDebugActive">▶ 运行</button>
+      <button v-else class="tep-btn primary" @click="startAndRun" :disabled="!!loading || debugStore.isDebugActive">{{ t('framework.taskExecution.button.run', '▶ 运行') }}</button>
       <span v-if="loading && loading !== 'runtime-abort'" class="tep-loading">{{ loading }}</span>
     </div>
 
@@ -112,73 +113,73 @@ async function abortRun() {
       </div>
       <div class="tep-pg-info">
         <span>{{ runtime.runtimeProgress.percent ?? 0 }}%</span>
-        <span>总节点 {{ runtime.runtimeProgress.total_node_count ?? 0 }}</span>
-        <span class="ok">完成 {{ runtime.runtimeProgress.completed_node_count ?? 0 }}</span>
-        <span v-if="runtime.runtimeProgress.failed_node_count" class="fail">失败 {{ runtime.runtimeProgress.failed_node_count }}</span>
-        <span v-if="runtime.runtimeProgress.running_node_count" class="running">运行中 {{ runtime.runtimeProgress.running_node_count }}</span>
+        <span>{{ t('framework.taskExecution.progress.totalNodes', `总节点 ${runtime.runtimeProgress.total_node_count ?? 0}`, { n: runtime.runtimeProgress.total_node_count ?? 0 }) }}</span>
+        <span class="ok">{{ t('framework.taskExecution.progress.completed', `完成 ${runtime.runtimeProgress.completed_node_count ?? 0}`, { n: runtime.runtimeProgress.completed_node_count ?? 0 }) }}</span>
+        <span v-if="runtime.runtimeProgress.failed_node_count" class="fail">{{ t('framework.taskExecution.progress.failed', `失败 ${runtime.runtimeProgress.failed_node_count}`, { n: runtime.runtimeProgress.failed_node_count }) }}</span>
+        <span v-if="runtime.runtimeProgress.running_node_count" class="running">{{ t('framework.taskExecution.progress.running', `运行中 ${runtime.runtimeProgress.running_node_count}`, { n: runtime.runtimeProgress.running_node_count }) }}</span>
       </div>
       <div class="tep-pg-live">
-        <span v-if="runtime.runtimeLiveStatus === 'connecting'" class="connecting">⏳ 正在连接…</span>
-        <span v-else-if="runtime.runtimeLiveStatus === 'streaming'" class="streaming">⟳ 实时同步中</span>
-        <span v-else-if="runtime.runtimeLiveStatus === 'aborting'" class="fail">■ 正在终止</span>
-        <span v-else-if="runtime.runtimeLiveStatus === 'aborted'" class="fail">■ 已终止</span>
-        <span v-else-if="runtime.runtimeLiveStatus === 'settling'" class="connecting">正在确认运行结果</span>
-        <span v-else-if="runtime.runtimeLiveStatus === 'completed'" class="done">✓ 运行完成</span>
-        <span v-else-if="runtime.runtimeLiveStatus === 'failed'" class="fail">✕ 运行失败</span>
-        <span v-else-if="runtime.runtimeLiveStatus === 'disconnected'" class="disconnected">⚠ 实时连接中断（数据已保留）</span>
-        <span v-else-if="runtime.runtimeLiveStatus === 'error'" class="fail">⚠ 实时连接错误</span>
+        <span v-if="runtime.runtimeLiveStatus === 'connecting'" class="connecting">{{ t('framework.taskExecution.live.connecting', '⏳ 正在连接…') }}</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'streaming'" class="streaming">{{ t('framework.taskExecution.live.streaming', '⟳ 实时同步中') }}</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'aborting'" class="fail">{{ t('framework.taskExecution.live.aborting', '■ 正在终止') }}</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'aborted'" class="fail">{{ t('framework.taskExecution.live.aborted', '■ 已终止') }}</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'settling'" class="connecting">{{ t('framework.taskExecution.live.settling', '正在确认运行结果') }}</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'completed'" class="done">{{ t('framework.taskExecution.live.completed', '✓ 运行完成') }}</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'failed'" class="fail">{{ t('framework.taskExecution.live.failed', '✕ 运行失败') }}</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'disconnected'" class="disconnected">{{ t('framework.taskExecution.live.disconnected', '⚠ 实时连接中断（数据已保留）') }}</span>
+        <span v-else-if="runtime.runtimeLiveStatus === 'error'" class="fail">{{ t('framework.taskExecution.live.error', '⚠ 实时连接错误') }}</span>
       </div>
     </div>
 
     <div class="tep-grid">
       <div class="tep-col">
-        <h4>Runtime 会话 ({{ runtime.rtSessions.length }})</h4>
-        <div v-if="!runtime.rtSessions.length" class="tep-empty">暂无</div>
+        <h4>{{ t('framework.taskExecution.section.runtimeSessions', `Runtime 会话 (${runtime.rtSessions.length})`, { n: runtime.rtSessions.length }) }}</h4>
+        <div v-if="!runtime.rtSessions.length" class="tep-empty">{{ t('framework.taskExecution.empty.none', '暂无') }}</div>
         <div v-for="s in runtime.rtSessions" :key="s.session_id" class="tep-row">
           <span :class="['tep-st', s.status === 'completed' ? 'ok' : s.status === 'failed' ? 'fail' : '']">{{ s.status }}</span>
           <span class="tep-sid">{{ s.session_id.slice(0,12) }}</span>
-          <button class="tep-sm" @click="rtDetail(s.session_id)">详</button>
+          <button class="tep-sm" @click="rtDetail(s.session_id)">{{ t('framework.taskExecution.button.detail', '详') }}</button>
         </div>
         <div v-if="runtime.activeRt" class="tep-detail">
           <strong>{{ runtime.activeRt.runtime_session.session_id }}</strong>
-          <div>状态: {{ runtime.activeRt.runtime_session.status }}</div>
-          <div v-if="runtime.activeRt.runtime_plan">节点: {{ runtime.activeRt.runtime_plan.node_count }}</div>
-          <div v-if="runtime.activeRt.event_log?.length">事件: {{ runtime.activeRt.event_log.length }} 条</div>
-          <div v-if="runtime.activeRt.node_states?.length">节点状态: {{ runtime.activeRt.node_states.length }} 个</div>
+          <div>{{ t('framework.taskExecution.detail.status', `状态: ${runtime.activeRt.runtime_session.status}`, { v: runtime.activeRt.runtime_session.status }) }}</div>
+          <div v-if="runtime.activeRt.runtime_plan">{{ t('framework.taskExecution.detail.nodes', `节点: ${runtime.activeRt.runtime_plan.node_count}`, { n: runtime.activeRt.runtime_plan.node_count }) }}</div>
+          <div v-if="runtime.activeRt.event_log?.length">{{ t('framework.taskExecution.detail.events', `事件: ${runtime.activeRt.event_log.length} 条`, { n: runtime.activeRt.event_log.length }) }}</div>
+          <div v-if="runtime.activeRt.node_states?.length">{{ t('framework.taskExecution.detail.nodeStates', `节点状态: ${runtime.activeRt.node_states.length} 个`, { n: runtime.activeRt.node_states.length }) }}</div>
         </div>
       </div>
 
       <div class="tep-col">
-        <h4>Debug 会话 ({{ debugStore.sessions.length }})</h4>
-        <div v-if="!debugStore.sessions.length" class="tep-empty">暂无</div>
+        <h4>{{ t('framework.taskExecution.section.debugSessions', `Debug 会话 (${debugStore.sessions.length})`, { n: debugStore.sessions.length }) }}</h4>
+        <div v-if="!debugStore.sessions.length" class="tep-empty">{{ t('framework.taskExecution.empty.none', '暂无') }}</div>
         <div v-for="s in debugStore.sessions" :key="s.session_id" class="tep-row">
           <span :class="['tep-st', s.status === 'completed' ? 'ok' : ['failed','cancelled','aborted','incomplete'].includes(s.status) ? 'fail' : '']">{{ s.status }}</span>
           <span class="tep-sid">{{ s.session_id.slice(0,12) }}</span>
-          <button class="tep-sm" @click="dbDetail(s.session_id)">详</button>
+          <button class="tep-sm" @click="dbDetail(s.session_id)">{{ t('framework.taskExecution.button.detail', '详') }}</button>
         </div>
         <div v-if="debugStore.activeSession" class="tep-detail">
           <strong>{{ debugStore.activeSession.debug_session.session_id }}</strong>
-          <div>状态: {{ debugStore.activeSession.debug_session.status }}</div>
-          <div>阶段: {{ debugStore.activeSession.stage_timeline?.length ?? 0 }}</div>
-          <div v-if="debugStore.activeSession.object_index">对象: {{ debugStore.activeSession.object_index.nodes.length }}N / {{ debugStore.activeSession.object_index.edges.length }}E</div>
+          <div>{{ t('framework.taskExecution.detail.status', `状态: ${debugStore.activeSession.debug_session.status}`, { v: debugStore.activeSession.debug_session.status }) }}</div>
+          <div>{{ t('framework.taskExecution.detail.stage', `阶段: ${debugStore.activeSession.stage_timeline?.length ?? 0}`, { n: debugStore.activeSession.stage_timeline?.length ?? 0 }) }}</div>
+          <div v-if="debugStore.activeSession.object_index">{{ t('framework.taskExecution.detail.objects', `对象: ${debugStore.activeSession.object_index.nodes.length}N / ${debugStore.activeSession.object_index.edges.length}E`, { nodes: debugStore.activeSession.object_index.nodes.length, edges: debugStore.activeSession.object_index.edges.length }) }}</div>
         </div>
       </div>
     </div>
 
     <div class="tep-section">
-      <h4>执行历史</h4>
-      <div v-if="!execHistory" class="tep-empty">暂无</div>
+      <h4>{{ t('framework.taskExecution.section.executionHistory', '执行历史') }}</h4>
+      <div v-if="!execHistory" class="tep-empty">{{ t('framework.taskExecution.empty.none', '暂无') }}</div>
       <template v-else>
         <div class="tep-summary">Runtime: {{ execHistory.summary.runtime_run_count }} · Debug: {{ execHistory.summary.debug_session_count }}</div>
         <div class="tep-sub" v-if="execHistory.runtime_runs.length">
-          <h5>Runtime 运行</h5>
+          <h5>{{ t('framework.taskExecution.section.runtimeRuns', 'Runtime 运行') }}</h5>
           <div v-for="(r, i) in execHistory.runtime_runs" :key="i" class="tep-row">
             <span>{{ (r as any).status ?? '—' }}</span>
             <span class="tep-sid">{{ ((r as any).session_id ?? '').slice(0,12) }}</span>
           </div>
         </div>
         <div class="tep-sub" v-if="execHistory.debug_sessions.length">
-          <h5>Debug 会话</h5>
+          <h5>{{ t('framework.taskExecution.section.debugSessionsHistory', 'Debug 会话') }}</h5>
           <div v-for="(d, i) in execHistory.debug_sessions" :key="i" class="tep-row">
             <span>{{ (d as any).status ?? '—' }}</span>
             <span class="tep-sid">{{ ((d as any).session_id ?? '').slice(0,12) }}</span>

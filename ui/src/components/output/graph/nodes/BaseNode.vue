@@ -9,6 +9,7 @@ import { useToastStore } from '@/stores/toastStore'
 import { PARAM_TEMPLATES } from '@/config/fieldTemplates'
 import type { FieldTemplate } from '@/config/fieldTemplates'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
+import { t, tr } from '@/i18n'
 
 const toast = useToastStore()
 
@@ -65,7 +66,7 @@ function portLabel(p: { semantic_slot?: string; display_name?: string | null }) 
 const COMPAT_KINDS = new Set(['control.jump_to_step', 'control.end_foreach', 'control.foreach_continue', 'control.foreach_break'])
 const isDisabled = computed(() => { const nk = props.data.nodeKind; if (!nk) return false; return resource.getResourceEnabledState(nk) === false })
 const isCompatibility = computed(() => { const nk = props.data.nodeKind; if (!nk) return false; return COMPAT_KINDS.has(nk) })
-const kindLabel = computed(() => { switch (props.data.kind) { case 'execution': return '执行'; case 'control': return '控制'; case 'observe': return '观察'; case 'bridge': return '桥接'; default: return props.data.kind } })
+const kindLabel = computed(() => { switch (props.data.kind) { case 'execution': return tr('nodegraph.base.kind.execution', '执行'); case 'control': return tr('nodegraph.base.kind.control', '控制'); case 'observe': return tr('nodegraph.base.kind.observe', '观察'); case 'bridge': return tr('nodegraph.base.kind.bridge', '桥接'); default: return props.data.kind } })
 const kindClass = computed(() => `node-${props.data.kind}`)
 
 // Config grouped by parent key: flat values directly, object values under section header
@@ -118,15 +119,15 @@ function getFieldTemplate(fieldKey: string): FieldTemplate | undefined {
 function isEditable(v: unknown, fieldKey?: string): boolean {
   if (!workspace.isGraphEditable) return false
   if (fieldKey) {
-    const t = getFieldTemplate(fieldKey)
-    if (t && (t.type === 'object-map' || t.type === 'branch-list' || t.type === 'typed-value')) return false
+    const tpl = getFieldTemplate(fieldKey)
+    if (tpl && (tpl.type === 'object-map' || tpl.type === 'branch-list' || tpl.type === 'typed-value')) return false
   }
   return typeof v === 'string' || typeof v === 'boolean' || typeof v === 'number'
 }
 function formatVal(v: unknown, fieldKey?: string): string {
   if (fieldKey) {
-    const t = getFieldTemplate(fieldKey)
-    if (t?.options && !t.options.includes(String(v))) return `${String(v)} (非标)`
+    const tpl = getFieldTemplate(fieldKey)
+    if (tpl?.options && !tpl.options.includes(String(v))) return t('framework.graph.node.nonStandard', `${String(v)} (非标)`, { value: String(v) })
   }
   if (typeof v === 'string') return v.slice(0, 30)
   if (typeof v === 'number' || typeof v === 'boolean') return String(v)
@@ -136,11 +137,11 @@ function formatVal(v: unknown, fieldKey?: string): string {
   }
   // For typed-value, object-map, code fields — show summary + hint
   if (fieldKey) {
-    const t = getFieldTemplate(fieldKey)
-    if (t?.type === 'typed-value') return typeof v === 'object' ? `(object)` : `(${typeof v}: ${String(v).slice(0,20)})`
-    if (t?.type === 'object-map') return `(${typeof v === 'object' && v !== null ? Object.keys(v as object).length + ' keys' : 'empty'})`
-    if (t?.type === 'branch-list') return `(${Array.isArray(v) ? v.length + ' branches' : 'empty'})`
-    if (t?.type === 'code') return `(code: ${String(v).length} chars)`
+    const tpl = getFieldTemplate(fieldKey)
+    if (tpl?.type === 'typed-value') return typeof v === 'object' ? `(object)` : `(${typeof v}: ${String(v).slice(0,20)})`
+    if (tpl?.type === 'object-map') return `(${typeof v === 'object' && v !== null ? Object.keys(v as object).length + ' keys' : 'empty'})`
+    if (tpl?.type === 'branch-list') return `(${Array.isArray(v) ? v.length + ' branches' : 'empty'})`
+    if (tpl?.type === 'code') return `(code: ${String(v).length} chars)`
   }
   return '(' + typeof v + ')'
 }
@@ -177,7 +178,7 @@ async function pickPathForInline(fieldKey: string) {
     : schema.path_kind === 'open_directory' ? 'open_folder'
     : 'open_file'
   try {
-    const r = await postFileDialog({ mode, title: schema.label || `选择 ${fieldKey}` })
+    const r = await postFileDialog({ mode, title: schema.label || t('framework.graph.node.pickPathTitle', `选择 ${fieldKey}`, { field: fieldKey }) })
     if (r.status === 'selected' && r.paths.length) {
       updateConfigField(fieldKey, r.paths[0])
     }
@@ -208,11 +209,11 @@ function openBranchEditor(fieldKey: string) {
 function addBranchItem() {
   let n = branchEditorItems.value.length + 1
   while (branchEditorItems.value.some(b => b.key === `branch_${n}`)) n++
-  branchEditorItems.value.push({ key: `branch_${n}`, label: `分支 ${n}` })
+  branchEditorItems.value.push({ key: `branch_${n}`, label: tr('nodegraph.base.branchLabel', `分支 ${n}`, { n }) })
 }
 
 function deleteBranchItem(idx: number) {
-  if (branchEditorItems.value.length <= 2) { toast.info('', '至少保留 2 个分支'); return }
+  if (branchEditorItems.value.length <= 2) { toast.info('', t('framework.graph.node.branchMinCount', '至少保留 2 个分支')); return }
   branchEditorItems.value.splice(idx, 1)
 }
 
@@ -220,8 +221,8 @@ async function applyBranches() {
   const node = workspace.graphModel?.nodes.find(n => n.node_id === props.data.nodeId)
   if (!node) return
   const keys = branchEditorItems.value.map(b => b.key.trim())
-  if (keys.some(k => !k)) { toast.info('', '分支 key 不能为空'); return }
-  if (new Set(keys).size !== keys.length) { toast.info('', '分支 key 不能重复'); return }
+  if (keys.some(k => !k)) { toast.info('', t('framework.graph.node.branchKeyEmpty', '分支 key 不能为空')); return }
+  if (new Set(keys).size !== keys.length) { toast.info('', t('framework.graph.node.branchKeyDuplicate', '分支 key 不能重复')); return }
   const cfg = JSON.parse(JSON.stringify(node.node_config || {}))
   cfg[branchEditorKey.value] = JSON.parse(JSON.stringify(branchEditorItems.value))
   workspace.updateNode(node.node_id, { node_config: cfg })
@@ -231,7 +232,7 @@ async function applyBranches() {
       workspace.graphModel = r.graph_model as any
       workspace.changeRevision++
     }
-  } catch (e: any) { toast.error('同步失败', e?.message) }
+  } catch (e: any) { toast.error(t('framework.graph.node.syncFailed', '同步失败'), e?.message) }
   branchEditorOpen.value = false
 }
 </script>
@@ -241,8 +242,8 @@ async function applyBranches() {
     <!-- Header: full width -->
     <div class="vf-node-header">
       <span class="vf-node-kind">{{ kindLabel }}</span>
-      <span v-if="showDetail && graphPreferences.show_disabled_resource_badge && isDisabled" class="vf-disabled-badge">禁用</span>
-      <span v-if="showDetail && isCompatibility" class="vf-compat-badge">兼容</span>
+      <span v-if="showDetail && graphPreferences.show_disabled_resource_badge && isDisabled" class="vf-disabled-badge">{{ t('framework.graph.node.disabledBadge', '禁用') }}</span>
+      <span v-if="showDetail && isCompatibility" class="vf-compat-badge">{{ t('framework.graph.node.compatBadge', '兼容') }}</span>
       <span v-if="showDetail && hasBP" class="vf-bp-badge">🔴</span>
       <span v-if="showDetail && hasRF" class="vf-rf-badge">◉</span>
       <span v-if="showDetail && graphPreferences.show_node_id_on_node && data.nodeId" class="vf-node-id">{{ data.nodeId }}</span>
@@ -273,10 +274,10 @@ async function applyBranches() {
                 <textarea v-else-if="e.editable && getFieldTemplate(e.key)?.type === 'code'" class="vf-cfg-input vf-cfg-code" :disabled="!workspace.isGraphEditable" :value="String(e.value ?? '')" rows="3" @change="updateConfigField(e.path, ($event.target as HTMLTextAreaElement).value)" @mousedown.stop @click.stop />
                 <span v-else-if="e.editable" style="display:flex;gap:1px;align-items:center">
                   <input class="vf-cfg-input" :disabled="!workspace.isGraphEditable" :value="String(e.value ?? '')" @change="updateConfigField(e.path, ($event.target as HTMLInputElement).value)" @mousedown.stop @click.stop />
-                  <button v-if="isPathField(e.key)" class="vf-path-btn" :disabled="!workspace.isGraphEditable" @mousedown.stop @click.stop @click="pickPathForInline(e.path)" title="选择路径">…</button>
+                  <button v-if="isPathField(e.key)" class="vf-path-btn" :disabled="!workspace.isGraphEditable" @mousedown.stop @click.stop @click="pickPathForInline(e.path)" :title="t('framework.graph.node.selectPath', '选择路径')">…</button>
                 </span>
                 <span v-else class="vf-cfg-ro" :class="{ 'vf-bound': e.display.startsWith('⇠') }">{{ e.display }}</span>
-                <button v-if="Array.isArray(e.value)" class="vf-branch-edit" :disabled="!workspace.isGraphEditable" @mousedown.stop @click.stop @click="openBranchEditor(e.path)" title="编辑分支">⚙</button>
+                <button v-if="Array.isArray(e.value)" class="vf-branch-edit" :disabled="!workspace.isGraphEditable" @mousedown.stop @click.stop @click="openBranchEditor(e.path)" :title="t('framework.graph.node.editBranch', '编辑分支')">⚙</button>
               </div>
             </template>
           </div>
@@ -302,7 +303,7 @@ async function applyBranches() {
       <div v-if="branchEditorOpen" class="br-overlay" @click.self="branchEditorOpen = false">
         <div class="br-box">
           <div class="br-hd">
-            <span>编辑 {{ branchEditorKey }}</span>
+            <span>{{ t('framework.graph.node.editBranchTitle', `编辑 ${branchEditorKey}`, { key: branchEditorKey }) }}</span>
             <button class="br-close" @click="branchEditorOpen = false">✕</button>
           </div>
           <div class="br-body">
@@ -311,10 +312,10 @@ async function applyBranches() {
               <input class="br-label" :disabled="!workspace.isGraphEditable" :value="b.label" @change="branchEditorItems[bi].label = ($event.target as HTMLInputElement).value" placeholder="label" />
               <button class="br-del" :disabled="!workspace.isGraphEditable" @click="deleteBranchItem(bi)">✕</button>
             </div>
-            <button class="br-add" :disabled="!workspace.isGraphEditable" @click="addBranchItem">+ 新增分支</button>
+            <button class="br-add" :disabled="!workspace.isGraphEditable" @click="addBranchItem">+ {{ t('framework.graph.node.addBranch', '新增分支') }}</button>
           </div>
           <div class="br-ft">
-            <button class="br-apply" :disabled="!workspace.isGraphEditable" @click="applyBranches">应用并同步端口</button>
+            <button class="br-apply" :disabled="!workspace.isGraphEditable" @click="applyBranches">{{ t('framework.graph.node.applySyncPorts', '应用并同步端口') }}</button>
           </div>
         </div>
       </div>

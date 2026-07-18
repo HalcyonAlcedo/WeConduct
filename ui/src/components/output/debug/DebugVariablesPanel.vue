@@ -2,6 +2,7 @@
 import { computed, reactive, watch } from 'vue'
 import { useDebugStore } from '@/stores/debugStore'
 import { useToastStore } from '@/stores/toastStore'
+import { t } from '@/i18n'
 
 const debugStore = useDebugStore()
 const toast = useToastStore()
@@ -40,8 +41,8 @@ function encode(value: unknown) { return typeof value === 'string' ? value : JSO
 function parse(name: string, type: string): unknown {
   const raw = drafts[name] ?? encode(stagedValues[name] ?? values.value[name])
   if (type === 'string') return raw
-  if (type === 'integer') { const value = Number(raw); if (!Number.isInteger(value)) throw new Error('请输入整数'); return value }
-  if (type === 'number') { const value = Number(raw); if (!Number.isFinite(value)) throw new Error('请输入数字'); return value }
+  if (type === 'integer') { const value = Number(raw); if (!Number.isInteger(value)) throw new Error(t('framework.debug.variables.errorInteger', '请输入整数')); return value }
+  if (type === 'number') { const value = Number(raw); if (!Number.isFinite(value)) throw new Error(t('framework.debug.variables.errorNumber', '请输入数字')); return value }
   if (type === 'boolean') return raw === 'true'
   if (type === 'null') return null
   return JSON.parse(raw)
@@ -56,7 +57,7 @@ async function commit(name: string) {
     if (editMode.value === 'staged') { stagedValues[name] = value; return }
     await debugStore.applyVariables(sid, { [name]: value }, 'immediate')
     await debugStore.loadActiveSession(sid)
-  } catch (error: any) { rowErrors[name] = error?.body?.details?.message || error?.message || '值无效' }
+  } catch (error: any) { rowErrors[name] = error?.body?.details?.message || error?.message || t('framework.debug.variables.errorInvalid', '值无效') }
 }
 async function applyAll() {
   const sid = activeDoc.value?.debug_session?.session_id
@@ -65,8 +66,8 @@ async function applyAll() {
     await debugStore.applyVariables(sid, { ...stagedValues }, 'immediate')
     for (const key of Object.keys(stagedValues)) delete stagedValues[key]
     await debugStore.loadActiveSession(sid)
-    toast.success('变量已应用')
-  } catch (error: any) { toast.error('应用失败', error?.message) }
+    toast.success(t('framework.debug.variables.applied', '变量已应用'))
+  } catch (error: any) { toast.error(t('framework.debug.variables.applyFailed', '应用失败'), error?.message) }
 }
 function discardAll() {
   for (const key of Object.keys(stagedValues)) delete stagedValues[key]
@@ -79,17 +80,17 @@ watch(values, current => {
 
 <template>
   <div class="dvp-root">
-    <div v-if="!rows.length" class="dvp-empty">无变量快照</div>
+    <div v-if="!rows.length" class="dvp-empty">{{ t('framework.debug.variables.empty', '无变量快照') }}</div>
     <template v-else>
       <div class="dvp-toolbar">
-        <span>{{ isHistory ? '历史快照只读' : editMode === 'immediate' ? '立即提交' : '暂存编辑' }}</span>
+        <span>{{ isHistory ? t('framework.debug.variables.historyReadonly', '历史快照只读') : editMode === 'immediate' ? t('framework.debug.variables.immediateCommit', '立即提交') : t('framework.debug.variables.stagedEdit', '暂存编辑') }}</span>
         <span v-if="editMode === 'staged' && !isHistory" class="dvp-actions">
-          <button @click="applyAll" :disabled="!Object.keys(stagedValues).length">应用全部</button>
-          <button @click="discardAll" :disabled="!Object.keys(stagedValues).length">撤销全部</button>
+          <button @click="applyAll" :disabled="!Object.keys(stagedValues).length">{{ t('framework.debug.variables.applyAll', '应用全部') }}</button>
+          <button @click="discardAll" :disabled="!Object.keys(stagedValues).length">{{ t('framework.debug.variables.discardAll', '撤销全部') }}</button>
         </span>
       </div>
       <div class="dvp-table">
-        <div class="dvp-head"><span>变量名</span><span>类型</span><span>值</span><span>作用域</span><span>状态</span></div>
+        <div class="dvp-head"><span>{{ t('framework.debug.variables.colName', '变量名') }}</span><span>{{ t('framework.debug.variables.colType', '类型') }}</span><span>{{ t('framework.debug.variables.colValue', '值') }}</span><span>{{ t('framework.debug.variables.colScope', '作用域') }}</span><span>{{ t('framework.debug.variables.colStatus', '状态') }}</span></div>
         <div v-for="row in rows" :key="row.name" :class="['dvp-row', { changed: row.change || row.name in stagedValues }]">
           <span class="dvp-name">{{ row.name }}</span>
           <span class="dvp-type">{{ row.descriptor.value_type }}</span>
@@ -100,7 +101,7 @@ watch(values, current => {
             <small v-if="rowErrors[row.name]">{{ rowErrors[row.name] }}</small>
           </span>
           <span>{{ row.descriptor.scope }}</span>
-          <span>{{ row.name in stagedValues ? '待应用' : row.change ? '已修改' : '' }}</span>
+          <span>{{ row.name in stagedValues ? t('framework.debug.variables.statusPending', '待应用') : row.change ? t('framework.debug.variables.statusModified', '已修改') : '' }}</span>
         </div>
       </div>
     </template>

@@ -76,11 +76,11 @@ function openReleasePage() {
 
 function handleUpdateAvailable(event: Event) {
   const detail = (event as CustomEvent).detail as Record<string, unknown> | null
-  const latestVersion = typeof detail?.latest_version === 'string' ? detail.latest_version : '未知版本'
+  const latestVersion = typeof detail?.latest_version === 'string' ? detail.latest_version : t('framework.commandBar.toast.unknownVersion', '未知版本')
   const currentVersion = typeof detail?.current_version === 'string'
     ? detail.current_version
-    : (workspace.health?.api_version ?? '未知版本')
-  toast.info(`发现新版本 ${latestVersion}`, `当前版本 ${currentVersion}`)
+    : (workspace.health?.api_version ?? t('framework.commandBar.toast.unknownVersion', '未知版本'))
+  toast.info(t('framework.commandBar.toast.newVersionFound', `发现新版本 ${latestVersion}`, { version: latestVersion }), t('framework.commandBar.toast.currentVersion', `当前版本 ${currentVersion}`, { version: currentVersion }))
 }
 
 onMounted(() => {
@@ -100,7 +100,7 @@ async function doNew() {
     const body: any = { project_name: dialogInput.value || 'untitled' }
     if (dialogPath.value) body.project_directory = dialogPath.value
     const r = await postProjectNew(body)
-    toast.success('已创建', r.project.project_name)
+    toast.success(t('framework.commandBar.toast.created', '已创建'), r.project.project_name)
     // Clear cached data after new project
     compilation.clearSource()
     graphWs.reset()
@@ -112,10 +112,10 @@ async function doNew() {
         const upgrade = workspace.snapshot?.project?.pending_graph_upgrade
     if (upgrade) { upgradeInfo.value = upgrade; showUpgradeDialog.value = true }
     closeDialog()
-  } catch(e:any){ toast.error('创建失败', e?.message) }
+  } catch(e:any){ toast.error(t('framework.commandBar.toast.createFailed', '创建失败'), e?.message) }
   finally { dialogLoading.value = false }
 }
-async function doOpen() { dialogLoading.value = true; try { await postProjectOpen({ project_path: dialogInput.value }); toast.success('已打开'); await applyOpenedProject() } catch(e:any){ toast.error('打开失败', e?.message) } finally { dialogLoading.value = false } }
+async function doOpen() { dialogLoading.value = true; try { await postProjectOpen({ project_path: dialogInput.value }); toast.success(t('framework.commandBar.toast.opened', '已打开')); await applyOpenedProject() } catch(e:any){ toast.error(t('framework.commandBar.toast.openFailed', '打开失败'), e?.message) } finally { dialogLoading.value = false } }
 const isWcrunPackage = computed(() => (workspace.snapshot as any)?.project_settings?.source_of_truth === 'wcrun_package')
 
 /** Get the main graph model for project save, loading it if currently on a custom graph */
@@ -129,7 +129,7 @@ async function getMainGraphModel(): Promise<Record<string, unknown> | undefined>
 }
 
 async function doSave() {
-  if (isWcrunPackage.value) { toast.info('', '.wcrun 包只读 — 仅运行默认值可编辑'); return }
+  if (isWcrunPackage.value) { toast.info('', t('framework.commandBar.toast.wcrunReadonly', '.wcrun 包只读 — 仅运行默认值可编辑')); return }
   dialogLoading.value = true
   try {
     const proj = await fetchProject()
@@ -138,42 +138,42 @@ async function doSave() {
     await postProjectSave(mainModel)
     await workspace.refreshSnapshot()
     await graphWs.loadGraph(undefined, { forceRefresh: true }) // refresh view/saveRevision after project save
-    toast.success('已保存');     const upgrade = workspace.snapshot?.project?.pending_graph_upgrade
+    toast.success(t('framework.commandBar.toast.saved', '已保存'));     const upgrade = workspace.snapshot?.project?.pending_graph_upgrade
     if (upgrade) { upgradeInfo.value = upgrade; showUpgradeDialog.value = true }
     closeDialog()
   } catch(e: any) {
     if (e?.body?.error === 'project.needs_save_as') { closeDialog(); openDialog('saveas') }
-    else { toast.error('保存失败', e?.message) }
+    else { toast.error(t('framework.commandBar.toast.saveFailed', '保存失败'), e?.message) }
   }
   finally { dialogLoading.value = false }
 }
 async function doSaveAs() {
-  if (isWcrunPackage.value) { toast.info('', '.wcrun 包只读 — 仅运行默认值可编辑'); return }
+  if (isWcrunPackage.value) { toast.info('', t('framework.commandBar.toast.wcrunReadonly', '.wcrun 包只读 — 仅运行默认值可编辑')); return }
   dialogLoading.value = true
   try {
     const mainModel = await getMainGraphModel()
     await postProjectSaveAs({ project_path: dialogInput.value, graph_document: mainModel })
     await workspace.refreshSnapshot()
     await graphWs.loadGraph(undefined, { forceRefresh: true }) // refresh view/saveRevision after project save
-    toast.success('已另存');     const upgrade = workspace.snapshot?.project?.pending_graph_upgrade
+    toast.success(t('framework.commandBar.toast.savedAs', '已另存'));     const upgrade = workspace.snapshot?.project?.pending_graph_upgrade
     if (upgrade) { upgradeInfo.value = upgrade; showUpgradeDialog.value = true }
     closeDialog()
-  } catch(e:any){ toast.error('另存失败', e?.message) }
+  } catch(e:any){ toast.error(t('framework.commandBar.toast.saveAsFailed', '另存失败'), e?.message) }
   finally { dialogLoading.value = false }
 }
   async function handleGraphUpgrade(decision: 'upgrade_and_load' | 'force_load') {
     try {
       await postGraphUpgradeApply(decision)
-      toast.success(decision === 'upgrade_and_load' ? '已升级' : '已强制加载')
+      toast.success(decision === 'upgrade_and_load' ? t('framework.commandBar.toast.upgraded', '已升级') : t('framework.commandBar.toast.forceLoaded', '已强制加载'))
       showUpgradeDialog.value = false
       await workspace.refreshSnapshot()
       await graphWs.loadGraph()
       if (graphWs.graphModel) await graphWs.syncSource()
       await graphWs.refreshGraphDocuments()
       runtime.refreshAll(); resource.refreshAll()
-    } catch (e: any) { toast.error('操作失败', e?.message) }
+    } catch (e: any) { toast.error(t('framework.commandBar.toast.operationFailed', '操作失败'), e?.message) }
   }
-async function doOpenRecent(fp: string) { dialogLoading.value = true; try { await postProjectOpen({ project_path: fp }); toast.success('已打开'); await applyOpenedProject() } catch(e:any){ toast.error('打开失败', e?.message) } finally { dialogLoading.value = false } }
+async function doOpenRecent(fp: string) { dialogLoading.value = true; try { await postProjectOpen({ project_path: fp }); toast.success(t('framework.commandBar.toast.opened', '已打开')); await applyOpenedProject() } catch(e:any){ toast.error(t('framework.commandBar.toast.openFailed', '打开失败'), e?.message) } finally { dialogLoading.value = false } }
   async function handleManualGraphUpgrade() {
     closeMenu()
     try {
@@ -184,12 +184,12 @@ async function doOpenRecent(fp: string) { dialogLoading.value = true; try { awai
         await workspace.refreshSnapshot()
         return
       }
-      toast.info('', '当前项目没有待升级的节点图')
+      toast.info('', t('framework.commandBar.toast.noPendingUpgrade', '当前项目没有待升级的节点图'))
     } catch (e: any) {
-      toast.error('重新检测失败', e?.message)
+      toast.error(t('framework.commandBar.toast.recheckFailed', '重新检测失败'), e?.message)
     }
   }
-async function doRemoveRecent(fp: string) { try { await postRecentProjectRemove({ project_path: fp }); recentProjects.value = recentProjects.value.filter(r => r.project_path !== fp) } catch(e:any){ toast.error('移除失败', e?.message) } }
+async function doRemoveRecent(fp: string) { try { await postRecentProjectRemove({ project_path: fp }); recentProjects.value = recentProjects.value.filter(r => r.project_path !== fp) } catch(e:any){ toast.error(t('framework.commandBar.toast.removeFailed', '移除失败'), e?.message) } }
 
 const projectLabel = computed(() => {
   if (!workspace.isConnected) return t('framework.commandBar.project.disconnected', '未连接')
@@ -207,12 +207,12 @@ const connectionDotClass = computed(() => {
 })
 
 async function handleOneClickRun() {
-  if (debugStore.isDebugActive) { toast.info('调试进行中', '请先中止调试会话再运行'); return }
+  if (debugStore.isDebugActive) { toast.info(t('framework.commandBar.toast.debugInProgress', '调试进行中'), t('framework.commandBar.toast.debugInProgressHint', '请先中止调试会话再运行')); return }
   // Ensure source is synced from graph first
   if (!compilation.sourceText.trim() && graphWs.graphModel) {
     await graphWs.syncSource()
   }
-  if (!graphWs.hasGraph) { toast.info('', '当前图为空，请先添加节点'); return }
+  if (!graphWs.hasGraph) { toast.info('', t('framework.commandBar.toast.emptyGraph', '当前图为空，请先添加节点')); return }
   // Auto-open task execution and output panels if not visible
   if (!dock.isPanelVisible('tasks')) dock.restorePanel('tasks')
   if (!dock.isPanelVisible('output')) dock.restorePanel('output')
@@ -221,9 +221,9 @@ async function handleOneClickRun() {
   const result = await runtime.startAndRun(graphWs.graphModel as Record<string, unknown> | undefined, graphWs.isDirty)
   await resource.refreshAll()
   if (result.success) {
-    toast.success('运行完成', result.message)
+    toast.success(t('framework.commandBar.toast.runComplete', '运行完成'), result.message)
   } else {
-    toast.error('运行失败', result.message)
+    toast.error(t('framework.commandBar.toast.runFailed', '运行失败'), result.message)
   }
 }
 
@@ -234,27 +234,27 @@ async function handleRuntimeCommand() {
     return
   }
   const result = await runtime.abortActiveRun()
-  if (result.success) toast.success('运行已终止')
-  else if (runtime.runtimeLiveStatus !== 'aborting') toast.error('终止失败', result.message)
+  if (result.success) toast.success(t('framework.commandBar.toast.runAborted', '运行已终止'))
+  else if (runtime.runtimeLiveStatus !== 'aborting') toast.error(t('framework.commandBar.toast.abortFailed', '终止失败'), result.message)
 }
 
 /** Open native file dialog and set path into dialogInput */
 async function pickFile(mode: string) {
   try {
-    const r = await postFileDialog({ mode, title: mode === 'save_file' ? '保存项目文件' : mode === 'open_folder' ? '选择项目目录' : '选择文件' })
+    const r = await postFileDialog({ mode, title: mode === 'save_file' ? t('framework.commandBar.fileDialog.saveProjectFile', '保存项目文件') : mode === 'open_folder' ? t('framework.commandBar.fileDialog.pickProjectDir', '选择项目目录') : t('framework.commandBar.fileDialog.pickFile', '选择文件') })
     if (r.status === 'selected' && r.paths.length) dialogInput.value = r.paths[0]
   } catch (e: any) {
-    if (e?.status === 503) toast.info('', workspace.isLimitedBrowser ? '受限浏览器模式：系统文件选择器不可用，请手动输入路径' : '当前运行环境不支持系统文件选择器，请手动输入路径')
+    if (e?.status === 503) toast.info('', workspace.isLimitedBrowser ? t('framework.commandBar.toast.limitedBrowserPath', '受限浏览器模式：系统文件选择器不可用，请手动输入路径') : t('framework.commandBar.toast.noFileDialogPath', '当前运行环境不支持系统文件选择器，请手动输入路径'))
   }
 }
 
 /** Open native file dialog and set path into dialogPath (for project directory) */
 async function pickFilePath(mode: string) {
   try {
-    const r = await postFileDialog({ mode, title: '选择项目目录' })
+    const r = await postFileDialog({ mode, title: t('framework.commandBar.fileDialog.pickProjectDir', '选择项目目录') })
     if (r.status === 'selected' && r.paths.length) dialogPath.value = r.paths[0]
   } catch (e: any) {
-    if (e?.status === 503) toast.info('', workspace.isLimitedBrowser ? '受限浏览器模式：系统文件选择器不可用，请手动输入路径' : '当前运行环境不支持系统文件选择器，请手动输入路径')
+    if (e?.status === 503) toast.info('', workspace.isLimitedBrowser ? t('framework.commandBar.toast.limitedBrowserPath', '受限浏览器模式：系统文件选择器不可用，请手动输入路径') : t('framework.commandBar.toast.noFileDialogPath', '当前运行环境不支持系统文件选择器，请手动输入路径'))
   }
 }
 
@@ -266,26 +266,26 @@ async function doImportGraph() {
   try {
     const json = JSON.parse(importJson.value)
     await graphWs.saveGraph(json)
-    toast.success('已导入', '节点图 JSON 已加载，画布已刷新')
+    toast.success(t('framework.commandBar.toast.imported', '已导入'), t('framework.commandBar.toast.importedHint', '节点图 JSON 已加载，画布已刷新'))
     importJson.value = '';     const upgrade = workspace.snapshot?.project?.pending_graph_upgrade
     if (upgrade) { upgradeInfo.value = upgrade; showUpgradeDialog.value = true }
     closeDialog()
-  } catch (e: any) { toast.error('导入失败', e?.message) }
+  } catch (e: any) { toast.error(t('framework.commandBar.toast.importFailed', '导入失败'), e?.message) }
   finally { dialogLoading.value = false }
 }
 
 /** Pick JSON file via native dialog, then read contents via backend */
 async function pickImportFile() {
   try {
-    const r = await postFileDialog({ mode: 'open_file', title: '选择节点图 JSON', file_types: ['JSON Files (*.json)'] })
+    const r = await postFileDialog({ mode: 'open_file', title: t('framework.commandBar.fileDialog.pickGraphJson', '选择节点图 JSON'), file_types: ['JSON Files (*.json)'] })
     if (r.status === 'selected' && r.paths.length) {
       const file = await postReadFile({ path: r.paths[0], encoding: 'utf-8' })
       importJson.value = file.content
-      toast.info('已加载', `${r.paths[0]} (${file.bytes_read} 字节)`)
+      toast.info(t('framework.commandBar.toast.loaded', '已加载'), t('framework.commandBar.toast.loadedFileBytes', `${r.paths[0]} (${file.bytes_read} 字节)`, { path: r.paths[0], bytes: file.bytes_read }))
     }
   } catch (e: any) {
-    if (e?.status === 503) { toast.info('', workspace.isLimitedBrowser ? '受限浏览器模式：系统文件选择器不可用，请手动粘贴 JSON' : '当前环境不支持文件选择器，请手动粘贴 JSON'); return }
-    if (e?.body?.error) { toast.error('读取失败', e.body.message ?? e.body.error) }
+    if (e?.status === 503) { toast.info('', workspace.isLimitedBrowser ? t('framework.commandBar.toast.limitedBrowserJson', '受限浏览器模式：系统文件选择器不可用，请手动粘贴 JSON') : t('framework.commandBar.toast.noFileDialogJson', '当前环境不支持文件选择器，请手动粘贴 JSON')); return }
+    if (e?.body?.error) { toast.error(t('framework.commandBar.toast.readFailed', '读取失败'), e.body.message ?? e.body.error) }
   }
 }
 
@@ -304,7 +304,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
 <template>
   <header class="commandbar" role="banner">
     <!-- Menu Area -->
-    <nav class="cmd-menu" aria-label="主菜单">
+    <nav class="cmd-menu" :aria-label="t('framework.commandBar.aria.mainMenu', '主菜单')">
       <div class="cmd-menu-item" @mouseenter="activeMenu !== null ? activeMenu = 'file' : null">
         <button class="cmd-item" @click="toggleMenu('file')">{{ t('framework.commandBar.menu.file', '文件') }}</button>
         <div v-if="activeMenu === 'file'" class="cmd-dropdown" @mouseleave="closeMenu">
@@ -365,7 +365,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
     </nav>
 
     <!-- Toolbar Area -->
-    <div class="cmd-toolbar" role="toolbar" aria-label="工具栏">
+    <div class="cmd-toolbar" role="toolbar" :aria-label="t('framework.commandBar.aria.toolbar', '工具栏')">
       <button :class="['tb-btn', runtime.isRuntimeActive && !runtime.isRunStarting ? 'danger' : 'primary']" :disabled="runtime.isRunStarting || (runtime.isRuntimeActive ? !runtime.canAbortRuntime : (!graphWs.hasGraph || debugStore.isDebugActive))" :title="runtime.isRunStarting ? t('framework.commandBar.toolbar.starting', '正在启动') : runtime.isRuntimeActive ? t('framework.commandBar.compile.abort', '终止运行') : t('framework.commandBar.toolbar.runTitle', '运行 (Ctrl+Enter)')" @click="handleRuntimeCommand()">
         <span class="tb-icon">{{ runtime.isRunStarting ? '…' : runtime.isRuntimeActive ? '■' : '▶' }}</span>
         {{ runtime.isRunStarting ? t('framework.commandBar.toolbar.startingShort', '启动中') : runtime.runtimeLiveStatus === 'aborting' ? t('framework.commandBar.toolbar.aborting', '终止中') : runtime.runtimeLiveStatus === 'settling' ? t('framework.commandBar.toolbar.settling', '确认中') : runtime.isRuntimeActive ? t('framework.commandBar.toolbar.abortShort', '终止') : t('framework.commandBar.toolbar.runShort', '运行') }}
@@ -438,7 +438,7 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
             <!-- Save: confirm -->
             <template v-else-if="activeDialog === 'save'">
               <p>{{ t('framework.commandBar.dialog.saveCurrentProject', '保存当前项目') }}</p>
-              <div class="dlg-actions"><button class="dlg-act-btn" @click="doSave" :disabled="dialogLoading">{{ t('framework.commandBar.menu.file.save', '保存') }}</button></div>
+              <div class="dlg-actions"><button class="dlg-act-btn" @click="doSave" :disabled="dialogLoading">{{ t('framework.commandBar.file.save', '保存') }}</button></div>
             </template>
             <!-- Recent -->
             <template v-else-if="activeDialog === 'recent'">

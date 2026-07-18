@@ -2,16 +2,17 @@
 import { computed, ref, watch } from 'vue'
 import { useDebugStore } from '@/stores/debugStore'
 import DebugValueTree from './DebugValueTree.vue'
+import { t } from '@/i18n'
 
 type DetailTab = 'overview' | 'variables' | 'io' | 'runtime' | 'trace'
 
-const tabs: Array<{ id: DetailTab; label: string }> = [
-  { id: 'overview', label: '概要' },
-  { id: 'variables', label: '变量' },
-  { id: 'io', label: '输入/输出' },
-  { id: 'runtime', label: '运行状态' },
-  { id: 'trace', label: '追踪' },
-]
+const tabs = computed<Array<{ id: DetailTab; label: string }>>(() => [
+  { id: 'overview', label: t('framework.debug.snapshots.tab.overview', '概要') },
+  { id: 'variables', label: t('framework.debug.snapshots.tab.variables', '变量') },
+  { id: 'io', label: t('framework.debug.snapshots.tab.io', '输入/输出') },
+  { id: 'runtime', label: t('framework.debug.snapshots.tab.runtime', '运行状态') },
+  { id: 'trace', label: t('framework.debug.snapshots.tab.trace', '追踪') },
+])
 
 const debugStore = useDebugStore()
 const selectedId = ref<string | null>(null)
@@ -53,16 +54,16 @@ async function selectSnapshot(snapshot: any) {
 }
 
 function snapshotLabel(snapshot: any) {
-  if (snapshot.event_kind === 'breakpoint.hit') return '断点'
-  if (snapshot.event_kind === 'debug.paused') return snapshot.reason === 'manual_pause' ? '手动暂停' : '暂停'
-  if (snapshot.event_kind === 'record_frame.hit') return '记录点'
-  return '关键帧'
+  if (snapshot.event_kind === 'breakpoint.hit') return t('framework.debug.snapshots.kind.breakpoint', '断点')
+  if (snapshot.event_kind === 'debug.paused') return snapshot.reason === 'manual_pause' ? t('framework.debug.snapshots.kind.manualPause', '手动暂停') : t('framework.debug.snapshots.kind.paused', '暂停')
+  if (snapshot.event_kind === 'record_frame.hit') return t('framework.debug.snapshots.kind.recordPoint', '记录点')
+  return t('framework.debug.snapshots.kind.keyframe', '关键帧')
 }
 
 function outputStateLabel(state: unknown) {
-  if (state === 'captured') return '已捕获'
-  if (state === 'not_executed') return '尚未执行'
-  return '不可用'
+  if (state === 'captured') return t('framework.debug.snapshots.outputState.captured', '已捕获')
+  if (state === 'not_executed') return t('framework.debug.snapshots.outputState.notExecuted', '尚未执行')
+  return t('framework.debug.snapshots.outputState.unavailable', '不可用')
 }
 
 function formatTime(value: unknown) {
@@ -83,7 +84,7 @@ function descriptorType(name: string, value: unknown) {
 <template>
   <div class="dsp-root">
     <aside class="dsp-list">
-      <label class="dsp-filter"><input v-model="showAll" type="checkbox"> 显示全部关键帧</label>
+      <label class="dsp-filter"><input v-model="showAll" type="checkbox"> {{ t('framework.debug.snapshots.showAllKeyframes', '显示全部关键帧') }}</label>
       <button
         v-for="snapshot in snapshots"
         :key="itemIdentity(snapshot)"
@@ -96,14 +97,14 @@ function descriptorType(name: string, value: unknown) {
           <span>#{{ snapshot.event_index }}</span>
           <small :data-state="snapshot.output_state">{{ outputStateLabel(snapshot.output_state) }}</small>
         </span>
-        <span class="dsp-node">{{ snapshot.node_id || '无节点' }}</span>
+        <span class="dsp-node">{{ snapshot.node_id || t('framework.debug.snapshots.noNode', '无节点') }}</span>
         <time>{{ formatTime(snapshot.recorded_at) }}</time>
       </button>
-      <div v-if="!snapshots.length" class="dsp-empty">暂无快照</div>
+      <div v-if="!snapshots.length" class="dsp-empty">{{ t('framework.debug.snapshots.emptyList', '暂无快照') }}</div>
     </aside>
 
     <section v-if="selected" class="dsp-detail">
-      <nav class="dsp-nav" aria-label="快照详情">
+      <nav class="dsp-nav" :aria-label="t('framework.debug.snapshots.detailNavLabel', '快照详情')">
         <button
           v-for="tab in tabs"
           :key="tab.id"
@@ -119,14 +120,14 @@ function descriptorType(name: string, value: unknown) {
           <span class="dsp-state">{{ outputStateLabel(selected.output_state) }}</span>
         </header>
         <dl class="dsp-grid">
-          <div><dt>节点</dt><dd>{{ selected.node_id || '-' }}</dd></div>
-          <div><dt>节点类型</dt><dd>{{ selected.node_kind || '-' }}</dd></div>
-          <div><dt>暂停原因</dt><dd>{{ selected.reason || '-' }}</dd></div>
-          <div><dt>暂停时机</dt><dd>{{ selected.pause_timing || '-' }}</dd></div>
-          <div><dt>图模型</dt><dd>{{ selected.graph_model_id || '-' }}</dd></div>
-          <div><dt>图版本</dt><dd>{{ selected.graph_revision ?? '-' }}</dd></div>
-          <div><dt>编译 ID</dt><dd>{{ selected.compilation_id || '-' }}</dd></div>
-          <div><dt>记录时间</dt><dd>{{ formatTime(selected.recorded_at) }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.node', '节点') }}</dt><dd>{{ selected.node_id || '-' }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.nodeKind', '节点类型') }}</dt><dd>{{ selected.node_kind || '-' }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.pauseReason', '暂停原因') }}</dt><dd>{{ selected.reason || '-' }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.pauseTiming', '暂停时机') }}</dt><dd>{{ selected.pause_timing || '-' }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.graphModel', '图模型') }}</dt><dd>{{ selected.graph_model_id || '-' }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.graphRevision', '图版本') }}</dt><dd>{{ selected.graph_revision ?? '-' }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.compilationId', '编译 ID') }}</dt><dd>{{ selected.compilation_id || '-' }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.recordedTime', '记录时间') }}</dt><dd>{{ formatTime(selected.recorded_at) }}</dd></div>
         </dl>
       </div>
 
@@ -137,49 +138,49 @@ function descriptorType(name: string, value: unknown) {
             <DebugValueTree :value="value" expanded />
           </section>
         </div>
-        <div v-else class="dsp-empty">当前快照没有变量</div>
+        <div v-else class="dsp-empty">{{ t('framework.debug.snapshots.noVariables', '当前快照没有变量') }}</div>
       </div>
 
       <div v-else-if="detailTab === 'io'" class="dsp-section dsp-io">
         <section>
-          <header><strong>节点输入</strong></header>
+          <header><strong>{{ t('framework.debug.snapshots.nodeInput', '节点输入') }}</strong></header>
           <DebugValueTree label="input" :value="selected.node_input_snapshot" expanded />
         </section>
         <section>
-          <header><strong>节点输出</strong><span>{{ outputStateLabel(selected.output_state) }}</span></header>
+          <header><strong>{{ t('framework.debug.snapshots.nodeOutput', '节点输出') }}</strong><span>{{ outputStateLabel(selected.output_state) }}</span></header>
           <DebugValueTree label="output" :value="selected.node_output_snapshot" expanded />
         </section>
       </div>
 
       <div v-else-if="detailTab === 'runtime'" class="dsp-section">
         <dl class="dsp-grid">
-          <div><dt>当前节点</dt><dd>{{ selected.runtime_preview_summary?.current_node_id || '-' }}</dd></div>
-          <div><dt>排队节点</dt><dd>{{ selected.runtime_preview_summary?.queued_node_count ?? 0 }}</dd></div>
-          <div><dt>已执行节点</dt><dd>{{ selected.runtime_preview_summary?.executed_node_count ?? 0 }}</dd></div>
-          <div><dt>调度模式</dt><dd>{{ selected.runtime_preview_summary?.scheduler_mode || '-' }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.currentNode', '当前节点') }}</dt><dd>{{ selected.runtime_preview_summary?.current_node_id || '-' }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.queuedNodes', '排队节点') }}</dt><dd>{{ selected.runtime_preview_summary?.queued_node_count ?? 0 }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.executedNodes', '已执行节点') }}</dt><dd>{{ selected.runtime_preview_summary?.executed_node_count ?? 0 }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.schedulerMode', '调度模式') }}</dt><dd>{{ selected.runtime_preview_summary?.scheduler_mode || '-' }}</dd></div>
         </dl>
-        <div class="dsp-subsection"><strong>运行投影</strong><DebugValueTree :value="selected.runtime_preview || {}" /></div>
+        <div class="dsp-subsection"><strong>{{ t('framework.debug.snapshots.runtimeProjection', '运行投影') }}</strong><DebugValueTree :value="selected.runtime_preview || {}" /></div>
       </div>
 
       <div v-else class="dsp-section">
         <section class="dsp-trace-block">
-          <strong>实例路径</strong>
+          <strong>{{ t('framework.debug.snapshots.instancePath', '实例路径') }}</strong>
           <ol><li v-for="(item, index) in selected.instance_path || []" :key="`${item}-${index}`">{{ item }}</li></ol>
         </section>
         <section class="dsp-trace-block">
-          <strong>迭代栈</strong>
+          <strong>{{ t('framework.debug.snapshots.iterationStack', '迭代栈') }}</strong>
           <DebugValueTree :value="selected.iteration_stack || []" />
         </section>
         <dl class="dsp-grid dsp-identifiers">
-          <div><dt>帧标识</dt><dd>{{ selected.frame_identity || '-' }}</dd></div>
-          <div><dt>事件 ID</dt><dd>{{ selected.event_id || '-' }}</dd></div>
-          <div><dt>关键帧 ID</dt><dd>{{ selected.keyframe_id || '-' }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.frameIdentity', '帧标识') }}</dt><dd>{{ selected.frame_identity || '-' }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.eventId', '事件 ID') }}</dt><dd>{{ selected.event_id || '-' }}</dd></div>
+          <div><dt>{{ t('framework.debug.snapshots.field.keyframeId', '关键帧 ID') }}</dt><dd>{{ selected.keyframe_id || '-' }}</dd></div>
         </dl>
-        <button data-testid="snapshot-raw-toggle" class="dsp-raw-toggle" @click="rawExpanded = !rawExpanded">原始数据</button>
+        <button data-testid="snapshot-raw-toggle" class="dsp-raw-toggle" @click="rawExpanded = !rawExpanded">{{ t('framework.debug.snapshots.rawData', '原始数据') }}</button>
         <pre v-if="rawExpanded" data-testid="snapshot-raw-json" class="dsp-raw-json">{{ rawJson }}</pre>
       </div>
     </section>
-    <div v-else class="dsp-empty dsp-detail-empty">选择快照后查看详情</div>
+    <div v-else class="dsp-empty dsp-detail-empty">{{ t('framework.debug.snapshots.selectPrompt', '选择快照后查看详情') }}</div>
   </div>
 </template>
 

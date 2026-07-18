@@ -8,6 +8,7 @@ import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
 import MonacoEditor from '@/components/input/MonacoEditor.vue'
 import { postFileDialog, postGraphNormalize } from '@/services/api'
 import { useToastStore } from '@/stores/toastStore'
+import { t } from '@/i18n'
 
 const graphStore = useGraphStore()
 const workspace = useGraphWorkspaceStore()
@@ -44,7 +45,7 @@ const selected = computed(() => graphStore.selectGraphModel({ workspaceModel: wo
 const selectedNodeId = computed(() => graphStore.selectedNode)
 const selectedNode = computed(() => selected.value.model?.nodes.find(n => n.node_id === selectedNodeId.value))
 
-function kindLabel(k: string) { switch (k) { case 'execution': return '执行'; case 'control': return '控制'; case 'observe': return '观察'; case 'bridge': return '桥接'; default: return k } }
+function kindLabel(k: string) { switch (k) { case 'execution': return t('framework.metadataEditor.kind.execution', '执行'); case 'control': return t('framework.metadataEditor.kind.control', '控制'); case 'observe': return t('framework.metadataEditor.kind.observe', '观察'); case 'bridge': return t('framework.metadataEditor.kind.bridge', '桥接'); default: return k } }
 
 interface ParamField { key: string; type: 'string' | 'number' | 'boolean' | 'json' | 'object-map' | 'typed-value' | 'branch-list' | 'code' | 'component-schema'; options?: string[] }
 const PARAM_TEMPLATES: Record<string, ParamField[]> = {
@@ -173,12 +174,12 @@ function cancelRename() { renamingEntry.value = null }
 interface BranchItem { key: string; label: string }
 function getBranches(fieldKey: string): BranchItem[] { const v = getCfgVal(fieldKey); if (Array.isArray(v)) return v.filter((b: any) => b && typeof b === 'object').map((b: any) => ({ key: String(b.key || ''), label: String(b.label || '') })); return [] }
 function setBranches(fieldKey: string, branches: BranchItem[]) { setCfgVal(fieldKey, branches) }
-function addBranch(fieldKey: string) { const branches = JSON.parse(JSON.stringify(getBranches(fieldKey))); let n = branches.length + 1; while (branches.some((b: BranchItem) => b.key === `branch_${n}`)) n++; branches.push({ key: `branch_${n}`, label: `分支 ${n}` }); setBranches(fieldKey, branches) }
-function deleteBranch(fieldKey: string, idx: number) { const branches = JSON.parse(JSON.stringify(getBranches(fieldKey))); if (branches.length <= 2) { toast.info('', '至少保留 2 个分支'); return }; branches.splice(idx, 1); setBranches(fieldKey, branches) }
+function addBranch(fieldKey: string) { const branches = JSON.parse(JSON.stringify(getBranches(fieldKey))); let n = branches.length + 1; while (branches.some((b: BranchItem) => b.key === `branch_${n}`)) n++; branches.push({ key: `branch_${n}`, label: t('framework.metadataEditor.branch.defaultLabel', `分支 ${n}`, { n }) }); setBranches(fieldKey, branches) }
+function deleteBranch(fieldKey: string, idx: number) { const branches = JSON.parse(JSON.stringify(getBranches(fieldKey))); if (branches.length <= 2) { toast.info('', t('framework.metadataEditor.branch.minKeep', '至少保留 2 个分支')); return }; branches.splice(idx, 1); setBranches(fieldKey, branches) }
 function updateBranchKey(fieldKey: string, idx: number, newKey: string) { const trimmed = newKey.trim(); if (!trimmed) return; const branches = JSON.parse(JSON.stringify(getBranches(fieldKey))); if (branches.some((b: BranchItem, i: number) => i !== idx && b.key === trimmed)) return; branches[idx].key = trimmed; setBranches(fieldKey, branches) }
 function updateBranchLabel(fieldKey: string, idx: number, newLabel: string) { const branches = JSON.parse(JSON.stringify(getBranches(fieldKey))); branches[idx].label = newLabel; setBranches(fieldKey, branches) }
 const normalizing = ref(false)
-async function normalizeGraph() { if (!workspace.graphModel) return; normalizing.value = true; try { const r = await postGraphNormalize(workspace.graphModel as any); if (r.graph_model) { workspace.graphModel = r.graph_model as any; workspace.changeRevision++ } } catch (e: any) { toast.error('规范化失败', e?.message) } finally { normalizing.value = false } }
+async function normalizeGraph() { if (!workspace.graphModel) return; normalizing.value = true; try { const r = await postGraphNormalize(workspace.graphModel as any); if (r.graph_model) { workspace.graphModel = r.graph_model as any; workspace.changeRevision++ } } catch (e: any) { toast.error(t('framework.metadataEditor.toast.normalizeFailed', '规范化失败'), e?.message) } finally { normalizing.value = false } }
 
 // Component-schema editor (component.input / component.output)
 interface SchemaEntry { name: string; type: string; required: boolean; default_value: string; description: string }
@@ -191,9 +192,9 @@ function updateSchemaEntry(fieldKey: string, idx: number, patch: Partial<SchemaE
   const entries = getSchemaEntries(fieldKey)
   if (patch.name !== undefined) {
     const trimmed = patch.name.trim()
-    if (!trimmed) { toast.info('', '字段名不能为空'); return }
+    if (!trimmed) { toast.info('', t('framework.metadataEditor.schema.nameEmpty', '字段名不能为空')); return }
     if (trimmed !== entries[idx].name) {
-      if (entries.some((e, i) => i !== idx && e.name === trimmed)) { toast.info('', '字段名重复'); return }
+      if (entries.some((e, i) => i !== idx && e.name === trimmed)) { toast.info('', t('framework.metadataEditor.schema.nameDuplicate', '字段名重复')); return }
       entries[idx] = { ...entries[idx], name: trimmed }
     }
   }
@@ -205,30 +206,30 @@ function writeSchemaObj(fieldKey: string, entries: SchemaEntry[]) { const obj: R
 
 // Path param editor
 function getParamSchema(fieldKey: string) { const nk = selectedNode.value?.node_kind; if (!nk) return undefined; return workspace.parameterSchemas[nk]?.[fieldKey] }
-async function pickPathForField(fieldKey: string) { const schema = getParamSchema(fieldKey); if (!schema) return; const mode = schema.path_kind === 'save_file' ? 'save_file' : schema.path_kind === 'open_directory' ? 'open_folder' : 'open_file'; try { const r = await postFileDialog({ mode, title: schema.label || `选择 ${fieldKey}` }); if (r.status === 'selected' && r.paths.length) setCfgVal(fieldKey, r.paths[0]) } catch (e: any) { if (e?.status === 503) toast.info('', '当前运行环境不支持系统文件选择器') } }
+async function pickPathForField(fieldKey: string) { const schema = getParamSchema(fieldKey); if (!schema) return; const mode = schema.path_kind === 'save_file' ? 'save_file' : schema.path_kind === 'open_directory' ? 'open_folder' : 'open_file'; try { const r = await postFileDialog({ mode, title: schema.label || t('framework.metadataEditor.pathPicker.selectField', `选择 ${fieldKey}`, { field: fieldKey }) }); if (r.status === 'selected' && r.paths.length) setCfgVal(fieldKey, r.paths[0]) } catch (e: any) { if (e?.status === 503) toast.info('', t('framework.metadataEditor.pathPicker.notSupported', '当前运行环境不支持系统文件选择器')) } }
 
 function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any).__panToNode?.(selectedNodeId.value) } catch {} } }
 </script>
 <template>
   <div class="mep" :class="{ 'mep-ro': !workspace.isGraphEditable }">
     <div class="mep-search-row">
-      <input v-model="nodeSearch" class="mep-search" placeholder="搜索节点…" @focus="showNodeSearch = true" @blur="showNodeSearch = false" />
+      <input v-model="nodeSearch" class="mep-search" :placeholder="t('framework.metadataEditor.searchPlaceholder', '搜索节点…')" @focus="showNodeSearch = true" @blur="showNodeSearch = false" />
       <div v-if="showNodeSearch && matchingNodes.length" class="mep-search-drop">
         <div v-for="n in matchingNodes" :key="n.node_id" class="mep-search-item" @mousedown.prevent="selectSearchedNode(n.node_id)"><span class="mep-search-name">{{ n.display_name || n.node_id }}</span><span class="mep-search-kid">{{ n.node_id }}</span></div>
       </div>
     </div>
-    <template v-if="!selectedNode"><PlaceholderBanner type="empty" title="未选中节点" description="在节点图或节点列表中点击节点以查看属性" /></template>
+    <template v-if="!selectedNode"><PlaceholderBanner type="empty" :title="t('framework.metadataEditor.emptyBanner.title', '未选中节点')" :description="t('framework.metadataEditor.emptyBanner.description', '在节点图或节点列表中点击节点以查看属性')" /></template>
     <template v-else>
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><h4 class="mep-title" style="margin-bottom:0">{{ selectedNode.node_id }}</h4><button class="mep-locate-btn" @click="locateSelectedNode">📍 定位</button></div>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><h4 class="mep-title" style="margin-bottom:0">{{ selectedNode.node_id }}</h4><button class="mep-locate-btn" @click="locateSelectedNode">{{ t('framework.metadataEditor.locate', '📍 定位') }}</button></div>
       <div class="mep-grid">
-        <div class="mep-row"><label>节点 ID</label><code>{{ selectedNode.node_id }}</code><span class="mep-hint">只读</span></div>
-        <div class="mep-row"><label>类型</label><span>{{ kindLabel(selectedNode.lowered_kind) }}</span></div>
-        <div class="mep-row"><label>显示名</label><input class="mep-input" :value="selectedNode.display_name ?? ''" :disabled="!workspace.isGraphEditable" @change="workspace.updateNode(selectedNode.node_id, { display_name: ($event.target as HTMLInputElement).value })" placeholder="输入显示名" /></div>
-        <div class="mep-row"><label>来源锚点</label><code>{{ selectedNode.source_anchor_ref }}</code></div>
-        <div class="mep-row"><label>扩展角色</label><span>{{ selectedNode.expansion_role }}</span></div>
+        <div class="mep-row"><label>{{ t('framework.metadataEditor.grid.nodeId', '节点 ID') }}</label><code>{{ selectedNode.node_id }}</code><span class="mep-hint">{{ t('framework.metadataEditor.grid.readonly', '只读') }}</span></div>
+        <div class="mep-row"><label>{{ t('framework.metadataEditor.grid.type', '类型') }}</label><span>{{ kindLabel(selectedNode.lowered_kind) }}</span></div>
+        <div class="mep-row"><label>{{ t('framework.metadataEditor.grid.displayName', '显示名') }}</label><input class="mep-input" :value="selectedNode.display_name ?? ''" :disabled="!workspace.isGraphEditable" @change="workspace.updateNode(selectedNode.node_id, { display_name: ($event.target as HTMLInputElement).value })" :placeholder="t('framework.metadataEditor.grid.displayNamePlaceholder', '输入显示名')" /></div>
+        <div class="mep-row"><label>{{ t('framework.metadataEditor.grid.sourceAnchor', '来源锚点') }}</label><code>{{ selectedNode.source_anchor_ref }}</code></div>
+        <div class="mep-row"><label>{{ t('framework.metadataEditor.grid.expansionRole', '扩展角色') }}</label><span>{{ selectedNode.expansion_role }}</span></div>
       </div>
-      <div v-if="selectedNode.node_kind === 'graph.call_subgraph'" class="mep-section"><h5>目标子图 Schema</h5><div v-if="!targetSubgraph" class="mep-empty-cfg">未找到目标子图资源</div><template v-else><div class="mep-schema-block"><h6>输入 Schema</h6><div v-for="f in schemaFields(targetSubgraph.input_schema)" :key="f.key" class="mep-schema-row"><span class="mep-schema-key">{{ f.key }}</span><span class="mep-schema-type">{{ f.type }}</span><span v-if="f.required" class="mep-schema-req">必填</span></div></div><div class="mep-schema-block"><h6>输出 Schema</h6><div v-for="f in schemaFields(targetSubgraph.output_schema)" :key="f.key" class="mep-schema-row"><span class="mep-schema-key">{{ f.key }}</span><span class="mep-schema-type">{{ f.type }}</span></div></div></template></div>
-      <div class="mep-section"><h5>节点配置 (node_config)</h5><div class="mep-config">
+      <div v-if="selectedNode.node_kind === 'graph.call_subgraph'" class="mep-section"><h5>{{ t('framework.metadataEditor.subgraph.title', '目标子图 Schema') }}</h5><div v-if="!targetSubgraph" class="mep-empty-cfg">{{ t('framework.metadataEditor.subgraph.notFound', '未找到目标子图资源') }}</div><template v-else><div class="mep-schema-block"><h6>{{ t('framework.metadataEditor.subgraph.inputSchema', '输入 Schema') }}</h6><div v-for="f in schemaFields(targetSubgraph.input_schema)" :key="f.key" class="mep-schema-row"><span class="mep-schema-key">{{ f.key }}</span><span class="mep-schema-type">{{ f.type }}</span><span v-if="f.required" class="mep-schema-req">{{ t('framework.metadataEditor.schema.required', '必填') }}</span></div></div><div class="mep-schema-block"><h6>{{ t('framework.metadataEditor.subgraph.outputSchema', '输出 Schema') }}</h6><div v-for="f in schemaFields(targetSubgraph.output_schema)" :key="f.key" class="mep-schema-row"><span class="mep-schema-key">{{ f.key }}</span><span class="mep-schema-type">{{ f.type }}</span></div></div></template></div>
+      <div class="mep-section"><h5>{{ t('framework.metadataEditor.config.title', '节点配置 (node_config)') }}</h5><div class="mep-config">
         <!-- Generic fields -->
         <div v-for="f in paramFields.filter(p => p.type !== 'object-map' && p.type !== 'typed-value' && p.type !== 'branch-list' && p.type !== 'code' && p.type !== 'component-schema')" :key="f.key" class="mep-cfg-row"><label :title="f.key">{{ f.key }}</label>
           <span v-if="isFieldBound(f.key)" class="mep-bound">{{ getCfgVal(f.key) }} <em>⇠ {{ isFieldBound(f.key)!.nodeName }}:{{ isFieldBound(f.key)!.portId }}</em></span>
@@ -257,26 +258,26 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
         <!-- Component-schema -->
         <template v-for="f in paramFields.filter(p => p.type === 'component-schema')" :key="f.key"><div class="mep-cfg-section">{{ f.key }}</div>
           <div v-for="(e, ei) in getSchemaEntries(f.key)" :key="ei" class="mep-cs-row">
-            <input :value="e.name" class="mep-br-key" placeholder="字段名" :disabled="!workspace.isGraphEditable" @change="updateSchemaEntry(f.key, ei, { name: ($event.target as HTMLInputElement).value })" />
+            <input :value="e.name" class="mep-br-key" :placeholder="t('framework.metadataEditor.schema.fieldNamePlaceholder', '字段名')" :disabled="!workspace.isGraphEditable" @change="updateSchemaEntry(f.key, ei, { name: ($event.target as HTMLInputElement).value })" />
             <select class="mep-cfg-input" style="width:70px" v-model="e.type" :disabled="!workspace.isGraphEditable" @change="updateSchemaEntry(f.key, ei, { type: ($event.target as HTMLSelectElement).value })"><option value="string">string</option><option value="number">number</option><option value="boolean">boolean</option><option value="array">array</option><option value="object">object</option></select>
-            <label class="mep-cs-chk"><input type="checkbox" v-model="e.required" :disabled="!workspace.isGraphEditable" @change="updateSchemaEntry(f.key, ei, { required: ($event.target as HTMLInputElement).checked })" />必填</label>
-            <input :value="e.default_value" class="mep-cfg-input" style="width:70px" placeholder="默认值" :disabled="!workspace.isGraphEditable" @change="updateSchemaEntry(f.key, ei, { default_value: ($event.target as HTMLInputElement).value })" />
-            <input :value="e.description" class="mep-cfg-input" style="flex:1" placeholder="描述" :disabled="!workspace.isGraphEditable" @change="updateSchemaEntry(f.key, ei, { description: ($event.target as HTMLInputElement).value })" />
+            <label class="mep-cs-chk"><input type="checkbox" v-model="e.required" :disabled="!workspace.isGraphEditable" @change="updateSchemaEntry(f.key, ei, { required: ($event.target as HTMLInputElement).checked })" />{{ t('framework.metadataEditor.schema.required', '必填') }}</label>
+            <input :value="e.default_value" class="mep-cfg-input" style="width:70px" :placeholder="t('framework.metadataEditor.schema.defaultValuePlaceholder', '默认值')" :disabled="!workspace.isGraphEditable" @change="updateSchemaEntry(f.key, ei, { default_value: ($event.target as HTMLInputElement).value })" />
+            <input :value="e.description" class="mep-cfg-input" style="flex:1" :placeholder="t('framework.metadataEditor.schema.descriptionPlaceholder', '描述')" :disabled="!workspace.isGraphEditable" @change="updateSchemaEntry(f.key, ei, { description: ($event.target as HTMLInputElement).value })" />
             <button v-if="workspace.isGraphEditable" class="mep-om-del" @click="deleteSchemaEntry(f.key, ei)">✕</button>
           </div>
-          <button v-if="workspace.isGraphEditable" class="mep-om-add" @click="addSchemaEntry(f.key)">+ 新增字段</button>
-          <button v-if="workspace.isGraphEditable" class="mep-br-norm" :disabled="normalizing" @click="normalizeGraph()">{{ normalizing ? '同步中…' : '🔄 同步端口' }}</button>
+          <button v-if="workspace.isGraphEditable" class="mep-om-add" @click="addSchemaEntry(f.key)">{{ t('framework.metadataEditor.schema.addField', '+ 新增字段') }}</button>
+          <button v-if="workspace.isGraphEditable" class="mep-br-norm" :disabled="normalizing" @click="normalizeGraph()">{{ normalizing ? t('framework.metadataEditor.syncing', '同步中…') : t('framework.metadataEditor.syncPorts', '🔄 同步端口') }}</button>
         </template>
         <!-- Branch-list -->
         <template v-for="f in paramFields.filter(p => p.type === 'branch-list')" :key="f.key"><div class="mep-cfg-section">{{ f.key }}</div>
           <div v-for="(b, bi) in getBranches(f.key)" :key="bi" class="mep-br-row"><input class="mep-br-key" :value="b.key" :disabled="!workspace.isGraphEditable" @change="updateBranchKey(f.key, bi, ($event.target as HTMLInputElement).value)" placeholder="key" /><input class="mep-br-label" :value="b.label" :disabled="!workspace.isGraphEditable" @change="updateBranchLabel(f.key, bi, ($event.target as HTMLInputElement).value)" placeholder="label" /><button v-if="workspace.isGraphEditable" class="mep-om-del" @click="deleteBranch(f.key, bi)">✕</button></div>
-          <button v-if="workspace.isGraphEditable" class="mep-om-add" @click="addBranch(f.key)">+ 新增分支</button><button v-if="workspace.isGraphEditable" class="mep-br-norm" :disabled="normalizing" @click="normalizeGraph()">{{ normalizing ? '同步中…' : '🔄 同步端口' }}</button>
+          <button v-if="workspace.isGraphEditable" class="mep-om-add" @click="addBranch(f.key)">{{ t('framework.metadataEditor.branch.addBranch', '+ 新增分支') }}</button><button v-if="workspace.isGraphEditable" class="mep-br-norm" :disabled="normalizing" @click="normalizeGraph()">{{ normalizing ? t('framework.metadataEditor.syncing', '同步中…') : t('framework.metadataEditor.syncPorts', '🔄 同步端口') }}</button>
         </template>
         <!-- Object-map -->
         <template v-for="omf in objectMapFields" :key="omf.key"><div class="mep-cfg-section">{{ omf.key }}</div>
           <div v-for="entry in objectMapEntries(omf.key)" :key="entry.key" class="mep-om-row">
             <template v-if="renamingEntry?.fieldKey === omf.key && renamingEntry?.subKey === entry.key"><input class="mep-om-key-input" :value="renamingEntry.tempName" :disabled="!workspace.isGraphEditable" @input="renamingEntry!.tempName = ($event.target as HTMLInputElement).value" @keyup.enter="finishRename()" @keyup.escape="cancelRename()" @blur="finishRename()" /></template>
-            <span v-else class="mep-om-key" @dblclick="workspace.isGraphEditable && startRename(omf.key, entry.key)" :title="workspace.isGraphEditable ? '双击重命名' : ''">{{ entry.key }}</span>
+            <span v-else class="mep-om-key" @dblclick="workspace.isGraphEditable && startRename(omf.key, entry.key)" :title="workspace.isGraphEditable ? t('framework.metadataEditor.objectMap.dblclickRename', '双击重命名') : ''">{{ entry.key }}</span>
             <template v-if="isFieldBound(`${omf.key}.${entry.key}`)"><span class="mep-bound">{{ typeof entry.value === 'object' ? JSON.stringify(entry.value) : entry.value }} <em>⇠ {{ isFieldBound(`${omf.key}.${entry.key}`)!.nodeName }}</em></span></template>
             <template v-else>
               <input v-if="entry.type === 'string'" class="mep-cfg-input" :value="String(entry.value ?? '')" :disabled="!workspace.isGraphEditable" @change="setObjectMapValue(omf.key, entry.key, ($event.target as HTMLInputElement).value)" />
@@ -286,13 +287,13 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
             </template>
             <button v-if="workspace.isGraphEditable" class="mep-om-del" @click="deleteObjectMapKey(omf.key, entry.key)">✕</button>
           </div>
-          <div class="mep-om-empty" v-if="!objectMapEntries(omf.key).length">当前为空</div>
-          <button v-if="workspace.isGraphEditable" class="mep-om-add" @click="addObjectMapKey(omf.key)">+ 新增条目</button>
+          <div class="mep-om-empty" v-if="!objectMapEntries(omf.key).length">{{ t('framework.metadataEditor.objectMap.empty', '当前为空') }}</div>
+          <button v-if="workspace.isGraphEditable" class="mep-om-add" @click="addObjectMapKey(omf.key)">{{ t('framework.metadataEditor.objectMap.addEntry', '+ 新增条目') }}</button>
         </template>
         <!-- Debugger config -->
         <div v-if="selectedNode" class="mep-cfg-section">debugger</div>
         <template v-if="selectedNode">
-          <div class="mep-cfg-row"><label>断点 enabled</label>
+          <div class="mep-cfg-row"><label>{{ t('framework.metadataEditor.debugger.breakpointEnabled', '断点 enabled') }}</label>
             <input type="checkbox" :checked="!!debuggerCfg.breakpoint?.enabled" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'enabled', ($event.target as HTMLInputElement).checked)" />
           </div>
           <div class="mep-cfg-row" v-if="debuggerCfg.breakpoint?.enabled">
@@ -303,7 +304,7 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
           </div>
           <div class="mep-cfg-row" v-if="debuggerCfg.breakpoint?.enabled">
             <label>expression</label>
-            <input :value="debuggerCfg.breakpoint?.expression || ''" class="mep-cfg-input" placeholder="条件表达式" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'expression', ($event.target as HTMLInputElement).value)" />
+            <input :value="debuggerCfg.breakpoint?.expression || ''" class="mep-cfg-input" :placeholder="t('framework.metadataEditor.debugger.expressionPlaceholder', '条件表达式')" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'expression', ($event.target as HTMLInputElement).value)" />
           </div>
           <div class="mep-cfg-row" v-if="debuggerCfg.breakpoint?.enabled">
             <label>hit_count</label>
@@ -313,7 +314,7 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
             <label>once</label>
             <input type="checkbox" :checked="!!debuggerCfg.breakpoint?.once" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('breakpoint', 'once', ($event.target as HTMLInputElement).checked)" />
           </div>
-          <div class="mep-cfg-row"><label>记录帧 enabled</label>
+          <div class="mep-cfg-row"><label>{{ t('framework.metadataEditor.debugger.recordFrameEnabled', '记录帧 enabled') }}</label>
             <input type="checkbox" :checked="!!debuggerCfg.record_frame?.enabled" :disabled="!workspace.isGraphEditable" @change="setDebuggerField('record_frame', 'enabled', ($event.target as HTMLInputElement).checked)" />
           </div>
         </template>
@@ -330,7 +331,7 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
             </template>
           </div>
         </template>
-        <div v-if="!paramFields.length && !extraConfigSections.length && !objectMapFields.length" class="mep-empty-cfg">无配置参数</div>
+        <div v-if="!paramFields.length && !extraConfigSections.length && !objectMapFields.length" class="mep-empty-cfg">{{ t('framework.metadataEditor.config.noParams', '无配置参数') }}</div>
       </div></div>
     </template>
   </div>

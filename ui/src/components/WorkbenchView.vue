@@ -2,6 +2,7 @@
 import { onMounted } from 'vue'
 import { useDockStore } from '@/stores/dockStore'
 import { useResourceStore } from '@/stores/resourceStore'
+import { t } from '@/i18n'
 import DockLayout from '@/components/panels/DockLayout.vue'
 import SourceInputPanel from '@/components/input/SourceInputPanel.vue'
 import OutputPanel from '@/components/output/OutputPanel.vue'
@@ -22,19 +23,19 @@ const resource = useResourceStore()
 
 onMounted(() => {
   resource.refreshAll()
-  dock.register({ id: 'graph', title: '节点图编辑器' })
-  dock.register({ id: 'components', title: '组件库' })
-  dock.register({ id: 'metadata', title: '元数据编辑' })
-  dock.register({ id: 'source', title: '源输入' })
-  dock.register({ id: 'output', title: '输出' })
-  dock.register({ id: 'resources', title: '资源管理' })
-  dock.register({ id: 'tasks', title: '任务执行' })
-  dock.register({ id: 'preferences', title: '首选项' })
-  dock.register({ id: 'projectSettings', title: '项目设置' })
-  dock.register({ id: 'packageManager', title: '.wcrun 包管理' })
-  dock.register({ id: 'debugVariables', title: 'Debug 变量' })
-  dock.register({ id: 'debugTimeline', title: 'Debug 事件' })
-  dock.register({ id: 'debugSnapshots', title: 'Debug 快照' })
+  dock.register({ id: 'graph', title: t('framework.workbench.panel.graph', '节点图编辑器') })
+  dock.register({ id: 'components', title: t('framework.workbench.panel.components', '组件库') })
+  dock.register({ id: 'metadata', title: t('framework.workbench.panel.metadata', '元数据编辑') })
+  dock.register({ id: 'source', title: t('framework.workbench.panel.source', '源输入') })
+  dock.register({ id: 'output', title: t('framework.workbench.panel.output', '输出') })
+  dock.register({ id: 'resources', title: t('framework.workbench.panel.resources', '资源管理') })
+  dock.register({ id: 'tasks', title: t('framework.workbench.panel.tasks', '任务执行') })
+  dock.register({ id: 'preferences', title: t('framework.workbench.panel.preferences', '首选项') })
+  dock.register({ id: 'projectSettings', title: t('framework.workbench.panel.projectSettings', '项目设置') })
+  dock.register({ id: 'packageManager', title: t('framework.workbench.panel.packageManager', '.wcrun 包管理') })
+  dock.register({ id: 'debugVariables', title: t('framework.workbench.panel.debugVariables', 'Debug 变量') })
+  dock.register({ id: 'debugTimeline', title: t('framework.workbench.panel.debugTimeline', 'Debug 事件') })
+  dock.register({ id: 'debugSnapshots', title: t('framework.workbench.panel.debugSnapshots', 'Debug 快照') })
 
   // Default layout
   if (dock.zones.center.panels.length === 0) {

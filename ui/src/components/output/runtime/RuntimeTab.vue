@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRuntimeStore } from '@/stores/runtimeStore'
 import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
+import { t } from '@/i18n'
 
 const runtime = useRuntimeStore()
 const showRaw = ref(false)
@@ -14,7 +15,7 @@ function hasStructuredFields(output: any): boolean {
 <template>
   <div class="rt-tab">
     <PlaceholderBanner v-if="!runtime.activeRt" type="empty" title="Runtime"
-      description="在任务执行窗口操作或导入项目后运行" />
+      :description="t('framework.runtime.empty.description', '在任务执行窗口操作或导入项目后运行')" />
 
     <template v-if="runtime.activeRt">
       <!-- Session Header -->
@@ -22,32 +23,32 @@ function hasStructuredFields(output: any): boolean {
         <div class="rt-header">
           <span class="rt-badge" :class="runtime.activeRt.status === 'completed' ? 'ok' : runtime.activeRt.status === 'failed' ? 'fail' : ''">{{ runtime.activeRt.status }}</span>
           <span class="rt-id">{{ runtime.activeRt.runtime_session.session_id ?? '—' }}</span>
-          <span v-if="(runtime.activeRt.request as any)?.request_origin" class="rt-origin">{{ (runtime.activeRt.request as any).request_origin === 'saved_graph_document' ? '📄 已保存图' : '✏️ 内存图' }}</span>
-          <span v-if="runtime.runtimeLiveStatus === 'streaming'" class="rt-live streaming">⟳ 实时</span>
-          <span v-else-if="runtime.runtimeLiveStatus === 'connecting'" class="rt-live connecting">⏳ 连接中</span>
-          <span v-else-if="runtime.runtimeLiveStatus === 'disconnected'" class="rt-live disconnected">⚠ 已断连</span>
-          <span v-else-if="runtime.runtimeLiveStatus === 'error'" class="rt-live error">⚠ 异常</span>
+          <span v-if="(runtime.activeRt.request as any)?.request_origin" class="rt-origin">{{ (runtime.activeRt.request as any).request_origin === 'saved_graph_document' ? t('framework.runtime.origin.savedGraph', '📄 已保存图') : t('framework.runtime.origin.memoryGraph', '✏️ 内存图') }}</span>
+          <span v-if="runtime.runtimeLiveStatus === 'streaming'" class="rt-live streaming">{{ t('framework.runtime.live.streaming', '⟳ 实时') }}</span>
+          <span v-else-if="runtime.runtimeLiveStatus === 'connecting'" class="rt-live connecting">{{ t('framework.runtime.live.connecting', '⏳ 连接中') }}</span>
+          <span v-else-if="runtime.runtimeLiveStatus === 'disconnected'" class="rt-live disconnected">{{ t('framework.runtime.live.disconnected', '⚠ 已断连') }}</span>
+          <span v-else-if="runtime.runtimeLiveStatus === 'error'" class="rt-live error">{{ t('framework.runtime.live.error', '⚠ 异常') }}</span>
         </div>
       </div>
 
       <!-- Live Progress Summary (from SSE runtime.summary) -->
       <div class="rt-section" v-if="runtime.runtimeProgress && runtime.runtimeProgress.total_node_count > 0">
-        <h4>执行进度</h4>
+        <h4>{{ t('framework.runtime.progress.title', '执行进度') }}</h4>
         <div class="rt-progress">
           <div class="rt-pg-bar-wrap"><div class="rt-pg-bar" :style="{ width: (runtime.runtimeProgress.percent ?? 0) + '%' }" :class="runtime.runtimeLiveStatus === 'completed' ? 'done' : runtime.runtimeLiveStatus === 'failed' ? 'fail' : ''"></div></div>
           <div class="rt-pg-stats">
             <span>{{ runtime.runtimeProgress.percent ?? 0 }}%</span>
-            <span class="ok">完成 {{ runtime.runtimeProgress.completed_node_count ?? 0 }}</span>
-            <span v-if="runtime.runtimeProgress.failed_node_count" class="fail">失败 {{ runtime.runtimeProgress.failed_node_count }}</span>
-            <span v-if="runtime.runtimeProgress.running_node_count" class="running">运行中 {{ runtime.runtimeProgress.running_node_count }}</span>
-            <span>事件 {{ runtime.runtimeProgress.event_count ?? 0 }}</span>
+            <span class="ok">{{ t('framework.runtime.progress.completed', '完成 {n}', { n: runtime.runtimeProgress.completed_node_count ?? 0 }) }}</span>
+            <span v-if="runtime.runtimeProgress.failed_node_count" class="fail">{{ t('framework.runtime.progress.failed', '失败 {n}', { n: runtime.runtimeProgress.failed_node_count }) }}</span>
+            <span v-if="runtime.runtimeProgress.running_node_count" class="running">{{ t('framework.runtime.progress.running', '运行中 {n}', { n: runtime.runtimeProgress.running_node_count }) }}</span>
+            <span>{{ t('framework.runtime.progress.events', '事件 {n}', { n: runtime.runtimeProgress.event_count ?? 0 }) }}</span>
           </div>
         </div>
       </div>
 
       <!-- Node States -->
       <div class="rt-section" v-if="runtime.activeRt.node_states?.length">
-        <h4>节点状态 ({{ runtime.activeRt.node_states.length }})</h4>
+        <h4>{{ t('framework.runtime.nodeStates.title', '节点状态 ({n})', { n: runtime.activeRt.node_states.length }) }}</h4>
         <div v-for="ns in runtime.activeRt.node_states" :key="(ns as any).node_id" class="rt-node">
           <div class="rt-node-header">
             <span :class="['rt-node-dot', (ns as any).node_status === 'completed' ? 'ok' : (ns as any).node_status === 'failed' ? 'fail' : (ns as any).node_status === 'running' ? 'running' : '']"></span>
@@ -61,13 +62,13 @@ function hasStructuredFields(output: any): boolean {
             <div v-else class="rt-node-ok">
               <!-- Structured output fields -->
               <template v-if="(ns as any).output.headers">{{ (ns as any).output.headers?.join?.(', ') || JSON.stringify((ns as any).output.headers) }}</template>
-              <div v-if="(ns as any).output.row_count !== undefined" class="rt-field"><span>行数:</span> {{ (ns as any).output.row_count }}</div>
-              <div v-if="(ns as any).output.cookie_count !== undefined" class="rt-field"><span>Cookie 数:</span> {{ (ns as any).output.cookie_count }}</div>
+              <div v-if="(ns as any).output.row_count !== undefined" class="rt-field"><span>{{ t('framework.runtime.field.rowCount', '行数') }}:</span> {{ (ns as any).output.row_count }}</div>
+              <div v-if="(ns as any).output.cookie_count !== undefined" class="rt-field"><span>{{ t('framework.runtime.field.cookieCount', 'Cookie 数') }}:</span> {{ (ns as any).output.cookie_count }}</div>
               <div v-if="(ns as any).output.local_storage_origin_count !== undefined" class="rt-field"><span>LocalStorage:</span> {{ (ns as any).output.local_storage_origin_count }}</div>
-              <div v-if="(ns as any).output.dialog_count !== undefined" class="rt-field"><span>对话框数:</span> {{ (ns as any).output.dialog_count }}</div>
-              <div v-if="(ns as any).output.handled_count !== undefined" class="rt-field"><span>已处理:</span> {{ (ns as any).output.handled_count }}</div>
-              <div v-if="(ns as any).output.value !== undefined" class="rt-field"><span>值:</span> {{ (ns as any).output.value }}</div>
-              <div v-if="(ns as any).output.path" class="rt-field"><span>路径:</span> {{ (ns as any).output.path }}</div>
+              <div v-if="(ns as any).output.dialog_count !== undefined" class="rt-field"><span>{{ t('framework.runtime.field.dialogCount', '对话框数') }}:</span> {{ (ns as any).output.dialog_count }}</div>
+              <div v-if="(ns as any).output.handled_count !== undefined" class="rt-field"><span>{{ t('framework.runtime.field.handledCount', '已处理') }}:</span> {{ (ns as any).output.handled_count }}</div>
+              <div v-if="(ns as any).output.value !== undefined" class="rt-field"><span>{{ t('framework.runtime.field.value', '值') }}:</span> {{ (ns as any).output.value }}</div>
+              <div v-if="(ns as any).output.path" class="rt-field"><span>{{ t('framework.runtime.field.path', '路径') }}:</span> {{ (ns as any).output.path }}</div>
               <div v-if="(ns as any).output.sheet_name" class="rt-field"><span>Sheet:</span> {{ (ns as any).output.sheet_name }}</div>
               <!-- Fallback: show remaining as JSON -->
               <div v-if="typeof (ns as any).output === 'object' && !hasStructuredFields((ns as any).output)" class="rt-node-json">{{ JSON.stringify((ns as any).output) }}</div>
@@ -82,10 +83,10 @@ function hasStructuredFields(output: any): boolean {
 
       <!-- Result -->
       <div class="rt-section" v-if="runtime.activeRt.result">
-        <h4>结果</h4>
+        <h4>{{ t('framework.runtime.result.title', '结果') }}</h4>
         <div class="rt-grid">
-          <span>状态: {{ (runtime.activeRt.result as any).status }}</span>
-          <span v-if="(runtime.activeRt.result as any).failure_reason">原因: {{ (runtime.activeRt.result as any).failure_reason }}</span>
+          <span>{{ t('framework.runtime.result.status', '状态') }}: {{ (runtime.activeRt.result as any).status }}</span>
+          <span v-if="(runtime.activeRt.result as any).failure_reason">{{ t('framework.runtime.result.reason', '原因') }}: {{ (runtime.activeRt.result as any).failure_reason }}</span>
         </div>
         <div v-if="(runtime.activeRt.result as any).outputs" class="rt-outputs">
           <div v-for="(v, k) in ((runtime.activeRt.result as any).outputs || {})" :key="k" class="rt-output-item">
@@ -97,7 +98,7 @@ function hasStructuredFields(output: any): boolean {
 
       <!-- Event Log -->
       <div class="rt-section" v-if="runtime.activeRt.event_log?.length">
-        <h4>事件日志 ({{ runtime.activeRt.event_log.length }})</h4>
+        <h4>{{ t('framework.runtime.eventLog.title', '事件日志 ({n})', { n: runtime.activeRt.event_log.length }) }}</h4>
         <div v-for="(ev, i) in runtime.activeRt.event_log" :key="i" class="rt-log-item">
           <span class="rt-log-kind">{{ (ev as any).event_kind || '' }}</span>
           <span class="rt-log-node">{{ (ev as any).node_id || '' }}</span>
@@ -107,7 +108,7 @@ function hasStructuredFields(output: any): boolean {
 
       <!-- Session List -->
       <div class="rt-section" v-if="runtime.rtSessions.length">
-        <h4>会话 ({{ runtime.rtSessions.length }})</h4>
+        <h4>{{ t('framework.runtime.sessions.title', '会话 ({n})', { n: runtime.rtSessions.length }) }}</h4>
         <div v-for="s in runtime.rtSessions" :key="s.session_id" class="rt-row">
           <span :class="s.status==='completed'?'ok':''">{{ s.status }}</span>
           <span class="rt-sid">{{ s.session_id.slice(0,12) }}</span>
@@ -116,7 +117,7 @@ function hasStructuredFields(output: any): boolean {
 
       <!-- Raw JSON -->
       <div class="rt-actions">
-        <button class="rt-btn-sm" @click="showRaw = !showRaw">{{ showRaw ? '隐藏' : '显示' }}原始 JSON</button>
+        <button class="rt-btn-sm" @click="showRaw = !showRaw">{{ showRaw ? t('framework.runtime.rawJson.hide', '隐藏原始 JSON') : t('framework.runtime.rawJson.show', '显示原始 JSON') }}</button>
       </div>
       <pre v-if="showRaw" class="rt-raw">{{ JSON.stringify(runtime.activeRt, null, 2) }}</pre>
     </template>

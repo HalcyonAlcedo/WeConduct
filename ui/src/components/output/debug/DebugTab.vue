@@ -6,6 +6,7 @@ import { useDockStore } from '@/stores/dockStore'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
+import { t } from '@/i18n'
 
 const toast = useToastStore()
 const debugStore = useDebugStore()
@@ -34,13 +35,13 @@ async function doStart() {
   loading.value = true; error.value = null
   const r = await debugStore.startDebugSession(graphBody())
   if (r.phase === 'started') {
-    toast.success('Debug 已启动', r.sessionId ?? '')
+    toast.success(t('framework.debug.tab.debugStarted', 'Debug 已启动'), r.sessionId ?? '')
   } else if (r.phase === 'started_with_sync_warning') {
-    toast.success('Debug 已启动', r.sessionId ?? '')
-    toast.error('面板同步失败', r.syncError ?? '')
+    toast.success(t('framework.debug.tab.debugStarted', 'Debug 已启动'), r.sessionId ?? '')
+    toast.error(t('framework.debug.tab.panelSyncFailed', '面板同步失败'), r.syncError ?? '')
   } else {
     error.value = r.startError ?? ''
-    toast.error('Debug 启动失败', error.value ?? '')
+    toast.error(t('framework.debug.tab.debugStartFailed', 'Debug 启动失败'), error.value ?? '')
   }
   loading.value = false
 }
@@ -55,8 +56,12 @@ async function doControl(action: string) {
   const sid = activeSessionId.value
   if (!sid) return
   const labels: Record<string, string> = {
-    continue: '继续', 'step-over': '单步跳过', 'step-into': '单步进入', 'step-out': '单步跳出',
-    pause: '暂停', abort: '中止',
+    continue: t('framework.debug.tab.continue', '继续'),
+    'step-over': t('framework.debug.tab.stepOver', '单步跳过'),
+    'step-into': t('framework.debug.tab.stepInto', '单步进入'),
+    'step-out': t('framework.debug.tab.stepOut', '单步跳出'),
+    pause: t('framework.debug.tab.pause', '暂停'),
+    abort: t('framework.debug.tab.abort', '中止'),
   }
   let session: any = null
   try {
@@ -67,30 +72,30 @@ async function doControl(action: string) {
     else if (action === 'pause') session = await debugStore.doPause(sid)
     else if (action === 'abort') session = await debugStore.doAbort(sid)
   } catch (e: any) {
-    toast.error(`${labels[action]}失败`, e?.message)
+    toast.error(t('framework.debug.tab.actionFailed', `${labels[action]}失败`, { action: labels[action] }), e?.message)
     return
   }
   if (session) {
-    toast.success(labels[action], `状态: ${session.status}`)
+    toast.success(labels[action], t('framework.debug.tab.statusLabel', `状态: ${session.status}`, { status: session.status }))
     try {
       await debugStore.pollOnce(sid, { throwOnError: true })
     } catch (e: any) {
-      toast.error('面板同步失败', e?.message)
+      toast.error(t('framework.debug.tab.panelSyncFailed', '面板同步失败'), e?.message)
     }
   }
 }
 
 function statusLabel(s: string): string {
   const m: Record<string, string> = {
-    preparing: '准备中',
-    running: '运行中',
-    paused: '已暂停',
-    stepping: '单步中',
-    completed: '已完成',
-    failed: '失败',
-    cancelled: '已取消',
-    aborted: '已中止',
-    incomplete: '未完成',
+    preparing: t('framework.debug.tab.status.preparing', '准备中'),
+    running: t('framework.debug.tab.status.running', '运行中'),
+    paused: t('framework.debug.tab.status.paused', '已暂停'),
+    stepping: t('framework.debug.tab.status.stepping', '单步中'),
+    completed: t('framework.debug.tab.status.completed', '已完成'),
+    failed: t('framework.debug.tab.status.failed', '失败'),
+    cancelled: t('framework.debug.tab.status.cancelled', '已取消'),
+    aborted: t('framework.debug.tab.status.aborted', '已中止'),
+    incomplete: t('framework.debug.tab.status.incomplete', '未完成'),
   }
   return m[s] || s
 }
@@ -124,18 +129,18 @@ watch(() => ({
 
 <template>
   <div class="dbg-tab">
-    <PlaceholderBanner v-if="!loading && !activeDoc" type="empty" title="尚未启动 Debug"
-      description="从此面板或任务执行窗口启动调试" />
+    <PlaceholderBanner v-if="!loading && !activeDoc" type="empty" :title="t('framework.debug.tab.emptyTitle', '尚未启动 Debug')"
+      :description="t('framework.debug.tab.emptyDescription', '从此面板或任务执行窗口启动调试')" />
     <div v-if="loading" class="loading"><div class="sk skeleton-pulse"></div></div>
     <div v-if="error" class="db-err">✕ {{ error }}</div>
 
     <!-- Toolbar -->
     <div class="db-tb">
       <button class="db-btn" @click="doStart" :disabled="loading || debugStore.isDebugActive">Debug Start</button>
-      <button class="db-btn-sm" @click="dock.restorePanel('debugVariables')" title="打开变量窗口">变量</button>
-      <button class="db-btn-sm" @click="dock.restorePanel('debugTimeline')" title="打开事件窗口">事件</button>
-      <button class="db-btn-sm" @click="dock.restorePanel('debugSnapshots')" title="打开快照窗口">快照</button>
-      <button class="db-btn-sm" @click="panToCurrentNode()" :disabled="!currentNodeId" title="定位到当前运行节点">📍 定位节点</button>
+      <button class="db-btn-sm" @click="dock.restorePanel('debugVariables')" :title="t('framework.debug.tab.openVariablesTitle', '打开变量窗口')">{{ t('framework.debug.tab.variables', '变量') }}</button>
+      <button class="db-btn-sm" @click="dock.restorePanel('debugTimeline')" :title="t('framework.debug.tab.openEventsTitle', '打开事件窗口')">{{ t('framework.debug.tab.events', '事件') }}</button>
+      <button class="db-btn-sm" @click="dock.restorePanel('debugSnapshots')" :title="t('framework.debug.tab.openSnapshotsTitle', '打开快照窗口')">{{ t('framework.debug.tab.snapshots', '快照') }}</button>
+      <button class="db-btn-sm" @click="panToCurrentNode()" :disabled="!currentNodeId" :title="t('framework.debug.tab.panToNodeTitle', '定位到当前运行节点')">{{ t('framework.debug.tab.panToNode', '📍 定位节点') }}</button>
       <template v-if="activeSessionId">
         <span class="db-session-badge">{{ activeSessionId }}</span>
       </template>
@@ -146,37 +151,37 @@ watch(() => ({
       <div class="db-section">
         <div class="db-sect-hd">
           <span class="db-badge" :class="statusClass(activeDoc.status)">{{ statusLabel(activeDoc.status) }}</span>
-          <span v-if="activeDoc.debug_session.step_mode" class="db-meta">步进模式: {{ activeDoc.debug_session.step_mode }}</span>
-          <span v-if="activeDoc.debug_session.paused_reason" class="db-meta">暂停原因: {{ activeDoc.debug_session.paused_reason }}</span>
+          <span v-if="activeDoc.debug_session.step_mode" class="db-meta">{{ t('framework.debug.tab.stepMode', '步进模式') }}: {{ activeDoc.debug_session.step_mode }}</span>
+          <span v-if="activeDoc.debug_session.paused_reason" class="db-meta">{{ t('framework.debug.tab.pausedReason', '暂停原因') }}: {{ activeDoc.debug_session.paused_reason }}</span>
         </div>
 
         <!-- Control buttons -->
         <div class="db-ctls">
-          <button class="db-ctl-btn" :disabled="debugStore.controlLoading || activeDoc.debug_session.status !== 'paused'" @click="doControl('continue')">▶ 继续</button>
-          <button class="db-ctl-btn" :disabled="debugStore.controlLoading || !['running','stepping'].includes(activeDoc.debug_session.status)" @click="doControl('pause')">⏸ 暂停</button>
-          <button class="db-ctl-btn" :disabled="debugStore.controlLoading || activeDoc.debug_session.status !== 'paused'" @click="doControl('step-over')">⤵ 单步跳过</button>
-          <button class="db-ctl-btn" :disabled="debugStore.controlLoading || activeDoc.debug_session.status !== 'paused'" @click="doControl('step-into')">↓ 单步进入</button>
-          <button class="db-ctl-btn" :disabled="debugStore.controlLoading || activeDoc.debug_session.status !== 'paused' || !activeDoc.debug_session.can_step_out" @click="doControl('step-out')">↑ 单步跳出</button>
-          <button class="db-ctl-btn db-ctl-abort" :disabled="debugStore.controlLoading || !['preparing','running','paused','stepping'].includes(activeDoc.debug_session.status)" @click="doControl('abort')">✕ 中止</button>
+          <button class="db-ctl-btn" :disabled="debugStore.controlLoading || activeDoc.debug_session.status !== 'paused'" @click="doControl('continue')">{{ t('framework.debug.tab.btnContinue', '▶ 继续') }}</button>
+          <button class="db-ctl-btn" :disabled="debugStore.controlLoading || !['running','stepping'].includes(activeDoc.debug_session.status)" @click="doControl('pause')">{{ t('framework.debug.tab.btnPause', '⏸ 暂停') }}</button>
+          <button class="db-ctl-btn" :disabled="debugStore.controlLoading || activeDoc.debug_session.status !== 'paused'" @click="doControl('step-over')">{{ t('framework.debug.tab.btnStepOver', '⤵ 单步跳过') }}</button>
+          <button class="db-ctl-btn" :disabled="debugStore.controlLoading || activeDoc.debug_session.status !== 'paused'" @click="doControl('step-into')">{{ t('framework.debug.tab.btnStepInto', '↓ 单步进入') }}</button>
+          <button class="db-ctl-btn" :disabled="debugStore.controlLoading || activeDoc.debug_session.status !== 'paused' || !activeDoc.debug_session.can_step_out" @click="doControl('step-out')">{{ t('framework.debug.tab.btnStepOut', '↑ 单步跳出') }}</button>
+          <button class="db-ctl-btn db-ctl-abort" :disabled="debugStore.controlLoading || !['preparing','running','paused','stepping'].includes(activeDoc.debug_session.status)" @click="doControl('abort')">{{ t('framework.debug.tab.btnAbort', '✕ 中止') }}</button>
         </div>
-        <div v-if="debugStore.controlLoading" class="db-meta">已发送请求…</div>
+        <div v-if="debugStore.controlLoading" class="db-meta">{{ t('framework.debug.tab.requestSent', '已发送请求…') }}</div>
       </div>
 
       <!-- Graph projection summary -->
       <div class="db-section" v-if="debugStore.projection">
-        <h4>图投影摘要 {{ debugStore.projection.mode === 'live' ? '(实时)' : '(历史)' }}</h4>
+        <h4>{{ t('framework.debug.tab.projectionTitle', '图投影摘要') }} {{ debugStore.projection.mode === 'live' ? t('framework.debug.tab.projectionLive', '(实时)') : t('framework.debug.tab.projectionHistory', '(历史)') }}</h4>
         <div class="db-meta">
-          运行中 {{ Object.values(debugStore.projection.node_status_by_id).filter(s => s === 'running').length }}
-          · 等待中 {{ Object.values(debugStore.projection.node_status_by_id).filter(s => s === 'waiting').length }}
-          · 已完成 {{ Object.values(debugStore.projection.node_status_by_id).filter(s => s === 'completed').length }}
+          {{ t('framework.debug.tab.projectionRunning', '运行中') }} {{ Object.values(debugStore.projection.node_status_by_id).filter(s => s === 'running').length }}
+          · {{ t('framework.debug.tab.projectionWaiting', '等待中') }} {{ Object.values(debugStore.projection.node_status_by_id).filter(s => s === 'waiting').length }}
+          · {{ t('framework.debug.tab.projectionCompleted', '已完成') }} {{ Object.values(debugStore.projection.node_status_by_id).filter(s => s === 'completed').length }}
         </div>
-        <div v-if="debugStore.projection.paused_node_id" class="db-meta">暂停节点: {{ debugStore.projection.paused_node_id }}</div>
-        <div v-if="debugStore.projection.active_paths?.length" class="db-meta">活跃路径: {{ debugStore.projection.active_paths.length }} 条</div>
+        <div v-if="debugStore.projection.paused_node_id" class="db-meta">{{ t('framework.debug.tab.projectionPausedNode', '暂停节点') }}: {{ debugStore.projection.paused_node_id }}</div>
+        <div v-if="debugStore.projection.active_paths?.length" class="db-meta">{{ t('framework.debug.tab.projectionActivePaths', `活跃路径: ${debugStore.projection.active_paths.length} 条`, { n: debugStore.projection.active_paths.length }) }}</div>
       </div>
 
       <!-- Debug events -->
       <div class="db-section" v-if="debugStore.events.length">
-        <h4>调试事件 ({{ debugStore.eventsTotal }})</h4>
+        <h4>{{ t('framework.debug.tab.debugEvents', '调试事件') }} ({{ debugStore.eventsTotal }})</h4>
         <div v-for="ev in debugStore.events" :key="ev.event_id || `event-${ev.event_index}`"
           :data-event-id="ev.event_id || ''"
           :class="['db-ev', `db-ev-${ev.event_kind.replace('.','-')}`]">
@@ -190,13 +195,13 @@ watch(() => ({
 
       <!-- Object index -->
       <div class="db-section" v-if="activeDoc.object_index">
-        <h4>对象索引</h4>
-        <span>节点: {{ activeDoc.object_index.nodes.length }} · 端口: {{ activeDoc.object_index.ports.length }} · 边: {{ activeDoc.object_index.edges.length }}</span>
+        <h4>{{ t('framework.debug.tab.objectIndex', '对象索引') }}</h4>
+        <span>{{ t('framework.debug.tab.objectIndexNodes', '节点') }}: {{ activeDoc.object_index.nodes.length }} · {{ t('framework.debug.tab.objectIndexPorts', '端口') }}: {{ activeDoc.object_index.ports.length }} · {{ t('framework.debug.tab.objectIndexEdges', '边') }}: {{ activeDoc.object_index.edges.length }}</span>
       </div>
 
       <!-- Variable snapshot -->
       <div class="db-section" v-if="activeDoc.variable_snapshot && Object.keys(activeDoc.variable_snapshot).length">
-        <h4>变量快照</h4>
+        <h4>{{ t('framework.debug.tab.variableSnapshot', '变量快照') }}</h4>
         <div class="db-var-grid">
           <div v-for="(v, k) in activeDoc.variable_snapshot" :key="k" class="db-var-item">
             <span class="db-var-key">{{ k }}</span>
@@ -210,7 +215,7 @@ watch(() => ({
     <!-- History session detail -->
     <template v-if="historyDoc">
       <div class="db-section">
-        <h4>历史会话详情</h4>
+        <h4>{{ t('framework.debug.tab.historySessionDetail', '历史会话详情') }}</h4>
         <div class="db-sect-hd">
           <span class="db-badge ok">{{ historyDoc.source }}</span>
           <span class="db-sid">{{ historyDoc.session_id }}</span>
@@ -220,7 +225,7 @@ watch(() => ({
 
     <!-- Active sessions list -->
     <div class="db-section" v-if="debugStore.sessions.length">
-      <h4>活动会话 ({{ debugStore.sessions.length }})</h4>
+      <h4>{{ t('framework.debug.tab.activeSessions', '活动会话') }} ({{ debugStore.sessions.length }})</h4>
       <div v-for="s in debugStore.sessions" :key="s.session_id" class="db-row"
         @click="debugStore.loadActiveSession(s.session_id); debugStore.loadProjection(s.session_id, 'live'); debugStore.loadEvents(s.session_id); ['preparing','running','paused','stepping'].includes(s.status) && debugStore.startPolling(s.session_id)">
         <span class="db-badge" :class="statusClass(s.status)">{{ statusLabel(s.status) }}</span>
@@ -230,7 +235,7 @@ watch(() => ({
 
     <!-- History sessions -->
     <div class="db-section" v-if="debugStore.historySessions.length">
-      <h4>历史会话 ({{ debugStore.historySessions.length }})</h4>
+      <h4>{{ t('framework.debug.tab.historySessions', '历史会话') }} ({{ debugStore.historySessions.length }})</h4>
       <div v-for="(s, i) in debugStore.historySessions" :key="String((s as any).session_id ?? i)" class="db-row"
         @click="loadHistorySession((s as any).session_id)">
         <span class="db-badge" :class="statusClass((s as any).status ?? 'unknown')">{{ statusLabel((s as any).status ?? 'unknown') }}</span>

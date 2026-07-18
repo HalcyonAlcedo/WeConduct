@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
+import { t } from '@/i18n'
 
 const workspace = useWorkspaceStore()
 
@@ -38,9 +39,9 @@ function statusClass(status: string) {
 
 function statusLabel(status: string) {
   switch (status) {
-    case 'succeeded': return '成功'
-    case 'failed': return '失败'
-    case 'unsupported': return '不支持'
+    case 'succeeded': return t('framework.history.status.succeeded', '成功')
+    case 'failed': return t('framework.history.status.failed', '失败')
+    case 'unsupported': return t('framework.history.status.unsupported', '不支持')
     default: return status
   }
 }
@@ -63,8 +64,8 @@ function highestSeverity(item: typeof history.value[0]): string | null {
     <PlaceholderBanner
       v-if="history.length === 0"
       type="empty"
-      title="暂无编译记录"
-      description="运行编译后在此查看历史记录"
+      :title="t('framework.history.empty.title', '暂无编译记录')"
+      :description="t('framework.history.empty.description', '运行编译后在此查看历史记录')"
     />
 
     <div v-else class="ht-scroll">
@@ -72,13 +73,13 @@ function highestSeverity(item: typeof history.value[0]): string | null {
         <thead>
           <tr>
             <th class="col-exp"></th>
-            <th class="col-time">时间</th>
+            <th class="col-time">{{ t('framework.history.table.time', '时间') }}</th>
             <th class="col-seq">#</th>
-            <th class="col-status">状态</th>
-            <th class="col-kind">类型</th>
-            <th class="col-diag">诊断</th>
-            <th class="col-graph">图</th>
-            <th class="col-dur">耗时</th>
+            <th class="col-status">{{ t('framework.history.table.status', '状态') }}</th>
+            <th class="col-kind">{{ t('framework.history.table.kind', '类型') }}</th>
+            <th class="col-diag">{{ t('framework.history.table.diagnostics', '诊断') }}</th>
+            <th class="col-graph">{{ t('framework.history.table.graph', '图') }}</th>
+            <th class="col-dur">{{ t('framework.history.table.duration', '耗时') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -112,7 +113,7 @@ function highestSeverity(item: typeof history.value[0]): string | null {
               <td colspan="8">
                 <div class="ht-detail">
                   <div class="ht-detail-section">
-                    <h4 class="ht-detail-head">阶段明细</h4>
+                    <h4 class="ht-detail-head">{{ t('framework.history.detail.stagesTitle', '阶段明细') }}</h4>
                     <div class="ht-stage-cards">
                       <div
                         v-for="card in item.stage_cards"
@@ -121,26 +122,26 @@ function highestSeverity(item: typeof history.value[0]): string | null {
                       >
                         <span :class="['ht-stage-dot', stageStatusClass(card.status)]"></span>
                         <span class="ht-stage-name">{{ card.stage }}</span>
-                        <span class="ht-stage-diag">{{ card.diagnostic_count }} 诊断</span>
+                        <span class="ht-stage-diag">{{ t('framework.history.detail.stageDiag', '{n} 诊断', { n: card.diagnostic_count }) }}</span>
                       </div>
                     </div>
                   </div>
                   <div class="ht-detail-grid">
                     <div class="ht-detail-section">
-                      <h4 class="ht-detail-head">概要</h4>
+                      <h4 class="ht-detail-head">{{ t('framework.history.detail.overviewTitle', '概要') }}</h4>
                       <div class="ht-detail-meta">
-                        <span>总阶段: {{ item.stage_overview.total_stage_count }}</span>
-                        <span>成功: {{ item.stage_overview.succeeded_stage_count }}</span>
-                        <span v-if="item.stage_overview.failed_stage_count">失败: {{ item.stage_overview.failed_stage_count }}</span>
-                        <span v-if="item.stage_overview.terminal_stage">终止: {{ item.stage_overview.terminal_stage }}</span>
+                        <span>{{ t('framework.history.detail.totalStages', '总阶段') }}: {{ item.stage_overview.total_stage_count }}</span>
+                        <span>{{ t('framework.history.detail.succeeded', '成功') }}: {{ item.stage_overview.succeeded_stage_count }}</span>
+                        <span v-if="item.stage_overview.failed_stage_count">{{ t('framework.history.detail.failed', '失败') }}: {{ item.stage_overview.failed_stage_count }}</span>
+                        <span v-if="item.stage_overview.terminal_stage">{{ t('framework.history.detail.terminal', '终止') }}: {{ item.stage_overview.terminal_stage }}</span>
                       </div>
                     </div>
                     <div class="ht-detail-section" v-if="item.primary_diagnostic">
-                      <h4 class="ht-detail-head">主要诊断</h4>
+                      <h4 class="ht-detail-head">{{ t('framework.history.detail.primaryTitle', '主要诊断') }}</h4>
                       <div class="ht-detail-meta">
-                        <span>阶段: {{ item.primary_diagnostic.stage }}</span>
-                        <span>类别: {{ item.primary_diagnostic.category }}</span>
-                        <span>严重度: {{ item.primary_diagnostic.severity }}</span>
+                        <span>{{ t('framework.history.detail.stage', '阶段') }}: {{ item.primary_diagnostic.stage }}</span>
+                        <span>{{ t('framework.history.detail.category', '类别') }}: {{ item.primary_diagnostic.category }}</span>
+                        <span>{{ t('framework.history.detail.severity', '严重度') }}: {{ item.primary_diagnostic.severity }}</span>
                       </div>
                       <p class="ht-detail-msg">{{ item.primary_diagnostic.message }}</p>
                     </div>

@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useCompilationStore } from '@/stores/compilationStore'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
+import { t } from '@/i18n'
 import MonacoEditor from '@/components/input/MonacoEditor.vue'
 
 const compilation = useCompilationStore()
@@ -71,11 +72,11 @@ const syncStatus = computed(() => graphWs.syncStatus)
       >
         <option v-for="k in sourceKinds" :key="k" :value="k">{{ k }}</option>
       </select>
-      <span class="sp-status" v-if="compilation.inputState === 'valid'">✓ 就绪</span>
-      <span class="sp-status empty" v-else>空</span>
+      <span class="sp-status" v-if="compilation.inputState === 'valid'">{{ t('framework.sourceInput.ready', '✓ 就绪') }}</span>
+      <span class="sp-status empty" v-else>{{ t('framework.sourceInput.empty', '空') }}</span>
       <span v-if="syncStatus !== 'idle'" class="sp-sync-status" :class="'sync-'+syncStatus">{{ syncStatus === 'syncing' ? '⟳' : syncStatus === 'synced' ? '✓' : syncStatus === 'failed' ? '✕' : '⟳' }}</span>
-      <button class="sp-btn-ghost" @click="graphWs.syncSource()" :disabled="syncStatus === 'syncing'" title="从节点图同步源码">🔄 同步</button>
-      <button class="sp-btn-ghost" @click="onClear">清空</button>
+      <button class="sp-btn-ghost" @click="graphWs.syncSource()" :disabled="syncStatus === 'syncing'" :title="t('framework.sourceInput.syncTitle', '从节点图同步源码')">{{ t('framework.sourceInput.sync', '🔄 同步') }}</button>
+      <button class="sp-btn-ghost" @click="onClear">{{ t('framework.sourceInput.clear', '清空') }}</button>
     </div>
 
     <div class="sp-editor-wrap">
@@ -98,13 +99,13 @@ const syncStatus = computed(() => graphWs.syncStatus)
     </div>
 
     <div class="sp-statusbar">
-      <span>字数: {{ compilation.sourceText.length }}</span>
+      <span>{{ t('framework.sourceInput.statusbar.chars', `字数: ${compilation.sourceText.length}`, { n: compilation.sourceText.length }) }}</span>
       <span class="sp-sb-div">|</span>
-      <span>行: {{ compilation.sourceText ? compilation.sourceText.split('\n').length : 0 }}</span>
+      <span>{{ t('framework.sourceInput.statusbar.lines', `行: ${compilation.sourceText ? compilation.sourceText.split('\n').length : 0}`, { n: compilation.sourceText ? compilation.sourceText.split('\n').length : 0 }) }}</span>
       <span class="sp-sb-div">|</span>
-      <span>编码: UTF-8</span>
+      <span>{{ t('framework.sourceInput.statusbar.encoding', '编码: UTF-8') }}</span>
       <span class="sp-sb-div">|</span>
-      <span>光标: Ln 1, Col 1</span>
+      <span>{{ t('framework.sourceInput.statusbar.cursor', '光标: Ln 1, Col 1') }}</span>
     </div>
 
     <div class="sp-actions">
@@ -113,7 +114,7 @@ const syncStatus = computed(() => graphWs.syncStatus)
         :disabled="!compilation.canCompile"
         @click="compilation.compile()"
       >
-        {{ compilation.isCompiling ? '编译中…' : '▶ 编译' }}
+        {{ compilation.isCompiling ? t('framework.sourceInput.compiling', '编译中…') : t('framework.sourceInput.compile', '▶ 编译') }}
       </button>
     </div>
   </div>

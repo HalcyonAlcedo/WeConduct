@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useDebugStore } from '@/stores/debugStore'
+import { t } from '@/i18n'
 
 const debugStore = useDebugStore()
 const emit = defineEmits<{
@@ -42,12 +43,12 @@ async function exitHistory() {
 
 <template>
   <div class="dtp-root">
-    <div class="dtp-empty" v-if="!events.length">无事件记录</div>
+    <div class="dtp-empty" v-if="!events.length">{{ t('framework.debug.timeline.empty', '无事件记录') }}</div>
     <template v-else>
       <div class="dtp-toolbar">
-        <span class="dtp-summary">共 {{ total }} 条事件</span>
+        <span class="dtp-summary">{{ t('framework.debug.timeline.eventCount', `共 ${total} 条事件`, { n: total }) }}</span>
         <button v-if="selectedEventIndex !== null" data-action="exit-history" class="dtp-exit"
-          :disabled="projectionLoading" @click="exitHistory">退出历史查看</button>
+          :disabled="projectionLoading" @click="exitHistory">{{ t('framework.debug.timeline.exitHistory', '退出历史查看') }}</button>
       </div>
       <div v-for="(ev, index) in events" :key="eventKey(ev, index)"
         :data-event-id="ev.event_id || ''"
@@ -58,19 +59,19 @@ async function exitHistory() {
         <span v-if="ev.reason" class="dtp-reason">{{ ev.reason }}</span>
         <div class="dtp-meta">
           <span v-if="ev.event_index != null">#{{ ev.event_index }}</span>
-          <span v-if="ev.keyframe_id" class="dtp-keyframe">关键帧</span>
-          <span v-if="ev.node_id">节点: {{ ev.node_id }}</span>
-          <span v-if="ev.session_id">会话: {{ ev.session_id }}</span>
-          <span v-if="ev.recorded_at">时间: {{ ev.recorded_at }}</span>
-          <span v-if="ev.frame_identity">帧: {{ ev.frame_identity.slice(0, 12) }}</span>
-          <span v-if="ev.pause_timing">时机: {{ ev.pause_timing }}</span>
+          <span v-if="ev.keyframe_id" class="dtp-keyframe">{{ t('framework.debug.timeline.keyframe', '关键帧') }}</span>
+          <span v-if="ev.node_id">{{ t('framework.debug.timeline.node', '节点') }}: {{ ev.node_id }}</span>
+          <span v-if="ev.session_id">{{ t('framework.debug.timeline.session', '会话') }}: {{ ev.session_id }}</span>
+          <span v-if="ev.recorded_at">{{ t('framework.debug.timeline.time', '时间') }}: {{ ev.recorded_at }}</span>
+          <span v-if="ev.frame_identity">{{ t('framework.debug.timeline.frame', '帧') }}: {{ ev.frame_identity.slice(0, 12) }}</span>
+          <span v-if="ev.pause_timing">{{ t('framework.debug.timeline.timing', '时机') }}: {{ ev.pause_timing }}</span>
           <span v-if="ev.breakpoint_hit_ordinal_in_session != null">#{{ ev.breakpoint_hit_ordinal_in_session }}</span>
         </div>
         <div v-if="ev.instance_path?.length" class="dtp-stack">
-          实例路径: {{ ev.instance_path.join(' → ') }}
+          {{ t('framework.debug.timeline.instancePath', '实例路径') }}: {{ ev.instance_path.join(' → ') }}
         </div>
         <div v-if="ev.iteration_stack?.length" class="dtp-stack">
-          迭代栈: {{ ev.iteration_stack.join(' → ') }}
+          {{ t('framework.debug.timeline.iterationStack', '迭代栈') }}: {{ ev.iteration_stack.join(' → ') }}
         </div>
       </div>
     </template>

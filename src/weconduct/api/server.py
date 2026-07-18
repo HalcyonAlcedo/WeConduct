@@ -734,10 +734,22 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             return
 
         if request_path == "/api/workbench/languages":
-            manifests = list_available_languages(self._resolve_preferences_path())
+            prefs_path = self._resolve_preferences_path()
+            manifests = list_available_languages(prefs_path)
+            languages_dir = _languages_directory(prefs_path)
+            # Ensure the directory exists so the "open data dir" button always
+            # has a real target (packs are user-authored; the dir may be absent
+            # on a fresh install).
+            try:
+                languages_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
             self._write_json(
                 HTTPStatus.OK,
-                {"languages": manifests},
+                {
+                    "languages": manifests,
+                    "languages_directory": str(languages_dir),
+                },
             )
             return
 

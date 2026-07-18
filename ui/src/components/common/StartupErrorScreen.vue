@@ -6,6 +6,7 @@
  */
 import { computed, ref } from 'vue'
 import { useStartupStore } from '@/stores/startupStore'
+import { t } from '@/i18n'
 import type { StartupSeverity, StartupSubsystemDiagnostic } from '@/types/domains/api'
 
 const emit = defineEmits<{
@@ -19,21 +20,21 @@ const startup = useStartupStore()
 
 const SEVERITY_META: Record<StartupSeverity, { label: string; tag: string; desc: string }> = {
   critical: {
-    label: '严重',
-    tag: '无法启动',
-    desc: '程序遇到无法恢复的错误，当前无法启动。请检查后端服务或联系支持。',
+    label: t('framework.startupError.severity.critical.label', '严重'),
+    tag: t('framework.startupError.severity.critical.tag', '无法启动'),
+    desc: t('framework.startupError.severity.critical.desc', '程序遇到无法恢复的错误，当前无法启动。请检查后端服务或联系支持。'),
   },
   fault: {
-    label: '故障',
-    tag: '配置或设置错误导致无法启动',
-    desc: '配置或工作区状态文件损坏/不兼容，导致程序无法启动。可备份并重置为默认配置后强行启动（原文件会保留为备份，但相关配置将丢失）。',
+    label: t('framework.startupError.severity.fault.label', '故障'),
+    tag: t('framework.startupError.severity.fault.tag', '配置或设置错误导致无法启动'),
+    desc: t('framework.startupError.severity.fault.desc', '配置或工作区状态文件损坏/不兼容，导致程序无法启动。可备份并重置为默认配置后强行启动（原文件会保留为备份，但相关配置将丢失）。'),
   },
   anomaly: {
-    label: '异常',
-    tag: '不影响使用',
-    desc: '软件启动存在问题，但不影响正常使用。可选择强行启动。',
+    label: t('framework.startupError.severity.anomaly.label', '异常'),
+    tag: t('framework.startupError.severity.anomaly.tag', '不影响使用'),
+    desc: t('framework.startupError.severity.anomaly.desc', '软件启动存在问题，但不影响正常使用。可选择强行启动。'),
   },
-  ok: { label: '正常', tag: '', desc: '' },
+  ok: { label: t('framework.startupError.severity.ok.label', '正常'), tag: '', desc: '' },
 }
 
 const meta = computed(() => SEVERITY_META[startup.severity])
@@ -48,31 +49,35 @@ const copied = ref(false)
 
 function formatSubsystem(s: StartupSubsystemDiagnostic): string {
   const lines: string[] = []
-  lines.push(`[子系统] ${s.label} (${s.subsystem})`)
-  lines.push(`  状态: ${s.status}`)
-  lines.push(`  严重度: ${severityLabel(s.severity)} (${s.severity})`)
-  lines.push(`  位置: ${s.location}`)
-  if (s.error_code) lines.push(`  错误码: ${s.error_code}`)
-  lines.push(`  信息: ${s.message}`)
-  lines.push(`  可恢复: ${s.recoverable ? '是' : '否'}`)
+  lines.push(t('framework.startupError.report.subsystemHeader', `[子系统] ${s.label} (${s.subsystem})`, { label: s.label, subsystem: s.subsystem }))
+  lines.push(t('framework.startupError.report.status', `  状态: ${s.status}`, { status: s.status }))
+  lines.push(t('framework.startupError.report.severity', `  严重度: ${severityLabel(s.severity)} (${s.severity})`, { label: severityLabel(s.severity), severity: s.severity }))
+  lines.push(t('framework.startupError.report.location', `  位置: ${s.location}`, { location: s.location }))
+  if (s.error_code) lines.push(t('framework.startupError.report.errorCode', `  错误码: ${s.error_code}`, { code: s.error_code }))
+  lines.push(t('framework.startupError.report.message', `  信息: ${s.message}`, { message: s.message }))
+  const recoverableText = s.recoverable
+    ? t('framework.startupError.report.yes', '是')
+    : t('framework.startupError.report.no', '否')
+  lines.push(t('framework.startupError.report.recoverable', `  可恢复: ${recoverableText}`, { value: recoverableText }))
   return lines.join('\n')
 }
 
 function buildReportText(): string {
   const r = startup.report
   const lines: string[] = []
-  lines.push('WeConduct 启动错误报告')
-  lines.push(`生成时间: ${r?.generated_at ?? new Date().toISOString()}`)
-  lines.push(`严重度: ${severityLabel(startup.severity)} (${startup.severity}) — ${meta.value.tag}`)
-  if (startup.triggerError?.message) lines.push(`触发错误: ${startup.triggerError.message}`)
-  if (startup.triggerError?.code) lines.push(`触发错误码: ${startup.triggerError.code}`)
-  if (startup.triggerError?.status != null) lines.push(`HTTP 状态: ${startup.triggerError.status}`)
+  lines.push(t('framework.startupError.report.title', 'WeConduct 启动错误报告'))
+  const generatedAt = r?.generated_at ?? new Date().toISOString()
+  lines.push(t('framework.startupError.report.generatedAt', `生成时间: ${generatedAt}`, { time: generatedAt }))
+  lines.push(t('framework.startupError.report.severitySummary', `严重度: ${severityLabel(startup.severity)} (${startup.severity}) — ${meta.value.tag}`, { label: severityLabel(startup.severity), severity: startup.severity, tag: meta.value.tag }))
+  if (startup.triggerError?.message) lines.push(t('framework.startupError.report.triggerError', `触发错误: ${startup.triggerError.message}`, { message: startup.triggerError.message }))
+  if (startup.triggerError?.code) lines.push(t('framework.startupError.report.triggerCode', `触发错误码: ${startup.triggerError.code}`, { code: startup.triggerError.code }))
+  if (startup.triggerError?.status != null) lines.push(t('framework.startupError.report.httpStatus', `HTTP 状态: ${startup.triggerError.status}`, { status: startup.triggerError.status }))
   lines.push('')
   for (const s of startup.problemSubsystems) {
     lines.push(formatSubsystem(s))
     lines.push('')
   }
-  if (startup.recoverError) lines.push(`恢复错误: ${startup.recoverError}`)
+  if (startup.recoverError) lines.push(t('framework.startupError.report.recoverError', `恢复错误: ${startup.recoverError}`, { error: startup.recoverError }))
   return lines.join('\n').trimEnd()
 }
 
@@ -106,7 +111,7 @@ function onExit() {
       <header class="se-header">
         <div class="se-badge">{{ meta.label }}</div>
         <div class="se-title-group">
-          <h1 class="se-title">程序启动失败</h1>
+          <h1 class="se-title">{{ t('framework.startupError.title', '程序启动失败') }}</h1>
           <p class="se-tag">{{ meta.tag }}</p>
         </div>
       </header>
@@ -114,15 +119,15 @@ function onExit() {
       <p class="se-desc">{{ meta.desc }}</p>
 
       <section v-if="startup.triggerError" class="se-trigger">
-        <span class="se-trigger-label">触发错误</span>
+        <span class="se-trigger-label">{{ t('framework.startupError.triggerLabel', '触发错误') }}</span>
         <code class="se-selectable">{{ startup.triggerError.message }}</code>
       </section>
 
       <section class="se-subsystems">
         <div class="se-section-head">
-          <span>问题详情（{{ startup.problemSubsystems.length }}）</span>
+          <span>{{ t('framework.startupError.problemDetails', `问题详情（${startup.problemSubsystems.length}）`, { n: startup.problemSubsystems.length }) }}</span>
           <button class="se-copy-all" :disabled="busy" @click="copyReport">
-            {{ copied ? '✓ 已复制' : '📋 复制全部' }}
+            {{ copied ? t('framework.startupError.copied', '✓ 已复制') : t('framework.startupError.copyAll', '📋 复制全部') }}
           </button>
         </div>
 
@@ -136,22 +141,22 @@ function onExit() {
             <span class="se-item-sev">{{ severityLabel(s.severity) }}</span>
             <span class="se-item-label">{{ s.label }}</span>
             <span class="se-item-key">{{ s.subsystem }}</span>
-            <span v-if="s.recoverable" class="se-item-recoverable">可恢复</span>
+            <span v-if="s.recoverable" class="se-item-recoverable">{{ t('framework.startupError.recoverable', '可恢复') }}</span>
           </div>
           <dl class="se-fields">
             <div class="se-field">
-              <dt>位置</dt>
+              <dt>{{ t('framework.startupError.field.location', '位置') }}</dt>
               <dd>
                 <code class="se-selectable">{{ s.location }}</code>
-                <button class="se-copy-mini" title="复制路径" @click="copyText(s.location)">📋</button>
+                <button class="se-copy-mini" :title="t('framework.startupError.copyPath', '复制路径')" @click="copyText(s.location)">📋</button>
               </dd>
             </div>
             <div v-if="s.error_code" class="se-field">
-              <dt>错误码</dt>
+              <dt>{{ t('framework.startupError.field.errorCode', '错误码') }}</dt>
               <dd><code class="se-selectable">{{ s.error_code }}</code></dd>
             </div>
             <div class="se-field">
-              <dt>信息</dt>
+              <dt>{{ t('framework.startupError.field.message', '信息') }}</dt>
               <dd class="se-selectable">{{ s.message }}</dd>
             </div>
           </dl>
@@ -159,7 +164,7 @@ function onExit() {
       </section>
 
       <p v-if="startup.recoverError" class="se-recover-error se-selectable">
-        恢复失败：{{ startup.recoverError }}
+        {{ t('framework.startupError.recoverFailed', `恢复失败：${startup.recoverError}`, { error: startup.recoverError }) }}
       </p>
 
       <footer class="se-actions">
@@ -169,7 +174,7 @@ function onExit() {
           :disabled="busy"
           @click="onRecoverAndRestart"
         >
-          {{ startup.phase === 'recovering' ? '恢复中…' : '用默认配置强行启动' }}
+          {{ startup.phase === 'recovering' ? t('framework.startupError.action.recovering', '恢复中…') : t('framework.startupError.action.recoverAndStart', '用默认配置强行启动') }}
         </button>
         <button
           v-if="startup.canForceStart"
@@ -177,14 +182,14 @@ function onExit() {
           :disabled="busy"
           @click="onForceStart"
         >
-          强行启动
+          {{ t('framework.startupError.action.forceStart', '强行启动') }}
         </button>
-        <button class="se-btn" :disabled="busy" @click="onRetry">重试</button>
-        <button v-if="startup.severity === 'critical'" class="se-btn" @click="onExit">退出</button>
+        <button class="se-btn" :disabled="busy" @click="onRetry">{{ t('framework.startupError.action.retry', '重试') }}</button>
+        <button v-if="startup.severity === 'critical'" class="se-btn" @click="onExit">{{ t('framework.startupError.action.exit', '退出') }}</button>
       </footer>
 
       <p v-if="startup.canRecover" class="se-hint">
-        提示：强行启动前会将损坏文件备份为 <code>.corrupt-*.bak</code>，相关配置将重置为默认值。
+        {{ t('framework.startupError.hintPrefix', '提示：强行启动前会将损坏文件备份为 ') }}<code>.corrupt-*.bak</code>{{ t('framework.startupError.hintSuffix', '，相关配置将重置为默认值。') }}
       </p>
     </div>
   </div>

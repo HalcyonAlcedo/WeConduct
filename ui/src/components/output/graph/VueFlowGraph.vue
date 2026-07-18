@@ -18,6 +18,7 @@ import { useDockStore } from '@/stores/dockStore'
 import { useToastStore } from '@/stores/toastStore'
 import { useDebugStore } from '@/stores/debugStore'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
+import { t } from '@/i18n'
 
 const compilation = useCompilationStore()
 const workspace = useGraphWorkspaceStore()
@@ -58,7 +59,7 @@ async function applyNodeDebugConfig(nodeId: string, nextNodeConfig: Record<strin
         debugStore.getDebuggerConfig(nextNodeConfig),
       )
     } catch (error: any) {
-      toast.error('调试配置更新失败', error?.message || '请求失败')
+      toast.error(t('framework.graph.toast.debugConfigFailed', '调试配置更新失败'), error?.message || t('framework.graph.toast.requestFailed', '请求失败'))
     }
     return
   }
@@ -123,7 +124,7 @@ function closeContextMenu() { contextMenu.value = null; edgeContextMenu.value = 
 function copyNode() {
   if (!contextMenu.value) return
   const node = workspace.graphModel?.nodes.find(n => n.node_id === contextMenu.value!.nodeId)
-  if (node) { copiedNode.value = JSON.parse(JSON.stringify(node)); toast.info('已复制', node.display_name || node.node_id) }
+  if (node) { copiedNode.value = JSON.parse(JSON.stringify(node)); toast.info(t('framework.graph.toast.copied', '已复制'), node.display_name || node.node_id) }
   closeContextMenu()
 }
 
@@ -134,7 +135,7 @@ async function pasteNode() {
   const newNodeId = await workspace.pasteNode(copiedNode.value)
   if (newNodeId) {
     graphStore.selectNode(newNodeId)
-    toast.info('已粘贴', copiedNode.value.display_name || newNodeId)
+    toast.info(t('framework.graph.toast.pasted', '已粘贴'), copiedNode.value.display_name || newNodeId)
   }
 }
 
@@ -155,14 +156,14 @@ function switchEdgeType() {
   if (!edgeContextMenu.value) return
   const next = EDGE_TYPE_CYCLE[edgeContextMenu.value.relation] || 'control'
   workspace.updateEdgeRelation(edgeContextMenu.value.edgeId, next)
-  toast.info('边类型', next)
+  toast.info(t('framework.graph.toast.edgeType', '边类型'), next)
   closeContextMenu()
 }
 function deleteEdge() {
   if (!workspace.isGraphEditable) return
   if (!edgeContextMenu.value) return
   workspace.removeEdge(edgeContextMenu.value.edgeId)
-  toast.info('边已删除')
+  toast.info(t('framework.graph.toast.edgeDeleted', '边已删除'))
   closeContextMenu()
 }
 function deleteNode() {
@@ -172,12 +173,12 @@ function deleteNode() {
   closeContextMenu()
   if (!graphPreferences.value.confirm_delete_node) {
     workspace.removeNode(nodeId)
-    toast.info('节点已删除')
+    toast.info(t('framework.graph.toast.nodeDeleted', '节点已删除'))
     return
   }
   ;(window as any).__openDeleteConfirm?.(() => {
     workspace.removeNode(nodeId)
-    toast.info('节点已删除')
+    toast.info(t('framework.graph.toast.nodeDeleted', '节点已删除'))
   })
 }
 /** Ensure metadata panel is visible in right zone and select the node */
@@ -222,7 +223,7 @@ async function onDrop(e: DragEvent) {
       if (graphPreferences.value.auto_open_node_on_drop) {
         openMetadataPanel(nodeId)
       }
-      toast.info('已添加节点', item.display_name)
+      toast.info(t('framework.graph.toast.nodeAdded', '已添加节点'), item.display_name)
     }
   } catch { /* ignore invalid drops */ }
 }
@@ -296,7 +297,7 @@ function onEdgeClick(event: any) {
   const next: Record<string, string> = { control: 'data', data: 'control' }
   const newLayer = next[e.relation_layer] || 'control'
   workspace.updateEdgeRelation(e.edge_id, newLayer)
-  toast.info('边类型已切换', newLayer)
+  toast.info(t('framework.graph.toast.edgeTypeSwitched', '边类型已切换'), newLayer)
 }
 function onEdgesChange(changes: any[]) {
   if (!workspace.isGraphEditable) return
@@ -327,9 +328,9 @@ const hasCachedViewport = computed(() => cachedRawViewport.value !== null)
 <template>
   <div class="vf-wrapper" @dragover="onDragOver" @drop="onDrop">
     <div v-if="!hasGraph" class="vf-empty">
-      <span class="vf-empty-text">无图数据
-        <span v-if="isWorkspaceEmpty" class="vf-source-tag">(工作区图为空 — 请编译源代码或在画布上添加节点)</span>
-        <span v-else> — 编译源代码以生成图模型</span>
+      <span class="vf-empty-text">{{ t('framework.graph.canvas.emptyText', '无图数据') }}
+        <span v-if="isWorkspaceEmpty" class="vf-source-tag">{{ t('framework.graph.canvas.emptyWorkspace', '(工作区图为空 — 请编译源代码或在画布上添加节点)') }}</span>
+        <span v-else> {{ t('framework.graph.canvas.emptyHint', '— 编译源代码以生成图模型') }}</span>
       </span>
     </div>
     <VueFlow
@@ -367,30 +368,30 @@ const hasCachedViewport = computed(() => cachedRawViewport.value !== null)
 
     <!-- Context Menu -->
     <div v-if="contextMenu" class="vf-ctxmenu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.self="closeContextMenu">
-      <button @click="inspectNode">查看属性</button>
-      <button @click="copyNode">复制节点</button>
-      <button v-if="copiedNode && workspace.isGraphEditable" @click="pasteNode">粘贴节点</button>
-      <button v-if="workspace.isGraphEditable" @click="deleteNode">删除节点</button>
+      <button @click="inspectNode">{{ t('framework.graph.ctxMenu.inspect', '查看属性') }}</button>
+      <button @click="copyNode">{{ t('framework.graph.ctxMenu.copy', '复制节点') }}</button>
+      <button v-if="copiedNode && workspace.isGraphEditable" @click="pasteNode">{{ t('framework.graph.ctxMenu.paste', '粘贴节点') }}</button>
+      <button v-if="workspace.isGraphEditable" @click="deleteNode">{{ t('framework.graph.ctxMenu.delete', '删除节点') }}</button>
       <hr>
       <button v-if="canEditDebugConfig" @click="toggleBreakpointOnNode(); closeContextMenu()">
-        {{ nodeHasBP ? '🔴 移除断点' : '🔴 添加断点' }}
+        {{ nodeHasBP ? t('framework.graph.ctxMenu.removeBreakpoint', '🔴 移除断点') : t('framework.graph.ctxMenu.addBreakpoint', '🔴 添加断点') }}
       </button>
-      <button v-if="nodeHasBP && canEditDebugConfig" @click="setBPTiming('before'); closeContextMenu()" style="padding-left:20px">{{ nodeBPTiming === 'before' ? '✓ ' : '' }}执行前暂停</button>
-      <button v-if="nodeHasBP && canEditDebugConfig" @click="setBPTiming('after'); closeContextMenu()" style="padding-left:20px">{{ nodeBPTiming === 'after' ? '✓ ' : '' }}执行后暂停</button>
-      <button v-if="nodeHasBP && canEditDebugConfig" @click="setBPTiming('both'); closeContextMenu()" style="padding-left:20px">{{ nodeBPTiming === 'both' ? '✓ ' : '' }}前后都停</button>
+      <button v-if="nodeHasBP && canEditDebugConfig" @click="setBPTiming('before'); closeContextMenu()" style="padding-left:20px">{{ nodeBPTiming === 'before' ? '✓ ' : '' }}{{ t('framework.graph.ctxMenu.pauseBefore', '执行前暂停') }}</button>
+      <button v-if="nodeHasBP && canEditDebugConfig" @click="setBPTiming('after'); closeContextMenu()" style="padding-left:20px">{{ nodeBPTiming === 'after' ? '✓ ' : '' }}{{ t('framework.graph.ctxMenu.pauseAfter', '执行后暂停') }}</button>
+      <button v-if="nodeHasBP && canEditDebugConfig" @click="setBPTiming('both'); closeContextMenu()" style="padding-left:20px">{{ nodeBPTiming === 'both' ? '✓ ' : '' }}{{ t('framework.graph.ctxMenu.pauseBoth', '前后都停') }}</button>
       <button v-if="canEditDebugConfig" @click="toggleRecordFrameOnNode(); closeContextMenu()">
-        {{ nodeHasRF ? '◉ 移除记录帧' : '◉ 添加记录帧' }}
+        {{ nodeHasRF ? t('framework.graph.ctxMenu.removeRecordFrame', '◉ 移除记录帧') : t('framework.graph.ctxMenu.addRecordFrame', '◉ 添加记录帧') }}
       </button>
-      <hr><button @click="closeContextMenu">取消</button>
+      <hr><button @click="closeContextMenu">{{ t('framework.graph.ctxMenu.cancel', '取消') }}</button>
     </div>
     <div v-if="contextMenu || edgeContextMenu" class="vf-ctxmask" @click="closeContextMenu"></div>
 
     <!-- Edge Context Menu -->
     <div v-if="edgeContextMenu" class="vf-ctxmenu" :style="{ left: edgeContextMenu.x + 'px', top: edgeContextMenu.y + 'px' }">
-      <div class="vf-ctxmenu-label">边: {{ edgeContextMenu.relation }} <span v-if="edgeContextMenu.relation === 'observe'" class="vf-observe-warn">(不支持执行)</span></div>
-      <button v-if="workspace.isGraphEditable" @click="switchEdgeType">切换类型 ({{ EDGE_TYPE_CYCLE[edgeContextMenu.relation] || 'control' }})</button>
-      <button v-if="workspace.isGraphEditable" @click="deleteEdge">删除连线</button>
-      <hr><button @click="closeContextMenu">取消</button>
+      <div class="vf-ctxmenu-label">{{ t('framework.graph.edgeCtxMenu.label', `边: ${edgeContextMenu.relation}`, { relation: edgeContextMenu.relation }) }} <span v-if="edgeContextMenu.relation === 'observe'" class="vf-observe-warn">{{ t('framework.graph.edgeCtxMenu.observeUnsupported', '(不支持执行)') }}</span></div>
+      <button v-if="workspace.isGraphEditable" @click="switchEdgeType">{{ t('framework.graph.edgeCtxMenu.switchType', `切换类型 (${EDGE_TYPE_CYCLE[edgeContextMenu.relation] || 'control'})`, { next: EDGE_TYPE_CYCLE[edgeContextMenu.relation] || 'control' }) }}</button>
+      <button v-if="workspace.isGraphEditable" @click="deleteEdge">{{ t('framework.graph.edgeCtxMenu.deleteEdge', '删除连线') }}</button>
+      <hr><button @click="closeContextMenu">{{ t('framework.graph.ctxMenu.cancel', '取消') }}</button>
     </div>
   </div>
 </template>

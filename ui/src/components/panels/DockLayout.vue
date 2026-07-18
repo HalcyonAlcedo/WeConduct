@@ -3,6 +3,7 @@
  *  Empty zones act as thin drop targets. Zones auto-create on first panel drop. */
 import { ref, computed, onBeforeUnmount } from 'vue'
 import { useDockStore } from '@/stores/dockStore'
+import { t } from '@/i18n'
 import type { DockZone } from '@/stores/dockStore'
 
 const dock = useDockStore()
@@ -78,8 +79,8 @@ function toggleMaximize(panelId: string) {
     <div class="dl-maximized-bar">
       <span class="dl-maximized-title">{{ dock.allPanels.find(p => p.id === maximizedPanel)?.title ?? '' }}</span>
       <span class="dl-tab-actions" style="margin-left:auto">
-        <button class="dl-tab-btn" title="还原" @click="maximizedPanel = null">❐</button>
-        <button class="dl-tab-btn" title="关闭" @click="dock.closePanel(maximizedPanel!); maximizedPanel = null">✕</button>
+        <button class="dl-tab-btn" :title="t('framework.dockLayout.restore', '还原')" @click="maximizedPanel = null">❐</button>
+        <button class="dl-tab-btn" :title="t('framework.dockLayout.close', '关闭')" @click="dock.closePanel(maximizedPanel!); maximizedPanel = null">✕</button>
       </span>
     </div>
     <div class="dl-maximized-body">
@@ -111,8 +112,8 @@ function toggleMaximize(panelId: string) {
               @dragstart="onPanelDragStart(p.id)" @dragend="onPanelDragEnd"
             >{{ p.title }}</button>
             <span class="dl-tab-actions">
-              <button class="dl-tab-btn" title="最大化" :disabled="!leftRenderableActivePanelId" @click="leftRenderableActivePanelId && toggleMaximize(leftRenderableActivePanelId)">□</button>
-              <button class="dl-tab-btn" title="关闭" :disabled="!leftRenderableActivePanelId" @click="leftRenderableActivePanelId && dock.closePanel(leftRenderableActivePanelId)">✕</button>
+              <button class="dl-tab-btn" :title="t('framework.dockLayout.maximize', '最大化')" :disabled="!leftRenderableActivePanelId" @click="leftRenderableActivePanelId && toggleMaximize(leftRenderableActivePanelId)">□</button>
+              <button class="dl-tab-btn" :title="t('framework.dockLayout.close', '关闭')" :disabled="!leftRenderableActivePanelId" @click="leftRenderableActivePanelId && dock.closePanel(leftRenderableActivePanelId)">✕</button>
             </span>
           </div>
           <div class="dl-zone-body">
@@ -139,14 +140,14 @@ function toggleMaximize(panelId: string) {
             @dragstart="onPanelDragStart(p.id)" @dragend="onPanelDragEnd"
           >{{ p.title }}</button>
           <span class="dl-tab-actions">
-            <button class="dl-tab-btn" title="最大化" :disabled="!centerRenderableActivePanelId" @click="centerRenderableActivePanelId && toggleMaximize(centerRenderableActivePanelId)">□</button>
-            <button class="dl-tab-btn" title="关闭" :disabled="!centerRenderableActivePanelId" @click="centerRenderableActivePanelId && dock.closePanel(centerRenderableActivePanelId)">✕</button>
+            <button class="dl-tab-btn" :title="t('framework.dockLayout.maximize', '最大化')" :disabled="!centerRenderableActivePanelId" @click="centerRenderableActivePanelId && toggleMaximize(centerRenderableActivePanelId)">□</button>
+            <button class="dl-tab-btn" :title="t('framework.dockLayout.close', '关闭')" :disabled="!centerRenderableActivePanelId" @click="centerRenderableActivePanelId && dock.closePanel(centerRenderableActivePanelId)">✕</button>
           </span>
         </div>
         <div class="dl-zone-body">
           <slot :name="centerRenderableActivePanelId ?? ''" :zone="'center'" />
           <div v-if="dock.zones.center.panels.length === 0 && dock.visiblePanels.length > 0" class="dl-hint">
-            拖拽面板到此处或从「视图」菜单添加
+            {{ t('framework.dockLayout.dropHint', '拖拽面板到此处或从「视图」菜单添加') }}
           </div>
         </div>
       </div>
@@ -175,8 +176,8 @@ function toggleMaximize(panelId: string) {
               @dragstart="onPanelDragStart(p.id)" @dragend="onPanelDragEnd"
             >{{ p.title }}</button>
             <span class="dl-tab-actions">
-              <button class="dl-tab-btn" title="最大化" :disabled="!rightRenderableActivePanelId" @click="rightRenderableActivePanelId && toggleMaximize(rightRenderableActivePanelId)">□</button>
-              <button class="dl-tab-btn" title="关闭" :disabled="!rightRenderableActivePanelId" @click="rightRenderableActivePanelId && dock.closePanel(rightRenderableActivePanelId)">✕</button>
+              <button class="dl-tab-btn" :title="t('framework.dockLayout.maximize', '最大化')" :disabled="!rightRenderableActivePanelId" @click="rightRenderableActivePanelId && toggleMaximize(rightRenderableActivePanelId)">□</button>
+              <button class="dl-tab-btn" :title="t('framework.dockLayout.close', '关闭')" :disabled="!rightRenderableActivePanelId" @click="rightRenderableActivePanelId && dock.closePanel(rightRenderableActivePanelId)">✕</button>
             </span>
           </div>
           <div class="dl-zone-body">
@@ -210,8 +211,8 @@ function toggleMaximize(panelId: string) {
             @dragstart="onPanelDragStart(p.id)" @dragend="onPanelDragEnd"
           >{{ p.title }}</button>
           <span class="dl-tab-actions">
-            <button class="dl-tab-btn" title="最大化" :disabled="!bottomRenderableActivePanelId" @click="bottomRenderableActivePanelId && toggleMaximize(bottomRenderableActivePanelId)">□</button>
-            <button class="dl-tab-btn" title="关闭" :disabled="!bottomRenderableActivePanelId" @click="bottomRenderableActivePanelId && dock.closePanel(bottomRenderableActivePanelId)">✕</button>
+            <button class="dl-tab-btn" :title="t('framework.dockLayout.maximize', '最大化')" :disabled="!bottomRenderableActivePanelId" @click="bottomRenderableActivePanelId && toggleMaximize(bottomRenderableActivePanelId)">□</button>
+            <button class="dl-tab-btn" :title="t('framework.dockLayout.close', '关闭')" :disabled="!bottomRenderableActivePanelId" @click="bottomRenderableActivePanelId && dock.closePanel(bottomRenderableActivePanelId)">✕</button>
           </span>
         </div>
         <div class="dl-zone-body">
@@ -221,7 +222,7 @@ function toggleMaximize(panelId: string) {
     </div>
 
     <div v-if="dock.visiblePanels.length === 0" class="dl-empty">
-      所有面板已关闭 · 通过「视图」菜单重新打开
+      {{ t('framework.dockLayout.allClosed', '所有面板已关闭 · 通过「视图」菜单重新打开') }}
     </div>
 
   </div>

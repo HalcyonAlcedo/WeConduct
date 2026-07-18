@@ -5,6 +5,7 @@ import { useResourceStore } from '@/stores/resourceStore'
 import { useToastStore } from '@/stores/toastStore'
 import { fetchComponentLibrary } from '@/services/api'
 import type { ComponentLibraryItem } from '@/types/domains/api'
+import { t } from '@/i18n'
 
 const workspace = useGraphWorkspaceStore()
 const resource = useResourceStore()
@@ -61,7 +62,7 @@ function selectSuggestion(item: ComponentLibraryItem) {
 
 async function addNode(item: ComponentLibraryItem) {
   const nodeId = await workspace.addNode(item)
-  if (nodeId) toast.info('已添加节点', item.display_name)
+  if (nodeId) toast.info(t('framework.componentLibrary.toast.nodeAdded', '已添加节点'), item.display_name)
 }
 function onDragStart(e: DragEvent, item: ComponentLibraryItem) { e.dataTransfer!.setData('application/json', JSON.stringify(item)); e.dataTransfer!.effectAllowed = 'copy' }
 
@@ -87,14 +88,14 @@ function makeGroups(list: ComponentLibraryItem[]): [string, ComponentLibraryItem
 
 const topGroups = computed(() => {
   const result: { label: string; icon: string; groups: [string, ComponentLibraryItem[]][] }[] = []
-  if (builtinItems.value.length) result.push({ label: '内置组件', icon: '📦', groups: makeGroups(builtinItems.value) })
-  if (userItems.value.length) result.push({ label: '用户组件', icon: '🔧', groups: makeGroups(userItems.value) })
-  if (otherItems.value.length) result.push({ label: '其他', icon: '📋', groups: makeGroups(otherItems.value) })
+  if (builtinItems.value.length) result.push({ label: t('framework.componentLibrary.topGroup.builtin', '内置组件'), icon: '📦', groups: makeGroups(builtinItems.value) })
+  if (userItems.value.length) result.push({ label: t('framework.componentLibrary.topGroup.user', '用户组件'), icon: '🔧', groups: makeGroups(userItems.value) })
+  if (otherItems.value.length) result.push({ label: t('framework.componentLibrary.topGroup.other', '其他'), icon: '📋', groups: makeGroups(otherItems.value) })
   return result
 })
 
-function taxonomyLabel(t: string | undefined) {
-  switch (t) { case 'builtin_component': return '能力'; case 'control_structure': return '流程'; case 'logic_expression': return '逻辑'; case 'user_component': return '用户'; default: return '' }
+function taxonomyLabel(tax: string | undefined) {
+  switch (tax) { case 'builtin_component': return t('framework.componentLibrary.taxonomy.capability', '能力'); case 'control_structure': return t('framework.componentLibrary.taxonomy.flow', '流程'); case 'logic_expression': return t('framework.componentLibrary.taxonomy.logic', '逻辑'); case 'user_component': return t('framework.componentLibrary.taxonomy.user', '用户'); default: return '' }
 }
 
 function displayName(c: ComponentLibraryItem) {
@@ -109,7 +110,7 @@ function itemTooltip(c: ComponentLibraryItem) {
 <template>
   <div class="clp">
     <div class="clp-search-row">
-      <input v-model="searchQuery" class="clp-search" placeholder="搜索组件…" @focus="showSuggestions = suggestions.length > 0" @blur="showSuggestions = false" />
+      <input v-model="searchQuery" class="clp-search" :placeholder="t('framework.componentLibrary.searchPlaceholder', '搜索组件…')" @focus="showSuggestions = suggestions.length > 0" @blur="showSuggestions = false" />
       <div v-if="showSuggestions" class="clp-suggestions">
         <div v-for="s in suggestions" :key="s.resource_id" class="clp-sug-item" @mousedown.prevent="selectSuggestion(s)">
           <span class="clp-sug-name">{{ displayName(s) }}</span>
@@ -136,7 +137,7 @@ function itemTooltip(c: ComponentLibraryItem) {
       </div>
       </template>
     </template>
-    <div v-else class="clp-empty">{{ searchQuery ? '无搜索结果' : '暂无组件' }}</div>
+    <div v-else class="clp-empty">{{ searchQuery ? t('framework.componentLibrary.empty.noResults', '无搜索结果') : t('framework.componentLibrary.empty.noComponents', '暂无组件') }}</div>
   </div>
 </template>
 <style scoped>

@@ -10,6 +10,7 @@ import HistoryTab from '@/components/output/history/HistoryTab.vue'
 import RuntimeTab from '@/components/output/runtime/RuntimeTab.vue'
 import DebugTab from '@/components/output/debug/DebugTab.vue'
 import HostInfoTab from '@/components/output/host/HostInfoTab.vue'
+import { t } from '@/i18n'
 
 const compilation = useCompilationStore()
 const runtimeStore = useRuntimeStore()
@@ -54,10 +55,10 @@ const diagCount = computed(() => {
   <div class="output-panel">
     <!-- Tabs -->
     <div class="ot-tabs">
-      <button :class="tabClass('summary')" @click="activeTab = 'summary'">概要</button>
-      <button :class="tabClass('diagnostics')" @click="activeTab = 'diagnostics'">诊断 {{ diagCount }}</button>
-      <button :class="tabClass('graph')" @click="activeTab = 'graph'">图模型</button>
-      <button :class="tabClass('history')" @click="activeTab = 'history'">历史</button>
+      <button :class="tabClass('summary')" @click="activeTab = 'summary'">{{ t('framework.output.tabs.summary', '概要') }}</button>
+      <button :class="tabClass('diagnostics')" @click="activeTab = 'diagnostics'">{{ t('framework.output.tabs.diagnostics', '诊断') }} {{ diagCount }}</button>
+      <button :class="tabClass('graph')" @click="activeTab = 'graph'">{{ t('framework.output.tabs.graph', '图模型') }}</button>
+      <button :class="tabClass('history')" @click="activeTab = 'history'">{{ t('framework.output.tabs.history', '历史') }}</button>
       <button :class="tabClass('runtime')" @click="activeTab = 'runtime'">Runtime</button>
       <button :class="tabClass('debug')" @click="activeTab = 'debug'">Debug</button>
       <button :class="tabClass('host')" @click="activeTab = 'host'">Host</button>
