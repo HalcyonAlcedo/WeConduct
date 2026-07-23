@@ -70,3 +70,210 @@ def test_input_request_is_registered_as_a_builtin_component() -> None:
 
     assert input_request["resource_id"] == "builtin:input.request"
     assert input_request["implementation_kind"] == "core_atomic"
+
+
+def _build_input_timeout_graph(
+    *,
+    default_value: object = None,
+    include_default: bool = False,
+    include_timeout_edge: bool = True,
+) -> dict:
+    input_fields = [{"field_id": "region", "label": "Region"}]
+    if include_default:
+        input_fields[0]["default_value"] = default_value
+
+    nodes = [
+        {
+            "node_id": "start",
+            "lowered_kind": "control",
+            "source_anchor_ref": "start",
+            "expansion_role": "flow.start",
+            "display_name": "Start",
+            "node_kind": "flow.start",
+            "position": {"x": 0, "y": 0},
+            "ports": [
+                {
+                    "port_id": "next",
+                    "direction": "output",
+                    "relation_layer": "control",
+                    "semantic_slot": "control.next",
+                }
+            ],
+            "node_config": {"initial_variables": {}},
+        },
+        {
+            "node_id": "input",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "input",
+            "expansion_role": "input.request",
+            "display_name": "Request input",
+            "node_kind": "input.request",
+            "position": {"x": 160, "y": 0},
+            "ports": [
+                {
+                    "port_id": "in",
+                    "direction": "input",
+                    "relation_layer": "control",
+                    "semantic_slot": "control.previous",
+                },
+                {
+                    "port_id": "next",
+                    "direction": "output",
+                    "relation_layer": "control",
+                    "semantic_slot": "control.next",
+                },
+                {
+                    "port_id": "timeout",
+                    "direction": "output",
+                    "relation_layer": "control",
+                    "semantic_slot": "control.timeout",
+                },
+            ],
+            "node_config": {"fields": input_fields, "timeout_seconds": 0.01},
+        },
+        {
+            "node_id": "default-target",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "default-target",
+            "expansion_role": "data.set_variable",
+            "display_name": "Default path",
+            "node_kind": "data.set_variable",
+            "position": {"x": 320, "y": -80},
+            "ports": [
+                {
+                    "port_id": "in",
+                    "direction": "input",
+                    "relation_layer": "control",
+                    "semantic_slot": "control.previous",
+                }
+            ],
+            "node_config": {"name": "path", "value": "default"},
+        },
+        {
+            "node_id": "timeout-target",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "timeout-target",
+            "expansion_role": "data.set_variable",
+            "display_name": "Timeout path",
+            "node_kind": "data.set_variable",
+            "position": {"x": 320, "y": 80},
+            "ports": [
+                {
+                    "port_id": "in",
+                    "direction": "input",
+                    "relation_layer": "control",
+                    "semantic_slot": "control.previous",
+                }
+            ],
+            "node_config": {"name": "path", "value": "timeout"},
+        },
+    ]
+    edges = [
+        {
+            "edge_id": "start-input",
+            "from_node_id": "start",
+            "from_port_id": "next",
+            "to_node_id": "input",
+            "to_port_id": "in",
+            "relation_layer": "control",
+        },
+        {
+            "edge_id": "input-default",
+            "from_node_id": "input",
+            "from_port_id": "next",
+            "to_node_id": "default-target",
+            "to_port_id": "in",
+            "relation_layer": "control",
+        },
+    ]
+    if include_timeout_edge:
+        edges.append(
+            {
+                "edge_id": "input-timeout",
+                "from_node_id": "input",
+                "from_port_id": "timeout",
+                "to_node_id": "timeout-target",
+                "to_port_id": "in",
+                "relation_layer": "control",
+            }
+        )
+    return {
+        "graph_model_id": "graph:workspace",
+        "compilation_id": None,
+        "graph_schema_version": "graph-v1",
+        "nodes": nodes,
+        "edges": edges,
+        "graph_effective_diagnostic_anchor_refs": [],
+    }
+
+
+def test_input_request_timeout_routes_only_to_connected_timeout_port() -> None:
+    service = CompilationWorkbenchService()
+    started = service.start_runtime_session(
+        graph_document_payload=_build_input_timeout_graph(),
+    )
+
+    result = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    node_states = {item["node_id"]: item for item in result["node_states"]}
+    assert result["status"] == "completed"
+    assert node_states["input"]["output"]["status"] == "timed_out"
+    assert node_states["timeout-target"]["node_status"] == "completed"
+    assert "default-target" in result["result"]["skipped_node_ids"]
+
+
+def test_input_request_timeout_uses_complete_defaults_without_timeout_branch() -> None:
+    service = CompilationWorkbenchService()
+    started = service.start_runtime_session(
+        graph_document_payload=_build_input_timeout_graph(
+            default_value="fallback-region",
+            include_default=True,
+        ),
+    )
+
+    result = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    node_states = {item["node_id"]: item for item in result["node_states"]}
+    assert result["status"] == "completed"
+    assert node_states["input"]["output"]["region"] == "fallback-region"
+    assert node_states["default-target"]["node_status"] == "completed"
+    assert "timeout-target" in result["result"]["skipped_node_ids"]
+
+
+def test_input_request_timeout_without_default_or_timeout_edge_fails() -> None:
+    service = CompilationWorkbenchService()
+    started = service.start_runtime_session(
+        graph_document_payload=_build_input_timeout_graph(include_timeout_edge=False),
+    )
+
+    result = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    node_states = {item["node_id"]: item for item in result["node_states"]}
+    assert result["status"] == "failed"
+    assert node_states["input"]["error"]["error_code"] == "runtime.input_timeout"
+
+
+def test_abort_runtime_session_cancels_waiting_input_request_without_leaking_worker() -> None:
+    service = CompilationWorkbenchService()
+    graph = _build_input_timeout_graph(include_timeout_edge=False)
+    input_node = next(node for node in graph["nodes"] if node["node_id"] == "input")
+    input_node["node_config"]["timeout_seconds"] = 0
+    started = service.start_runtime_session(graph_document_payload=graph)
+    session_id = started["runtime_session"]["session_id"]
+
+    service.start_runtime_session_execution(session_id=session_id)
+    deadline = monotonic() + 1
+    while (
+        service.get_pending_input_snapshot(execution_id=session_id) is None
+        and monotonic() < deadline
+    ):
+        sleep(0.01)
+    pending = service.get_pending_input_snapshot(execution_id=session_id)
+    assert pending is not None
+    assert pending.status == "waiting"
+
+    aborted = service.abort_runtime_session(session_id=session_id, reason="test_abort")
+
+    assert aborted["status"] == "aborted"
+    assert aborted["runtime_session"]["status"] == "aborted"
+    assert service._runtime_execution_threads.get(session_id) is None  # type: ignore[attr-defined]

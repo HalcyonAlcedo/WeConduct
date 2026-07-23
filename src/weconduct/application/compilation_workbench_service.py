@@ -4392,6 +4392,32 @@ class CompilationWorkbenchService:
                     )
                     node_state["output"] = node_output
                     if (
+                        executable_node.get("node_kind") == "input.request"
+                        and isinstance(node_output, dict)
+                        and node_output.get("status") == "timed_out"
+                    ):
+                        timeout_port_id = node_output.get("port_id")
+                        has_connected_timeout_edge = (
+                            scheduler_mode == "flow_graph"
+                            and isinstance(timeout_port_id, str)
+                            and any(
+                                edge.get("from_port_id") == timeout_port_id
+                                for edge in control_edges_by_source.get(
+                                    executable_node["node_id"],
+                                    [],
+                                )
+                            )
+                        )
+                        if not has_connected_timeout_edge:
+                            node_output = {
+                                **node_output,
+                                "status": "failed",
+                                "error_code": "runtime.input_timeout",
+                                "message": "input request timed out without a default or connected timeout port",
+                            }
+                            runtime_context.node_outputs[executable_node["node_id"]] = node_output
+                            node_state["output"] = node_output
+                    if (
                         isinstance(node_output, dict)
                         and node_output.get("status") == "cancelled"
                     ):
@@ -4708,7 +4734,12 @@ class CompilationWorkbenchService:
                         else:
                             queue_control_edges(
                                 source_node_id=executable_node["node_id"],
-                                source_port_id=None,
+                                source_port_id=node_output.get("port_id")
+                                if (
+                                    executable_node.get("node_kind") == "input.request"
+                                    and isinstance(node_output, dict)
+                                )
+                                else None,
                                 repeat_mode_value=repeat_mode,
                             )
                         cursor = ExecutionCore.dispatch_next_token(
@@ -5251,6 +5282,26 @@ class CompilationWorkbenchService:
             if isinstance(semantic_slot, str) and semantic_slot.strip():
                 return semantic_slot.strip()
             return None
+        return None
+
+    def _resolve_runtime_control_output_port_id(
+        self,
+        *,
+        executable_node: dict,
+        semantic_slot: str,
+    ) -> str | None:
+        for port in executable_node.get("ports", []):
+            if not isinstance(port, dict):
+                continue
+            if (
+                port.get("direction") != "output"
+                or port.get("relation_layer") != "control"
+                or port.get("semantic_slot") != semantic_slot
+            ):
+                continue
+            port_id = port.get("port_id")
+            if isinstance(port_id, str) and port_id.strip():
+                return port_id.strip()
         return None
 
     def _build_runtime_component_output_payload(
@@ -6040,10 +6091,13 @@ class CompilationWorkbenchService:
                     runtime_context=runtime_context,
                     executable_node=executable_node,
                     output={
-                        "status": "failed",
+                        "status": "timed_out",
                         "node_id": executable_node["node_id"],
-                        "error_code": "runtime.input_timeout",
-                        "message": "input request timed out",
+                        "request_id": snapshot.request_id,
+                        "port_id": self._resolve_runtime_control_output_port_id(
+                            executable_node=executable_node,
+                            semantic_slot="control.timeout",
+                        ),
                     },
                 )
             values = default_values
@@ -6054,6 +6108,10 @@ class CompilationWorkbenchService:
             "status": "succeeded",
             "node_id": executable_node["node_id"],
             "request_id": snapshot.request_id,
+            "port_id": self._resolve_runtime_control_output_port_id(
+                executable_node=executable_node,
+                semantic_slot="control.next",
+            ),
         }
         for field in request.fields:
             value = values[field.field_id]
