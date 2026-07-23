@@ -2593,6 +2593,29 @@ def test_runtime_session_injects_unlocked_parameter_as_sensitive_reference(
     assert "test-secret" not in repr(captured_variables)
 
 
+def test_runtime_session_redacts_unlocked_parameter_from_persisted_result() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    project_settings = service.get_project_settings_document()["project_settings"]
+    project_settings["encrypted_parameter_set"] = {
+        "parameter_set_id": "parameters-1",
+        "parameters": [{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+        "envelope": encrypt_parameter_values(
+            {"api_key": "test-secret"},
+            password="correct-password",
+            parameter_set_id="parameters-1",
+        ),
+    }
+    service.update_project_settings(project_settings=project_settings)
+    session_id = service.start_runtime_session(graph_document_payload=None)["runtime_session"]["session_id"]
+    service.unlock_runtime_session_parameters(session_id=session_id, password="correct-password")
+
+    result = service.run_runtime_session(session_id=session_id)
+
+    assert result["result"]["variables"]["api_key"] == "<sensitive-ref>"
+    assert "test-secret" not in repr(result)
+
+
 def test_runtime_session_rejects_parameter_unlock_after_execution_starts() -> None:
     service = CompilationWorkbenchService()
     service.save_graph_document(_build_minimal_workspace_graph())

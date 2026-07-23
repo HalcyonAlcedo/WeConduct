@@ -80,6 +80,7 @@ from weconduct.packaging.msgpack_codec import packb
 from weconduct.packaging.msgpack_codec import unpackb
 from weconduct.application.runtime_session_stream import RuntimeSessionStreamBroker
 from weconduct.application.sensitive_values.models import SensitiveRef
+from weconduct.application.sensitive_values.redaction import redact_sensitive_payload
 from weconduct.application.sensitive_values.service import SensitiveValueService
 from weconduct.application.workspace_state_store import (
     FileWorkspaceStateStore,
@@ -4853,11 +4854,14 @@ class CompilationWorkbenchService:
                         "unreachable_node_ids": unreachable_node_ids,
                     }
                 )
+            persisted_node_states = redact_sensitive_payload(node_states)
+            persisted_event_log = redact_sensitive_payload(event_log)
+            persisted_result = redact_sensitive_payload(result)
             sessions[target_index] = {
                 **session,
                 "runtime_session": runtime_session,
-                "node_states": node_states,
-                "event_log": event_log,
+                "node_states": persisted_node_states,
+                "event_log": persisted_event_log,
                 "debug_snapshot": self._build_runtime_debug_snapshot(
                     scheduler_mode=scheduler_mode,
                     pending_node_entries=pending_node_entries,
@@ -4871,21 +4875,21 @@ class CompilationWorkbenchService:
                 ),
                 "diagnostic_events": [
                     item
-                    for item in event_log
+                    for item in persisted_event_log
                     if item.get("event_kind") == "diagnostic.raised"
                 ],
                 "execution_summary": self._build_runtime_execution_summary(
                     runtime_session=runtime_session,
-                    node_states=node_states,
-                    event_log=event_log,
+                    node_states=persisted_node_states,
+                    event_log=persisted_event_log,
                     diagnostic_events=[
                         item
-                        for item in event_log
+                        for item in persisted_event_log
                         if item.get("event_kind") == "diagnostic.raised"
                     ],
-                    result=result,
+                    result=persisted_result,
                 ),
-                "result": result,
+                "result": persisted_result,
             }
             current_state["runtime_sessions"] = sessions
             execution_history = self._extract_execution_history(current_state)
