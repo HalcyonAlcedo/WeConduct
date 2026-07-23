@@ -79,6 +79,7 @@ from weconduct.contracts.debugger import DEBUG_SESSION_TERMINAL_STATUSES
 from weconduct.packaging.msgpack_codec import packb
 from weconduct.packaging.msgpack_codec import unpackb
 from weconduct.application.runtime_session_stream import RuntimeSessionStreamBroker
+from weconduct.application.sensitive_values.models import SensitiveRef
 from weconduct.application.sensitive_values.service import SensitiveValueService
 from weconduct.application.workspace_state_store import (
     FileWorkspaceStateStore,
@@ -263,6 +264,7 @@ class CompilationWorkbenchService:
         self._runtime_execution_threads: dict[str, Thread] = {}
         self._runtime_cancellation_contexts: dict[str, CancellationContext] = {}
         self._runtime_sensitive_values: dict[str, SensitiveValueService] = {}
+        self._runtime_sensitive_parameter_refs: dict[str, dict[str, SensitiveRef]] = {}
         self._debug_execution_lock = Lock()
         self._debug_execution_threads: dict[str, Thread] = {}
         self._debug_execution_resume_events: dict[str, Event] = {}
@@ -3835,6 +3837,10 @@ class CompilationWorkbenchService:
         status = session["runtime_session"].get("status")
         if status in {"completed", "failed", "aborted"}:
             raise ValueError("runtime session is already terminal")
+        with self._runtime_execution_lock:
+            execution_thread = self._runtime_execution_threads.get(session_id)
+            if execution_thread is not None and execution_thread.is_alive():
+                raise ValueError("runtime session execution has already started")
         encrypted_parameter_set = self._extract_project_settings(self._state).get(
             "encrypted_parameter_set"
         )
@@ -3850,10 +3856,15 @@ class CompilationWorkbenchService:
             scope_id=session_id,
         )
         with self._runtime_execution_lock:
+            execution_thread = self._runtime_execution_threads.get(session_id)
+            if execution_thread is not None and execution_thread.is_alive():
+                sensitive_values.revoke_scope(session_id)
+                raise ValueError("runtime session execution has already started")
             previous = self._runtime_sensitive_values.pop(session_id, None)
             if previous is not None:
                 previous.revoke_scope(session_id)
             self._runtime_sensitive_values[session_id] = sensitive_values
+            self._runtime_sensitive_parameter_refs[session_id] = dict(unlocked)
         return {"status": "unlocked", "parameter_ids": sorted(unlocked)}
 
     def start_runtime_session_execution(self, *, session_id: str) -> dict:
@@ -4083,6 +4094,9 @@ class CompilationWorkbenchService:
                     session_id,
                     CancellationContext(),
                 )
+                sensitive_parameter_refs = dict(
+                    self._runtime_sensitive_parameter_refs.get(session_id, {})
+                )
             runtime_context = RuntimeContext(
                 project_directory=self._resolve_runtime_project_directory(),
                 workspace_root=self._resolve_runtime_workspace_root(),
@@ -4091,6 +4105,7 @@ class CompilationWorkbenchService:
                 runtime_settings=deepcopy(runtime_execution_settings),
                 cancellation_context=cancellation_context,
             )
+            runtime_context.variables.update(sensitive_parameter_refs)
             runtime_context.flow_runtime["graph_root_metadata"] = deepcopy(
                 session["runtime_plan"].get("root_metadata", {})
             )
@@ -4988,6 +5003,7 @@ class CompilationWorkbenchService:
                 self._runtime_execution_threads.pop(session_id, None)
                 self._runtime_cancellation_contexts.pop(session_id, None)
                 sensitive_values = self._runtime_sensitive_values.pop(session_id, None)
+                self._runtime_sensitive_parameter_refs.pop(session_id, None)
             if sensitive_values is not None:
                 sensitive_values.revoke_scope(session_id)
             self._runtime_stream_broker.close_session(session_id)
