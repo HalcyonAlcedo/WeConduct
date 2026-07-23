@@ -13321,6 +13321,7 @@ class CompilationWorkbenchService:
                 "external_resource_bindings": [],
             },
             "compile_profile": {"source_of_truth": "saved_project_only"},
+            "encrypted_parameter_set": None,
         }
 
     def _build_initial_project_debug_profile_document(self) -> dict:
@@ -13478,6 +13479,7 @@ class CompilationWorkbenchService:
         raw_compile_profile = raw_payload.get("compile_profile")
         raw_external_resources = raw_payload.get("external_resources")
         raw_runtime_requirements = raw_payload.get("runtime_requirements")
+        raw_encrypted_parameter_set = raw_payload.get("encrypted_parameter_set")
         if not isinstance(raw_identity, dict):
             raw_identity = {}
         if not isinstance(raw_packaging, dict):
@@ -13490,6 +13492,9 @@ class CompilationWorkbenchService:
             raw_external_resources = []
         if not isinstance(raw_runtime_requirements, dict):
             raw_runtime_requirements = {}
+        encrypted_parameter_set = self._normalize_encrypted_parameter_set(
+            raw_encrypted_parameter_set
+        )
 
         project = state.get("project") if isinstance(state, dict) and isinstance(state.get("project"), dict) else {}
         project_id = (
@@ -13579,6 +13584,47 @@ class CompilationWorkbenchService:
                 ),
             },
             "runtime_requirements": deepcopy(raw_runtime_requirements),
+            "encrypted_parameter_set": encrypted_parameter_set,
+        }
+
+    def _normalize_encrypted_parameter_set(self, payload: object) -> dict | None:
+        if not isinstance(payload, dict):
+            return None
+        parameter_set_id = payload.get("parameter_set_id")
+        parameters = payload.get("parameters")
+        envelope = payload.get("envelope")
+        if (
+            not isinstance(parameter_set_id, str)
+            or not parameter_set_id.strip()
+            or not isinstance(parameters, list)
+            or not isinstance(envelope, dict)
+            or envelope.get("parameter_set_id") != parameter_set_id.strip()
+        ):
+            return None
+        normalized_parameters: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
+        for parameter in parameters:
+            if not isinstance(parameter, dict):
+                return None
+            parameter_id = parameter.get("parameter_id")
+            name = parameter.get("name")
+            value_type = parameter.get("type")
+            if (
+                not isinstance(parameter_id, str)
+                or not parameter_id.strip()
+                or parameter_id in seen_ids
+                or not isinstance(name, str)
+                or not isinstance(value_type, str)
+            ):
+                return None
+            seen_ids.add(parameter_id)
+            normalized_parameters.append(
+                {"parameter_id": parameter_id, "name": name, "type": value_type}
+            )
+        return {
+            "parameter_set_id": parameter_set_id.strip(),
+            "parameters": normalized_parameters,
+            "envelope": deepcopy(envelope),
         }
 
     def _extract_project_settings(self, state: dict | None) -> dict:

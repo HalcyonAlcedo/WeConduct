@@ -6,6 +6,7 @@ from time import monotonic, sleep
 
 import weconduct.application.compilation_workbench_service as workbench_service_module
 from weconduct.application import CompilationWorkbenchService
+from weconduct.application.sensitive_values.encryption import encrypt_parameter_values
 from weconduct.application.workspace_state_store import FileWorkspaceStateStore
 from weconduct.application.workspace_state_store import InMemoryWorkspaceStateStore
 from weconduct.application.configuration import (
@@ -2501,6 +2502,33 @@ def test_project_security_settings_report_blocked_entries_and_can_be_enabled(
     assert enable_result["status"] == "updated"
     assert summary_after["ready"] is True
     assert summary_after["blocked_count"] == 0
+
+
+def test_project_settings_persist_versioned_encrypted_parameter_set(tmp_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    project_path = tmp_path / "encrypted-parameters.weconduct.json"
+    service.save_project_as(project_path=str(project_path))
+    project_settings = service.get_project_settings_document()["project_settings"]
+    project_settings["encrypted_parameter_set"] = {
+        "parameter_set_id": "parameters-1",
+        "parameters": [{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+        "envelope": encrypt_parameter_values(
+            {"api_key": "test-secret"},
+            password="correct-password",
+            parameter_set_id="parameters-1",
+        ),
+    }
+
+    service.update_project_settings(project_settings=project_settings)
+
+    stored = service.get_project_settings_document()["project_settings"]["encrypted_parameter_set"]
+    stored_text = (project_path.parent / "encrypted-parameters.weconduct.data" / "project-settings.json").read_text(
+        encoding="utf-8"
+    )
+    assert stored["parameters"] == [{"parameter_id": "api_key", "name": "API Key", "type": "string"}]
+    assert stored["envelope"]["parameter_set_id"] == "parameters-1"
+    assert "test-secret" not in stored_text
+    assert "correct-password" not in stored_text
 
 
 def test_start_debug_session_rejects_when_runtime_session_is_active() -> None:
