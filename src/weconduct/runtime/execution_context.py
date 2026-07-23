@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -36,3 +36,19 @@ class ExecutionTokenContext:
             network_context_id=raw_context_id.strip(),
             network_context_epoch=epoch,
         )
+
+
+@dataclass
+class ExecutionSessionContext:
+    """Execution-wide state shared by the runtime context compatibility facade."""
+
+    session_id: str
+    token_context: ExecutionTokenContext = field(default_factory=ExecutionTokenContext)
+    cancellation_context: object | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.session_id, str) or not self.session_id.strip():
+            raise ValueError("session_id must be a non-empty string")
+        self.session_id = self.session_id.strip()
+        if not isinstance(self.token_context, ExecutionTokenContext):
+            self.token_context = ExecutionTokenContext()

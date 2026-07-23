@@ -23,7 +23,7 @@ import urllib.request
 from zipfile import BadZipFile
 from typing import Any, Callable
 
-from weconduct.runtime.execution_context import ExecutionTokenContext
+from weconduct.runtime.execution_context import ExecutionSessionContext, ExecutionTokenContext
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from playwright.sync_api import Browser, Frame, Page, Playwright, sync_playwright
@@ -119,10 +119,39 @@ class RuntimeContext:
     runtime_settings: dict[str, Any] = field(default_factory=dict)
     execution_token_context: ExecutionTokenContext = field(default_factory=ExecutionTokenContext)
     cancellation_context: CancellationContext = field(default_factory=CancellationContext)
+    execution_session_context: ExecutionSessionContext | None = None
     owns_cancellation_context: bool = True
     _cleanup_keys: set[str] = field(default_factory=set, init=False, repr=False)
     _close_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.execution_session_context is None:
+            self.execution_session_context = ExecutionSessionContext(
+                session_id="runtime-context",
+                token_context=self.execution_token_context,
+                cancellation_context=self.cancellation_context,
+            )
+            return
+        self.execution_token_context = self.execution_session_context.token_context
+        if isinstance(self.execution_session_context.cancellation_context, CancellationContext):
+            self.cancellation_context = self.execution_session_context.cancellation_context
+        else:
+            self.execution_session_context.cancellation_context = self.cancellation_context
+
+    def __setattr__(self, name: str, value: object) -> None:
+        object.__setattr__(self, name, value)
+        session_context = self.__dict__.get("execution_session_context")
+        if not isinstance(session_context, ExecutionSessionContext):
+            return
+        if name == "execution_token_context" and isinstance(value, ExecutionTokenContext):
+            session_context.token_context = value
+        elif name == "cancellation_context" and isinstance(value, CancellationContext):
+            session_context.cancellation_context = value
+        elif name == "execution_session_context" and isinstance(value, ExecutionSessionContext):
+            object.__setattr__(self, "execution_token_context", value.token_context)
+            if isinstance(value.cancellation_context, CancellationContext):
+                object.__setattr__(self, "cancellation_context", value.cancellation_context)
 
     def register_cleanup(self, key: str, callback: Callable[[], None]) -> Callable[[], None]:
         with self._close_lock:

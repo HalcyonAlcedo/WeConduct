@@ -2617,6 +2617,27 @@ def test_runtime_session_rejects_parameter_unlock_after_execution_starts() -> No
         )
 
 
+def test_runtime_session_binds_runtime_context_to_its_session_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CompilationWorkbenchService()
+    session_id = service.start_runtime_session(
+        graph_document_payload=_build_minimal_workspace_graph()
+    )["runtime_session"]["session_id"]
+    captured_session_ids: list[str] = []
+
+    def capture_runtime_context(*, runtime_context, executable_node, **_kwargs) -> dict:
+        captured_session_ids.append(runtime_context.execution_session_context.session_id)
+        return {"status": "succeeded", "node_id": executable_node["node_id"]}
+
+    monkeypatch.setattr(service, "_execute_runtime_plan_node", capture_runtime_context)
+
+    result = service.run_runtime_session(session_id=session_id)
+
+    assert result["status"] == "completed"
+    assert captured_session_ids == [session_id]
+
+
 def test_start_debug_session_rejects_when_runtime_session_is_active() -> None:
     service = CompilationWorkbenchService()
     service.save_graph_document(_build_minimal_workspace_graph())

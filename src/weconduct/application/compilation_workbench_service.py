@@ -32,7 +32,7 @@ from weconduct.runtime.captcha_ocr import (
 )
 from weconduct.runtime import RuntimeContext, RuntimeExecutorRegistry, execute_runtime_node
 from weconduct.runtime.engine import CancellationContext, _safe_eval_expression
-from weconduct.runtime.execution_context import ExecutionTokenContext
+from weconduct.runtime.execution_context import ExecutionSessionContext, ExecutionTokenContext
 from weconduct.contracts import (
     CompilationOutcome,
     CompilationRequest,
@@ -4104,6 +4104,7 @@ class CompilationWorkbenchService:
                 allowed_path_roots=self._build_runtime_allowed_path_roots(),
                 runtime_settings=deepcopy(runtime_execution_settings),
                 cancellation_context=cancellation_context,
+                execution_session_context=ExecutionSessionContext(session_id=session_id),
             )
             runtime_context.variables.update(sensitive_parameter_refs)
             runtime_context.flow_runtime["graph_root_metadata"] = deepcopy(
@@ -5831,6 +5832,10 @@ class CompilationWorkbenchService:
                 allowed_path_roots=tuple(parent_runtime_context.allowed_path_roots),
                 runtime_settings=deepcopy(parent_runtime_context.runtime_settings),
                 cancellation_context=parent_runtime_context.cancellation_context,
+                execution_session_context=ExecutionSessionContext(
+                    session_id=parent_runtime_context.execution_session_context.session_id,
+                    token_context=parent_runtime_context.execution_token_context,
+                ),
                 owns_cancellation_context=False,
             )
             child_context.browser_runtime = parent_runtime_context.browser_runtime
@@ -19071,6 +19076,7 @@ class CompilationWorkbenchService:
                 embedded_resource_paths=self._build_runtime_embedded_resource_path_map(),
                 allowed_path_roots=self._build_runtime_allowed_path_roots(),
                 runtime_settings=deepcopy(runtime_execution_settings),
+                execution_session_context=ExecutionSessionContext(session_id=session_id),
             )
             self._debug_runtime_contexts[session_id] = runtime_context
             self._debug_runtime_context_owner_thread_ids[session_id] = get_ident()
