@@ -46,6 +46,19 @@ class PendingInputService:
         with self._condition:
             return self._snapshot(request_id)
 
+    def get_snapshot_for_execution(self, execution_id: str) -> PendingInputSnapshot | None:
+        with self._condition:
+            matches = [
+                request_id
+                for request_id, record in self._records.items()
+                if record.request.execution_id == execution_id
+            ]
+            if not matches:
+                return None
+            if len(matches) != 1:
+                raise RuntimeError("execution has multiple pending input requests")
+            return self._snapshot(matches[0])
+
     def wait(
         self,
         request_id: str,

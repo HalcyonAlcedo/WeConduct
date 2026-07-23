@@ -79,6 +79,12 @@ from weconduct.contracts.debugger import DEBUG_SESSION_TERMINAL_STATUSES
 from weconduct.packaging.msgpack_codec import packb
 from weconduct.packaging.msgpack_codec import unpackb
 from weconduct.application.runtime_session_stream import RuntimeSessionStreamBroker
+from weconduct.application.pending_input import (
+    PendingInputField,
+    PendingInputRequest,
+    PendingInputService,
+    PendingInputStatus,
+)
 from weconduct.application.sensitive_values.models import SensitiveRef
 from weconduct.application.sensitive_values.redaction import redact_sensitive_payload
 from weconduct.application.sensitive_values.service import SensitiveValueService
@@ -258,6 +264,7 @@ class CompilationWorkbenchService:
         self._state_store = state_store or InMemoryWorkspaceStateStore()
         self._configuration_service = configuration_service or self._build_default_configuration_service()
         self._runtime_stream_broker = runtime_stream_broker or RuntimeSessionStreamBroker()
+        self._pending_input_service = PendingInputService()
         self._project_python_runtime_manager = ProjectPythonRuntimeManager(
             app_data_root=self._resolve_application_data_root()
         )
@@ -3832,6 +3839,21 @@ class CompilationWorkbenchService:
     def run_runtime_session(self, *, session_id: str) -> dict:
         return self._run_runtime_session_sync(session_id=session_id)
 
+    def get_pending_input_snapshot(self, *, execution_id: str):
+        return self._pending_input_service.get_snapshot_for_execution(execution_id)
+
+    def submit_pending_input(
+        self,
+        *,
+        execution_id: str,
+        request_id: str,
+        values: dict[str, object],
+    ):
+        snapshot = self._pending_input_service.get_snapshot_for_execution(execution_id)
+        if snapshot is None or snapshot.request_id != request_id:
+            raise ValueError("pending input request was not found")
+        return self._pending_input_service.submit(request_id, values)
+
     def unlock_runtime_session_parameters(self, *, session_id: str, password: str) -> dict:
         self._refresh_state_from_store()
         session = self._find_runtime_session(session_id)
@@ -5004,6 +5026,7 @@ class CompilationWorkbenchService:
                 **session_document,
             }
         finally:
+            self._pending_input_service.cancel_session(session_id)
             with self._runtime_execution_lock:
                 self._runtime_execution_threads.pop(session_id, None)
                 self._runtime_cancellation_contexts.pop(session_id, None)
@@ -5021,6 +5044,11 @@ class CompilationWorkbenchService:
         executor_registry: RuntimeExecutorRegistry,
     ) -> dict:
         try:
+            if executable_node.get("node_kind") == "input.request":
+                return self._execute_pending_input_request_node(
+                    executable_node=executable_node,
+                    runtime_context=runtime_context,
+                )
             if executable_node.get("node_kind") == "call_blueprint":
                 return self._execute_call_blueprint_node(
                     executable_node=executable_node,
@@ -5906,6 +5934,147 @@ class CompilationWorkbenchService:
                 session_id="component-runtime",
                 token_context=child_context.execution_token_context,
             )
+
+    def _execute_pending_input_request_node(
+        self,
+        *,
+        executable_node: dict,
+        runtime_context: RuntimeContext,
+    ) -> dict:
+        node_config = executable_node.get("node_config")
+        if not isinstance(node_config, dict):
+            node_config = {}
+        raw_fields = node_config.get("fields")
+        if not isinstance(raw_fields, list):
+            return self._record_runtime_node_output(
+                runtime_context=runtime_context,
+                executable_node=executable_node,
+                output={
+                    "status": "failed",
+                    "node_id": executable_node["node_id"],
+                    "error_code": "runtime.input_fields_invalid",
+                    "message": "input.request node_config.fields must be a list",
+                },
+            )
+        try:
+            fields = tuple(
+                PendingInputField(
+                    field_id=item["field_id"],
+                    label=item["label"],
+                    value_type=item.get("value_type", "string"),
+                    sensitive=item.get("sensitive", False),
+                    required=item.get("required", True),
+                    **(
+                        {"default_value": item["default_value"]}
+                        if "default_value" in item
+                        else {}
+                    ),
+                )
+                for item in raw_fields
+                if isinstance(item, dict)
+            )
+            if len(fields) != len(raw_fields):
+                raise ValueError("input.request fields must be objects")
+            session_id = runtime_context.execution_session_context.session_id
+            request = PendingInputRequest(
+                request_id=f"{session_id}:{executable_node['node_id']}",
+                execution_id=session_id,
+                node_id=executable_node["node_id"],
+                fields=fields,
+                timeout_seconds=node_config.get("timeout_seconds", 0),
+            )
+            snapshot = self._pending_input_service.create(request)
+        except (KeyError, TypeError, ValueError) as exc:
+            return self._record_runtime_node_output(
+                runtime_context=runtime_context,
+                executable_node=executable_node,
+                output={
+                    "status": "failed",
+                    "node_id": executable_node["node_id"],
+                    "error_code": "runtime.input_request_invalid",
+                    "message": str(exc),
+                },
+            )
+        self._runtime_stream_broker.publish_event(
+            session_id,
+            "runtime.pending_input",
+            {
+                "session_id": session_id,
+                "request_id": snapshot.request_id,
+                "node_id": snapshot.node_id,
+                "status": snapshot.status,
+                "fields": [
+                    {
+                        "field_id": field.field_id,
+                        "label": field.label,
+                        "value_type": field.value_type,
+                        "sensitive": field.sensitive,
+                        "required": field.required,
+                    }
+                    for field in snapshot.fields
+                ],
+            },
+        )
+        result = self._pending_input_service.wait(
+            snapshot.request_id,
+            runtime_context.cancellation_context,
+        )
+        if result.status == PendingInputStatus.CANCELLED:
+            return self._record_runtime_node_output(
+                runtime_context=runtime_context,
+                executable_node=executable_node,
+                output={
+                    "status": "cancelled",
+                    "node_id": executable_node["node_id"],
+                    "reason": runtime_context.cancellation_context.reason,
+                },
+            )
+        if result.status == PendingInputStatus.TIMED_OUT:
+            default_values = {
+                field.field_id: field.default_value
+                for field in request.fields
+                if field.has_default
+            }
+            if len(default_values) != len(request.fields):
+                return self._record_runtime_node_output(
+                    runtime_context=runtime_context,
+                    executable_node=executable_node,
+                    output={
+                        "status": "failed",
+                        "node_id": executable_node["node_id"],
+                        "error_code": "runtime.input_timeout",
+                        "message": "input request timed out",
+                    },
+                )
+            values = default_values
+        else:
+            values = dict(result.values)
+        sensitive_values = self._get_runtime_sensitive_value_service(session_id)
+        output = {
+            "status": "succeeded",
+            "node_id": executable_node["node_id"],
+            "request_id": snapshot.request_id,
+        }
+        for field in request.fields:
+            value = values[field.field_id]
+            output[field.field_id] = (
+                sensitive_values.create(
+                    value,
+                    scope_id=session_id,
+                    source="runtime_input",
+                )
+                if field.sensitive
+                else value
+            )
+        return self._record_runtime_node_output(
+            runtime_context=runtime_context,
+            executable_node=executable_node,
+            output=output,
+        )
+
+    def _get_runtime_sensitive_value_service(self, session_id: str) -> SensitiveValueService:
+        with self._runtime_execution_lock:
+            return self._runtime_sensitive_values.setdefault(session_id, SensitiveValueService())
 
         def queue_control_edges(
             *,
