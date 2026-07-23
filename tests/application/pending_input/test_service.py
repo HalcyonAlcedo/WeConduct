@@ -69,3 +69,51 @@ def test_pending_input_submits_multiple_fields_atomically() -> None:
     assert result_holder[0].values == {"username": "alice", "password": "secret"}
     with pytest.raises(ValueError, match="request is not waiting"):
         service.submit(request.request_id, {"username": "other", "password": "other"})
+
+
+def test_pending_input_times_out_when_positive_timeout_expires() -> None:
+    service = PendingInputService()
+    request = PendingInputRequest(
+        request_id="request-timeout",
+        execution_id="execution-1",
+        node_id="node-1",
+        fields=(PendingInputField(field_id="value", label="Value"),),
+        timeout_seconds=0.02,
+    )
+    service.create(request)
+
+    result = service.wait(request_id=request.request_id, cancellation=CancellationContext())
+
+    assert result.status == "timed_out"
+    assert result.values == {}
+    assert service.get_snapshot(request.request_id).status == "timed_out"
+
+
+def test_pending_input_wait_is_cancelled_without_timeout() -> None:
+    service = PendingInputService()
+    request = PendingInputRequest(
+        request_id="request-cancelled",
+        execution_id="execution-1",
+        node_id="node-1",
+        fields=(PendingInputField(field_id="value", label="Value"),),
+        timeout_seconds=0,
+    )
+    service.create(request)
+    cancellation = CancellationContext()
+    result_holder: list[object] = []
+    worker = Thread(
+        target=lambda: result_holder.append(
+            service.wait(request_id=request.request_id, cancellation=cancellation)
+        ),
+        daemon=True,
+    )
+    worker.start()
+    deadline = monotonic() + 1
+    while service.get_snapshot(request.request_id).status != "waiting" and monotonic() < deadline:
+        sleep(0.01)
+
+    cancellation.request_cancel("session cancelled")
+    worker.join(timeout=1)
+
+    assert worker.is_alive() is False
+    assert result_holder[0].status == "cancelled"
