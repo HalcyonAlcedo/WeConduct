@@ -23,6 +23,11 @@ import urllib.request
 from zipfile import BadZipFile
 from typing import Any, Callable
 
+from weconduct.network_runtime import (
+    NetworkContextSnapshot,
+    NetworkOperation,
+    NetworkRuntimeService,
+)
 from weconduct.runtime.execution_context import ExecutionSessionContext, ExecutionTokenContext
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
@@ -179,11 +184,18 @@ class RuntimeContext:
 
 
 class RuntimeExecutorRegistry:
-    def __init__(self, *, runtime_settings: dict | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        runtime_settings: dict | None = None,
+        network_runtime_service: NetworkRuntimeService | None = None,
+    ) -> None:
         self._runtime_settings = runtime_settings or {}
+        self._network_runtime_service = network_runtime_service
         self._executors = {
             "flow.start": self._execute_flow_start,
             "http.request": self._execute_http_request,
+            "network.http_request": self._execute_network_http_request,
             "browser.navigate": self._execute_browser_navigate,
             "browser.fill": self._execute_browser_fill,
             "browser.check": self._execute_browser_check,
@@ -444,6 +456,86 @@ class RuntimeExecutorRegistry:
             }
         context.variables["last_http_response"] = result
         return result
+
+    def _execute_network_http_request(self, node: dict, context: RuntimeContext) -> dict:
+        _check_cancellation(context)
+        node_config = _node_config(node)
+        method = _resolve_value(node_config.get("method", "GET"), context)
+        url = _resolve_value(node_config.get("url"), context)
+        headers = _resolve_value(node_config.get("headers", {}), context)
+        timeout = _resolve_value(node_config.get("timeout", 30), context)
+        if not isinstance(method, str) or not method.strip():
+            return _failed_result(node, "network.method_invalid", "network.http_request requires method")
+        if not isinstance(url, str) or not url.strip():
+            return _failed_result(node, "network.url_required", "network.http_request requires url")
+        if not isinstance(headers, dict):
+            return _failed_result(node, "network.headers_invalid", "network headers must be an object")
+        try:
+            timeout_seconds = float(timeout)
+        except (TypeError, ValueError):
+            return _failed_result(node, "network.timeout_invalid", "network timeout must be numeric")
+        body_value = _resolve_value(node_config.get("body"), context)
+        request_headers = {str(key): str(value) for key, value in headers.items()}
+        if isinstance(body_value, (dict, list)):
+            try:
+                request_content = json.dumps(body_value).encode("utf-8")
+            except (TypeError, ValueError) as exc:
+                return _failed_result(node, "network.body_invalid", str(exc))
+            request_headers.setdefault("Content-Type", "application/json")
+        elif body_value is None or isinstance(body_value, (bytes, str)):
+            request_content = body_value
+        else:
+            request_content = str(body_value)
+        session_id = context.execution_session_context.session_id
+        operation = NetworkOperation(
+            operation_id=node["node_id"],
+            session_id=session_id,
+            method=method.strip().upper(),
+            url=url.strip(),
+            headers=request_headers,
+            content=request_content,
+            timeout_seconds=timeout_seconds,
+        )
+        service = self._resolve_network_runtime_service(context)
+        unregister = context.cancellation_context.register_cleanup(
+            lambda: service.cancel_session(session_id)
+        )
+        try:
+            result = service.submit(
+                operation,
+                NetworkContextSnapshot(
+                    context_id=context.execution_token_context.network_context_id,
+                ),
+            ).result(timeout=timeout_seconds + 1)
+        except Exception as exc:
+            return _failed_result(node, "network.request_failed", str(exc))
+        finally:
+            unregister()
+        if result.status != "succeeded":
+            error_code = result.transport_error or "network.request_failed"
+            return _failed_result(node, error_code, result.transport_error or "network request failed")
+        output = {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "status_code": result.status_code,
+            "headers": dict(result.headers),
+            "body_ref": result.body_ref,
+            "final_url": result.final_url,
+            "network_context_id": context.execution_token_context.network_context_id,
+        }
+        context.variables["last_network_response"] = output
+        return output
+
+    def _resolve_network_runtime_service(self, context: RuntimeContext) -> NetworkRuntimeService:
+        if self._network_runtime_service is not None:
+            return self._network_runtime_service
+        service = context.flow_runtime.get("network_runtime_service")
+        if isinstance(service, NetworkRuntimeService):
+            return service
+        service = NetworkRuntimeService(response_root_directory=Path(tempfile.gettempdir()))
+        context.flow_runtime["network_runtime_service"] = service
+        context.register_cleanup("network-runtime-service", service.close)
+        return service
 
     def _execute_browser_navigate(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
