@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterable
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import mkdtemp
@@ -53,6 +54,51 @@ class ResponseBodyStore:
             session_id=self._session_id,
             storage_kind="file",
             size_bytes=len(payload),
+            content_type=content_type,
+            path=path,
+        )
+
+    async def create_from_async_chunks(
+        self,
+        chunks: AsyncIterable[bytes],
+        *,
+        content_type: str | None,
+    ) -> ResponseBodyRef:
+        if self._closed:
+            raise RuntimeError("network.response_store_closed")
+        payload = bytearray()
+        path: Path | None = None
+        handle = None
+        size_bytes = 0
+        try:
+            async for chunk in chunks:
+                if not chunk:
+                    continue
+                size_bytes += len(chunk)
+                if path is None and len(payload) + len(chunk) <= MAX_IN_MEMORY_RESPONSE_BYTES:
+                    payload.extend(chunk)
+                    continue
+                if path is None:
+                    path = self._directory / f"response-{len(list(self._directory.iterdir()))}.bin"
+                    handle = path.open("wb")
+                    handle.write(payload)
+                    payload.clear()
+                handle.write(chunk)
+        finally:
+            if handle is not None:
+                handle.close()
+        if path is None:
+            return ResponseBodyRef(
+                session_id=self._session_id,
+                storage_kind="memory",
+                size_bytes=size_bytes,
+                content_type=content_type,
+                _payload=bytes(payload),
+            )
+        return ResponseBodyRef(
+            session_id=self._session_id,
+            storage_kind="file",
+            size_bytes=size_bytes,
             content_type=content_type,
             path=path,
         )

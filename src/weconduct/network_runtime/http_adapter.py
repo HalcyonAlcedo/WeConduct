@@ -47,17 +47,28 @@ class HttpxAdapter:
             request_url = operation.url
             for _ in range(10):
                 self._access_policy.validate_url(request_url)
-                response = await self._client.request(
+                async with self._client.stream(
                     operation.method,
                     request_url,
                     headers=headers,
                     content=operation.content,
                     timeout=operation.timeout_seconds,
-                )
-                redirect_target = response.headers.get("location")
-                if response.status_code not in {301, 302, 303, 307, 308} or not redirect_target:
-                    break
-                request_url = urljoin(request_url, redirect_target)
+                ) as response:
+                    redirect_target = response.headers.get("location")
+                    if response.status_code not in {301, 302, 303, 307, 308} or not redirect_target:
+                        store = self._stores.setdefault(
+                            operation.session_id,
+                            ResponseBodyStore(
+                                session_id=operation.session_id,
+                                root_directory=self._response_root_directory,
+                            ),
+                        )
+                        body_ref = await store.create_from_async_chunks(
+                            response.aiter_bytes(),
+                            content_type=response.headers.get("content-type"),
+                        )
+                        break
+                    request_url = urljoin(request_url, redirect_target)
             else:
                 return NetworkResult(
                     status="failed",
@@ -79,23 +90,13 @@ class HttpxAdapter:
                 session_id=operation.session_id,
                 transport_error=str(exc),
             )
-        store = self._stores.setdefault(
-            operation.session_id,
-            ResponseBodyStore(
-                session_id=operation.session_id,
-                root_directory=self._response_root_directory,
-            ),
-        )
         return NetworkResult(
             status="succeeded",
             operation_id=operation.operation_id,
             session_id=operation.session_id,
             status_code=response.status_code,
             headers=dict(response.headers),
-            body_ref=store.create(
-                response.content,
-                content_type=response.headers.get("content-type"),
-            ),
+            body_ref=body_ref,
             final_url=str(response.url),
         )
 
