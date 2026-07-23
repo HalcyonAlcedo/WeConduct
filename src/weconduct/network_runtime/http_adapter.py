@@ -18,8 +18,14 @@ class HttpxAdapter:
         transport: httpx.AsyncBaseTransport | httpx.BaseTransport | None = None,
         response_root_directory: Path,
         access_policy: NetworkAccessPolicy | None = None,
+        client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._transport = transport
+        self._client = client or httpx.AsyncClient(
+            transport=transport,
+            trust_env=False,
+            follow_redirects=False,
+        )
+        self._owns_client = client is None
         self._response_root_directory = Path(response_root_directory)
         self._access_policy = access_policy or NetworkAccessPolicy()
         self._stores: dict[str, ResponseBodyStore] = {}
@@ -38,32 +44,27 @@ class HttpxAdapter:
     ) -> NetworkResult:
         try:
             headers = {**snapshot.headers, **operation.headers}
-            async with httpx.AsyncClient(
-                transport=self._transport,
-                trust_env=False,
-                follow_redirects=False,
-            ) as client:
-                request_url = operation.url
-                for _ in range(10):
-                    self._access_policy.validate_url(request_url)
-                    response = await client.request(
-                        operation.method,
-                        request_url,
-                        headers=headers,
-                        content=operation.content,
-                        timeout=operation.timeout_seconds,
-                    )
-                    redirect_target = response.headers.get("location")
-                    if response.status_code not in {301, 302, 303, 307, 308} or not redirect_target:
-                        break
-                    request_url = urljoin(request_url, redirect_target)
-                else:
-                    return NetworkResult(
-                        status="failed",
-                        operation_id=operation.operation_id,
-                        session_id=operation.session_id,
-                        transport_error="network.too_many_redirects",
-                    )
+            request_url = operation.url
+            for _ in range(10):
+                self._access_policy.validate_url(request_url)
+                response = await self._client.request(
+                    operation.method,
+                    request_url,
+                    headers=headers,
+                    content=operation.content,
+                    timeout=operation.timeout_seconds,
+                )
+                redirect_target = response.headers.get("location")
+                if response.status_code not in {301, 302, 303, 307, 308} or not redirect_target:
+                    break
+                request_url = urljoin(request_url, redirect_target)
+            else:
+                return NetworkResult(
+                    status="failed",
+                    operation_id=operation.operation_id,
+                    session_id=operation.session_id,
+                    transport_error="network.too_many_redirects",
+                )
         except asyncio.CancelledError:
             return NetworkResult(
                 status="failed",
@@ -106,3 +107,8 @@ class HttpxAdapter:
     def close(self) -> None:
         for session_id in list(self._stores):
             self.close_session(session_id)
+
+    async def aclose(self) -> None:
+        self.close()
+        if self._owns_client:
+            await self._client.aclose()

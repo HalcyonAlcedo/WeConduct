@@ -59,3 +59,30 @@ def test_network_runtime_service_cancels_active_session_requests(tmp_path) -> No
 
     assert result.status == "failed"
     assert result.transport_error == "network.cancelled"
+
+
+def test_network_runtime_service_reuses_its_single_async_client(tmp_path) -> None:
+    service = NetworkRuntimeService(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(204, request=request)
+        ),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+    client = service._client  # type: ignore[attr-defined]
+
+    for operation_id in ("request-1", "request-2"):
+        result = service.submit(
+            NetworkOperation(
+                operation_id=operation_id,
+                session_id="session-1",
+                method="GET",
+                url="https://example.test/ok",
+            ),
+            NetworkContextSnapshot(context_id="context-1"),
+        ).result(timeout=1)
+        assert result.status_code == 204
+        assert service._client is client  # type: ignore[attr-defined]
+
+    service.close()
+    assert client.is_closed is True

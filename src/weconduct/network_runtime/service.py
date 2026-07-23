@@ -21,10 +21,15 @@ class NetworkRuntimeService:
         access_policy: NetworkAccessPolicy | None = None,
     ) -> None:
         self._adapter = HttpxAdapter(
-            transport=transport,
             response_root_directory=response_root_directory,
             access_policy=access_policy,
+            client=httpx.AsyncClient(
+                transport=transport,
+                trust_env=False,
+                follow_redirects=False,
+            ),
         )
+        self._client = self._adapter._client
         self._loop = asyncio.new_event_loop()
         self._ready = Event()
         self._closed = False
@@ -122,6 +127,7 @@ class NetworkRuntimeService:
             task.cancel()
         if active_tasks:
             await asyncio.gather(*active_tasks, return_exceptions=True)
+        await self._client.aclose()
         self._adapter.close()
 
     def _run_loop(self) -> None:
