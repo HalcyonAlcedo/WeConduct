@@ -7,6 +7,7 @@ from weconduct.application.runtime_session_stream import (
     RuntimeSessionStreamBroker,
     _STOP_EVENT,
 )
+from weconduct.application.sensitive_values.service import SensitiveValueService
 
 
 class _BlockingTerminalQueue(Queue):
@@ -111,3 +112,20 @@ def test_close_session_waits_for_in_flight_snapshot_before_clearing_it() -> None
     )
     assert blocking_queue.get_nowait() is _STOP_EVENT
     assert broker.get_latest_snapshot("session-to-close") is None
+
+
+def test_runtime_stream_redacts_sensitive_refs_at_event_boundary() -> None:
+    broker = RuntimeSessionStreamBroker()
+    _, queue = broker.subscribe("session-sensitive")
+    ref = SensitiveValueService().create(
+        "test-secret",
+        scope_id="session-sensitive",
+        source="runtime_input",
+    )
+
+    broker.publish_event("session-sensitive", "runtime.node", {"credential": ref})
+
+    assert queue.get_nowait() == (
+        "runtime.node",
+        {"credential": "<sensitive-ref>"},
+    )

@@ -32,6 +32,7 @@ from weconduct.runtime.captcha_ocr import (
 )
 from weconduct.runtime import RuntimeContext, RuntimeExecutorRegistry, execute_runtime_node
 from weconduct.runtime.engine import CancellationContext, _safe_eval_expression
+from weconduct.runtime.execution_context import ExecutionTokenContext
 from weconduct.contracts import (
     CompilationOutcome,
     CompilationRequest,
@@ -67,6 +68,11 @@ from weconduct.application.project_python_runtime import (
 from weconduct.application.debug_controller import DebugController
 from weconduct.application.debug_session_history import DebugSessionHistoryStore
 from weconduct.application.execution_core import ExecutionCore
+from weconduct.application.graph_upgrades import (
+    CURRENT_GRAPH_DATA_VERSION,
+    GRAPH_DATA_UPGRADERS,
+    upgrade_graph_payload,
+)
 from weconduct.application.graph_runtime_projection import GraphRuntimeProjectionBuilder
 from weconduct.contracts.debugger import DEBUG_SESSION_ACTIVE_STATUSES
 from weconduct.contracts.debugger import DEBUG_SESSION_TERMINAL_STATUSES
@@ -126,14 +132,7 @@ MAX_DEBUG_LIVE_SESSION_DOCUMENTS = 2
 MAX_RUNTIME_EXECUTION_STEPS = 1000
 MAX_COMPONENT_CALL_DEPTH = 8
 GRAPH_COMPATIBILITY_BASELINE_VERSION = "0.5.2"
-GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION = "0.6.2"
-GRAPH_DATA_UPGRADERS = [
-    {
-        "from_version": GRAPH_COMPATIBILITY_BASELINE_VERSION,
-        "to_version": GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION,
-        "upgrader_id": "p18d-baseline-052-to-061",
-    }
-]
+GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION = CURRENT_GRAPH_DATA_VERSION
 SOURCE_TEMPLATES = {
     "graph_workspace": {
         "entry_document": "graph:workspace",
@@ -142,7 +141,7 @@ SOURCE_TEMPLATES = {
             '"graph_schema_version":"graph-v1","nodes":['
             '{"node_id":"node-1","lowered_kind":"execution","source_anchor_ref":"n1",'
             '"expansion_role":"action:request","display_name":"HTTP Request",'
-            '"node_kind":"http.request","position":{"x":120,"y":80},"ports":['
+            '"node_kind":"network.http_request","position":{"x":120,"y":80},"ports":['
             '{"port_id":"out-main","direction":"output","relation_layer":"data",'
             '"semantic_slot":"out.result"}],"node_config":{"method":"GET"}},'
             '{"node_id":"node-2","lowered_kind":"execution","source_anchor_ref":"n2",'
@@ -2918,24 +2917,11 @@ class CompilationWorkbenchService:
     def apply_pending_graph_upgrade(self, *, decision: str) -> dict:
         self._refresh_state_from_store()
         normalized_decision = decision.strip() if isinstance(decision, str) else ""
-        if normalized_decision not in {"upgrade_and_load", "force_load"}:
-            raise ValueError("field must be one of: upgrade_and_load, force_load")
+        if normalized_decision != "upgrade_and_load":
+            raise ValueError("field must be one of: upgrade_and_load")
         pending_graph_upgrade = self._extract_pending_graph_upgrade(self._state)
         if pending_graph_upgrade is None:
             raise ValueError("pending graph upgrade was not found")
-        if normalized_decision == "force_load":
-            def mutation(state: dict | None) -> dict:
-                current_state, _ = self._normalize_workspace_state(state)
-                current_state["pending_graph_upgrade"] = None
-                return current_state
-
-            self._state = self._state_store.mutate(mutation)
-            graph_model = self._get_graph_document_model()
-            return {
-                "status": "force_loaded",
-                "project": self._build_project_metadata(),
-                "graph_document": graph_model,
-            }
 
         pending_documents = pending_graph_upgrade.get("documents", [])
         main_graph_item = next(
@@ -4169,6 +4155,7 @@ class CompilationWorkbenchService:
                         executable_nodes=executable_nodes,
                         event_log=event_log,
                         session_id=session_id,
+                        token_context=runtime_context.execution_token_context,
                     )
 
                 def queue_control_edges(
@@ -4210,6 +4197,7 @@ class CompilationWorkbenchService:
                     )
                     program_counter = cursor.program_counter
                     repeat_mode = cursor.repeat_mode
+                    runtime_context.execution_token_context = cursor.token_context
                 else:
                     program_counter = 0
                     repeat_mode = False
@@ -4235,6 +4223,7 @@ class CompilationWorkbenchService:
                         )
                         program_counter = cursor.program_counter
                         repeat_mode = cursor.repeat_mode
+                        runtime_context.execution_token_context = cursor.token_context
                         continue
                     if scheduler_mode == "flow_graph":
                         executed_node_ids.add(node_state["node_id"])
@@ -4491,6 +4480,7 @@ class CompilationWorkbenchService:
                                     executable_nodes=executable_nodes,
                                     node_index=next_flow_index,
                                     repeat_mode=repeat_mode,
+                                    token_context=runtime_context.execution_token_context,
                                 )
                         elif node_kind == "control.if":
                             self._queue_runtime_if_successors(
@@ -4538,6 +4528,7 @@ class CompilationWorkbenchService:
                                 executable_nodes=executable_nodes,
                                 event_log=event_log,
                                 session_id=session_id,
+                                token_context=runtime_context.execution_token_context,
                             )
                         elif node_kind == "control.join":
                             self._queue_runtime_join_successors(
@@ -4553,6 +4544,7 @@ class CompilationWorkbenchService:
                                 executable_nodes=executable_nodes,
                                 event_log=event_log,
                                 session_id=session_id,
+                                token_context=runtime_context.execution_token_context,
                             )
                         elif node_kind == "control.while":
                             self._queue_runtime_while_successors(
@@ -4637,6 +4629,7 @@ class CompilationWorkbenchService:
                                     executable_nodes=executable_nodes,
                                     node_index=jump_target_index,
                                     repeat_mode=True,
+                                    token_context=runtime_context.execution_token_context,
                                 )
                             else:
                                 queue_control_edges(
@@ -4658,6 +4651,7 @@ class CompilationWorkbenchService:
                         )
                         program_counter = cursor.program_counter
                         repeat_mode = cursor.repeat_mode
+                        runtime_context.execution_token_context = cursor.token_context
                         continue
                     if node_kind == "control.foreach":
                         loop_body_index, loop_exit_index = self._resolve_runtime_foreach_targets(
@@ -5853,6 +5847,7 @@ class CompilationWorkbenchService:
                 executable_nodes=executable_nodes,
                 event_log=event_log,
                 session_id="component-runtime",
+                token_context=child_context.execution_token_context,
             )
 
         def queue_control_edges(
@@ -5882,8 +5877,13 @@ class CompilationWorkbenchService:
                         repeat_mode=False,
                         event_log=event_log,
                         session_id="component-runtime",
+                        token_context=child_context.execution_token_context,
                     )
             next_entry = pending_node_entries.pop(0) if pending_node_entries else None
+            if isinstance(next_entry, dict):
+                child_context.execution_token_context = ExecutionTokenContext.from_snapshot(
+                    next_entry.get("token_context")
+                )
             if isinstance(next_entry, dict):
                 dispatched_node_index = next_entry.get("node_index")
                 if isinstance(dispatched_node_index, int) and 0 <= dispatched_node_index < len(executable_nodes):
@@ -5942,6 +5942,10 @@ class CompilationWorkbenchService:
                     and node_state["node_id"] in executed_node_ids
                 ):
                     next_entry = pending_node_entries.pop(0) if pending_node_entries else None
+                    if isinstance(next_entry, dict):
+                        child_context.execution_token_context = ExecutionTokenContext.from_snapshot(
+                            next_entry.get("token_context")
+                        )
                     if isinstance(next_entry, dict):
                         dispatched_node_index = next_entry.get("node_index")
                         if isinstance(dispatched_node_index, int) and 0 <= dispatched_node_index < len(executable_nodes):
@@ -6351,6 +6355,7 @@ class CompilationWorkbenchService:
                                 event_log=event_log,
                                 session_id="component-runtime",
                                 source_node_id=executable_node["node_id"],
+                                token_context=child_context.execution_token_context,
                             )
                     elif node_kind == "control.if":
                         self._queue_runtime_if_successors(
@@ -6397,6 +6402,7 @@ class CompilationWorkbenchService:
                             executable_nodes=executable_nodes,
                             event_log=event_log,
                             session_id="component-runtime",
+                            token_context=child_context.execution_token_context,
                         )
                     elif node_kind == "control.join":
                         self._queue_runtime_join_successors(
@@ -6412,6 +6418,7 @@ class CompilationWorkbenchService:
                             executable_nodes=executable_nodes,
                             event_log=event_log,
                             session_id="component-runtime",
+                            token_context=child_context.execution_token_context,
                         )
                     elif node_kind == "control.while":
                         self._queue_runtime_while_successors(
@@ -6490,6 +6497,7 @@ class CompilationWorkbenchService:
                                 event_log=event_log,
                                 session_id="component-runtime",
                                 source_node_id=executable_node["node_id"],
+                                token_context=child_context.execution_token_context,
                             )
                         else:
                             queue_control_edges(
@@ -6504,6 +6512,10 @@ class CompilationWorkbenchService:
                             repeat_mode_value=repeat_mode,
                         )
                     next_entry = pending_node_entries.pop(0) if pending_node_entries else None
+                    if isinstance(next_entry, dict):
+                        child_context.execution_token_context = ExecutionTokenContext.from_snapshot(
+                            next_entry.get("token_context")
+                        )
                     if isinstance(next_entry, dict):
                         dispatched_node_index = next_entry.get("node_index")
                         if isinstance(dispatched_node_index, int) and 0 <= dispatched_node_index < len(executable_nodes):
@@ -7161,6 +7173,7 @@ class CompilationWorkbenchService:
         source_node_id: str | None = None,
         source_port_id: str | None = None,
         iteration_stack: list[str] | None = None,
+        token_context: ExecutionTokenContext | None = None,
     ) -> None:
         if not (0 <= node_index < len(executable_nodes)):
             return
@@ -7174,6 +7187,7 @@ class CompilationWorkbenchService:
                 "node_index": node_index,
                 "repeat_mode": repeat_mode,
                 "iteration_stack": list(iteration_stack) if isinstance(iteration_stack, list) else [],
+                "token_context": (token_context or ExecutionTokenContext()).to_snapshot(),
             }
         )
         if event_log is not None:
@@ -7880,6 +7894,7 @@ class CompilationWorkbenchService:
         event_log: list[dict] | None = None,
         session_id: str | None = None,
         iteration_stack: list[str] | None = None,
+        token_context: ExecutionTokenContext | None = None,
     ) -> None:
         target_node_id = edge.get("to_node_id")
         if not isinstance(target_node_id, str):
@@ -7908,6 +7923,7 @@ class CompilationWorkbenchService:
                     if isinstance(edge.get("from_port_id"), str)
                     else None,
                     iteration_stack=iteration_stack,
+                    token_context=token_context,
                 )
                 return
             self._enqueue_runtime_flow_graph_node(
@@ -7926,6 +7942,7 @@ class CompilationWorkbenchService:
                 if isinstance(edge.get("from_port_id"), str)
                 else None,
                 iteration_stack=iteration_stack,
+                token_context=token_context,
             )
             return
         if target_node_kind == "control.while":
@@ -7947,6 +7964,7 @@ class CompilationWorkbenchService:
                     if isinstance(edge.get("from_port_id"), str)
                     else None,
                     iteration_stack=iteration_stack,
+                    token_context=token_context,
                 )
                 return
             else:
@@ -7967,6 +7985,7 @@ class CompilationWorkbenchService:
                     if isinstance(edge.get("from_port_id"), str)
                     else None,
                     iteration_stack=iteration_stack,
+                    token_context=token_context,
                 )
                 return
         target_node = executable_nodes[target_node_index]
@@ -8061,6 +8080,7 @@ class CompilationWorkbenchService:
             if isinstance(edge.get("from_port_id"), str)
             else None,
             iteration_stack=iteration_stack,
+            token_context=token_context,
         )
 
     def _queue_runtime_control_edges(
@@ -8082,6 +8102,7 @@ class CompilationWorkbenchService:
         session_id: str | None = None,
         source_node: dict | None = None,
         iteration_stack: list[str] | None = None,
+        token_context: ExecutionTokenContext | None = None,
     ) -> None:
         for edge in self._resolve_runtime_edge_target_ports(
             source_node_id=source_node_id,
@@ -8104,6 +8125,7 @@ class CompilationWorkbenchService:
                 event_log=event_log,
                 session_id=session_id,
                 iteration_stack=iteration_stack,
+                token_context=token_context,
             )
 
     def _evaluate_runtime_control_condition(self, node_config: dict, runtime_context: RuntimeContext) -> bool:
@@ -8173,6 +8195,7 @@ class CompilationWorkbenchService:
             event_log=event_log,
             session_id=session_id,
             source_node=executable_node,
+            token_context=runtime_context.execution_token_context,
         )
 
     def _queue_runtime_switch_successors(
@@ -8240,6 +8263,7 @@ class CompilationWorkbenchService:
             event_log=event_log,
             session_id=session_id,
             source_node=executable_node,
+            token_context=runtime_context.execution_token_context,
         )
 
     def _queue_runtime_parallel_fork_successors(
@@ -8257,6 +8281,7 @@ class CompilationWorkbenchService:
         executable_nodes: list[dict],
         event_log: list[dict] | None = None,
         session_id: str | None = None,
+        token_context: ExecutionTokenContext | None = None,
     ) -> None:
         self._queue_runtime_control_edges(
             source_node_id=executable_node["node_id"],
@@ -8274,6 +8299,7 @@ class CompilationWorkbenchService:
             event_log=event_log,
             session_id=session_id,
             source_node=executable_node,
+            token_context=token_context,
         )
 
     def _queue_runtime_join_successors(
@@ -8291,6 +8317,7 @@ class CompilationWorkbenchService:
         executable_nodes: list[dict],
         event_log: list[dict] | None = None,
         session_id: str | None = None,
+        token_context: ExecutionTokenContext | None = None,
     ) -> None:
         if event_log is not None:
             event_log.append(
@@ -8317,6 +8344,7 @@ class CompilationWorkbenchService:
             event_log=event_log,
             session_id=session_id,
             source_node=executable_node,
+            token_context=token_context,
         )
 
     def _queue_runtime_while_successors(
@@ -8384,6 +8412,7 @@ class CompilationWorkbenchService:
             session_id=session_id,
             source_node=executable_node,
             iteration_stack=iteration_stack,
+            token_context=runtime_context.execution_token_context,
         )
 
     def _queue_runtime_retry_successors(
@@ -8458,6 +8487,7 @@ class CompilationWorkbenchService:
             event_log=event_log,
             session_id=session_id,
             source_node=executable_node,
+            token_context=runtime_context.execution_token_context,
         )
 
     def _queue_runtime_failover_successors(
@@ -8532,6 +8562,7 @@ class CompilationWorkbenchService:
             event_log=event_log,
             session_id=session_id,
             source_node=executable_node,
+            token_context=runtime_context.execution_token_context,
         )
 
     def _resolve_runtime_jump_target_index(
@@ -15145,6 +15176,11 @@ class CompilationWorkbenchService:
         upgrade_history = list(compatibility.get("upgrade_history", []))
         previous_version = compatibility["graph_data_version"]
         upgrade_path = self._build_graph_upgrade_path(previous_version)
+        payload = upgrade_graph_payload(
+            payload,
+            from_version=previous_version,
+            target_version=GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION,
+        )
         if upgrade_path:
             upgrade_history.append(
                 {
@@ -15178,12 +15214,12 @@ class CompilationWorkbenchService:
             next_upgrader = next(
                 (
                     {
-                        "from_version": item["from_version"],
-                        "to_version": item["to_version"],
-                        "upgrader_id": item["upgrader_id"],
+                        "from_version": item.from_version,
+                        "to_version": item.to_version,
+                        "upgrader_id": item.upgrader_id,
                     }
                     for item in GRAPH_DATA_UPGRADERS
-                    if item["from_version"] == current_version
+                    if item.from_version == current_version
                 ),
                 None,
             )
@@ -19169,6 +19205,7 @@ class CompilationWorkbenchService:
                 current_program_counter=current_program_counter,
                 current_repeat_mode=current_repeat_mode,
                 current_iteration_stack=current_iteration_stack,
+                current_token_context=runtime_context.execution_token_context,
             )
             if isinstance(current_node_override, dict):
                 session_document["runtime_preview"]["current_node"] = deepcopy(current_node_override)
@@ -19335,6 +19372,7 @@ class CompilationWorkbenchService:
                 executable_nodes=executable_nodes,
                 event_log=None,
                 session_id=session_id,
+                token_context=runtime_context.execution_token_context,
             )
 
         def queue_control_edges(
@@ -19377,23 +19415,38 @@ class CompilationWorkbenchService:
                     if isinstance(resume_cursor.get("iteration_stack"), list)
                     else []
                 )
+                runtime_context.execution_token_context = ExecutionTokenContext.from_snapshot(
+                    resume_cursor.get("token_context")
+                )
             elif isinstance(resume_node_id, str) and resume_node_id in node_index_by_id:
-                preview_queued_node_ids = (
-                    runtime_preview.get("queued_node_ids")
-                    if isinstance(runtime_preview.get("queued_node_ids"), list)
+                preview_token_queue = (
+                    runtime_preview.get("token_queue")
+                    if isinstance(runtime_preview.get("token_queue"), list)
                     else []
                 )
-                for queued_node_id in preview_queued_node_ids:
-                    if isinstance(queued_node_id, str) and queued_node_id in node_index_by_id:
+                for token in preview_token_queue:
+                    if isinstance(token, dict) and isinstance(token.get("node_id"), str):
+                        queued_node_id = token["node_id"]
+                    else:
+                        continue
+                    if queued_node_id in node_index_by_id:
                         self._enqueue_runtime_flow_graph_node(
                             pending_node_entries=pending_node_entries,
                             queued_node_ids=queued_node_ids,
                             executed_node_ids=executed_node_ids,
                             executable_nodes=executable_nodes,
                             node_index=node_index_by_id[queued_node_id],
-                            repeat_mode=False,
+                            repeat_mode=bool(token.get("repeat_mode")),
                             event_log=None,
                             session_id=session_id,
+                            iteration_stack=(
+                                list(token.get("iteration_stack"))
+                                if isinstance(token.get("iteration_stack"), list)
+                                else []
+                            ),
+                            token_context=ExecutionTokenContext.from_snapshot(
+                                token.get("token_context")
+                            ),
                         )
                 if resume_from_pending_queue:
                     session_document["debug_session"] = {
@@ -19408,6 +19461,7 @@ class CompilationWorkbenchService:
                     program_counter = cursor.program_counter
                     repeat_mode = cursor.repeat_mode
                     active_iteration_stack = cursor.iteration_stack
+                    runtime_context.execution_token_context = cursor.token_context
                 else:
                     queued_node_ids.discard(resume_node_id)
                     pending_node_entries = [
@@ -19434,6 +19488,7 @@ class CompilationWorkbenchService:
                             repeat_mode=False,
                             event_log=None,
                             session_id=session_id,
+                            token_context=runtime_context.execution_token_context,
                         )
                 cursor = ExecutionCore.dispatch_next_token(
                     pending_node_entries=pending_node_entries,
@@ -19442,6 +19497,7 @@ class CompilationWorkbenchService:
                 program_counter = cursor.program_counter
                 repeat_mode = cursor.repeat_mode
                 active_iteration_stack = cursor.iteration_stack
+                runtime_context.execution_token_context = cursor.token_context
         else:
             if isinstance(resume_node_id, str) and resume_node_id in node_index_by_id:
                 program_counter = node_index_by_id[resume_node_id]
@@ -19535,6 +19591,7 @@ class CompilationWorkbenchService:
                 program_counter = cursor.program_counter
                 repeat_mode = cursor.repeat_mode
                 active_iteration_stack = cursor.iteration_stack
+                runtime_context.execution_token_context = cursor.token_context
                 continue
 
             if (
@@ -19571,6 +19628,7 @@ class CompilationWorkbenchService:
                     program_counter = cursor.program_counter
                     repeat_mode = cursor.repeat_mode
                     active_iteration_stack = cursor.iteration_stack
+                    runtime_context.execution_token_context = cursor.token_context
                 else:
                     program_counter += 1
                 continue
@@ -19905,6 +19963,7 @@ class CompilationWorkbenchService:
                         executable_nodes=executable_nodes,
                         event_log=None,
                         session_id=session_id,
+                        token_context=runtime_context.execution_token_context,
                     )
                 elif node_kind == "control.while":
                     self._queue_runtime_while_successors(
@@ -19954,6 +20013,7 @@ class CompilationWorkbenchService:
                 next_program_counter = cursor.program_counter
                 repeat_mode = cursor.repeat_mode
                 next_iteration_stack = cursor.iteration_stack
+                runtime_context.execution_token_context = cursor.token_context
                 upcoming_program_counter = (
                     next_program_counter if next_program_counter >= 0 else None
                 )
@@ -20007,6 +20067,7 @@ class CompilationWorkbenchService:
                                     "node_id": executable_nodes[upcoming_program_counter]["node_id"],
                                     "repeat_mode": repeat_mode,
                                     "iteration_stack": list(next_iteration_stack),
+                                    "token_context": cursor.token_context.to_snapshot(),
                                 }
                                 if upcoming_program_counter is not None
                                 else None
@@ -20055,6 +20116,7 @@ class CompilationWorkbenchService:
                             "node_id": executable_nodes[upcoming_program_counter]["node_id"],
                             "repeat_mode": repeat_mode,
                             "iteration_stack": list(next_iteration_stack),
+                            "token_context": cursor.token_context.to_snapshot(),
                         }
                         if upcoming_program_counter is not None
                         else None
@@ -20646,6 +20708,7 @@ class CompilationWorkbenchService:
         current_program_counter: int | None,
         current_repeat_mode: bool,
         current_iteration_stack: list[str] | None = None,
+        current_token_context: ExecutionTokenContext | None = None,
     ) -> dict:
         return ExecutionCore.build_scheduler_snapshot(
             scheduler_mode=scheduler_mode,
@@ -20658,6 +20721,7 @@ class CompilationWorkbenchService:
             current_program_counter=current_program_counter,
             current_repeat_mode=current_repeat_mode,
             current_iteration_stack=current_iteration_stack,
+            current_token_context=current_token_context,
         )
 
     def _restore_runtime_debug_snapshot(

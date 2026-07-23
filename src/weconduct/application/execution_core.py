@@ -4,12 +4,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
+from weconduct.runtime.execution_context import ExecutionTokenContext
+
 
 @dataclass(frozen=True)
 class ExecutionCursor:
     program_counter: int
     repeat_mode: bool
     iteration_stack: list[str]
+    token_context: ExecutionTokenContext = ExecutionTokenContext()
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,7 @@ class ExecutionCore:
             if isinstance(next_entry.get("iteration_stack"), list)
             else []
         )
+        token_context = ExecutionTokenContext.from_snapshot(next_entry.get("token_context"))
         if event_log is not None and isinstance(session_id, str):
             node = executable_nodes[node_index]
             recorded_at = datetime.now(timezone.utc).isoformat()
@@ -53,6 +57,7 @@ class ExecutionCore:
                         "node_id": node.get("node_id"),
                         "node_kind": node.get("node_kind"),
                         "repeat_mode": repeat_mode,
+                        "network_context_id": token_context.network_context_id,
                     },
                     {
                         "event_kind": "node.ready",
@@ -67,6 +72,7 @@ class ExecutionCore:
             program_counter=node_index,
             repeat_mode=repeat_mode,
             iteration_stack=iteration_stack,
+            token_context=token_context,
         )
 
     @staticmethod
@@ -142,6 +148,7 @@ class ExecutionCore:
         current_program_counter: int | None,
         current_repeat_mode: bool,
         current_iteration_stack: list[str] | None = None,
+        current_token_context: ExecutionTokenContext | None = None,
     ) -> dict:
         token_queue: list[dict[str, object]] = []
         for entry in pending_node_entries:
@@ -161,6 +168,9 @@ class ExecutionCore:
                         if isinstance(entry.get("iteration_stack"), list)
                         else []
                     ),
+                    "token_context": ExecutionTokenContext.from_snapshot(
+                        entry.get("token_context")
+                    ).to_snapshot(),
                 }
             )
         join_buffers: dict[str, dict[str, object]] = {}
@@ -198,6 +208,7 @@ class ExecutionCore:
                     if isinstance(current_iteration_stack, list)
                     else []
                 ),
+                "token_context": (current_token_context or ExecutionTokenContext()).to_snapshot(),
             }
         return {
             "scheduler_mode": scheduler_mode,
@@ -242,6 +253,9 @@ class ExecutionCore:
                             if isinstance(token.get("iteration_stack"), list)
                             else []
                         ),
+                        "token_context": ExecutionTokenContext.from_snapshot(
+                            token.get("token_context")
+                        ).to_snapshot(),
                     }
                 )
                 queued_node_ids.add(node_id)

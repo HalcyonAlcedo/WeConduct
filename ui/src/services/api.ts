@@ -397,7 +397,7 @@ export function postConvertWebcontrol(body: WebControlConvertRequest): Promise<W
 }
 
 // ===== 0.6.2: Graph Upgrade =====
-export function postGraphUpgradeApply(decision: 'upgrade_and_load' | 'force_load'): Promise<{ status: string; project: Record<string, unknown>; graph_document: Record<string, unknown> }> {
+export function postGraphUpgradeApply(decision: 'upgrade_and_load'): Promise<{ status: string; project: Record<string, unknown>; graph_document: Record<string, unknown> }> {
   return request('/workbench/project/graph-upgrade/apply', { method: 'POST', body: JSON.stringify({ decision }) })
 }
 export function postGraphUpgradeRecheck(): Promise<import('@/types/domains/api').GraphUpgradeRecheckResponse> {

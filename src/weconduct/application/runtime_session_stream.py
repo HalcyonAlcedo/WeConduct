@@ -7,6 +7,8 @@ from threading import Lock
 from typing import Any, Iterator
 import uuid
 
+from weconduct.application.sensitive_values.redaction import redact_sensitive_payload
+
 
 _STOP_EVENT = object()
 
@@ -24,7 +26,9 @@ class RuntimeSessionStreamBroker:
         self._latest_snapshot_by_session_id: dict[str, dict[str, Any]] = {}
 
     def publish_snapshot(self, session_id: str, snapshot: dict[str, Any]) -> None:
-        snapshot_payload = dict(snapshot)
+        snapshot_payload = redact_sensitive_payload(snapshot)
+        if not isinstance(snapshot_payload, dict):
+            raise TypeError("runtime snapshot must be a mapping")
         with self._lock:
             self._latest_snapshot_by_session_id[session_id] = snapshot_payload
             subscribers = list(self._subscribers_by_session_id.get(session_id, {}).values())
@@ -32,7 +36,10 @@ class RuntimeSessionStreamBroker:
                 subscriber.queue.put(("runtime.snapshot", dict(snapshot_payload)))
 
     def publish_event(self, session_id: str, event_name: str, payload: dict[str, Any]) -> None:
-        self._publish(session_id, event_name, dict(payload))
+        event_payload = redact_sensitive_payload(payload)
+        if not isinstance(event_payload, dict):
+            raise TypeError("runtime event payload must be a mapping")
+        self._publish(session_id, event_name, event_payload)
 
     def get_latest_snapshot(self, session_id: str) -> dict[str, Any] | None:
         with self._lock:

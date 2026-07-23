@@ -22,6 +22,8 @@ import urllib.parse
 import urllib.request
 from zipfile import BadZipFile
 from typing import Any, Callable
+
+from weconduct.runtime.execution_context import ExecutionTokenContext
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from playwright.sync_api import Browser, Frame, Page, Playwright, sync_playwright
@@ -115,6 +117,7 @@ class RuntimeContext:
     embedded_resource_paths: dict[str, str] = field(default_factory=dict)
     allowed_path_roots: tuple[Path, ...] = field(default_factory=tuple)
     runtime_settings: dict[str, Any] = field(default_factory=dict)
+    execution_token_context: ExecutionTokenContext = field(default_factory=ExecutionTokenContext)
     cancellation_context: CancellationContext = field(default_factory=CancellationContext)
     owns_cancellation_context: bool = True
     _cleanup_keys: set[str] = field(default_factory=set, init=False, repr=False)

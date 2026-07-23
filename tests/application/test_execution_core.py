@@ -11,6 +11,7 @@ from weconduct.runtime.engine import (
     RuntimeContext,
     RuntimeExecutorRegistry,
 )
+from weconduct.runtime.execution_context import ExecutionTokenContext
 
 
 class _Owner:
@@ -158,6 +159,28 @@ def test_execution_core_dispatches_token_with_iteration_identity() -> None:
     assert [event["event_kind"] for event in event_log] == ["token.dispatched", "node.ready"]
 
 
+def test_execution_core_dispatches_token_with_network_context_reference() -> None:
+    cursor = ExecutionCore.dispatch_next_token(
+        pending_node_entries=[
+            {
+                "node_index": 0,
+                "repeat_mode": False,
+                "iteration_stack": [],
+                "token_context": {
+                    "network_context_id": "network-context-1",
+                    "network_context_epoch": 2,
+                },
+            }
+        ],
+        executable_nodes=[{"node_id": "node-a", "node_kind": "network.http_request"}],
+    )
+
+    assert cursor.token_context == ExecutionTokenContext(
+        network_context_id="network-context-1",
+        network_context_epoch=2,
+    )
+
+
 def test_execution_core_executes_injection_and_node_through_one_path() -> None:
     owner = _Owner()
 
@@ -246,6 +269,52 @@ def test_execution_core_scheduler_snapshot_round_trip() -> None:
     assert restored.queued_node_ids == {"node-b"}
     assert restored.join_state_by_node_id["node-b"]["arrived_tokens"] == {"left"}
     assert restored.retry_state_by_node_id["node-a"]["attempts"] == 2
+
+
+def test_execution_core_scheduler_snapshot_preserves_network_context_references() -> None:
+    executable_nodes = [
+        {"node_id": "node-a", "node_kind": "network.http_request"},
+        {"node_id": "node-b", "node_kind": "network.download"},
+    ]
+    snapshot = ExecutionCore.build_scheduler_snapshot(
+        scheduler_mode="flow_graph",
+        pending_node_entries=[
+            {
+                "node_index": 1,
+                "repeat_mode": False,
+                "iteration_stack": [],
+                "token_context": {
+                    "network_context_id": "network-context-queued",
+                    "network_context_epoch": 4,
+                },
+            }
+        ],
+        queued_node_ids={"node-b"},
+        executed_node_ids_in_order=["node-a"],
+        join_state_by_node_id={},
+        retry_state_by_node_id={},
+        executable_nodes=executable_nodes,
+        current_program_counter=0,
+        current_repeat_mode=False,
+        current_token_context=ExecutionTokenContext(
+            network_context_id="network-context-current",
+            network_context_epoch=3,
+        ),
+    )
+
+    restored = ExecutionCore.restore_scheduler_snapshot(
+        snapshot=snapshot,
+        executable_nodes=executable_nodes,
+    )
+
+    assert snapshot["current_node"]["token_context"] == {
+        "network_context_id": "network-context-current",
+        "network_context_epoch": 3,
+    }
+    assert restored.pending_node_entries[0]["token_context"] == {
+        "network_context_id": "network-context-queued",
+        "network_context_epoch": 4,
+    }
 
 
 def test_cancellation_context_cleanup_is_idempotent_and_isolates_exceptions() -> None:
