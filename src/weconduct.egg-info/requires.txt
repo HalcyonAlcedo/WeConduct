@@ -1,10 +1,18 @@
+Authlib<2,>=1.6
+cryptography<47,>=46
+graphql-core<4,>=3.2
+httpx[http2,socks]<1,>=0.28
+httpx-sse<1,>=0.4
+msgpack<2,>=1.1
 pydantic<3,>=2.8
 playwright<2,>=1.53
+python-socks[asyncio]<3,>=2.8
 pywebview==6.2.1
 pythonnet==3.0.5
 clr_loader==0.2.10
 openpyxl>=3.1.0
 PyYAML>=6.0
+websockets<17,>=16
 
 [packaging]
 pyinstaller>=6.0

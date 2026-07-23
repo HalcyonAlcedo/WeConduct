@@ -3,6 +3,8 @@
 from pathlib import Path
 import sys
 
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
+
 root = Path(SPECPATH).parents[1]
 captcha_ocr_source = root / "third_party" / "captcha_ocr"
 icon_path = root / "assets" / "icons" / "weconduct.ico"
@@ -55,12 +57,29 @@ if captcha_ocr_source.exists():
     datas.append((str(captcha_ocr_source), "captcha_ocr"))
 datas.extend(_collect_bundled_python_runtime_entries(bundled_python_home))
 
+network_runtime_packages = (
+    "httpx",
+    "httpx_sse",
+    "websockets",
+    "graphql",
+    "authlib",
+    "cryptography",
+    "msgpack",
+    "socksio",
+    "python_socks",
+)
+network_hiddenimports: list[str] = []
+network_binaries: list[tuple[str, str]] = []
+for package_name in network_runtime_packages:
+    network_hiddenimports.extend(collect_submodules(package_name))
+    network_binaries.extend(collect_dynamic_libs(package_name))
+
 a = Analysis(
     [str(root / "src" / "weconduct" / "cli" / "main.py")],
     pathex=[str(root / "src")],
-    binaries=[],
+    binaries=network_binaries,
     datas=datas,
-    hiddenimports=["weconduct.cli.main", "webview"],
+    hiddenimports=["weconduct.cli.main", "webview", *network_hiddenimports],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[str(root / "packaging" / "pyinstaller" / "desktop_shell_runtime_hook.py")],

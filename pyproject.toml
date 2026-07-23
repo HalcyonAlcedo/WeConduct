@@ -8,13 +8,21 @@ version = "0.8.2"
 description = "WeConduct Python core"
 requires-python = ">=3.11"
 dependencies = [
+  "Authlib>=1.6,<2",
+  "cryptography>=46,<47",
+  "graphql-core>=3.2,<4",
+  "httpx[http2,socks]>=0.28,<1",
+  "httpx-sse>=0.4,<1",
+  "msgpack>=1.1,<2",
   "pydantic>=2.8,<3",
   "playwright>=1.53,<2",
+  "python-socks[asyncio]>=2.8,<3",
   "pywebview==6.2.1",
   "pythonnet==3.0.5",
   "clr_loader==0.2.10",
   "openpyxl>=3.1.0",
   "PyYAML>=6.0",
+  "websockets>=16,<17",
 ]
 
 [project.optional-dependencies]

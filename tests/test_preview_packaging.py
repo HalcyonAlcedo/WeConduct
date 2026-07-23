@@ -62,3 +62,25 @@ def test_preview_packaging_spec_collects_bundled_python_runtime() -> None:
     assert 'base_dir / "Lib" / "ensurepip" / "__init__.py"' in spec_text
     assert 'file_path.relative_to(base_dir).parent.as_posix()' in spec_text
     assert 'entries.append((str(file_path), f"bundled-python/{relative_parent}"))' in spec_text
+
+
+def test_preview_packaging_collects_network_runtime_dependencies() -> None:
+    root = Path(__file__).resolve().parents[1]
+    spec_text = (
+        root / "packaging" / "pyinstaller" / "weconduct_preview.spec"
+    ).read_text(encoding="utf-8")
+
+    assert "collect_submodules" in spec_text
+    assert "collect_dynamic_libs" in spec_text
+    for package_name in (
+        "httpx",
+        "httpx_sse",
+        "websockets",
+        "graphql",
+        "authlib",
+        "cryptography",
+        "msgpack",
+        "socksio",
+        "python_socks",
+    ):
+        assert package_name in spec_text

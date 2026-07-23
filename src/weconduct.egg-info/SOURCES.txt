@@ -2,6 +2,7 @@ LICENSE
 README.md
 pyproject.toml
 src/weconduct/__init__.py
+src/weconduct/_version.py
 src/weconduct.egg-info/PKG-INFO
 src/weconduct.egg-info/SOURCES.txt
 src/weconduct.egg-info/dependency_links.txt
@@ -31,6 +32,12 @@ src/weconduct/application/configuration/registry.py
 src/weconduct/application/configuration/repository.py
 src/weconduct/application/configuration/schema.py
 src/weconduct/application/configuration/service.py
+src/weconduct/application/event_storage/__init__.py
+src/weconduct/application/event_storage/blob_store.py
+src/weconduct/application/event_storage/frame.py
+src/weconduct/application/event_storage/migration.py
+src/weconduct/application/event_storage/segment.py
+src/weconduct/application/event_storage/session_store.py
 src/weconduct/builtin_components/__init__.py
 src/weconduct/builtin_components/node_drafts.py
 src/weconduct/builtin_components/registry.py

@@ -1,16 +1,24 @@
 Metadata-Version: 2.4
 Name: weconduct
-Version: 0.8.1
+Version: 0.8.2
 Summary: WeConduct Python core
 Requires-Python: >=3.11
 License-File: LICENSE
+Requires-Dist: Authlib<2,>=1.6
+Requires-Dist: cryptography<47,>=46
+Requires-Dist: graphql-core<4,>=3.2
+Requires-Dist: httpx[http2,socks]<1,>=0.28
+Requires-Dist: httpx-sse<1,>=0.4
+Requires-Dist: msgpack<2,>=1.1
 Requires-Dist: pydantic<3,>=2.8
 Requires-Dist: playwright<2,>=1.53
+Requires-Dist: python-socks[asyncio]<3,>=2.8
 Requires-Dist: pywebview==6.2.1
 Requires-Dist: pythonnet==3.0.5
 Requires-Dist: clr_loader==0.2.10
 Requires-Dist: openpyxl>=3.1.0
 Requires-Dist: PyYAML>=6.0
+Requires-Dist: websockets<17,>=16
 Provides-Extra: packaging
 Requires-Dist: pyinstaller>=6.0; extra == "packaging"
 Dynamic: license-file
