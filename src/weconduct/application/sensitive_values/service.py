@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Literal
 from uuid import uuid4
 
 from .models import SensitiveConsumer, SensitiveRef
+from .encryption import decrypt_parameter_values
 
 
 _SENSITIVE_SOURCES = {
@@ -65,6 +66,24 @@ class SensitiveValueService:
     def revoke_scope(self, scope_id: str) -> None:
         for ref_id in self._refs_by_scope_id.pop(scope_id, set()):
             self._values_by_ref_id.pop(ref_id, None)
+
+    def unlock_encrypted_parameters(
+        self,
+        envelope: Mapping[str, object],
+        *,
+        password: str,
+        scope_id: str,
+    ) -> dict[str, SensitiveRef]:
+        values = decrypt_parameter_values(envelope, password=password)
+        return {
+            name: self.create(
+                value,
+                scope_id=scope_id,
+                source="encrypted_parameter",
+            )
+            for name, value in values.items()
+            if isinstance(name, str)
+        }
 
     def _resolve_ref(self, ref: SensitiveRef) -> object:
         if not isinstance(ref, SensitiveRef):

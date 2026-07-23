@@ -79,6 +79,7 @@ from weconduct.contracts.debugger import DEBUG_SESSION_TERMINAL_STATUSES
 from weconduct.packaging.msgpack_codec import packb
 from weconduct.packaging.msgpack_codec import unpackb
 from weconduct.application.runtime_session_stream import RuntimeSessionStreamBroker
+from weconduct.application.sensitive_values.service import SensitiveValueService
 from weconduct.application.workspace_state_store import (
     FileWorkspaceStateStore,
     InMemoryWorkspaceStateStore,
@@ -261,6 +262,7 @@ class CompilationWorkbenchService:
         self._runtime_execution_lock = Lock()
         self._runtime_execution_threads: dict[str, Thread] = {}
         self._runtime_cancellation_contexts: dict[str, CancellationContext] = {}
+        self._runtime_sensitive_values: dict[str, SensitiveValueService] = {}
         self._debug_execution_lock = Lock()
         self._debug_execution_threads: dict[str, Thread] = {}
         self._debug_execution_resume_events: dict[str, Event] = {}
@@ -3827,6 +3829,33 @@ class CompilationWorkbenchService:
     def run_runtime_session(self, *, session_id: str) -> dict:
         return self._run_runtime_session_sync(session_id=session_id)
 
+    def unlock_runtime_session_parameters(self, *, session_id: str, password: str) -> dict:
+        self._refresh_state_from_store()
+        session = self._find_runtime_session(session_id)
+        status = session["runtime_session"].get("status")
+        if status in {"completed", "failed", "aborted"}:
+            raise ValueError("runtime session is already terminal")
+        encrypted_parameter_set = self._extract_project_settings(self._state).get(
+            "encrypted_parameter_set"
+        )
+        if not isinstance(encrypted_parameter_set, dict):
+            raise ValueError("project does not define encrypted parameters")
+        envelope = encrypted_parameter_set.get("envelope")
+        if not isinstance(envelope, dict):
+            raise ValueError("encrypted parameter envelope is unavailable")
+        sensitive_values = SensitiveValueService()
+        unlocked = sensitive_values.unlock_encrypted_parameters(
+            envelope,
+            password=password,
+            scope_id=session_id,
+        )
+        with self._runtime_execution_lock:
+            previous = self._runtime_sensitive_values.pop(session_id, None)
+            if previous is not None:
+                previous.revoke_scope(session_id)
+            self._runtime_sensitive_values[session_id] = sensitive_values
+        return {"status": "unlocked", "parameter_ids": sorted(unlocked)}
+
     def start_runtime_session_execution(self, *, session_id: str) -> dict:
         self._refresh_state_from_store()
         existing_session = self._find_runtime_session(session_id)
@@ -4958,6 +4987,9 @@ class CompilationWorkbenchService:
             with self._runtime_execution_lock:
                 self._runtime_execution_threads.pop(session_id, None)
                 self._runtime_cancellation_contexts.pop(session_id, None)
+                sensitive_values = self._runtime_sensitive_values.pop(session_id, None)
+            if sensitive_values is not None:
+                sensitive_values.revoke_scope(session_id)
             self._runtime_stream_broker.close_session(session_id)
 
     def _execute_runtime_plan_node(

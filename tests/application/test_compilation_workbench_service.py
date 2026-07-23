@@ -2531,6 +2531,31 @@ def test_project_settings_persist_versioned_encrypted_parameter_set(tmp_path: Pa
     assert "correct-password" not in stored_text
 
 
+def test_runtime_session_unlocks_encrypted_parameter_refs_without_returning_values() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    project_settings = service.get_project_settings_document()["project_settings"]
+    project_settings["encrypted_parameter_set"] = {
+        "parameter_set_id": "parameters-1",
+        "parameters": [{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+        "envelope": encrypt_parameter_values(
+            {"api_key": "test-secret"},
+            password="correct-password",
+            parameter_set_id="parameters-1",
+        ),
+    }
+    service.update_project_settings(project_settings=project_settings)
+    session_id = service.start_runtime_session(graph_document_payload=None)["runtime_session"]["session_id"]
+
+    result = service.unlock_runtime_session_parameters(
+        session_id=session_id,
+        password="correct-password",
+    )
+
+    assert result == {"status": "unlocked", "parameter_ids": ["api_key"]}
+    assert "test-secret" not in repr(result)
+
+
 def test_start_debug_session_rejects_when_runtime_session_is_active() -> None:
     service = CompilationWorkbenchService()
     service.save_graph_document(_build_minimal_workspace_graph())
