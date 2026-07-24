@@ -6,6 +6,7 @@ from .resources import ResponseBodyRef, ResponseBodyStore, ResponseBodyTooLargeE
 from .proxy import ProxyConfigurationError, ProxyResolver, ResolvedProxy
 from .tls import ResolvedTls, TlsConfigurationError, TlsResolver
 from .oauth import OAuthClientCredentialsRequest, OAuthConfigurationError, OAuthService, OAuthTokenState
+from .graphql_adapter import GraphQLAdapterError, GraphQLProtocolAdapter, GraphQLResult
 from .service import NetworkRuntimeService
 
 __all__ = [
@@ -30,5 +31,8 @@ __all__ = [
     "OAuthConfigurationError",
     "OAuthService",
     "OAuthTokenState",
+    "GraphQLAdapterError",
+    "GraphQLProtocolAdapter",
+    "GraphQLResult",
     "UnknownNetworkContextError",
 ]
