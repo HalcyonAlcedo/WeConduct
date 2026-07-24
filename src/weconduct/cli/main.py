@@ -1,13 +1,16 @@
 import argparse
+import getpass
 import json
 from pathlib import Path
 import sys
+from threading import Thread
 
 from weconduct.application import (
     CompilationWorkbenchService,
     OperationRegistry,
     OperationRegistryError,
 )
+from weconduct.application.pending_input.models import PendingInputSnapshot
 from weconduct.application.preview_smoke import run_preview_smoke
 from weconduct.api import build_api_server
 from weconduct.desktop_shell import (
@@ -97,14 +100,14 @@ def main() -> int:
             _print_json(payload)
             return 1
         session_id = started["runtime_session"]["session_id"]
-        run_result = service.run_runtime_session(session_id=session_id)
+        run_result = _run_runtime_session_with_cli_input(service, session_id=session_id)
         payload = {
             "status": run_result["status"],
             "project": opened["project"],
             "project_file": str(project_file),
             "runtime_session": run_result["runtime_session"],
             "execution_summary": run_result.get("execution_summary"),
-            "runtime_preview_summary": service.prepare_runtime_session(None)["runtime_session"]["debug_snapshot"],
+            "runtime_preview_summary": run_result.get("debug_snapshot", {}),
             "project_execution_overview": service.get_project_document()["project"]["execution_overview"],
             "runtime_plan": run_result["runtime_plan"],
             "node_states": run_result["node_states"],
@@ -406,6 +409,103 @@ def _json_default(value):
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
     raise TypeError(f"object of type {type(value).__name__} is not JSON serializable")
+
+
+def _prompt_pending_input_values(snapshot: PendingInputSnapshot) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for field in snapshot.fields:
+        reader = getpass.getpass if field.sensitive else input
+        while True:
+            raw_value = reader(f"{field.label}: ")
+            if raw_value == "":
+                if field.has_default:
+                    values[field.field_id] = field.default_value
+                    break
+                if not field.required:
+                    values[field.field_id] = None
+                    break
+                print(f"字段 {field.label} 为必填项。", file=sys.stderr)
+                continue
+            try:
+                values[field.field_id] = _parse_pending_input_cli_value(
+                    raw_value,
+                    value_type=field.value_type,
+                )
+            except ValueError as exc:
+                print(f"字段 {field.label} 输入无效：{exc}", file=sys.stderr)
+                continue
+            break
+    return values
+
+
+def _parse_pending_input_cli_value(raw_value: str, *, value_type: str) -> object:
+    normalized_type = value_type.strip().lower()
+    if normalized_type in {"number", "float", "decimal"}:
+        try:
+            return float(raw_value)
+        except ValueError as exc:
+            raise ValueError("需要输入数字") from exc
+    if normalized_type in {"integer", "int"}:
+        try:
+            return int(raw_value)
+        except ValueError as exc:
+            raise ValueError("需要输入整数") from exc
+    if normalized_type in {"boolean", "bool"}:
+        lowered = raw_value.strip().lower()
+        if lowered in {"true", "1", "yes", "y", "是"}:
+            return True
+        if lowered in {"false", "0", "no", "n", "否"}:
+            return False
+        raise ValueError("需要输入 true/false")
+    if normalized_type in {"json", "object", "array"}:
+        try:
+            return json.loads(raw_value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("需要输入有效 JSON") from exc
+    return raw_value
+
+
+def _run_runtime_session_with_cli_input(service, *, session_id: str) -> dict:
+    result_holder: list[dict] = []
+    error_holder: list[BaseException] = []
+
+    def run_worker() -> None:
+        try:
+            result_holder.append(service.run_runtime_session(session_id=session_id))
+        except BaseException as exc:  # pragma: no cover - propagated to caller
+            error_holder.append(exc)
+
+    worker = Thread(target=run_worker, daemon=True)
+    worker.start()
+    handled_request_ids: set[str] = set()
+    try:
+        while worker.is_alive():
+            snapshot = service.get_pending_input_snapshot(execution_id=session_id)
+            if (
+                snapshot is not None
+                and snapshot.status == "waiting"
+                and snapshot.request_id not in handled_request_ids
+            ):
+                handled_request_ids.add(snapshot.request_id)
+                values = _prompt_pending_input_values(snapshot)
+                service.submit_pending_input(
+                    execution_id=session_id,
+                    request_id=snapshot.request_id,
+                    values=values,
+                )
+            worker.join(timeout=0.05)
+    except BaseException:
+        abort_runtime_session = getattr(service, "abort_runtime_session", None)
+        if callable(abort_runtime_session):
+            abort_runtime_session(session_id=session_id, reason="CLI input interrupted")
+        worker.join(timeout=2)
+        raise
+    worker.join()
+    if error_holder:
+        raise error_holder[0]
+    if not result_holder:
+        raise RuntimeError("runtime session worker returned no result")
+    return result_holder[0]
 
 
 def _serialize_json(payload) -> str:

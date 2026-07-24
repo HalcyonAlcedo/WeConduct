@@ -4,6 +4,8 @@ import json
 import sys
 
 from weconduct.cli.main import main
+from weconduct.application.pending_input.models import PendingInputField, PendingInputRequest, PendingInputSnapshot
+from weconduct.cli.main import _prompt_pending_input_values, _run_runtime_session_with_cli_input
 
 
 def test_cli_operation_uses_operation_registry_and_json_contract(monkeypatch, capsys) -> None:
@@ -35,3 +37,82 @@ def test_cli_operation_returns_nonzero_for_invalid_payload(monkeypatch, capsys) 
 
     assert exit_code == 1
     assert payload["error_code"] == "operation.input_invalid"
+
+
+def test_cli_pending_input_uses_getpass_for_sensitive_fields(monkeypatch) -> None:
+    request = PendingInputRequest(
+        request_id="request-cli",
+        execution_id="execution-cli",
+        node_id="node-cli",
+        fields=(
+            PendingInputField(field_id="name", label="Name"),
+            PendingInputField(field_id="secret", label="Secret", sensitive=True),
+        ),
+    )
+    snapshot = PendingInputSnapshot(
+        request_id=request.request_id,
+        execution_id=request.execution_id,
+        node_id=request.node_id,
+        status="waiting",
+        fields=request.fields,
+        timeout_seconds=0,
+    )
+    plain_prompts: list[str] = []
+    secret_prompts: list[str] = []
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt: plain_prompts.append(prompt) or "alice",
+    )
+    monkeypatch.setattr(
+        "weconduct.cli.main.getpass.getpass",
+        lambda prompt: secret_prompts.append(prompt) or "top-secret",
+    )
+
+    values = _prompt_pending_input_values(snapshot)
+
+    assert values == {"name": "alice", "secret": "top-secret"}
+    assert plain_prompts == ["Name: "]
+    assert secret_prompts == ["Secret: "]
+
+
+def test_cli_runtime_worker_submits_pending_input_without_blocking_runtime_thread(monkeypatch) -> None:
+    request = PendingInputRequest(
+        request_id="request-runtime-cli",
+        execution_id="execution-runtime-cli",
+        node_id="node-runtime-cli",
+        fields=(PendingInputField(field_id="name", label="Name"),),
+    )
+    snapshot = PendingInputSnapshot(
+        request_id=request.request_id,
+        execution_id=request.execution_id,
+        node_id=request.node_id,
+        status="waiting",
+        fields=request.fields,
+        timeout_seconds=0,
+    )
+
+    class _Service:
+        def __init__(self) -> None:
+            self.pending = True
+            self.submitted: dict[str, object] | None = None
+
+        def run_runtime_session(self, *, session_id: str) -> dict:
+            while self.pending:
+                pass
+            return {"status": "completed", "session_id": session_id}
+
+        def get_pending_input_snapshot(self, *, execution_id: str):
+            return snapshot if self.pending else None
+
+        def submit_pending_input(self, *, execution_id: str, request_id: str, values: dict):
+            self.submitted = values
+            self.pending = False
+            return {"status": "submitted"}
+
+    service = _Service()
+    monkeypatch.setattr("weconduct.cli.main._prompt_pending_input_values", lambda current: {"name": "alice"})
+
+    result = _run_runtime_session_with_cli_input(service, session_id=request.execution_id)
+
+    assert result == {"status": "completed", "session_id": request.execution_id}
+    assert service.submitted == {"name": "alice"}
