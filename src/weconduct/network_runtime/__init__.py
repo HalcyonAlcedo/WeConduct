@@ -14,6 +14,7 @@ from .long_connection import (
     WebSocketConnection,
     WebSocketConnectionError,
 )
+from .batch import execute_batch
 from .service import NetworkRuntimeService
 
 __all__ = [
@@ -46,5 +47,6 @@ __all__ = [
     "SSEEvent",
     "WebSocketConnection",
     "WebSocketConnectionError",
+    "execute_batch",
     "UnknownNetworkContextError",
 ]
