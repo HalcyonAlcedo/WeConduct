@@ -106,3 +106,18 @@ def test_websocket_client_receive_honors_operation_timeout() -> None:
     import asyncio
 
     asyncio.run(run())
+
+
+def test_long_connection_clients_keep_explicit_proxy_configuration() -> None:
+    sse = SSEClientHandle(url="https://example.test/events", proxy="http://proxy.example.test:8080")
+    websocket = WebSocketClientHandle(
+        url="wss://example.test/events",
+        proxy="socks5h://proxy.example.test:1080",
+    )
+
+    try:
+        assert sse.proxy == "http://proxy.example.test:8080"
+        assert websocket.proxy == "socks5h://proxy.example.test:1080"
+    finally:
+        sse.close()
+        websocket.close()

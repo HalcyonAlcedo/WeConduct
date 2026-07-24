@@ -228,6 +228,7 @@ class SSEClientHandle:
         url: str,
         headers: Mapping[str, str] | None = None,
         params: Mapping[str, str] | None = None,
+        proxy: str | None = None,
         timeout_seconds: float = 30.0,
         max_queue_size: int = 100,
     ) -> None:
@@ -238,6 +239,7 @@ class SSEClientHandle:
         self.url = url.strip()
         self.headers = {str(key): str(value) for key, value in (headers or {}).items()}
         self.params = {str(key): str(value) for key, value in (params or {}).items()}
+        self.proxy = proxy.strip() if isinstance(proxy, str) and proxy.strip() else None
         self.timeout_seconds = float(timeout_seconds)
         self.connection = SSEConnection(max_queue_size=max_queue_size)
         self._loop = _AsyncHandleLoop(name="weconduct-sse-client")
@@ -312,6 +314,7 @@ class SSEClientHandle:
                 timeout=self.timeout_seconds,
                 trust_env=False,
                 follow_redirects=False,
+                proxy=self.proxy,
             ) as client:
                 async with aconnect_sse(
                     client,
@@ -345,6 +348,7 @@ class WebSocketClientHandle:
         *,
         url: str,
         headers: Mapping[str, str] | None = None,
+        proxy: str | None = None,
         timeout_seconds: float = 30.0,
         subprotocols: list[str] | None = None,
     ) -> None:
@@ -354,6 +358,7 @@ class WebSocketClientHandle:
             raise ValueError("network.websocket_timeout_invalid")
         self.url = url.strip()
         self.headers = {str(key): str(value) for key, value in (headers or {}).items()}
+        self.proxy = proxy.strip() if isinstance(proxy, str) and proxy.strip() else None
         self.timeout_seconds = float(timeout_seconds)
         self.subprotocols = list(subprotocols or [])
         self.connection: WebSocketConnection | None = None
@@ -425,7 +430,7 @@ class WebSocketClientHandle:
                 self.url,
                 additional_headers=self.headers or None,
                 subprotocols=self.subprotocols or None,
-                proxy=None,
+                proxy=self.proxy,
                 open_timeout=self.timeout_seconds,
             )
             self.connection = WebSocketConnection(socket)

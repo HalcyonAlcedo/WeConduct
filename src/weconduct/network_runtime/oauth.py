@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from time import time
 from typing import TYPE_CHECKING, Mapping
 from urllib.parse import urlsplit
 from uuid import uuid4
+
+import httpx
 
 if TYPE_CHECKING:
     from weconduct.application.sensitive_values.models import SensitiveRef
@@ -39,8 +42,18 @@ class OAuthTokenState:
 
 
 class OAuthService:
-    def __init__(self, *, sensitive_values: SensitiveValueService) -> None:
+    def __init__(
+        self,
+        *,
+        sensitive_values: SensitiveValueService,
+        transport: httpx.BaseTransport | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> None:
         self._sensitive_values = sensitive_values
+        self._transport = transport
+        if timeout_seconds <= 0:
+            raise OAuthConfigurationError("oauth.timeout_invalid")
+        self._timeout_seconds = float(timeout_seconds)
 
     def build_client_credentials_request(
         self,
@@ -109,3 +122,100 @@ class OAuthService:
             token_type=token_type.strip(),
             expires_at=(time() + float(expires_in)) if expires_in is not None else None,
         )
+
+    def exchange_client_credentials(
+        self,
+        *,
+        request: OAuthClientCredentialsRequest,
+        scope_id: str,
+    ) -> OAuthTokenState:
+        if not isinstance(request, OAuthClientCredentialsRequest):
+            raise OAuthConfigurationError("oauth.request_invalid")
+        self._validate_scope(request.client_secret, scope_id)
+        secret = self._resolve_secret(request.client_secret)
+        if not isinstance(secret, str):
+            raise OAuthConfigurationError("oauth.client_secret_invalid")
+        data: dict[str, str] = {
+            "grant_type": "client_credentials",
+            "client_id": request.client_id,
+        }
+        if request.scope:
+            data["scope"] = request.scope
+        response = self._post_token(
+            request.token_url,
+            data=data,
+            auth=(request.client_id, secret),
+        )
+        return self.accept_token_response(
+            request_id=request.request_id,
+            scope_id=scope_id,
+            response=response,
+        )
+
+    def refresh_access_token(
+        self,
+        *,
+        token_url: str,
+        refresh_token: SensitiveRef,
+        scope_id: str,
+        client_id: str | None = None,
+        scope: str | None = None,
+    ) -> OAuthTokenState:
+        parsed = urlsplit(token_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise OAuthConfigurationError("oauth.token_url_invalid")
+        self._validate_scope(refresh_token, scope_id)
+        secret = self._resolve_secret(refresh_token)
+        if not isinstance(secret, str):
+            raise OAuthConfigurationError("oauth.refresh_token_invalid")
+        data = {"grant_type": "refresh_token", "refresh_token": secret}
+        if isinstance(scope, str) and scope.strip():
+            data["scope"] = scope.strip()
+        auth = (client_id.strip(), "") if isinstance(client_id, str) and client_id.strip() else None
+        response = self._post_token(token_url, data=data, auth=auth)
+        return self.accept_token_response(
+            request_id=f"oauth-refresh-{uuid4().hex}",
+            scope_id=scope_id,
+            response=response,
+        )
+
+    def _post_token(
+        self,
+        token_url: str,
+        *,
+        data: Mapping[str, str],
+        auth: tuple[str, str] | None,
+    ) -> Mapping[str, object]:
+        try:
+            with httpx.Client(
+                transport=self._transport,
+                timeout=self._timeout_seconds,
+                trust_env=False,
+            ) as client:
+                response = client.post(token_url, data=dict(data), auth=auth)
+        except (httpx.HTTPError, ValueError) as exc:
+            raise OAuthConfigurationError("oauth.token_exchange_failed") from exc
+        if response.status_code < 200 or response.status_code >= 300:
+            raise OAuthConfigurationError("oauth.token_exchange_failed")
+        try:
+            payload = response.json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise OAuthConfigurationError("oauth.token_response_invalid") from exc
+        if not isinstance(payload, Mapping):
+            raise OAuthConfigurationError("oauth.token_response_invalid")
+        return payload
+
+    def _resolve_secret(self, ref: SensitiveRef) -> object:
+        from weconduct.application.sensitive_values.models import SensitiveConsumer
+
+        return self._sensitive_values.resolve(
+            ref,
+            consumer=SensitiveConsumer.NETWORK_RUNTIME,
+        )
+
+    @staticmethod
+    def _validate_scope(ref: SensitiveRef, scope_id: str) -> None:
+        from weconduct.application.sensitive_values.models import SensitiveRef
+
+        if not isinstance(ref, SensitiveRef) or ref.scope_id != scope_id:
+            raise OAuthConfigurationError("oauth.sensitive_scope_mismatch")

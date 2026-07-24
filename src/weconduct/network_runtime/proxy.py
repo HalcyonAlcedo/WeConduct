@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from typing import Mapping
 from urllib.parse import urlsplit
 
@@ -18,7 +19,8 @@ class ResolvedProxy:
 
 class ProxyResolver:
     def __init__(self, *, environment: Mapping[str, str] | None = None) -> None:
-        self._environment = {str(key).upper(): str(value) for key, value in (environment or {}).items()}
+        source = os.environ if environment is None else environment
+        self._environment = {str(key).upper(): str(value) for key, value in source.items()}
 
     def resolve(self, configuration: Mapping[str, object], target_url: str) -> ResolvedProxy:
         if not isinstance(configuration, Mapping):

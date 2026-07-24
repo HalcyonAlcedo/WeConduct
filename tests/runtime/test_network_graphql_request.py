@@ -62,9 +62,10 @@ def test_network_graphql_subscription_uses_websocket_transport(monkeypatch) -> N
     class FakeWebSocketClientHandle:
         instances: list["FakeWebSocketClientHandle"] = []
 
-        def __init__(self, *, url, headers=None, timeout_seconds=30.0, subprotocols=None):
+        def __init__(self, *, url, headers=None, proxy=None, timeout_seconds=30.0, subprotocols=None):
             self.url = url
             self.headers = headers or {}
+            self.proxy = proxy
             self.timeout_seconds = timeout_seconds
             self.subprotocols = subprotocols or []
             self.sent: list[object] = []

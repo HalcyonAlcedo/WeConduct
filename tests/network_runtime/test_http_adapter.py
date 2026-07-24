@@ -157,6 +157,27 @@ def test_httpx_adapter_isolates_manual_proxy_clients(tmp_path) -> None:
     assert same_proxy_client is proxy_client
 
 
+def test_httpx_adapter_resolves_environment_proxy_without_silent_direct_fallback(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.test:3128")
+    adapter = HttpxAdapter(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, request=request)
+        ),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+
+    client = adapter._client_for_snapshot(  # type: ignore[attr-defined]
+        NetworkContextSnapshot(
+            context_id="proxy-env",
+            proxy={"mode": "environment"},
+        ),
+        "https://example.test/api",
+    )
+
+    assert client is not adapter._client  # type: ignore[attr-defined]
+
+
 def test_network_http_request_node_delegates_to_network_runtime_service() -> None:
     class StubNetworkRuntimeService:
         def __init__(self) -> None:

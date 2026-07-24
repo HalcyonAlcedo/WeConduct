@@ -3049,12 +3049,36 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
         ],
         "node_config": {
             "code": "",
+            "inputs": {},
+            "input_schema": {},
+            "output_schema": {},
+            "metadata": {},
+            "metadata_schema": {},
+            "data_fields": [],
         },
         "parameter_schema": {
             "code": {
                 "type": "string",
                 "required": True,
                 "editor_kind": "code",
+                "path_kind": None,
+            },
+            "input_schema": {
+                "type": "object",
+                "required": False,
+                "editor_kind": "json",
+                "path_kind": None,
+            },
+            "output_schema": {
+                "type": "object",
+                "required": False,
+                "editor_kind": "json",
+                "path_kind": None,
+            },
+            "metadata_schema": {
+                "type": "object",
+                "required": False,
+                "editor_kind": "json",
                 "path_kind": None,
             },
         },

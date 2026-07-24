@@ -23,7 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from zipfile import BadZipFile
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from weconduct.network_runtime import (
     GraphQLAdapterError,
@@ -33,6 +33,7 @@ from weconduct.network_runtime import (
     NetworkContextSnapshot,
     NetworkOperation,
     NetworkRuntimeService,
+    ProxyResolver,
     ResponseBodyRef,
     ResponseBodyTooLargeError,
     SSEClientHandle,
@@ -40,6 +41,7 @@ from weconduct.network_runtime import (
     execute_batch,
 )
 from weconduct.runtime.execution_context import ExecutionSessionContext, ExecutionTokenContext
+from weconduct.runtime.execution_envelope import ExecutionEnvelope, ExecutionEnvelopeError, FieldSchema
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from playwright.sync_api import Browser, Frame, Page, Playwright, sync_playwright
@@ -946,6 +948,7 @@ class RuntimeExecutorRegistry:
             operation_name = _resolve_value(node_config.get("operation_name"), context)
             variables = _resolve_value(node_config.get("variables", {}), context)
             headers = _resolve_value(node_config.get("headers", {}), context)
+            proxy_config = _resolve_value(node_config.get("proxy", {"mode": "direct"}), context)
             subprotocol = _resolve_value(
                 node_config.get("subprotocol", "graphql-transport-ws"),
                 context,
@@ -958,8 +961,12 @@ class RuntimeExecutorRegistry:
                 return _failed_result(node, "network.graphql_endpoint_required", "GraphQL endpoint is required")
             if not isinstance(query, str) or not query.strip():
                 return _failed_result(node, "network.graphql_query_required", "GraphQL query is required")
-            if not isinstance(variables, dict) or not isinstance(headers, dict):
-                return _failed_result(node, "network.graphql_input_invalid", "GraphQL variables and headers must be objects")
+            if (
+                not isinstance(variables, dict)
+                or not isinstance(headers, dict)
+                or not isinstance(proxy_config, dict)
+            ):
+                return _failed_result(node, "network.graphql_input_invalid", "GraphQL variables, headers and proxy must be objects")
             try:
                 timeout_seconds = float(timeout_value)
                 request = GraphQLProtocolAdapter().build_subscription(
@@ -971,9 +978,11 @@ class RuntimeExecutorRegistry:
                     headers=headers,
                     subprotocol=subprotocol if isinstance(subprotocol, str) else "graphql-transport-ws",
                 )
+                resolved_proxy = ProxyResolver().resolve(proxy_config, endpoint)
                 handle = WebSocketClientHandle(
                     url=request.endpoint,
                     headers=request.headers,
+                    proxy=resolved_proxy.url,
                     timeout_seconds=timeout_seconds,
                     subprotocols=[request.subprotocol],
                 )
@@ -1090,19 +1099,22 @@ class RuntimeExecutorRegistry:
             url = _resolve_value(node_config.get("url", node_config.get("endpoint")), context)
             headers = _resolve_value(node_config.get("headers", {}), context)
             params = _resolve_value(node_config.get("query", node_config.get("params", {})), context)
+            proxy_config = _resolve_value(node_config.get("proxy", {"mode": "direct"}), context)
             timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout", 30)), context)
             max_queue_size = _resolve_value(node_config.get("max_queue_size", 100), context)
             if not isinstance(url, str) or not url.strip():
                 return _failed_result(node, "network.sse_url_required", "SSE url is required")
-            if not isinstance(headers, dict) or not isinstance(params, dict):
-                return _failed_result(node, "network.sse_headers_invalid", "SSE headers and params must be objects")
+            if not isinstance(headers, dict) or not isinstance(params, dict) or not isinstance(proxy_config, dict):
+                return _failed_result(node, "network.sse_headers_invalid", "SSE headers, params and proxy must be objects")
             try:
                 timeout_seconds = float(timeout_value)
                 queue_size = int(max_queue_size)
+                resolved_proxy = ProxyResolver().resolve(proxy_config, url)
                 handle = SSEClientHandle(
                     url=url,
                     headers=headers,
                     params=params,
+                    proxy=resolved_proxy.url,
                     timeout_seconds=timeout_seconds,
                     max_queue_size=queue_size,
                 )
@@ -1163,17 +1175,20 @@ class RuntimeExecutorRegistry:
         if action == "connect":
             url = _resolve_value(node_config.get("url", node_config.get("endpoint")), context)
             headers = _resolve_value(node_config.get("headers", {}), context)
+            proxy_config = _resolve_value(node_config.get("proxy", {"mode": "direct"}), context)
             timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout", 30)), context)
             subprotocols = _resolve_value(node_config.get("subprotocols", []), context)
             if not isinstance(url, str) or not url.strip():
                 return _failed_result(node, "network.websocket_url_required", "WebSocket url is required")
-            if not isinstance(headers, dict) or not isinstance(subprotocols, list):
-                return _failed_result(node, "network.websocket_input_invalid", "WebSocket headers and subprotocols are invalid")
+            if not isinstance(headers, dict) or not isinstance(subprotocols, list) or not isinstance(proxy_config, dict):
+                return _failed_result(node, "network.websocket_input_invalid", "WebSocket headers, subprotocols and proxy are invalid")
             try:
                 timeout_seconds = float(timeout_value)
+                resolved_proxy = ProxyResolver().resolve(proxy_config, url)
                 handle = WebSocketClientHandle(
                     url=url,
                     headers=headers,
+                    proxy=resolved_proxy.url,
                     timeout_seconds=timeout_seconds,
                     subprotocols=[str(item) for item in subprotocols],
                 )
@@ -3363,10 +3378,34 @@ class RuntimeExecutorRegistry:
             }
         python_executable = Path(python_executable_path)
         capture_stdout_stderr = self._should_capture_stdout_stderr()
+        try:
+            envelope = self._build_python_execution_envelope(node=node, context=context)
+        except ExecutionEnvelopeError as exc:
+            return {
+                "status": "failed",
+                "node_id": node["node_id"],
+                "error_code": exc.error_code,
+                "message": str(exc),
+                "stdout": "",
+                "stderr": "",
+            }
         payload = {
             "code": code,
             "variables": _make_python_run_json_safe(context.variables),
             "result_variable": default_variable_name,
+            "envelope": {
+                "inputs": _make_python_run_json_safe(envelope.inputs),
+                "metadata": _make_python_run_json_safe(envelope.metadata),
+                "input_schema": _serialize_python_schema(envelope.input_schema),
+                "output_schema": _serialize_python_schema(envelope.output_schema),
+                "metadata_schema": _serialize_python_schema(envelope.metadata_schema),
+                "data": _make_python_run_json_safe(envelope.data_values),
+                "allowed_data_fields": sorted(envelope.allowed_data_fields),
+                "session_info": _make_python_run_json_safe(envelope.session_info),
+                "network": _make_python_run_json_safe(
+                    context.flow_runtime.get("network_context_snapshot", {})
+                ),
+            },
             "blocked_imports": sorted(
                 _resolve_python_blocked_import_modules(self._runtime_settings)
             ),
@@ -3509,6 +3548,22 @@ class RuntimeExecutorRegistry:
         if isinstance(child_variables, dict):
             context.variables.clear()
             context.variables.update(child_variables)
+        try:
+            committed_envelope = self._commit_python_execution_envelope(
+                envelope=envelope,
+                child_result=child_result,
+                context=context,
+            )
+        except ExecutionEnvelopeError as exc:
+            envelope.discard()
+            return {
+                "status": "failed",
+                "node_id": node["node_id"],
+                "error_code": exc.error_code,
+                "message": str(exc),
+                "stdout": child_stdout if capture_stdout_stderr else "",
+                "stderr": child_stderr if capture_stdout_stderr else "",
+            }
         return self._finalize_python_run_result(
             node=node,
             context=context,
@@ -3519,7 +3574,83 @@ class RuntimeExecutorRegistry:
             python_runtime_root=python_runtime_root,
             stdout=child_stdout if capture_stdout_stderr else "",
             stderr=child_stderr if capture_stdout_stderr else "",
+            envelope_result=committed_envelope,
         )
+
+    def _build_python_execution_envelope(
+        self,
+        *,
+        node: dict,
+        context: RuntimeContext,
+    ) -> ExecutionEnvelope:
+        node_config = _node_config(node)
+        input_schema = _normalize_python_schema_config(node_config.get("input_schema"))
+        output_schema = _normalize_python_schema_config(node_config.get("output_schema"))
+        metadata_schema = _normalize_python_schema_config(node_config.get("metadata_schema"))
+        raw_inputs = node_config.get("inputs", {})
+        inputs = dict(raw_inputs) if isinstance(raw_inputs, dict) else {}
+        overrides = node.get("__runtime_input_overrides__")
+        if isinstance(overrides, dict):
+            override_inputs = overrides.get("inputs")
+            if isinstance(override_inputs, dict):
+                inputs.update(override_inputs)
+            elif not input_schema:
+                inputs.update(overrides)
+        if not input_schema:
+            input_schema = {
+                field_id: FieldSchema(field_id=field_id)
+                for field_id in inputs
+                if isinstance(field_id, str) and field_id.strip()
+            }
+        for field_id in input_schema:
+            if field_id not in inputs and field_id in context.variables:
+                inputs[field_id] = context.variables[field_id]
+        raw_metadata = node_config.get("metadata", {})
+        metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+        raw_data_fields = node_config.get("data_fields", ())
+        allowed_data_fields = frozenset(
+            item.strip()
+            for item in raw_data_fields
+            if isinstance(item, str) and item.strip()
+        ) if isinstance(raw_data_fields, (list, tuple, set)) else frozenset()
+        data_values = {
+            name: context.variables[name]
+            for name in allowed_data_fields
+            if name in context.variables
+        }
+        envelope = ExecutionEnvelope(
+            inputs=inputs,
+            metadata=metadata,
+            input_schema=input_schema,
+            output_schema=output_schema,
+            metadata_schema=metadata_schema,
+            data_values=data_values,
+            allowed_data_fields=allowed_data_fields,
+            session_info={"session_id": context.execution_session_context.session_id},
+        )
+        envelope.validate_inputs()
+        return envelope
+
+    @staticmethod
+    def _commit_python_execution_envelope(
+        *,
+        envelope: ExecutionEnvelope,
+        child_result: dict,
+        context: RuntimeContext,
+    ) -> dict[str, dict[str, object]]:
+        outputs = child_result.get("outputs", {})
+        metadata = child_result.get("metadata", {})
+        data_values = child_result.get("data", {})
+        if not isinstance(outputs, dict) or not isinstance(metadata, dict) or not isinstance(data_values, dict):
+            raise ExecutionEnvelopeError("python.envelope_invalid", "python.run envelope result must be objects")
+        for field_id, value in outputs.items():
+            envelope.context.outputs.set(field_id, value)
+        for field_id, value in metadata.items():
+            envelope.context.metadata.set(field_id, value)
+        for name, value in data_values.items():
+            envelope.context.data.set(name, value)
+            context.variables[name] = value
+        return envelope.commit()
 
     def _read_python_run_child_result(self, output_path: Path) -> dict:
         if not output_path.exists():
@@ -3544,13 +3675,14 @@ class RuntimeExecutorRegistry:
         python_runtime_root: object,
         stdout: str,
         stderr: str,
+        envelope_result: dict[str, dict[str, object]] | None = None,
     ) -> dict:
         if isinstance(result_variable, str) and result_variable.strip():
             context.variables[result_variable.strip()] = result
             result_variable = result_variable.strip()
         else:
             result_variable = None
-        return {
+        output = {
             "status": "succeeded",
             "node_id": node["node_id"],
             "result": result,
@@ -3561,6 +3693,9 @@ class RuntimeExecutorRegistry:
             "stdout": stdout,
             "stderr": stderr,
         }
+        if isinstance(envelope_result, dict):
+            output.update(envelope_result)
+        return output
 
     def _is_file_access_allowed(self) -> bool:
         return bool(self._runtime_settings.get("allow_file_access", True))
@@ -4502,6 +4637,97 @@ def _json_safe(value):
     return repr(value)
 
 
+class _FieldReader:
+    def __init__(self, values):
+        self._values = values if isinstance(values, dict) else {}
+
+    def get(self, field_id, default=None):
+        return self._values.get(field_id, default)
+
+
+class _FieldWriter:
+    def __init__(self, values, schema, kind):
+        self._values = values
+        self._schema = schema if isinstance(schema, dict) else {}
+        self._kind = kind
+
+    def set(self, field_id, value):
+        schema = self._schema.get(field_id)
+        if not isinstance(schema, dict):
+            raise ValueError(f"python.{self._kind}_undeclared: {field_id}")
+        _validate_field_value(schema, field_id, value)
+        self._values[field_id] = value
+
+    def get(self, field_id, default=None):
+        return self._values.get(field_id, default)
+
+
+class _DomainData:
+    def __init__(self, values, allowed_fields):
+        self._values = values if isinstance(values, dict) else {}
+        self._allowed_fields = set(allowed_fields or ())
+
+    def get(self, name, default=None):
+        self._ensure(name)
+        return self._values.get(name, default)
+
+    def set(self, name, value):
+        self._ensure(name)
+        self._values[name] = value
+
+    def _ensure(self, name):
+        if name not in self._allowed_fields:
+            raise ValueError(f"python.data_access_denied: {name}")
+
+
+class _Session:
+    def __init__(self, info):
+        self._info = info if isinstance(info, dict) else {}
+
+    def info(self):
+        return dict(self._info)
+
+
+class _Network:
+    def __init__(self, snapshot):
+        self._snapshot = snapshot if isinstance(snapshot, dict) else {}
+
+    def current(self):
+        return dict(self._snapshot)
+
+
+class _Cancel:
+    def check(self):
+        return None
+
+
+class _Context:
+    def __init__(self, envelope):
+        self.inputs = _FieldReader(envelope.get("inputs", {}))
+        self.outputs = _FieldWriter(envelope.setdefault("outputs", {}), envelope.get("output_schema", {}), "output")
+        self.metadata = _FieldWriter(envelope.setdefault("staged_metadata", {}), envelope.get("metadata_schema", {}), "metadata")
+        self.data = _DomainData(envelope.setdefault("data", {}), envelope.get("allowed_data_fields", ()))
+        self.session = _Session(envelope.get("session_info", {}))
+        self.network = _Network(envelope.get("network", {}))
+        self.cancel = _Cancel()
+
+
+def _validate_field_value(schema, field_id, value):
+    if value is None and schema.get("allow_none", True):
+        return
+    value_type = str(schema.get("type", "any")).lower()
+    expected = {
+        "object": dict,
+        "list": list,
+        "string": str,
+        "number": (int, float),
+        "integer": int,
+        "boolean": bool,
+    }.get(value_type)
+    if expected is not None and not isinstance(value, expected):
+        raise ValueError(f"python.field_type_invalid: {field_id}")
+
+
 def main() -> int:
     input_path = Path(sys.argv[1])
     output_path = Path(sys.argv[2])
@@ -4515,6 +4741,14 @@ def main() -> int:
         "result": None,
         "result_variable": payload.get("result_variable"),
     }
+    raw_envelope = payload.get("envelope")
+    envelope = dict(raw_envelope) if isinstance(raw_envelope, dict) else {}
+    envelope.setdefault("outputs", {})
+    envelope.setdefault("staged_metadata", {})
+    scope["ctx"] = _Context(envelope)
+    scope["inputs"] = scope["ctx"].inputs
+    scope["outputs"] = scope["ctx"].outputs
+    scope["metadata"] = scope["ctx"].metadata
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
     response = {}
@@ -4527,6 +4761,9 @@ def main() -> int:
             "result": _json_safe(scope.get("result")),
             "result_variable": _json_safe(scope.get("result_variable")),
             "variables": _json_safe(scope.get("variables", {})),
+            "outputs": _json_safe(envelope.get("outputs", {})),
+            "metadata": _json_safe(envelope.get("staged_metadata", {})),
+            "data": _json_safe(envelope.get("data", {})),
         }
     except Exception as exc:
         response = {
@@ -4555,6 +4792,50 @@ def _make_python_run_json_safe(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _make_python_run_json_safe(item) for key, item in value.items()}
     return repr(value)
+
+
+def _normalize_python_schema_config(raw: object) -> dict[str, FieldSchema]:
+    if raw is None:
+        return {}
+    entries: dict[str, object] = {}
+    if isinstance(raw, dict):
+        entries = raw
+    elif isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            field_id = item.get("field_id", item.get("id"))
+            if isinstance(field_id, str) and field_id.strip():
+                entries[field_id.strip()] = item
+    result: dict[str, FieldSchema] = {}
+    for field_id, value in entries.items():
+        if not isinstance(field_id, str) or not field_id.strip():
+            continue
+        if isinstance(value, FieldSchema):
+            result[field_id.strip()] = value
+            continue
+        if isinstance(value, dict):
+            result[field_id.strip()] = FieldSchema(
+                field_id=field_id.strip(),
+                value_type=str(value.get("type", value.get("value_type", "any"))),
+                required=bool(value.get("required", False)),
+                allow_none=bool(value.get("allow_none", True)),
+            )
+        else:
+            result[field_id.strip()] = FieldSchema(field_id=field_id.strip(), value_type=str(value or "any"))
+    return result
+
+
+def _serialize_python_schema(schema: Mapping[str, FieldSchema]) -> dict[str, dict[str, object]]:
+    return {
+        field_id: {
+            "field_id": field_id,
+            "type": field.value_type,
+            "required": field.required,
+            "allow_none": field.allow_none,
+        }
+        for field_id, field in schema.items()
+    }
 
 
 _HTTP_BLOCKED_SCHEMES = frozenset({"file", "ftp", "gopher", "dict", "ldap"})
