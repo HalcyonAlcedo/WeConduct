@@ -10684,6 +10684,15 @@ class CompilationWorkbenchService:
             if boundary_ports_changed:
                 changed = True
 
+            python_ports, python_ports_changed = self._normalize_python_dynamic_ports(
+                node_id=normalized_node.get("node_id"),
+                node_kind=normalized_node.get("node_kind"),
+                node_config=normalized_node_config,
+                existing_ports=normalized_node.get("ports", []),
+            )
+            if python_ports_changed:
+                changed = True
+
             normalized_node, custom_instance_changed = self._normalize_custom_node_graph_instance_node(
                 normalized_node=normalized_node,
                 normalized_node_config=normalized_node_config,
@@ -10697,6 +10706,8 @@ class CompilationWorkbenchService:
                 normalized_node["ports"] = normalized_ports
             elif normalized_node.get("node_kind") in {"component.input", "component.output"}:
                 normalized_node["ports"] = boundary_ports
+            elif normalized_node.get("node_kind") == "python.run":
+                normalized_node["ports"] = python_ports
             elif not isinstance(normalized_node.get("ports"), list):
                 normalized_node["ports"] = normalized_ports
             normalized_nodes.append(normalized_node)
@@ -11118,6 +11129,137 @@ class CompilationWorkbenchService:
                         }
                     )
                 return normalized_ports, self._ports_changed(existing_ports, normalized_ports)
+
+        return normalized_ports, self._ports_changed(existing_ports, normalized_ports)
+
+    def _normalize_python_dynamic_ports(
+        self,
+        *,
+        node_id: object,
+        node_kind: object,
+        node_config: dict,
+        existing_ports: list | None,
+    ) -> tuple[list[dict], bool]:
+        """Derive stable data ports for python.run schema fields.
+
+        The graph keeps port identity separate from a field's display label.  Existing
+        port IDs are therefore reused by semantic slot; newly declared fields receive
+        deterministic IDs derived from the node ID and field ID.  Stale schema ports
+        are removed so deleted fields cannot remain connectable in the editor.
+        """
+        if node_kind != "python.run":
+            if isinstance(existing_ports, list):
+                return deepcopy(existing_ports), False
+            return [], False
+
+        normalized_node_id = (
+            node_id.strip() if isinstance(node_id, str) and node_id.strip() else "python-node"
+        )
+
+        def normalize_schema(value: object) -> dict[str, dict]:
+            if not isinstance(value, dict):
+                return {}
+            result: dict[str, dict] = {}
+            for raw_field_id, raw_meta in value.items():
+                if not isinstance(raw_field_id, str) or not raw_field_id.strip():
+                    continue
+                field_id = raw_field_id.strip()
+                if isinstance(raw_meta, dict):
+                    result[field_id] = deepcopy(raw_meta)
+                else:
+                    result[field_id] = {}
+            return result
+
+        def existing_port_id_for_slot(slot: str, direction: str, fallback: str) -> str:
+            if isinstance(existing_ports, list):
+                for port in existing_ports:
+                    if not isinstance(port, dict) or port.get("direction") != direction:
+                        continue
+                    if port.get("semantic_slot") != slot:
+                        continue
+                    port_id = port.get("port_id")
+                    if isinstance(port_id, str) and port_id.strip():
+                        return port_id.strip()
+            return fallback
+
+        def generated_port_id(*, field_id: str, direction: str, metadata: bool = False) -> str:
+            prefix = "out-metadata" if metadata else ("in" if direction == "input" else "out")
+            safe_field_id = "".join(
+                character
+                if (character.isascii() and character.isalnum()) or character in {"_", "-"}
+                else "-"
+                for character in field_id
+            ).strip("-") or "field"
+            return f"{normalized_node_id}::python::{prefix}-{safe_field_id}"
+
+        normalized_ports: list[dict] = []
+
+        # Keep the control boundary stable even for legacy python.run payloads that
+        # omitted the draft's default control ports.
+        normalized_ports.extend(
+            [
+                {
+                    "port_id": existing_port_id_for_slot("in.control", "input", "in"),
+                    "direction": "input",
+                    "relation_layer": "control",
+                    "semantic_slot": "in.control",
+                    "display_name": None,
+                    "max_connections": None,
+                },
+                {
+                    "port_id": existing_port_id_for_slot("out.control", "output", "out"),
+                    "direction": "output",
+                    "relation_layer": "control",
+                    "semantic_slot": "out.control",
+                    "display_name": None,
+                    "max_connections": None,
+                },
+            ]
+        )
+
+        for field_id, field_meta in normalize_schema(node_config.get("input_schema")).items():
+            normalized_ports.append(
+                {
+                    "port_id": existing_port_id_for_slot(
+                        f"in.{field_id}", "input", generated_port_id(field_id=field_id, direction="input")
+                    ),
+                    "direction": "input",
+                    "relation_layer": "data",
+                    "semantic_slot": f"in.{field_id}",
+                    "display_name": field_meta.get("label") if isinstance(field_meta.get("label"), str) else None,
+                    "max_connections": None,
+                }
+            )
+
+        for field_id, field_meta in normalize_schema(node_config.get("output_schema")).items():
+            normalized_ports.append(
+                {
+                    "port_id": existing_port_id_for_slot(
+                        f"out.{field_id}", "output", generated_port_id(field_id=field_id, direction="output")
+                    ),
+                    "direction": "output",
+                    "relation_layer": "data",
+                    "semantic_slot": f"out.{field_id}",
+                    "display_name": field_meta.get("label") if isinstance(field_meta.get("label"), str) else None,
+                    "max_connections": None,
+                }
+            )
+
+        for field_id, field_meta in normalize_schema(node_config.get("metadata_schema")).items():
+            normalized_ports.append(
+                {
+                    "port_id": existing_port_id_for_slot(
+                        f"out.metadata.{field_id}",
+                        "output",
+                        generated_port_id(field_id=field_id, direction="output", metadata=True),
+                    ),
+                    "direction": "output",
+                    "relation_layer": "data",
+                    "semantic_slot": f"out.metadata.{field_id}",
+                    "display_name": field_meta.get("label") if isinstance(field_meta.get("label"), str) else None,
+                    "max_connections": None,
+                }
+            )
 
         return normalized_ports, self._ports_changed(existing_ports, normalized_ports)
 

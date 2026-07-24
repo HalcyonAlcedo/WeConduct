@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import dagre from 'dagre'
-import type { GraphModel } from '@/types/domains/graph'
+import type { GraphModel, GraphNode, GraphPort } from '@/types/domains/graph'
 import type { Node, Edge } from '@vue-flow/core'
 
 const NODE_WIDTH = 180
@@ -66,7 +66,7 @@ export const useGraphStore = defineStore('graph', () => {
           kind: node.lowered_kind,
           expansionRole: node.expansion_role,
           nodeKind: node.node_kind,
-          ports: node.ports || [],
+          ports: deriveVisualPorts(node),
         },
       }
     })
@@ -117,4 +117,91 @@ function edgeStyle(layer: string): Record<string, string> {
     default:
       return { stroke: 'var(--border-default)' }
   }
+}
+
+/**
+ * Mirror the backend python.run schema-port contract for immediate canvas feedback.
+ * The normalized graph remains the source of truth when the document is saved; this
+ * visual derivation only prevents a schema edit from leaving the node without handles
+ * until the next normalize request completes.
+ */
+function deriveVisualPorts(node: GraphNode): GraphPort[] {
+  if (node.node_kind !== 'python.run') return [...(node.ports || [])]
+
+  const existing = node.ports || []
+  const existingPortIdForSlot = (slot: string, direction: GraphPort['direction'], fallback: string): string => {
+    const match = existing.find(port => port.direction === direction && port.semantic_slot === slot)
+    return match?.port_id || fallback
+  }
+  const nodeId = node.node_id.trim() || 'python-node'
+  const safePortId = (fieldId: string, prefix: string): string => {
+    const safeField = fieldId.replace(/[^A-Za-z0-9_-]/g, '-').replace(/^-+|-+$/g, '') || 'field'
+    return `${nodeId}::python::${prefix}-${safeField}`
+  }
+  const schemaEntries = (raw: unknown): Array<[string, Record<string, unknown>]> => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return []
+    return Object.entries(raw as Record<string, unknown>)
+      .filter(([fieldId]) => fieldId.trim().length > 0)
+      .map(([fieldId, metadata]) => [
+        fieldId.trim(),
+        metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+          ? metadata as Record<string, unknown>
+          : {},
+      ])
+  }
+  const config = node.node_config || {}
+  const ports: GraphPort[] = [
+    {
+      port_id: existingPortIdForSlot('in.control', 'input', 'in'),
+      direction: 'input',
+      relation_layer: 'control',
+      semantic_slot: 'in.control',
+      display_name: null,
+      max_connections: null,
+    },
+    {
+      port_id: existingPortIdForSlot('out.control', 'output', 'out'),
+      direction: 'output',
+      relation_layer: 'control',
+      semantic_slot: 'out.control',
+      display_name: null,
+      max_connections: null,
+    },
+  ]
+
+  for (const [fieldId, metadata] of schemaEntries(config.input_schema)) {
+    ports.push({
+      port_id: existingPortIdForSlot(`in.${fieldId}`, 'input', safePortId(fieldId, 'in')),
+      direction: 'input',
+      relation_layer: 'data',
+      semantic_slot: `in.${fieldId}`,
+      display_name: typeof metadata.label === 'string' ? metadata.label : null,
+      max_connections: null,
+    })
+  }
+  for (const [fieldId, metadata] of schemaEntries(config.output_schema)) {
+    ports.push({
+      port_id: existingPortIdForSlot(`out.${fieldId}`, 'output', safePortId(fieldId, 'out')),
+      direction: 'output',
+      relation_layer: 'data',
+      semantic_slot: `out.${fieldId}`,
+      display_name: typeof metadata.label === 'string' ? metadata.label : null,
+      max_connections: null,
+    })
+  }
+  for (const [fieldId, metadata] of schemaEntries(config.metadata_schema)) {
+    ports.push({
+      port_id: existingPortIdForSlot(
+        `out.metadata.${fieldId}`,
+        'output',
+        safePortId(fieldId, 'out-metadata'),
+      ),
+      direction: 'output',
+      relation_layer: 'data',
+      semantic_slot: `out.metadata.${fieldId}`,
+      display_name: typeof metadata.label === 'string' ? metadata.label : null,
+      max_connections: null,
+    })
+  }
+  return ports
 }
