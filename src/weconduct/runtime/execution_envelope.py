@@ -47,7 +47,8 @@ class _StagedFieldWriter:
                 "python.output_undeclared" if self._kind == "output" else "python.metadata_undeclared",
                 f"{self._kind} field is not declared: {field_id}",
             )
-        _validate_value(schema, value)
+        if not _is_sensitive_ref(value):
+            _validate_value(schema, value)
         self._values[field_id] = value
 
     def get(self, field_id: str, default: object = None) -> object:
@@ -88,6 +89,14 @@ class _SessionFacade:
         return dict(self._info)
 
 
+class _NetworkFacade:
+    def __init__(self, snapshot: Mapping[str, object] | None = None) -> None:
+        self._snapshot = dict(snapshot or {})
+
+    def current(self) -> dict[str, object]:
+        return dict(self._snapshot)
+
+
 @dataclass
 class ExecutionContextFacade:
     inputs: _FieldReader
@@ -95,6 +104,7 @@ class ExecutionContextFacade:
     metadata: _StagedFieldWriter
     data: _DomainData
     session: _SessionFacade
+    network: _NetworkFacade
     cancel: _CancelFacade
 
 
@@ -108,6 +118,10 @@ class ExecutionEnvelope:
     data_values: MutableMapping[str, object] = field(default_factory=dict)
     allowed_data_fields: frozenset[str] = frozenset()
     session_info: Mapping[str, object] = field(default_factory=dict)
+    network_snapshot: Mapping[str, object] = field(default_factory=dict)
+    sensitive_input_fields: frozenset[str] = frozenset()
+    sensitive_data_fields: frozenset[str] = frozenset()
+    sensitive_refs: tuple[object, ...] = ()
     cancel_check: Callable[[], None] | None = None
     _staged_outputs: MutableMapping[str, object] = field(default_factory=dict, init=False, repr=False)
     _staged_metadata: MutableMapping[str, object] = field(default_factory=dict, init=False, repr=False)
@@ -124,6 +138,7 @@ class ExecutionEnvelope:
             metadata=_StagedFieldWriter(self._staged_metadata, self.metadata_schema, kind="metadata"),
             data=_DomainData(self.data_values, self.allowed_data_fields),
             session=_SessionFacade(self.session_info),
+            network=_NetworkFacade(self.network_snapshot),
             cancel=_CancelFacade(self.cancel_check),
         )
 
@@ -183,3 +198,11 @@ def _validate_value(schema: FieldSchema, value: object) -> None:
     }.get(schema.value_type.strip().lower())
     if expected is not None and not isinstance(value, expected):
         raise ExecutionEnvelopeError("python.field_type_invalid", f"field type is invalid: {schema.field_id}")
+
+
+def _is_sensitive_ref(value: object) -> bool:
+    try:
+        from weconduct.application.sensitive_values.models import SensitiveRef
+    except ImportError:
+        return False
+    return isinstance(value, SensitiveRef)

@@ -3402,6 +3402,8 @@ class RuntimeExecutorRegistry:
                 "data": _make_python_run_json_safe(envelope.data_values),
                 "allowed_data_fields": sorted(envelope.allowed_data_fields),
                 "session_info": _make_python_run_json_safe(envelope.session_info),
+                "sensitive_input_fields": sorted(envelope.sensitive_input_fields),
+                "sensitive_data_fields": sorted(envelope.sensitive_data_fields),
                 "network": _make_python_run_json_safe(
                     context.flow_runtime.get("network_context_snapshot", {})
                 ),
@@ -3524,6 +3526,12 @@ class RuntimeExecutorRegistry:
             }
         child_stdout = child_result.get("stdout", child_stdout)
         child_stderr = child_result.get("stderr", child_stderr)
+        sensitive_plaintexts = _resolve_python_sensitive_plaintexts(
+            envelope=envelope,
+            context=context,
+        )
+        child_stdout = _redact_python_text(child_stdout, sensitive_plaintexts)
+        child_stderr = _redact_python_text(child_stderr, sensitive_plaintexts)
         if process.returncode != 0 and child_result.get("status") != "failed":
             detail = child_stderr.strip() or child_stdout.strip() or f"exit code {process.returncode}"
             return {
@@ -3539,7 +3547,10 @@ class RuntimeExecutorRegistry:
                 "status": "failed",
                 "node_id": node["node_id"],
                 "error_code": "python.execution_failed",
-                "message": str(child_result.get("message") or "python child execution failed"),
+                "message": _redact_python_text(
+                    child_result.get("message") or "python child execution failed",
+                    sensitive_plaintexts,
+                ),
                 "exception_type": child_result.get("exception_type"),
                 "stdout": child_stdout if capture_stdout_stderr else "",
                 "stderr": child_stderr if capture_stdout_stderr else "",
@@ -3575,6 +3586,7 @@ class RuntimeExecutorRegistry:
             stdout=child_stdout if capture_stdout_stderr else "",
             stderr=child_stderr if capture_stdout_stderr else "",
             envelope_result=committed_envelope,
+            sensitive_result=bool(child_result.get("sensitive_result")),
         )
 
     def _build_python_execution_envelope(
@@ -3618,6 +3630,36 @@ class RuntimeExecutorRegistry:
             for name in allowed_data_fields
             if name in context.variables
         }
+        sensitive_input_fields = frozenset(
+            field_id
+            for field_id, value in inputs.items()
+            if _contains_python_sensitive_ref(value)
+        )
+        sensitive_refs = tuple(
+            _collect_python_sensitive_refs(inputs)
+            + _collect_python_sensitive_refs(data_values)
+            + _collect_python_sensitive_refs(metadata)
+        )
+        inputs = _resolve_python_sensitive_inputs(
+            inputs,
+            context=context,
+            allow_sensitive_values=node_config.get("allow_sensitive_values") is True,
+        )
+        sensitive_data_fields = frozenset(
+            name
+            for name, value in data_values.items()
+            if _contains_python_sensitive_ref(value)
+        )
+        data_values = _resolve_python_sensitive_inputs(
+            data_values,
+            context=context,
+            allow_sensitive_values=node_config.get("allow_sensitive_values") is True,
+        )
+        metadata = _resolve_python_sensitive_inputs(
+            metadata,
+            context=context,
+            allow_sensitive_values=node_config.get("allow_sensitive_values") is True,
+        )
         envelope = ExecutionEnvelope(
             inputs=inputs,
             metadata=metadata,
@@ -3627,6 +3669,14 @@ class RuntimeExecutorRegistry:
             data_values=data_values,
             allowed_data_fields=allowed_data_fields,
             session_info={"session_id": context.execution_session_context.session_id},
+            network_snapshot=(
+                context.flow_runtime.get("network_context_snapshot", {})
+                if isinstance(context.flow_runtime.get("network_context_snapshot", {}), dict)
+                else {}
+            ),
+            sensitive_input_fields=sensitive_input_fields,
+            sensitive_data_fields=sensitive_data_fields,
+            sensitive_refs=sensitive_refs,
         )
         envelope.validate_inputs()
         return envelope
@@ -3643,13 +3693,37 @@ class RuntimeExecutorRegistry:
         data_values = child_result.get("data", {})
         if not isinstance(outputs, dict) or not isinstance(metadata, dict) or not isinstance(data_values, dict):
             raise ExecutionEnvelopeError("python.envelope_invalid", "python.run envelope result must be objects")
+        sensitive_output_fields = {
+            item
+            for item in child_result.get("sensitive_output_fields", [])
+            if isinstance(item, str)
+        }
+        sensitive_service = context.flow_runtime.get("sensitive_value_service")
+        session_id = (
+            context.execution_session_context.session_id
+            if context.execution_session_context is not None
+            else "runtime-context"
+        )
+
+        def mark_sensitive(field_id: str, value: object) -> object:
+            if field_id not in sensitive_output_fields:
+                return value
+            creator = getattr(sensitive_service, "create", None)
+            if not callable(creator):
+                raise ExecutionEnvelopeError(
+                    "python.sensitive_access_denied",
+                    "sensitive value resolver is unavailable",
+                )
+            return creator(value, scope_id=session_id, source="derived")
+
         for field_id, value in outputs.items():
-            envelope.context.outputs.set(field_id, value)
+            envelope.context.outputs.set(field_id, mark_sensitive(field_id, value))
         for field_id, value in metadata.items():
-            envelope.context.metadata.set(field_id, value)
+            envelope.context.metadata.set(field_id, mark_sensitive(field_id, value))
         for name, value in data_values.items():
-            envelope.context.data.set(name, value)
-            context.variables[name] = value
+            marked_value = mark_sensitive(name, value)
+            envelope.context.data.set(name, marked_value)
+            context.variables[name] = marked_value
         return envelope.commit()
 
     def _read_python_run_child_result(self, output_path: Path) -> dict:
@@ -3676,7 +3750,26 @@ class RuntimeExecutorRegistry:
         stdout: str,
         stderr: str,
         envelope_result: dict[str, dict[str, object]] | None = None,
+        sensitive_result: bool = False,
     ) -> dict:
+        if sensitive_result:
+            sensitive_service = context.flow_runtime.get("sensitive_value_service")
+            creator = getattr(sensitive_service, "create", None)
+            if not callable(creator):
+                return {
+                    "status": "failed",
+                    "node_id": node["node_id"],
+                    "error_code": "python.sensitive_access_denied",
+                    "message": "sensitive value resolver is unavailable",
+                    "stdout": stdout,
+                    "stderr": stderr,
+                }
+            session_id = (
+                context.execution_session_context.session_id
+                if context.execution_session_context is not None
+                else "runtime-context"
+            )
+            result = creator(result, scope_id=session_id, source="derived")
         if isinstance(result_variable, str) and result_variable.strip():
             context.variables[result_variable.strip()] = result
             result_variable = result_variable.strip()
@@ -4638,18 +4731,24 @@ def _json_safe(value):
 
 
 class _FieldReader:
-    def __init__(self, values):
+    def __init__(self, values, sensitive_fields=()):
         self._values = values if isinstance(values, dict) else {}
+        self._sensitive_fields = set(sensitive_fields or ())
+        self.sensitive_read = False
 
     def get(self, field_id, default=None):
+        if field_id in self._sensitive_fields:
+            self.sensitive_read = True
         return self._values.get(field_id, default)
 
 
 class _FieldWriter:
-    def __init__(self, values, schema, kind):
+    def __init__(self, values, schema, kind, is_sensitive, sensitive_output_fields):
         self._values = values
         self._schema = schema if isinstance(schema, dict) else {}
         self._kind = kind
+        self._is_sensitive = is_sensitive
+        self._sensitive_output_fields = sensitive_output_fields
 
     def set(self, field_id, value):
         schema = self._schema.get(field_id)
@@ -4657,23 +4756,33 @@ class _FieldWriter:
             raise ValueError(f"python.{self._kind}_undeclared: {field_id}")
         _validate_field_value(schema, field_id, value)
         self._values[field_id] = value
+        if self._is_sensitive():
+            self._sensitive_output_fields.add(field_id)
 
     def get(self, field_id, default=None):
         return self._values.get(field_id, default)
 
 
 class _DomainData:
-    def __init__(self, values, allowed_fields):
+    def __init__(self, values, allowed_fields, sensitive_fields, is_sensitive, sensitive_output_fields):
         self._values = values if isinstance(values, dict) else {}
         self._allowed_fields = set(allowed_fields or ())
+        self._sensitive_fields = set(sensitive_fields or ())
+        self._is_sensitive = is_sensitive
+        self._sensitive_output_fields = sensitive_output_fields
+        self.sensitive_read = False
 
     def get(self, name, default=None):
         self._ensure(name)
+        if name in self._sensitive_fields:
+            self.sensitive_read = True
         return self._values.get(name, default)
 
     def set(self, name, value):
         self._ensure(name)
         self._values[name] = value
+        if self._is_sensitive():
+            self._sensitive_output_fields.add(name)
 
     def _ensure(self, name):
         if name not in self._allowed_fields:
@@ -4703,13 +4812,38 @@ class _Cancel:
 
 class _Context:
     def __init__(self, envelope):
-        self.inputs = _FieldReader(envelope.get("inputs", {}))
-        self.outputs = _FieldWriter(envelope.setdefault("outputs", {}), envelope.get("output_schema", {}), "output")
-        self.metadata = _FieldWriter(envelope.setdefault("staged_metadata", {}), envelope.get("metadata_schema", {}), "metadata")
-        self.data = _DomainData(envelope.setdefault("data", {}), envelope.get("allowed_data_fields", ()))
+        self.sensitive_output_fields = set()
+        self.inputs = _FieldReader(
+            envelope.get("inputs", {}),
+            envelope.get("sensitive_input_fields", ()),
+        )
+        self.data = _DomainData(
+            envelope.setdefault("data", {}),
+            envelope.get("allowed_data_fields", ()),
+            envelope.get("sensitive_data_fields", ()),
+            self._is_sensitive_read,
+            self.sensitive_output_fields,
+        )
+        self.outputs = _FieldWriter(
+            envelope.setdefault("outputs", {}),
+            envelope.get("output_schema", {}),
+            "output",
+            self._is_sensitive_read,
+            self.sensitive_output_fields,
+        )
+        self.metadata = _FieldWriter(
+            envelope.setdefault("staged_metadata", {}),
+            envelope.get("metadata_schema", {}),
+            "metadata",
+            self._is_sensitive_read,
+            self.sensitive_output_fields,
+        )
         self.session = _Session(envelope.get("session_info", {}))
         self.network = _Network(envelope.get("network", {}))
         self.cancel = _Cancel()
+
+    def _is_sensitive_read(self):
+        return self.inputs.sensitive_read or self.data.sensitive_read
 
 
 def _validate_field_value(schema, field_id, value):
@@ -4764,6 +4898,8 @@ def main() -> int:
             "outputs": _json_safe(envelope.get("outputs", {})),
             "metadata": _json_safe(envelope.get("staged_metadata", {})),
             "data": _json_safe(envelope.get("data", {})),
+            "sensitive_output_fields": sorted(scope["ctx"].sensitive_output_fields),
+            "sensitive_result": scope["ctx"]._is_sensitive_read(),
         }
     except Exception as exc:
         response = {
@@ -4792,6 +4928,123 @@ def _make_python_run_json_safe(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _make_python_run_json_safe(item) for key, item in value.items()}
     return repr(value)
+
+
+def _contains_python_sensitive_ref(value: Any) -> bool:
+    from weconduct.application.sensitive_values.models import SensitiveRef
+
+    if isinstance(value, SensitiveRef):
+        return True
+    if isinstance(value, dict):
+        return any(_contains_python_sensitive_ref(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_python_sensitive_ref(item) for item in value)
+    return False
+
+
+def _collect_python_sensitive_refs(value: Any) -> list[object]:
+    from weconduct.application.sensitive_values.models import SensitiveRef
+
+    if isinstance(value, SensitiveRef):
+        return [value]
+    if isinstance(value, dict):
+        refs: list[object] = []
+        for item in value.values():
+            refs.extend(_collect_python_sensitive_refs(item))
+        return refs
+    if isinstance(value, (list, tuple)):
+        refs = []
+        for item in value:
+            refs.extend(_collect_python_sensitive_refs(item))
+        return refs
+    return []
+
+
+def _resolve_python_sensitive_plaintexts(
+    *,
+    envelope: ExecutionEnvelope,
+    context: RuntimeContext,
+) -> tuple[str, ...]:
+    sensitive_service = context.flow_runtime.get("sensitive_value_service")
+    resolver = getattr(sensitive_service, "resolve", None)
+    if not callable(resolver):
+        return ()
+    from weconduct.application.sensitive_values.models import SensitiveConsumer
+
+    secrets: list[str] = []
+    for ref in envelope.sensitive_refs:
+        try:
+            value = resolver(ref, consumer=SensitiveConsumer.RUNTIME_EXECUTOR)
+        except (KeyError, PermissionError, TypeError, ValueError):
+            continue
+        if isinstance(value, str) and value:
+            secrets.append(value)
+    return tuple(dict.fromkeys(secrets))
+
+
+def _redact_python_text(value: object, secrets: tuple[str, ...]) -> str:
+    text = value if isinstance(value, str) else str(value)
+    for secret in secrets:
+        text = text.replace(secret, "<redacted>")
+    return text
+
+
+def _resolve_python_sensitive_inputs(
+    value: Any,
+    *,
+    context: RuntimeContext,
+    allow_sensitive_values: bool,
+) -> Any:
+    from weconduct.application.sensitive_values.models import SensitiveConsumer, SensitiveRef
+
+    if isinstance(value, SensitiveRef):
+        if not allow_sensitive_values:
+            raise ExecutionEnvelopeError(
+                "python.sensitive_access_denied",
+                "python.run is not permitted to consume sensitive values",
+            )
+        sensitive_service = context.flow_runtime.get("sensitive_value_service")
+        resolver = getattr(sensitive_service, "resolve", None)
+        if not callable(resolver):
+            raise ExecutionEnvelopeError(
+                "python.sensitive_access_denied",
+                "sensitive value resolver is unavailable",
+            )
+        try:
+            return resolver(value, consumer=SensitiveConsumer.RUNTIME_EXECUTOR)
+        except (KeyError, PermissionError, TypeError, ValueError) as exc:
+            raise ExecutionEnvelopeError(
+                "python.sensitive_access_denied",
+                "sensitive value reference is unavailable",
+            ) from exc
+    if isinstance(value, dict):
+        return {
+            key: _resolve_python_sensitive_inputs(
+                item,
+                context=context,
+                allow_sensitive_values=allow_sensitive_values,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _resolve_python_sensitive_inputs(
+                item,
+                context=context,
+                allow_sensitive_values=allow_sensitive_values,
+            )
+            for item in value
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _resolve_python_sensitive_inputs(
+                item,
+                context=context,
+                allow_sensitive_values=allow_sensitive_values,
+            )
+            for item in value
+        )
+    return value
 
 
 def _normalize_python_schema_config(raw: object) -> dict[str, FieldSchema]:

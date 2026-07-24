@@ -18,10 +18,12 @@ def test_execution_envelope_exposes_stable_facade_and_commits_outputs_atomically
         data_values={"counter": 1},
         allowed_data_fields=frozenset({"counter"}),
         session_info={"session_id": "session-1"},
+        network_snapshot={"context_id": "network-1", "epoch": 2},
     )
 
     assert envelope.context.inputs.get("name") == "alice"
     assert envelope.context.session.info()["session_id"] == "session-1"
+    assert envelope.context.network.current() == {"context_id": "network-1", "epoch": 2}
     assert envelope.context.data.get("counter") == 1
     envelope.context.outputs.set("greeting", "hello alice")
     envelope.context.metadata.set("trace", "trace-1")

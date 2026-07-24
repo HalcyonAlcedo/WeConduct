@@ -4168,6 +4168,9 @@ class CompilationWorkbenchService:
             runtime_context.flow_runtime["graph_root_metadata"] = deepcopy(
                 session["runtime_plan"].get("root_metadata", {})
             )
+            runtime_context.flow_runtime["sensitive_value_service"] = self._get_runtime_sensitive_value_service(
+                session_id
+            )
             executor_registry = RuntimeExecutorRegistry(
                 runtime_settings=runtime_execution_settings
             )
