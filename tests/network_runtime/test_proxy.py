@@ -39,6 +39,17 @@ def test_proxy_resolver_requires_a_supported_proxy_url_for_manual_mode() -> None
         )
 
 
+def test_proxy_resolver_does_not_include_credentials_in_validation_errors() -> None:
+    with pytest.raises(ProxyConfigurationError) as exc_info:
+        ProxyResolver().resolve(
+            {"mode": "manual", "url": "ftp://proxy-user:proxy-secret@proxy.example.test:21"},
+            "https://example.test/api",
+        )
+
+    assert "proxy-user" not in str(exc_info.value)
+    assert "proxy-secret" not in str(exc_info.value)
+
+
 def test_proxy_resolver_uses_explicit_environment_mapping_only() -> None:
     resolver = ProxyResolver(environment={"HTTPS_PROXY": "http://proxy.example.test:3128"})
 

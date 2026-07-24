@@ -92,8 +92,8 @@ class ProxyResolver:
     def _parse_proxy_url(raw_url: str, *, source: str) -> ResolvedProxy:
         parsed = urlsplit(raw_url)
         if parsed.scheme not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
-            raise ProxyConfigurationError(f"proxy configuration is invalid: unsupported url {raw_url!r}")
+            raise ProxyConfigurationError("proxy configuration is invalid: unsupported proxy URL")
         if parsed.port is None or parsed.port <= 0 or parsed.port > 65535:
-            raise ProxyConfigurationError(f"proxy configuration is invalid: port is required in {raw_url!r}")
+            raise ProxyConfigurationError("proxy configuration is invalid: proxy port is required")
         mode = "http" if parsed.scheme in {"http", "https"} else parsed.scheme
         return ResolvedProxy(mode=mode, url=raw_url, source=source)
