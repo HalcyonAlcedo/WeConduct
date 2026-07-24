@@ -1,12 +1,52 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
+from time import sleep
 
 import httpx
 
 from weconduct.network_runtime.models import NetworkContextSnapshot, NetworkOperation
 from weconduct.network_runtime.access_policy import NetworkAccessPolicy
 from weconduct.network_runtime.service import NetworkRuntimeService
+
+
+@contextmanager
+def _local_http_server():
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", "/ok")
+                self.end_headers()
+                return
+            if self.path == "/slow":
+                sleep(0.2)
+            status_code = {
+                "/ok": 200,
+                "/missing": 404,
+                "/error": 500,
+                "/slow": 200,
+            }.get(self.path, 404)
+            self.send_response(status_code)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(str(status_code).encode("ascii"))
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=1)
+        server.server_close()
 
 
 def test_network_runtime_service_executes_on_its_owned_loop_and_closes_cleanly(tmp_path) -> None:
@@ -86,3 +126,35 @@ def test_network_runtime_service_reuses_its_single_async_client(tmp_path) -> Non
 
     service.close()
     assert client.is_closed is True
+
+
+def test_network_runtime_service_real_local_http_semantics(tmp_path) -> None:
+    with _local_http_server() as base_url:
+        service = NetworkRuntimeService(
+            response_root_directory=tmp_path,
+            access_policy=NetworkAccessPolicy(allow_loopback=True),
+        )
+        try:
+            results = {
+                path: service.submit(
+                    NetworkOperation(
+                        operation_id=f"request-{path[1:]}",
+                        session_id="session-local-http",
+                        method="GET",
+                        url=f"{base_url}{path}",
+                        timeout_seconds=0.05 if path == "/slow" else 1,
+                    ),
+                    NetworkContextSnapshot(context_id="context-1"),
+                ).result(timeout=2)
+                for path in ("/ok", "/missing", "/error", "/redirect", "/slow")
+            }
+        finally:
+            service.close()
+
+    assert results["/ok"].status_code == 200
+    assert results["/missing"].status_code == 404
+    assert results["/error"].status_code == 500
+    assert results["/redirect"].status_code == 200
+    assert results["/redirect"].final_url == f"{base_url}/ok"
+    assert results["/slow"].status == "failed"
+    assert results["/slow"].transport_error is not None

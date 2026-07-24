@@ -46,6 +46,11 @@ class HttpxAdapter:
         started_at = perf_counter()
         try:
             headers = {**snapshot.headers, **operation.headers}
+            query = {
+                **dict(httpx.URL(operation.url).params),
+                **snapshot.query,
+                **operation.query,
+            }
             content = operation.content
             if operation.upload_file_path is not None:
                 content = _iter_upload_file_chunks(operation.upload_file_path)
@@ -56,6 +61,8 @@ class HttpxAdapter:
                     operation.method,
                     request_url,
                     headers=headers,
+                    params=query,
+                    cookies=snapshot.cookies,
                     content=content,
                     timeout=operation.timeout_seconds,
                 ) as response:

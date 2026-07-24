@@ -33,6 +33,7 @@ class NetworkOperation:
     method: str
     url: str
     headers: Mapping[str, str] = field(default_factory=dict)
+    query: Mapping[str, str] = field(default_factory=dict)
     content: bytes | str | None = None
     upload_file_path: Path | None = None
     timeout_seconds: float = 30.0

@@ -477,6 +477,7 @@ class RuntimeExecutorRegistry:
         method = _resolve_value(node_config.get("method", "GET"), context)
         url = _resolve_value(node_config.get("url"), context)
         headers = _resolve_value(node_config.get("headers", {}), context)
+        query = _resolve_value(node_config.get("query", {}), context)
         timeout = _resolve_value(node_config.get("timeout", 30), context)
         if not isinstance(method, str) or not method.strip():
             return _failed_result(node, "network.method_invalid", "network.http_request requires method")
@@ -484,12 +485,15 @@ class RuntimeExecutorRegistry:
             return _failed_result(node, "network.url_required", "network.http_request requires url")
         if not isinstance(headers, dict):
             return _failed_result(node, "network.headers_invalid", "network headers must be an object")
+        if not isinstance(query, dict):
+            return _failed_result(node, "network.query_invalid", "network query must be an object")
         try:
             timeout_seconds = float(timeout)
         except (TypeError, ValueError):
             return _failed_result(node, "network.timeout_invalid", "network timeout must be numeric")
         body_value = _resolve_value(node_config.get("body"), context)
         request_headers = {str(key): str(value) for key, value in headers.items()}
+        request_query = {str(key): str(value) for key, value in query.items()}
         if isinstance(body_value, (dict, list)):
             try:
                 request_content = json.dumps(body_value).encode("utf-8")
@@ -512,6 +516,7 @@ class RuntimeExecutorRegistry:
         context_strategy = raw_strategy.strip().lower()
         context_overrides = {
             "headers": request_headers,
+            "query": request_query,
             "timeout_seconds": timeout_seconds,
         }
         try:
@@ -550,6 +555,7 @@ class RuntimeExecutorRegistry:
             method=method.strip().upper(),
             url=url.strip(),
             headers=request_headers,
+            query=request_query,
             content=None if upload_file_path is not None else request_content,
             upload_file_path=upload_file_path,
             timeout_seconds=timeout_seconds,

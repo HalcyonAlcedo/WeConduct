@@ -64,6 +64,45 @@ def test_httpx_adapter_revalidates_redirect_destinations(tmp_path) -> None:
     assert "network.access_denied" in result.transport_error
 
 
+def test_httpx_adapter_merges_context_and_node_query_and_cookie_values(tmp_path) -> None:
+    observed: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed["query"] = str(request.url.query, encoding="utf-8")
+        observed["cookie"] = request.headers.get("cookie", "")
+        return httpx.Response(200, request=request)
+
+    adapter = HttpxAdapter(
+        transport=httpx.MockTransport(handler),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+    operation = NetworkOperation(
+        operation_id="request-context-merge",
+        session_id="session-1",
+        method="GET",
+        url="https://example.test/search?url=present",
+        query={"page": "2", "shared": "node"},
+    )
+
+    result = adapter.execute(
+        operation,
+        NetworkContextSnapshot(
+            context_id="context-1",
+            query={"locale": "zh-CN", "shared": "context"},
+            cookies={"session": "context-cookie"},
+        ),
+    )
+
+    assert result.status == "succeeded"
+    assert observed["query"] in {
+        "url=present&locale=zh-CN&shared=node&page=2",
+        "url=present&page=2&shared=node&locale=zh-CN",
+        "url=present&locale=zh-CN&page=2&shared=node",
+    }
+    assert observed["cookie"] == "session=context-cookie"
+
+
 def test_network_http_request_node_delegates_to_network_runtime_service() -> None:
     class StubNetworkRuntimeService:
         def __init__(self) -> None:
@@ -104,6 +143,7 @@ def test_network_http_request_node_delegates_to_network_runtime_service() -> Non
         "node_config": {
             "method": "GET",
             "url": "https://example.test/missing",
+            "query": {"source": "node"},
             "body": {"request": "value"},
         },
     }
@@ -115,6 +155,7 @@ def test_network_http_request_node_delegates_to_network_runtime_service() -> Non
     assert output["body_ref"].read_text() == "missing"
     assert service.operation is not None
     assert service.operation.url == "https://example.test/missing"
+    assert service.operation.query == {"source": "node"}
     assert service.operation.content == b'{"request": "value"}'
     assert service.operation.headers["Content-Type"] == "application/json"
 
