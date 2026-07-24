@@ -5,6 +5,7 @@ from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
 from .resources import ResponseBodyRef, ResponseBodyStore, ResponseBodyTooLargeError
 from .proxy import ProxyConfigurationError, ProxyResolver, ResolvedProxy
 from .tls import ResolvedTls, TlsConfigurationError, TlsResolver
+from .oauth import OAuthClientCredentialsRequest, OAuthConfigurationError, OAuthService, OAuthTokenState
 from .service import NetworkRuntimeService
 
 __all__ = [
@@ -25,5 +26,9 @@ __all__ = [
     "ResolvedTls",
     "TlsConfigurationError",
     "TlsResolver",
+    "OAuthClientCredentialsRequest",
+    "OAuthConfigurationError",
+    "OAuthService",
+    "OAuthTokenState",
     "UnknownNetworkContextError",
 ]
