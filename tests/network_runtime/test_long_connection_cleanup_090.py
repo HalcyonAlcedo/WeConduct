@@ -10,6 +10,10 @@ import websockets
 
 from weconduct.network_runtime.long_connection import SSEClientHandle, WebSocketClientHandle
 from weconduct.network_runtime.long_connection import SSEConnection
+from weconduct.network_runtime.access_policy import NetworkAccessPolicy
+
+
+_LOCAL_ACCESS_POLICY = NetworkAccessPolicy(allow_loopback=True)
 
 
 @contextmanager
@@ -43,7 +47,7 @@ def _blocking_sse_server():
 
 def test_sse_client_close_is_idempotent_and_stops_owned_loop() -> None:
     with _blocking_sse_server() as url:
-        handle = SSEClientHandle(url=url)
+        handle = SSEClientHandle(url=url, access_policy=_LOCAL_ACCESS_POLICY)
         handle.start()
         assert handle.receive(timeout_seconds=1)["event_id"] == "one"
         handle.close()
@@ -94,7 +98,10 @@ def test_websocket_client_close_is_idempotent_and_stops_owned_loop() -> None:
     thread = Thread(target=server_thread, daemon=True)
     thread.start()
     assert ready.wait(timeout=2)
-    handle = WebSocketClientHandle(url=f"ws://127.0.0.1:{server_info['port']}")
+    handle = WebSocketClientHandle(
+        url=f"ws://127.0.0.1:{server_info['port']}",
+        access_policy=_LOCAL_ACCESS_POLICY,
+    )
     try:
         handle.start()
         handle.send("ping")

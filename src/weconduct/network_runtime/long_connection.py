@@ -11,6 +11,8 @@ import httpx
 from httpx_sse import aconnect_sse
 import websockets
 
+from .access_policy import NetworkAccessPolicy
+
 
 class SSEConnectionClosed(RuntimeError):
     error_code = "network.sse_closed"
@@ -244,12 +246,14 @@ class SSEClientHandle:
         proxy: str | None = None,
         timeout_seconds: float = 30.0,
         max_queue_size: int = 100,
+        access_policy: NetworkAccessPolicy | None = None,
     ) -> None:
         if not isinstance(url, str) or not url.strip():
             raise ValueError("network.sse_url_required")
         if timeout_seconds <= 0:
             raise ValueError("network.sse_timeout_invalid")
         self.url = url.strip()
+        (access_policy or NetworkAccessPolicy()).validate_url(self.url)
         self.headers = {str(key): str(value) for key, value in (headers or {}).items()}
         self.params = {str(key): str(value) for key, value in (params or {}).items()}
         self.proxy = proxy.strip() if isinstance(proxy, str) and proxy.strip() else None
@@ -364,12 +368,17 @@ class WebSocketClientHandle:
         proxy: str | None = None,
         timeout_seconds: float = 30.0,
         subprotocols: list[str] | None = None,
+        access_policy: NetworkAccessPolicy | None = None,
     ) -> None:
         if not isinstance(url, str) or not url.strip():
             raise ValueError("network.websocket_url_required")
         if timeout_seconds <= 0:
             raise ValueError("network.websocket_timeout_invalid")
         self.url = url.strip()
+        (access_policy or NetworkAccessPolicy()).validate_url(
+            self.url,
+            allowed_schemes=frozenset({"ws", "wss"}),
+        )
         self.headers = {str(key): str(value) for key, value in (headers or {}).items()}
         self.proxy = proxy.strip() if isinstance(proxy, str) and proxy.strip() else None
         self.timeout_seconds = float(timeout_seconds)

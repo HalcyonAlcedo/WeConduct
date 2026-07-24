@@ -9,6 +9,8 @@ from uuid import uuid4
 
 import httpx
 
+from .access_policy import NetworkAccessPolicy
+
 if TYPE_CHECKING:
     from weconduct.application.sensitive_values.models import SensitiveRef
     from weconduct.application.sensitive_values.service import SensitiveValueService
@@ -48,9 +50,11 @@ class OAuthService:
         sensitive_values: SensitiveValueService,
         transport: httpx.BaseTransport | None = None,
         timeout_seconds: float = 30.0,
+        access_policy: NetworkAccessPolicy | None = None,
     ) -> None:
         self._sensitive_values = sensitive_values
         self._transport = transport
+        self._access_policy = access_policy or NetworkAccessPolicy()
         if timeout_seconds <= 0:
             raise OAuthConfigurationError("oauth.timeout_invalid")
         self._timeout_seconds = float(timeout_seconds)
@@ -187,6 +191,7 @@ class OAuthService:
         auth: tuple[str, str] | None,
     ) -> Mapping[str, object]:
         try:
+            self._access_policy.validate_url(token_url)
             with httpx.Client(
                 transport=self._transport,
                 timeout=self._timeout_seconds,

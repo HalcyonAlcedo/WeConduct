@@ -16,10 +16,16 @@ class NetworkAccessPolicy:
     allow_loopback: bool = False
     allowed_hostnames: frozenset[str] = field(default_factory=frozenset)
 
-    def validate_url(self, url: str) -> None:
+    def validate_url(
+        self,
+        url: str,
+        *,
+        allowed_schemes: frozenset[str] = frozenset({"http", "https"}),
+    ) -> None:
         parsed = urlsplit(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("network.access_denied: only absolute http(s) URLs are allowed")
+        if parsed.scheme not in allowed_schemes or not parsed.hostname:
+            allowed = ", ".join(sorted(allowed_schemes))
+            raise ValueError(f"network.access_denied: only absolute {allowed} URLs are allowed")
         hostname = parsed.hostname.lower()
         if hostname in {item.lower() for item in self.allowed_hostnames}:
             return

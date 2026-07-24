@@ -5,6 +5,7 @@ import httpx
 
 from weconduct.application.sensitive_values.models import SensitiveConsumer, SensitiveRef
 from weconduct.application.sensitive_values.service import SensitiveValueService
+from weconduct.network_runtime.access_policy import NetworkAccessPolicy
 from weconduct.network_runtime.oauth import OAuthConfigurationError, OAuthService
 
 
@@ -54,6 +55,33 @@ def test_oauth_service_rejects_invalid_token_responses_without_leaking_values() 
     assert "secret details" not in str(exc_info.value)
 
 
+def test_oauth_service_applies_network_access_policy_before_token_exchange() -> None:
+    observed = {"called": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed["called"] = True
+        return httpx.Response(200, json={"access_token": "token"}, request=request)
+
+    sensitive = SensitiveValueService()
+    service = OAuthService(
+        sensitive_values=sensitive,
+        transport=httpx.MockTransport(handler),
+    )
+    secret = sensitive.create("client-secret", scope_id="session-policy", source="runtime_input")
+    request = service.build_client_credentials_request(
+        token_url="http://127.0.0.1:8080/token",
+        client_id="client-id",
+        client_secret=secret,
+        scope=None,
+        scope_id="session-policy",
+    )
+
+    with pytest.raises(OAuthConfigurationError, match="oauth.token_exchange_failed"):
+        service.exchange_client_credentials(request=request, scope_id="session-policy")
+
+    assert observed["called"] is False
+
+
 def test_oauth_service_executes_client_credentials_exchange_without_exposing_secret() -> None:
     observed: dict[str, str] = {}
 
@@ -70,6 +98,7 @@ def test_oauth_service_executes_client_credentials_exchange_without_exposing_sec
     service = OAuthService(
         sensitive_values=sensitive,
         transport=httpx.MockTransport(handler),
+        access_policy=NetworkAccessPolicy(allowed_hostnames=frozenset({"example.test"})),
     )
     client_secret = sensitive.create("client-secret", scope_id="session-2", source="runtime_input")
     request = service.build_client_credentials_request(

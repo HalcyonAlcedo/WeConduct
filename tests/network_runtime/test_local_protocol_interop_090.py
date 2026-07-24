@@ -531,7 +531,10 @@ def test_httpx_adapter_forwards_through_real_local_socks5_proxy(tmp_path: Path) 
 def test_oauth_service_exchanges_against_local_token_endpoint_without_secret_leak(tmp_path: Path) -> None:
     with _local_oauth_server() as (token_url, observed):
         sensitive = SensitiveValueService()
-        service = OAuthService(sensitive_values=sensitive)
+        service = OAuthService(
+            sensitive_values=sensitive,
+            access_policy=NetworkAccessPolicy(allow_loopback=True),
+        )
         secret = sensitive.create("local-client-secret", scope_id="oauth-session", source="runtime_input")
         request = service.build_client_credentials_request(
             token_url=token_url,
@@ -549,7 +552,10 @@ def test_oauth_service_exchanges_against_local_token_endpoint_without_secret_lea
 def test_oauth_service_refreshes_against_local_token_endpoint(tmp_path: Path) -> None:
     with _local_oauth_server() as (token_url, observed):
         sensitive = SensitiveValueService()
-        service = OAuthService(sensitive_values=sensitive)
+        service = OAuthService(
+            sensitive_values=sensitive,
+            access_policy=NetworkAccessPolicy(allow_loopback=True),
+        )
         refresh_ref = sensitive.create("local-refresh-secret", scope_id="oauth-refresh", source="runtime_input")
         state = service.refresh_access_token(
             token_url=token_url,
@@ -720,6 +726,7 @@ def test_graphql_subscription_uses_local_websocket_protocol() -> None:
     handle = WebSocketClientHandle(
         url=f"ws://127.0.0.1:{port}",
         subprotocols=["graphql-transport-ws"],
+        access_policy=NetworkAccessPolicy(allow_loopback=True),
     )
     try:
         adapter = GraphQLProtocolAdapter()

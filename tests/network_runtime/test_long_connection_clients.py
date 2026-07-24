@@ -11,6 +11,10 @@ from weconduct.network_runtime.long_connection import (
     SSEClientHandle,
     WebSocketClientHandle,
 )
+from weconduct.network_runtime.access_policy import NetworkAccessPolicy
+
+
+_LOCAL_ACCESS_POLICY = NetworkAccessPolicy(allow_loopback=True)
 
 
 @contextmanager
@@ -40,7 +44,7 @@ def _sse_server():
 
 def test_sse_client_handle_connects_and_pulls_events() -> None:
     with _sse_server() as url:
-        handle = SSEClientHandle(url=url)
+        handle = SSEClientHandle(url=url, access_policy=_LOCAL_ACCESS_POLICY)
         metadata = handle.start(timeout_seconds=2)
         try:
             assert metadata["status_code"] == 200
@@ -61,7 +65,10 @@ def test_websocket_client_handle_supports_pull_operations_and_close() -> None:
 
         server = await websockets.serve(handler, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
-        handle = WebSocketClientHandle(url=f"ws://127.0.0.1:{port}")
+        handle = WebSocketClientHandle(
+            url=f"ws://127.0.0.1:{port}",
+            access_policy=_LOCAL_ACCESS_POLICY,
+        )
         try:
             metadata = await asyncio.to_thread(handle.start, timeout_seconds=2)
             assert metadata["status"] == "connected"
@@ -79,7 +86,10 @@ def test_websocket_client_handle_supports_pull_operations_and_close() -> None:
 
 
 def test_long_connection_client_rejects_receive_after_close() -> None:
-    handle = SSEClientHandle(url="http://127.0.0.1:1/events")
+    handle = SSEClientHandle(
+        url="http://127.0.0.1:1/events",
+        access_policy=_LOCAL_ACCESS_POLICY,
+    )
     handle.close()
 
     with pytest.raises(RuntimeError, match="closed"):
@@ -93,7 +103,10 @@ def test_websocket_client_receive_honors_operation_timeout() -> None:
 
         server = await websockets.serve(handler, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
-        handle = WebSocketClientHandle(url=f"ws://127.0.0.1:{port}")
+        handle = WebSocketClientHandle(
+            url=f"ws://127.0.0.1:{port}",
+            access_policy=_LOCAL_ACCESS_POLICY,
+        )
         try:
             await asyncio.to_thread(handle.start, timeout_seconds=2)
             with pytest.raises(TimeoutError, match="receive_timeout"):
@@ -109,10 +122,16 @@ def test_websocket_client_receive_honors_operation_timeout() -> None:
 
 
 def test_long_connection_clients_keep_explicit_proxy_configuration() -> None:
-    sse = SSEClientHandle(url="https://example.test/events", proxy="http://proxy.example.test:8080")
+    fixture_policy = NetworkAccessPolicy(allowed_hostnames=frozenset({"example.test"}))
+    sse = SSEClientHandle(
+        url="https://example.test/events",
+        proxy="http://proxy.example.test:8080",
+        access_policy=fixture_policy,
+    )
     websocket = WebSocketClientHandle(
         url="wss://example.test/events",
         proxy="socks5h://proxy.example.test:1080",
+        access_policy=fixture_policy,
     )
 
     try:
@@ -121,3 +140,10 @@ def test_long_connection_clients_keep_explicit_proxy_configuration() -> None:
     finally:
         sse.close()
         websocket.close()
+
+
+def test_long_connection_clients_apply_default_network_access_policy() -> None:
+    with pytest.raises(ValueError, match="network.access_denied"):
+        SSEClientHandle(url="http://127.0.0.1:1/events")
+    with pytest.raises(ValueError, match="network.access_denied"):
+        WebSocketClientHandle(url="ws://127.0.0.1:1/events")
