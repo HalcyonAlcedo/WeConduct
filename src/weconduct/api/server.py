@@ -1,9 +1,11 @@
 import json
 import mimetypes
+from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from hashlib import sha256
 from pathlib import Path
 import secrets
 from threading import Condition, RLock
@@ -47,6 +49,7 @@ DEFAULT_WORKSPACE_STATE_PATH = (
 )
 DEFAULT_PREFERENCES_PATH = Path(__file__).resolve().parents[3] / ".weconduct" / "preferences.json"
 DEFAULT_UI_DIST_PATH = Path(__file__).resolve().parents[3] / "ui" / "dist"
+EXTERNAL_IDEMPOTENCY_CACHE_LIMIT = 256
 DebugActionResult = TypeVar("DebugActionResult")
 
 
@@ -514,7 +517,58 @@ class WeConductApiServer(ThreadingHTTPServer):
         self.external_api_enabled = False
         self.external_api_token: str | None = None
         self.external_api_instance_id = uuid.uuid4().hex
+        self._external_idempotency_lock = RLock()
+        self._external_idempotency_cache: OrderedDict[
+            str, tuple[str, int | None, dict[str, object] | None]
+        ] = OrderedDict()
         super().__init__(*args, **kwargs)
+
+    def begin_external_idempotency(self, key: str) -> tuple[str, int, dict[str, object]] | None:
+        """Reserve an external idempotency key or return its completed response."""
+        with self._external_idempotency_lock:
+            entry = self._external_idempotency_cache.get(key)
+            if entry is not None:
+                self._external_idempotency_cache.move_to_end(key)
+                state, status, payload = entry
+                if state == "completed" and status is not None and payload is not None:
+                    return state, status, deepcopy(payload)
+                return "in_progress", 0, {}
+            self._external_idempotency_cache[key] = ("in_progress", None, None)
+            self._trim_external_idempotency_cache()
+        return None
+
+    def complete_external_idempotency(
+        self,
+        key: str,
+        *,
+        status: HTTPStatus,
+        payload: dict[str, object],
+    ) -> None:
+        """Store a redacted response for a previously reserved idempotency key."""
+        with self._external_idempotency_lock:
+            if key not in self._external_idempotency_cache:
+                return
+            self._external_idempotency_cache[key] = (
+                "completed",
+                status.value,
+                deepcopy(payload),
+            )
+            self._external_idempotency_cache.move_to_end(key)
+            self._trim_external_idempotency_cache()
+
+    def _trim_external_idempotency_cache(self) -> None:
+        while len(self._external_idempotency_cache) > EXTERNAL_IDEMPOTENCY_CACHE_LIMIT:
+            removable_key = next(
+                (
+                    cache_key
+                    for cache_key, entry in self._external_idempotency_cache.items()
+                    if entry[0] == "completed"
+                ),
+                None,
+            )
+            if removable_key is None:
+                return
+            self._external_idempotency_cache.pop(removable_key, None)
 
     def execute_debug_action(
         self,
@@ -590,6 +644,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         if not self._require_external_api():
             return True
         payload: dict[str, object] = {}
+        idempotency_cache_key: str | None = None
         try:
             service = self._get_service()
             registry = self._get_external_operation_registry(service)
@@ -605,20 +660,50 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     request_id=request_id,
                 )
                 return True
-            result = registry.execute(operation_id, payload)
-            self._write_json(
-                (
-                    HTTPStatus.ACCEPTED
-                    if operation_id in {"execution.start", "pending_input.submit"}
-                    else HTTPStatus.OK
-                ),
-                {
-                    "operation_id": operation_id,
-                    "contract_version": registry.describe(operation_id).contract_version,
-                    "request_id": request_id,
-                    "result": result,
-                },
+            descriptor = registry.describe(operation_id)
+            idempotency_cache_key = self._get_external_idempotency_cache_key(
+                operation_id=operation_id,
+                enabled=descriptor.idempotency_capability,
             )
+            if idempotency_cache_key is not None:
+                replay = self.server.begin_external_idempotency(idempotency_cache_key)
+                if replay is not None:
+                    state, status_value, cached_payload = replay
+                    if state == "in_progress":
+                        self._write_json(
+                            HTTPStatus.CONFLICT,
+                            {
+                                "error_code": "operation.in_progress",
+                                "message": "an identical operation is already in progress",
+                                "request_id": request_id,
+                                "operation_id": operation_id,
+                            },
+                        )
+                    else:
+                        self._write_json(
+                            HTTPStatus(status_value),
+                            cached_payload,
+                        )
+                    return True
+            result = registry.execute(operation_id, payload)
+            response_status = (
+                HTTPStatus.ACCEPTED
+                if operation_id in {"execution.start", "pending_input.submit"}
+                else HTTPStatus.OK
+            )
+            response_payload = {
+                "operation_id": operation_id,
+                "contract_version": descriptor.contract_version,
+                "request_id": request_id,
+                "result": result,
+            }
+            if idempotency_cache_key is not None:
+                self.server.complete_external_idempotency(
+                    idempotency_cache_key,
+                    status=response_status,
+                    payload=response_payload,
+                )
+            self._write_json(response_status, response_payload)
         except OperationRegistryError as exc:
             status = {
                 "operation.not_found": HTTPStatus.NOT_FOUND,
@@ -626,16 +711,20 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 "operation.state_conflict": HTTPStatus.CONFLICT,
                 "operation.not_available": HTTPStatus.NOT_IMPLEMENTED,
             }.get(exc.error_code, HTTPStatus.INTERNAL_SERVER_ERROR)
-            self._write_json(
-                status,
-                {
-                    "error_code": exc.error_code,
-                    "message": str(exc),
-                    "details": dict(exc.details),
-                    "request_id": self.headers.get("X-Request-ID"),
-                    "operation_id": exc.operation_id,
-                },
-            )
+            response_payload = {
+                "error_code": exc.error_code,
+                "message": str(exc),
+                "details": dict(exc.details),
+                "request_id": self.headers.get("X-Request-ID"),
+                "operation_id": exc.operation_id,
+            }
+            if idempotency_cache_key is not None:
+                self.server.complete_external_idempotency(
+                    idempotency_cache_key,
+                    status=status,
+                    payload=response_payload,
+                )
+            self._write_json(status, response_payload)
         except ValueError as exc:
             error_code = (
                 str(exc)
@@ -666,16 +755,40 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                         }
                     except (ValueError, KeyError):
                         details = {}
-            self._write_json(
-                status,
-                {
-                    "error_code": error_code,
-                    "message": str(exc),
-                    "details": details,
-                    "request_id": self.headers.get("X-Request-ID"),
-                },
-            )
+            response_payload = {
+                "error_code": error_code,
+                "message": str(exc),
+                "details": details,
+                "request_id": self.headers.get("X-Request-ID"),
+            }
+            if idempotency_cache_key is not None:
+                self.server.complete_external_idempotency(
+                    idempotency_cache_key,
+                    status=status,
+                    payload=response_payload,
+                )
+            self._write_json(status, response_payload)
         return True
+
+    def _get_external_idempotency_cache_key(
+        self,
+        *,
+        operation_id: str,
+        enabled: bool,
+    ) -> str | None:
+        if not enabled:
+            return None
+        raw_key = self.headers.get("Idempotency-Key")
+        if not isinstance(raw_key, str):
+            return None
+        idempotency_key = raw_key.strip()
+        if not idempotency_key:
+            return None
+        _, _, caller_token = self.headers.get("Authorization", "").partition(" ")
+        if not caller_token:
+            return None
+        caller_digest = sha256(caller_token.encode("utf-8")).hexdigest()
+        return f"{caller_digest}:{operation_id}:{idempotency_key}"
 
     def _resolve_external_operation(self, *, method: str, request_path: str) -> tuple[str, dict[str, object]]:
         if method == "GET":

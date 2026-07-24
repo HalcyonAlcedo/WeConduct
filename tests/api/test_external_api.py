@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from time import monotonic, sleep
 import urllib.error
 import urllib.request
@@ -18,10 +18,12 @@ def _request_json(
     method: str = "GET",
     payload: dict | None = None,
     token: str | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[int, dict]:
     headers = {"Content-Type": "application/json"}
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
+    headers.update(extra_headers or {})
     request = urllib.request.Request(
         url,
         method=method,
@@ -268,6 +270,131 @@ def test_external_api_sse_replays_from_last_event_id(tmp_path: Path) -> None:
         assert "id: 2" in body
         assert "event: runtime.completed" in body
         assert "Last-Event-ID" not in body
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_replays_idempotent_graph_replace_response(tmp_path: Path) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, graph = _request_json(
+            f"{base_url}/api/ext/v1/graph",
+            token="external-secret",
+        )
+        assert status == 200
+        payload = {"graph_document": graph["result"]["graph_model"]}
+        headers = {"Idempotency-Key": "replace-once"}
+
+        first_status, first = _request_json(
+            f"{base_url}/api/ext/v1/graph",
+            method="PUT",
+            payload=payload,
+            token="external-secret",
+            extra_headers=headers,
+        )
+        second_status, second = _request_json(
+            f"{base_url}/api/ext/v1/graph",
+            method="PUT",
+            payload=payload,
+            token="external-secret",
+            extra_headers=headers,
+        )
+
+        assert first_status == 200
+        assert second_status == first_status
+        assert second == first
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_rejects_duplicate_idempotent_request_while_in_progress(tmp_path: Path) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    first_result: list[tuple[int, dict]] = []
+    started = Event()
+    release = Event()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, graph = _request_json(
+            f"{base_url}/api/ext/v1/graph",
+            token="external-secret",
+        )
+        assert status == 200
+        payload = {"graph_document": graph["result"]["graph_model"]}
+        original_save = server.workbench_service.save_graph_document
+
+        def blocked_save(*args, **kwargs):
+            started.set()
+            assert release.wait(timeout=2)
+            return original_save(*args, **kwargs)
+
+        server.workbench_service.save_graph_document = blocked_save  # type: ignore[method-assign]
+        request_headers = {"Idempotency-Key": "replace-concurrent"}
+
+        first_thread = Thread(
+            target=lambda: first_result.append(
+                _request_json(
+                    f"{base_url}/api/ext/v1/graph",
+                    method="PUT",
+                    payload=payload,
+                    token="external-secret",
+                    extra_headers=request_headers,
+                )
+            ),
+            daemon=True,
+        )
+        first_thread.start()
+        assert started.wait(timeout=2)
+
+        second_status, second = _request_json(
+            f"{base_url}/api/ext/v1/graph",
+            method="PUT",
+            payload=payload,
+            token="external-secret",
+            extra_headers=request_headers,
+        )
+
+        assert second_status == 409
+        assert second["error_code"] == "operation.in_progress"
+        release.set()
+        first_thread.join(timeout=2)
+        assert first_result and first_result[0][0] == 200
+    finally:
+        release.set()
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_ignores_idempotency_key_for_non_capable_operation(tmp_path: Path) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        headers = {"Idempotency-Key": "describe-once"}
+        first_status, first = _request_json(
+            f"{base_url}/api/ext/v1/host",
+            token="external-secret",
+            extra_headers=headers,
+        )
+        second_status, second = _request_json(
+            f"{base_url}/api/ext/v1/host",
+            token="external-secret",
+            extra_headers=headers,
+        )
+
+        assert first_status == second_status == 200
+        assert first["operation_id"] == second["operation_id"] == "host.describe"
+        assert first["request_id"] != second["request_id"]
     finally:
         server.shutdown()
         thread.join(timeout=2)
