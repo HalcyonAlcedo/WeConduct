@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
@@ -33,6 +34,7 @@ from weconduct.network_runtime.long_connection import WebSocketClientHandle
 from weconduct.network_runtime.models import NetworkContextSnapshot, NetworkOperation
 from weconduct.network_runtime.oauth import OAuthService
 from weconduct.network_runtime.access_policy import NetworkAccessPolicy
+from weconduct.network_runtime.service import NetworkRuntimeService
 
 
 @contextmanager
@@ -580,6 +582,45 @@ def test_httpx_adapter_uses_local_custom_ca(tmp_path: Path) -> None:
     assert result.status_code == 200
 
 
+def test_httpx_adapter_enforces_local_tls_certificate_pins(tmp_path: Path) -> None:
+    with _local_tls_server(tmp_path) as (base_url, ca_file):
+        server_der = ssl.PEM_cert_to_DER_cert((tmp_path / "local-server.pem").read_text(encoding="ascii"))
+        matching_pin = hashlib.sha256(server_der).hexdigest()
+        adapter = HttpxAdapter(
+            response_root_directory=tmp_path,
+            access_policy=NetworkAccessPolicy(allow_loopback=True),
+        )
+        try:
+            matching = adapter.execute(
+                NetworkOperation(operation_id="tls-pin-match", session_id="session-tls-pin", method="GET", url=f"{base_url}/ok"),
+                NetworkContextSnapshot(
+                    context_id="context-tls-pin-match",
+                    tls={
+                        "verify": "custom_ca",
+                        "ca_file": str(ca_file),
+                        "certificate_pins": [matching_pin],
+                    },
+                ),
+            )
+            mismatching = adapter.execute(
+                NetworkOperation(operation_id="tls-pin-mismatch", session_id="session-tls-pin", method="GET", url=f"{base_url}/ok"),
+                NetworkContextSnapshot(
+                    context_id="context-tls-pin-mismatch",
+                    tls={
+                        "verify": "custom_ca",
+                        "ca_file": str(ca_file),
+                        "certificate_pins": ["0" * 64],
+                    },
+                ),
+            )
+        finally:
+            adapter.close()
+
+    assert matching.status == "succeeded", matching.transport_error
+    assert mismatching.status == "failed"
+    assert mismatching.transport_error == "network.tls_pin_mismatch"
+
+
 def test_httpx_adapter_uses_local_mtls_certificate(tmp_path: Path) -> None:
     with _local_mtls_server(tmp_path) as (base_url, ca_file, client_cert_file, client_key_file):
         adapter = HttpxAdapter(
@@ -626,6 +667,17 @@ def test_httpx_adapter_negotiates_http2_against_local_alpn_server(tmp_path: Path
     assert result.status == "succeeded", result.transport_error
     assert result.status_code == 200
     assert result.body_ref is not None
+
+
+def test_network_runtime_service_enables_http2_on_its_default_client(tmp_path: Path) -> None:
+    service = NetworkRuntimeService(
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allow_loopback=True),
+    )
+    try:
+        assert service._client._transport._pool._http2 is True  # type: ignore[attr-defined]
+    finally:
+        service.close()
 
 
 def test_graphql_subscription_uses_local_websocket_protocol() -> None:

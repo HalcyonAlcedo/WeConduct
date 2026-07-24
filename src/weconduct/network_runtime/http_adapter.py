@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from http.cookies import CookieError, SimpleCookie
+import hashlib
+import hmac
 from pathlib import Path
 import ssl
 from time import perf_counter
@@ -13,7 +15,7 @@ from .access_policy import NetworkAccessPolicy
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
 from .resources import ResponseBodyStore
 from .proxy import ProxyResolver
-from .tls import TlsResolver
+from .tls import ResolvedTls, TlsResolver
 
 
 class HttpxAdapter:
@@ -62,7 +64,9 @@ class HttpxAdapter:
             if operation.upload_file_path is not None:
                 content = _iter_upload_file_chunks(operation.upload_file_path)
             request_url = operation.url
-            client = self._client_for_snapshot(snapshot, request_url)
+            tls_config = snapshot.tls if isinstance(snapshot.tls, dict) else {}
+            resolved_tls = TlsResolver().resolve(tls_config)
+            client = self._client_for_snapshot(snapshot, request_url, resolved_tls=resolved_tls)
             for _ in range(10):
                 self._access_policy.validate_url(request_url)
                 async with client.stream(
@@ -74,6 +78,7 @@ class HttpxAdapter:
                     content=content,
                     timeout=operation.timeout_seconds,
                 ) as response:
+                    _verify_certificate_pins(response, resolved_tls.certificate_pins)
                     redirect_target = response.headers.get("location")
                     if response.status_code not in {301, 302, 303, 307, 308} or not redirect_target:
                         store = self._stores.setdefault(
@@ -139,9 +144,13 @@ class HttpxAdapter:
         self,
         snapshot: NetworkContextSnapshot,
         target_url: str = "https://example.invalid/",
+        *,
+        resolved_tls: ResolvedTls | None = None,
     ) -> httpx.AsyncClient:
-        tls_config = snapshot.tls if isinstance(snapshot.tls, dict) else {}
-        resolved = TlsResolver().resolve(tls_config)
+        resolved = resolved_tls
+        if resolved is None:
+            tls_config = snapshot.tls if isinstance(snapshot.tls, dict) else {}
+            resolved = TlsResolver().resolve(tls_config)
         verify_argument: ssl.SSLContext | bool
         if resolved.verify == "system":
             verify_argument = True
@@ -216,3 +225,22 @@ def _parse_set_cookie_headers(headers: httpx.Headers) -> dict[str, str | None]:
             max_age = morsel["max-age"].strip().lower()
             changes[name] = None if max_age == "0" else morsel.value
     return changes
+
+
+def _verify_certificate_pins(response: httpx.Response, pins: tuple[str, ...]) -> None:
+    if not pins:
+        return
+    stream = response.extensions.get("network_stream")
+    get_extra_info = getattr(stream, "get_extra_info", None)
+    if not callable(get_extra_info):
+        raise ValueError("network.tls_pin_unavailable")
+    ssl_object = get_extra_info("ssl_object")
+    get_peer_certificate = getattr(ssl_object, "getpeercert", None)
+    if not callable(get_peer_certificate):
+        raise ValueError("network.tls_pin_unavailable")
+    certificate = get_peer_certificate(binary_form=True)
+    if not isinstance(certificate, bytes) or not certificate:
+        raise ValueError("network.tls_pin_unavailable")
+    digest = hashlib.sha256(certificate).hexdigest()
+    if not any(hmac.compare_digest(digest, pin) for pin in pins):
+        raise ValueError("network.tls_pin_mismatch")

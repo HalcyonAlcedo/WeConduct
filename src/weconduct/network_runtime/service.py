@@ -27,6 +27,7 @@ class NetworkRuntimeService:
                 transport=transport,
                 trust_env=False,
                 follow_redirects=False,
+                http2=True,
             ),
         )
         self._client = self._adapter._client
