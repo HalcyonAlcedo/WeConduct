@@ -26,7 +26,9 @@ from zipfile import BadZipFile
 from typing import Any, Callable
 
 from weconduct.network_runtime import (
+    GraphQLAdapterError,
     GraphQLProtocolAdapter,
+    GraphQLSubscriptionProtocol,
     NetworkContextRegistry,
     NetworkContextSnapshot,
     NetworkOperation,
@@ -854,6 +856,10 @@ class RuntimeExecutorRegistry:
 
     def _execute_network_graphql_request(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        action_value = _resolve_value(node_config.get("action"), context)
+        action = action_value.strip().lower() if isinstance(action_value, str) else ""
+        if action in {"connect", "receive", "close"}:
+            return self._execute_network_graphql_subscription(node, context)
         endpoint = _resolve_value(node_config.get("endpoint", node_config.get("url")), context)
         query = _resolve_value(node_config.get("query"), context)
         operation_name = _resolve_value(node_config.get("operation_name"), context)
@@ -875,6 +881,10 @@ class RuntimeExecutorRegistry:
                 headers=headers,
             )
             body = json.loads(graphql_operation.content or b"{}")
+        except GraphQLAdapterError as exc:
+            if str(exc) == "graphql.subscription_requires_websocket":
+                return self._execute_network_graphql_subscription(node, context)
+            return _failed_result(node, "network.graphql_request_invalid", str(exc))
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             return _failed_result(node, "network.graphql_request_invalid", str(exc))
         request_node = dict(node)
@@ -912,6 +922,161 @@ class RuntimeExecutorRegistry:
         )
         context.variables["last_graphql_response"] = output
         return output
+
+    def _execute_network_graphql_subscription(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        action_value = _resolve_value(node_config.get("action", "connect"), context)
+        action = action_value.strip().lower() if isinstance(action_value, str) else "connect"
+        connection_id_value = _resolve_value(
+            node_config.get("connection_id", node["node_id"]),
+            context,
+        )
+        if not isinstance(connection_id_value, str) or not connection_id_value.strip():
+            return _failed_result(
+                node,
+                "network.graphql_subscription_id_required",
+                "GraphQL subscription connection_id is required",
+            )
+        connection_id = connection_id_value.strip()
+        connections = self._network_connection_store(context)
+        key = ("graphql", connection_id)
+        if action == "connect":
+            endpoint = _resolve_value(node_config.get("endpoint", node_config.get("url")), context)
+            query = _resolve_value(node_config.get("query"), context)
+            operation_name = _resolve_value(node_config.get("operation_name"), context)
+            variables = _resolve_value(node_config.get("variables", {}), context)
+            headers = _resolve_value(node_config.get("headers", {}), context)
+            subprotocol = _resolve_value(
+                node_config.get("subprotocol", "graphql-transport-ws"),
+                context,
+            )
+            timeout_value = _resolve_value(
+                node_config.get("timeout_seconds", node_config.get("timeout", 30)),
+                context,
+            )
+            if not isinstance(endpoint, str) or not endpoint.strip():
+                return _failed_result(node, "network.graphql_endpoint_required", "GraphQL endpoint is required")
+            if not isinstance(query, str) or not query.strip():
+                return _failed_result(node, "network.graphql_query_required", "GraphQL query is required")
+            if not isinstance(variables, dict) or not isinstance(headers, dict):
+                return _failed_result(node, "network.graphql_input_invalid", "GraphQL variables and headers must be objects")
+            try:
+                timeout_seconds = float(timeout_value)
+                request = GraphQLProtocolAdapter().build_subscription(
+                    endpoint=endpoint.strip(),
+                    query=query,
+                    session_id=context.execution_session_context.session_id,
+                    operation_name=operation_name if isinstance(operation_name, str) else None,
+                    variables=variables,
+                    headers=headers,
+                    subprotocol=subprotocol if isinstance(subprotocol, str) else "graphql-transport-ws",
+                )
+                handle = WebSocketClientHandle(
+                    url=request.endpoint,
+                    headers=request.headers,
+                    timeout_seconds=timeout_seconds,
+                    subprotocols=[request.subprotocol],
+                )
+                metadata = handle.start(timeout_seconds=timeout_seconds)
+                handle.send(json.dumps(GraphQLSubscriptionProtocol.connection_init(), ensure_ascii=False))
+                handle.send(
+                    json.dumps(
+                        GraphQLSubscriptionProtocol.subscribe(
+                            request_id=connection_id,
+                            request=request,
+                        ),
+                        ensure_ascii=False,
+                    )
+                )
+            except (GraphQLAdapterError, TypeError, ValueError, TimeoutError, RuntimeError) as exc:
+                try:
+                    handle.close()  # type: ignore[has-type]
+                except UnboundLocalError:
+                    pass
+                return _failed_result(node, "network.graphql_subscription_connect_failed", str(exc))
+            existing = connections.get(key)
+            if existing is not None:
+                try:
+                    existing.close()
+                except BaseException:
+                    pass
+            connections[key] = handle
+            return {
+                **metadata,
+                "status": "succeeded",
+                "node_id": node["node_id"],
+                "action": "connect",
+                "connection_id": connection_id,
+                "subprotocol": request.subprotocol,
+            }
+        handle = connections.get(key)
+        if not isinstance(handle, WebSocketClientHandle):
+            return _failed_result(
+                node,
+                "network.graphql_subscription_not_found",
+                "GraphQL subscription connection was not found",
+            )
+        try:
+            if action == "receive":
+                timeout_value = _resolve_value(node_config.get("timeout_seconds"), context)
+                timeout_seconds = float(timeout_value) if timeout_value is not None else None
+                frame = GraphQLSubscriptionProtocol.parse(
+                    handle.receive(timeout_seconds=timeout_seconds)
+                )
+                if frame.type in {"next", "data"}:
+                    payload = frame.payload if isinstance(frame.payload, dict) else {}
+                    result = GraphQLProtocolAdapter().parse_response(payload)
+                    output = {
+                        "status": "succeeded",
+                        "node_id": node["node_id"],
+                        "action": "receive",
+                        "connection_id": connection_id,
+                        "event_type": frame.type,
+                        "data": result.data,
+                        "errors": [dict(item) for item in result.errors],
+                        "extensions": dict(result.extensions),
+                    }
+                    context.variables["last_graphql_response"] = output
+                    return output
+                if frame.type == "error":
+                    errors = frame.payload if isinstance(frame.payload, list) else [frame.payload]
+                    return {
+                        "status": "succeeded",
+                        "node_id": node["node_id"],
+                        "action": "receive",
+                        "connection_id": connection_id,
+                        "event_type": frame.type,
+                        "errors": [item for item in errors if isinstance(item, dict)],
+                    }
+                if frame.type in {"complete", "stop"}:
+                    return {
+                        "status": "succeeded",
+                        "node_id": node["node_id"],
+                        "action": "receive",
+                        "connection_id": connection_id,
+                        "event_type": frame.type,
+                        "completed": True,
+                    }
+                return {
+                    "status": "succeeded",
+                    "node_id": node["node_id"],
+                    "action": "receive",
+                    "connection_id": connection_id,
+                    "event_type": frame.type,
+                    "payload": frame.payload,
+                }
+            if action == "close":
+                handle.close()
+                connections.pop(key, None)
+                return {
+                    "status": "succeeded",
+                    "node_id": node["node_id"],
+                    "action": "close",
+                    "connection_id": connection_id,
+                }
+            return _failed_result(node, "network.graphql_subscription_action_invalid", f"unsupported GraphQL subscription action: {action}")
+        except (GraphQLAdapterError, TimeoutError, RuntimeError, ValueError) as exc:
+            return _failed_result(node, "network.graphql_subscription_operation_failed", str(exc))
 
     def _execute_network_sse_connect(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from weconduct.network_runtime.graphql_adapter import GraphQLAdapterError, GraphQLProtocolAdapter
+from weconduct.network_runtime.graphql_adapter import (
+    GraphQLAdapterError,
+    GraphQLProtocolAdapter,
+    GraphQLSubscriptionProtocol,
+)
 
 
 def test_graphql_adapter_selects_named_operation_and_builds_http_operation() -> None:
@@ -45,3 +49,42 @@ def test_graphql_adapter_parses_data_errors_and_extensions() -> None:
     assert result.data == {"health": True}
     assert result.errors == ({"message": "partial"},)
     assert result.extensions == {"trace": "x"}
+
+
+def test_graphql_subscription_builds_transport_ws_frames() -> None:
+    adapter = GraphQLProtocolAdapter()
+
+    request = adapter.build_subscription(
+        endpoint="https://example.test/graphql",
+        query="subscription Watch { updates { id } }",
+        operation_name="Watch",
+        variables={"limit": 1},
+        session_id="session-1",
+    )
+
+    assert request.endpoint == "wss://example.test/graphql"
+    assert request.subprotocol == "graphql-transport-ws"
+    assert GraphQLSubscriptionProtocol.connection_init() == {
+        "type": "connection_init"
+    }
+    assert GraphQLSubscriptionProtocol.subscribe(
+        request_id="sub-1",
+        request=request,
+    )["type"] == "subscribe"
+
+
+def test_graphql_subscription_parses_next_error_and_complete_frames() -> None:
+    protocol = GraphQLSubscriptionProtocol()
+
+    next_frame = protocol.parse(
+        '{"id":"sub-1","type":"next","payload":{"data":{"updates":[]}}}'
+    )
+    error_frame = protocol.parse(
+        '{"id":"sub-1","type":"error","payload":[{"message":"bad"}]}'
+    )
+    complete_frame = protocol.parse('{"id":"sub-1","type":"complete"}')
+
+    assert next_frame.type == "next"
+    assert next_frame.payload == {"data": {"updates": []}}
+    assert error_frame.type == "error"
+    assert complete_frame.type == "complete"

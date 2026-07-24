@@ -54,3 +54,66 @@ def test_network_graphql_request_returns_data_errors_and_extensions() -> None:
     assert output["data"] == {"health": True}
     assert output["errors"] == [{"message": "partial"}]
     assert output["extensions"] == {"trace": "x"}
+
+
+def test_network_graphql_subscription_uses_websocket_transport(monkeypatch) -> None:
+    import weconduct.runtime.engine as engine_module
+
+    class FakeWebSocketClientHandle:
+        instances: list["FakeWebSocketClientHandle"] = []
+
+        def __init__(self, *, url, headers=None, timeout_seconds=30.0, subprotocols=None):
+            self.url = url
+            self.headers = headers or {}
+            self.timeout_seconds = timeout_seconds
+            self.subprotocols = subprotocols or []
+            self.sent: list[object] = []
+            self.closed = False
+            self.received = [
+                '{"id":"subscription-1","type":"next","payload":{"data":{"updates":[{"id":"1"}]}}}',
+            ]
+            self.__class__.instances.append(self)
+
+        def start(self, *, timeout_seconds=None):
+            return {"status": "connected", "url": self.url}
+
+        def send(self, value):
+            self.sent.append(value)
+
+        def receive(self, *, timeout_seconds=None):
+            return self.received.pop(0)
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(engine_module, "WebSocketClientHandle", FakeWebSocketClientHandle)
+    registry = RuntimeExecutorRegistry()
+    context = RuntimeContext()
+    node = {
+        "node_id": "subscription-node",
+        "node_kind": "network.graphql_request",
+        "node_config": {
+            "action": "connect",
+            "connection_id": "subscription-1",
+            "endpoint": "https://example.test/graphql",
+            "query": "subscription Watch { updates { id } }",
+            "operation_name": "Watch",
+        },
+    }
+
+    connected = registry.execute("network.graphql_request", node, context)
+    received = registry.execute(
+        "network.graphql_request",
+        {
+            **node,
+            "node_config": {
+                "action": "receive",
+                "connection_id": "subscription-1",
+            },
+        },
+        context,
+    )
+
+    assert connected["status"] == "succeeded"
+    assert received["data"] == {"updates": [{"id": "1"}]}
+    assert json.loads(FakeWebSocketClientHandle.instances[0].sent[0])["type"] == "connection_init"

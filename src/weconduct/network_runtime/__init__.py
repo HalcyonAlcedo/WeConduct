@@ -6,7 +6,14 @@ from .resources import ResponseBodyRef, ResponseBodyStore, ResponseBodyTooLargeE
 from .proxy import ProxyConfigurationError, ProxyResolver, ResolvedProxy
 from .tls import ResolvedTls, TlsConfigurationError, TlsResolver
 from .oauth import OAuthClientCredentialsRequest, OAuthConfigurationError, OAuthService, OAuthTokenState
-from .graphql_adapter import GraphQLAdapterError, GraphQLProtocolAdapter, GraphQLResult
+from .graphql_adapter import (
+    GraphQLAdapterError,
+    GraphQLProtocolAdapter,
+    GraphQLResult,
+    GraphQLSubscriptionFrame,
+    GraphQLSubscriptionProtocol,
+    GraphQLSubscriptionRequest,
+)
 from .long_connection import (
     SSEConnection,
     SSEConnectionClosed,
@@ -44,6 +51,9 @@ __all__ = [
     "GraphQLAdapterError",
     "GraphQLProtocolAdapter",
     "GraphQLResult",
+    "GraphQLSubscriptionFrame",
+    "GraphQLSubscriptionProtocol",
+    "GraphQLSubscriptionRequest",
     "SSEConnection",
     "SSEConnectionClosed",
     "SSEEvent",
