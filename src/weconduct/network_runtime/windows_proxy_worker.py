@@ -164,6 +164,10 @@ def _resolve_with_winhttp(
             raise ProxyConfigurationError("proxy resolution failed: WinHttpGetProxyForUrl")
         allocated.extend([info.lpszProxy, info.lpszProxyBypass])
         if not info.lpszProxy:
+            # WinHTTP reports PAC/WPAD's explicit DIRECT result as
+            # WINHTTP_ACCESS_TYPE_NO_PROXY (1) with a null proxy string.
+            if info.dwAccessType == 1 and normalized_mode in {"pac", "wpad"}:
+                return ResolvedProxy(mode="direct", source=normalized_mode)
             raise ProxyConfigurationError("proxy resolution failed: WinHTTP returned no proxy")
         return _parse_winhttp_proxy_list(info.lpszProxy, target_url, source=normalized_mode)
     finally:

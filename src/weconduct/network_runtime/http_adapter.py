@@ -30,6 +30,7 @@ class HttpxAdapter:
             transport=transport,
             trust_env=False,
             follow_redirects=False,
+            http2=True,
         )
         self._owns_client = client is None
         self._response_root_directory = Path(response_root_directory)
@@ -148,6 +149,17 @@ class HttpxAdapter:
             verify_argument = False
         else:
             verify_argument = ssl.create_default_context(cafile=resolved.verify)
+        if resolved.client_cert is not None:
+            if isinstance(verify_argument, ssl.SSLContext):
+                client_context = verify_argument
+            elif verify_argument is False:
+                client_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                client_context.check_hostname = False
+                client_context.verify_mode = ssl.CERT_NONE
+            else:
+                client_context = ssl.create_default_context()
+            client_context.load_cert_chain(*resolved.client_cert)
+            verify_argument = client_context
         proxy_config = snapshot.proxy if isinstance(snapshot.proxy, dict) else {"mode": "direct"}
         resolved_proxy = ProxyResolver().resolve(proxy_config, target_url)
         if (
@@ -169,10 +181,10 @@ class HttpxAdapter:
         client = httpx.AsyncClient(
             transport=self._transport,
             verify=verify_argument,
-            cert=resolved.client_cert,
             proxy=resolved_proxy.url,
             trust_env=False,
             follow_redirects=False,
+            http2=True,
         )
         self._tls_clients[key] = client
         return client
