@@ -2805,6 +2805,38 @@ class CompilationWorkbenchService:
             "graph_document": graph_model,
         }
 
+    def close_project(self, *, discard_changes: bool = False) -> dict:
+        self._refresh_state_from_store()
+        if not isinstance(discard_changes, bool):
+            raise ValueError("discard_changes must be a boolean")
+        with self._runtime_execution_lock:
+            active_runtime = any(
+                thread.is_alive() for thread in self._runtime_execution_threads.values()
+            )
+        with self._debug_execution_lock:
+            active_debug = any(
+                thread.is_alive() for thread in self._debug_execution_threads.values()
+            )
+        if active_runtime or active_debug:
+            raise ValueError("project.close_active_execution")
+        if self._get_project_runtime().get("is_dirty") and not discard_changes:
+            raise ValueError("project.close_unsaved_changes")
+        recent_projects = self._extract_recent_projects(self._state)
+
+        def mutation(state: dict | None) -> dict:
+            current_state = self._build_initial_workspace_state(
+                project_name="WeConduct Workspace",
+                mark_project_dirty=False,
+            )
+            current_state["recent_projects"] = recent_projects
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        return {
+            "status": "closed",
+            "project": self._build_project_metadata(),
+        }
+
     def convert_webcontrol_project(
         self,
         *,
@@ -19301,6 +19333,20 @@ class CompilationWorkbenchService:
         return self._build_runtime_stream_terminal_payload(
             session_id=session_id,
             session_document=session_document,
+        )
+
+    def get_runtime_stream_events_since(
+        self,
+        *,
+        session_id: str,
+        after_event_id: int | None = None,
+    ) -> dict:
+        # External operation adapters use this bounded replay surface instead
+        # of reaching into the broker's subscriber queues.
+        self.get_runtime_session(session_id=session_id)
+        return self._runtime_stream_broker.get_events_since(
+            session_id,
+            after_event_id=after_event_id,
         )
 
     def iter_runtime_stream_events(self, *, session_id: str):

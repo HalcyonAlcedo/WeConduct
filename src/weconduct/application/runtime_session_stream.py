@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections import deque
 from dataclasses import dataclass, field
 from queue import Queue, Empty
 from threading import Lock
@@ -20,10 +21,17 @@ class RuntimeSessionStreamSubscriber:
 
 
 class RuntimeSessionStreamBroker:
-    def __init__(self) -> None:
+    def __init__(self, *, history_limit: int = 256) -> None:
+        if not isinstance(history_limit, int) or isinstance(history_limit, bool) or history_limit <= 0:
+            raise ValueError("history_limit must be a positive integer")
         self._lock = Lock()
+        self._history_limit = history_limit
         self._subscribers_by_session_id: dict[str, dict[str, RuntimeSessionStreamSubscriber]] = defaultdict(dict)
         self._latest_snapshot_by_session_id: dict[str, dict[str, Any]] = {}
+        self._event_history_by_session_id: dict[str, deque[dict[str, Any]]] = defaultdict(
+            lambda: deque(maxlen=self._history_limit)
+        )
+        self._next_event_id_by_session_id: dict[str, int] = defaultdict(int)
 
     def publish_snapshot(self, session_id: str, snapshot: dict[str, Any]) -> None:
         snapshot_payload = redact_sensitive_payload(snapshot)
@@ -31,6 +39,7 @@ class RuntimeSessionStreamBroker:
             raise TypeError("runtime snapshot must be a mapping")
         with self._lock:
             self._latest_snapshot_by_session_id[session_id] = snapshot_payload
+            self._record_event_locked(session_id, "runtime.snapshot", snapshot_payload)
             subscribers = list(self._subscribers_by_session_id.get(session_id, {}).values())
             for subscriber in subscribers:
                 subscriber.queue.put(("runtime.snapshot", dict(snapshot_payload)))
@@ -74,11 +83,62 @@ class RuntimeSessionStreamBroker:
                 subscriber.queue.put(_STOP_EVENT)
             self._latest_snapshot_by_session_id.pop(session_id, None)
 
+    def get_events_since(
+        self,
+        session_id: str,
+        *,
+        after_event_id: int | None = None,
+    ) -> dict[str, Any]:
+        if after_event_id is not None and (
+            not isinstance(after_event_id, int)
+            or isinstance(after_event_id, bool)
+            or after_event_id < 0
+        ):
+            raise ValueError("execution.event_cursor_invalid")
+        with self._lock:
+            history = list(self._event_history_by_session_id.get(session_id, ()))
+        if not history:
+            return {
+                "oldest_event_id": None,
+                "latest_event_id": None,
+                "events": [],
+            }
+        oldest_event_id = int(history[0]["event_id"])
+        latest_event_id = int(history[-1]["event_id"])
+        cursor = after_event_id if after_event_id is not None else 0
+        if cursor < oldest_event_id - 1:
+            raise ValueError("execution.event_cursor_expired")
+        return {
+            "oldest_event_id": oldest_event_id,
+            "latest_event_id": latest_event_id,
+            "events": [
+                {
+                    "event_id": int(event["event_id"]),
+                    "event_name": event["event_name"],
+                    "payload": dict(event["payload"]),
+                }
+                for event in history
+                if int(event["event_id"]) > cursor
+            ],
+        }
+
     def _publish(self, session_id: str, event_name: str, payload: dict[str, Any]) -> None:
         with self._lock:
+            self._record_event_locked(session_id, event_name, payload)
             subscribers = list(self._subscribers_by_session_id.get(session_id, {}).values())
             for subscriber in subscribers:
                 subscriber.queue.put((event_name, payload))
+
+    def _record_event_locked(self, session_id: str, event_name: str, payload: dict[str, Any]) -> None:
+        next_event_id = self._next_event_id_by_session_id[session_id] + 1
+        self._next_event_id_by_session_id[session_id] = next_event_id
+        self._event_history_by_session_id[session_id].append(
+            {
+                "event_id": next_event_id,
+                "event_name": event_name,
+                "payload": dict(payload),
+            }
+        )
 
     def iter_events(self, queue: Queue) -> Iterator[tuple[str, dict[str, Any]]]:
         while True:

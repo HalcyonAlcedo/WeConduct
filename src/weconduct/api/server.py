@@ -9,11 +9,14 @@ import secrets
 from threading import Condition, RLock
 from typing import Callable, TypeVar
 from urllib.parse import parse_qs, unquote, urlparse
+import uuid
 
 from weconduct.application import (
     CompilationWorkbenchService,
     FileWorkspaceStateStore,
     GraphDocumentRevisionConflictError,
+    OperationRegistry,
+    OperationRegistryError,
     UpdateService,
 )
 from weconduct.application.configuration import (
@@ -508,6 +511,9 @@ class WeConductApiServer(ThreadingHTTPServer):
         self._debug_action_condition = Condition(RLock())
         self._active_debug_action_count = 0
         self._closing = False
+        self.external_api_enabled = False
+        self.external_api_token: str | None = None
+        self.external_api_instance_id = uuid.uuid4().hex
         super().__init__(*args, **kwargs)
 
     def execute_debug_action(
@@ -540,6 +546,263 @@ class WeConductApiServer(ThreadingHTTPServer):
 
 
 class WeConductApiHandler(BaseHTTPRequestHandler):
+    def _get_external_operation_registry(self, service: CompilationWorkbenchService | None = None) -> OperationRegistry:
+        resolved_service = service or self._get_service()
+        return OperationRegistry(
+            service=resolved_service,
+            host_metadata={"instance_id": self.server.external_api_instance_id},
+        )
+
+    def _require_external_api(self) -> bool:
+        if not getattr(self.server, "external_api_enabled", False):
+            self._write_json(
+                HTTPStatus.NOT_FOUND,
+                {
+                    "error_code": "external_api.disabled",
+                    "message": "external API is disabled",
+                },
+            )
+            return False
+        expected_token = getattr(self.server, "external_api_token", None)
+        authorization = self.headers.get("Authorization", "")
+        scheme, _, provided_token = authorization.partition(" ")
+        if (
+            not isinstance(expected_token, str)
+            or not expected_token
+            or scheme.lower() != "bearer"
+            or not provided_token
+            or not secrets.compare_digest(provided_token, expected_token)
+        ):
+            self._write_json(
+                HTTPStatus.UNAUTHORIZED,
+                {
+                    "error_code": "external_api.unauthorized",
+                    "message": "valid bearer token is required",
+                },
+            )
+            return False
+        return True
+
+    def _handle_external_api(self, *, method: str) -> bool:
+        request_path = urlparse(self.path).path
+        if not request_path.startswith("/api/ext/v1"):
+            return False
+        if not self._require_external_api():
+            return True
+        payload: dict[str, object] = {}
+        try:
+            service = self._get_service()
+            registry = self._get_external_operation_registry(service)
+            request_id = self.headers.get("X-Request-ID") or f"request-{uuid.uuid4().hex[:12]}"
+            operation_id, payload = self._resolve_external_operation(
+                method=method,
+                request_path=request_path,
+            )
+            if operation_id == "execution.events.subscribe":
+                self._write_external_execution_events(
+                    service=service,
+                    execution_id=payload["execution_id"],
+                    request_id=request_id,
+                )
+                return True
+            result = registry.execute(operation_id, payload)
+            self._write_json(
+                (
+                    HTTPStatus.ACCEPTED
+                    if operation_id in {"execution.start", "pending_input.submit"}
+                    else HTTPStatus.OK
+                ),
+                {
+                    "operation_id": operation_id,
+                    "contract_version": registry.describe(operation_id).contract_version,
+                    "request_id": request_id,
+                    "result": result,
+                },
+            )
+        except OperationRegistryError as exc:
+            status = {
+                "operation.not_found": HTTPStatus.NOT_FOUND,
+                "operation.input_invalid": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "operation.state_conflict": HTTPStatus.CONFLICT,
+                "operation.not_available": HTTPStatus.NOT_IMPLEMENTED,
+            }.get(exc.error_code, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._write_json(
+                status,
+                {
+                    "error_code": exc.error_code,
+                    "message": str(exc),
+                    "details": dict(exc.details),
+                    "request_id": self.headers.get("X-Request-ID"),
+                    "operation_id": exc.operation_id,
+                },
+            )
+        except ValueError as exc:
+            error_code = (
+                str(exc)
+                if str(exc).startswith("execution.")
+                else "operation.input_invalid"
+            )
+            status = (
+                HTTPStatus.CONFLICT
+                if str(exc) == "execution.event_cursor_expired"
+                else HTTPStatus.UNPROCESSABLE_ENTITY
+            )
+            details: dict[str, object] = {}
+            if str(exc) == "execution.event_cursor_expired":
+                execution_id = (
+                    payload.get("execution_id")
+                    if isinstance(payload, dict)
+                    else None
+                )
+                if isinstance(execution_id, str):
+                    try:
+                        replay = service.get_runtime_stream_events_since(
+                            session_id=execution_id,
+                            after_event_id=None,
+                        )
+                        details = {
+                            "oldest_event_id": replay.get("oldest_event_id"),
+                            "latest_event_id": replay.get("latest_event_id"),
+                        }
+                    except (ValueError, KeyError):
+                        details = {}
+            self._write_json(
+                status,
+                {
+                    "error_code": error_code,
+                    "message": str(exc),
+                    "details": details,
+                    "request_id": self.headers.get("X-Request-ID"),
+                },
+            )
+        return True
+
+    def _resolve_external_operation(self, *, method: str, request_path: str) -> tuple[str, dict[str, object]]:
+        if method == "GET":
+            static_routes = {
+                "/api/ext/v1/host": ("host.describe", {}),
+                "/api/ext/v1/host/capabilities": ("host.capabilities", {}),
+                "/api/ext/v1/project/current": ("project.current.get", {}),
+                "/api/ext/v1/graph": ("graph.get", {}),
+            }
+            if request_path in static_routes:
+                return static_routes[request_path]
+        if method == "POST":
+            operation_by_path = {
+                "/api/ext/v1/projects": "project.create",
+                "/api/ext/v1/project/open": "project.open",
+                "/api/ext/v1/project/save": "project.save",
+                "/api/ext/v1/project/close": "project.close",
+                "/api/ext/v1/graph/validate": "graph.validate",
+                "/api/ext/v1/graph/compile": "graph.compile",
+                "/api/ext/v1/graph/node-drafts": "graph.node_draft.build",
+                "/api/ext/v1/executions": "execution.start",
+            }
+            operation_id = operation_by_path.get(request_path)
+            if operation_id is not None:
+                return operation_id, self._read_optional_json_body_or_empty()
+        if method == "PUT" and request_path == "/api/ext/v1/graph":
+            return "graph.replace", self._read_optional_json_body_or_empty()
+        prefix = "/api/ext/v1/executions/"
+        if request_path.startswith(prefix):
+            remainder = request_path[len(prefix):]
+            parts = [item for item in remainder.split("/") if item]
+            if len(parts) == 1 and method == "GET":
+                return "execution.get", {"execution_id": parts[0]}
+            if len(parts) == 2 and parts[1] == "cancel" and method == "POST":
+                payload = self._read_optional_json_body_or_empty()
+                payload["execution_id"] = parts[0]
+                return "execution.cancel", payload
+            if len(parts) == 2 and parts[1] == "events" and method == "GET":
+                return "execution.events.subscribe", {"execution_id": parts[0]}
+            if len(parts) == 2 and parts[1] == "pending-input" and method == "GET":
+                return "pending_input.get", {"execution_id": parts[0]}
+            if len(parts) == 4 and parts[1] == "pending-input" and parts[3] == "submit" and method == "POST":
+                payload = self._read_optional_json_body_or_empty()
+                payload["execution_id"] = parts[0]
+                payload["request_id"] = parts[2]
+                return "pending_input.submit", payload
+        raise OperationRegistryError("operation.not_found", f"external route not found: {method} {request_path}")
+
+    def _read_optional_json_body_or_empty(self) -> dict:
+        payload = self._read_optional_json_request_body()
+        return payload if isinstance(payload, dict) else {}
+
+    def _write_external_execution_events(
+        self,
+        *,
+        service: CompilationWorkbenchService,
+        execution_id: str,
+        request_id: str,
+    ) -> None:
+        raw_cursor = self.headers.get("Last-Event-ID")
+        if raw_cursor is None or not raw_cursor.strip():
+            after_event_id = 0
+        else:
+            try:
+                after_event_id = int(raw_cursor.strip())
+            except ValueError as exc:
+                raise ValueError("execution.event_cursor_invalid") from exc
+            if after_event_id < 0:
+                raise ValueError("execution.event_cursor_invalid")
+        replay = service.get_runtime_stream_events_since(
+            session_id=execution_id,
+            after_event_id=after_event_id,
+        )
+        self.send_response(HTTPStatus.OK.value)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        last_event_id = after_event_id
+        for event in replay["events"]:
+            self._write_external_sse_event(
+                event_id=str(event["event_id"]),
+                event_name=event["event_name"],
+                payload={"request_id": request_id, "result": event["payload"]},
+            )
+            last_event_id = int(event["event_id"])
+            if event["event_name"] in {"runtime.completed", "runtime.failed", "runtime.aborted"}:
+                break
+        else:
+            snapshot = service.get_runtime_stream_snapshot(session_id=execution_id)
+            if snapshot.get("status") in {"completed", "failed", "aborted"}:
+                latest = service.get_runtime_stream_events_since(
+                    session_id=execution_id,
+                    after_event_id=last_event_id,
+                )
+                for event in latest["events"]:
+                    self._write_external_sse_event(
+                        event_id=str(event["event_id"]),
+                        event_name=event["event_name"],
+                        payload={"request_id": request_id, "result": event["payload"]},
+                    )
+                return
+            for event_name, _payload in service.iter_runtime_stream_events(session_id=execution_id):
+                replayed = service.get_runtime_stream_events_since(
+                    session_id=execution_id,
+                    after_event_id=last_event_id,
+                )
+                for event in replayed["events"]:
+                    self._write_external_sse_event(
+                        event_id=str(event["event_id"]),
+                        event_name=event["event_name"],
+                        payload={"request_id": request_id, "result": event["payload"]},
+                    )
+                    last_event_id = int(event["event_id"])
+                    if event["event_name"] in {"runtime.completed", "runtime.failed", "runtime.aborted"}:
+                        return
+
+    def _write_external_sse_event(self, *, event_id: str, event_name: str, payload: dict) -> None:
+        body = (
+            f"id: {event_id}\n"
+            f"event: {event_name}\n"
+            f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        ).encode("utf-8")
+        self.wfile.write(body)
+        self.wfile.flush()
+
     def _verify_api_token(self) -> bool:
         expected_token = getattr(self.server, "api_token", None)
         if expected_token is None:
@@ -560,6 +823,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self) -> None:  # noqa: N802
+        if self._handle_external_api(method="GET"):
+            return
         parsed_url = urlparse(self.path)
         query_params = parse_qs(parsed_url.query)
         request_path = parsed_url.path
@@ -1011,6 +1276,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         self._write_json(HTTPStatus.OK, result)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._handle_external_api(method="POST"):
+            return
         if self.path == "/api/host/file-dialog":
             if not self._require_api_token():
                 return
@@ -2264,6 +2531,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         self._write_not_found_error()
 
     def do_PUT(self) -> None:  # noqa: N802
+        if self._handle_external_api(method="PUT"):
+            return
         if not self._require_api_token():
             return
         try:
@@ -3087,6 +3356,8 @@ def build_api_server(
     preferences_path: str | Path | None = None,
     ui_dist_path: str | Path | None = None,
     api_token: str | None = None,
+    external_api_enabled: bool = False,
+    external_api_token: str | None = None,
 ) -> WeConductApiServer:
     server = WeConductApiServer((host, port), WeConductApiHandler)
     server.workspace_state_path = (
@@ -3106,4 +3377,6 @@ def build_api_server(
     server.configuration_migration_result = migration_result["program"]
     server.graph_configuration_migration_result = migration_result["graph"]
     server.api_token = api_token
+    server.external_api_enabled = bool(external_api_enabled)
+    server.external_api_token = external_api_token
     return server

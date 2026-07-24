@@ -3,7 +3,11 @@ import json
 from pathlib import Path
 import sys
 
-from weconduct.application import CompilationWorkbenchService
+from weconduct.application import (
+    CompilationWorkbenchService,
+    OperationRegistry,
+    OperationRegistryError,
+)
 from weconduct.application.preview_smoke import run_preview_smoke
 from weconduct.api import build_api_server
 from weconduct.desktop_shell import (
@@ -34,6 +38,11 @@ def main() -> int:
     serve_api_parser.add_argument("--preferences-path", default=None)
     serve_api_parser.add_argument("--ui-dist-path", default=None)
     serve_api_parser.add_argument("--api-token", default=None)
+    operation_parser = subparsers.add_parser("operation")
+    operation_parser.add_argument("operation_id")
+    operation_payload_group = operation_parser.add_mutually_exclusive_group()
+    operation_payload_group.add_argument("--payload", default=None)
+    operation_payload_group.add_argument("--payload-file", default=None)
     preview_smoke_parser = subparsers.add_parser("preview-smoke")
     preview_smoke_parser.add_argument("--host", default="127.0.0.1")
     preview_smoke_parser.add_argument("--port", type=int, default=0)
@@ -269,6 +278,33 @@ def main() -> int:
             server.server_close()
         return 0
 
+    if args.command == "operation":
+        try:
+            payload = _load_operation_payload(
+                payload_text=args.payload,
+                payload_file=args.payload_file,
+            )
+            service = CompilationWorkbenchService()
+            registry = OperationRegistry(service=service)
+            descriptor = registry.describe(args.operation_id)
+            result = registry.execute(args.operation_id, payload)
+            _print_json(
+                {
+                    "operation_id": descriptor.operation_id,
+                    "contract_version": descriptor.contract_version,
+                    "result": result,
+                }
+            )
+            return 0
+        except OperationRegistryError as exc:
+            _print_operation_error(exc)
+            return 1
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            _print_operation_error(
+                OperationRegistryError("operation.input_invalid", str(exc))
+            )
+            return 1
+
     if args.command == "preview-smoke":
         workspace_state_path = (
             Path(args.workspace_state_path).resolve()
@@ -384,6 +420,32 @@ def _print_json(payload, *, output_path: str | None = None) -> None:
         print(text)
     except UnicodeEncodeError:
         print(json.dumps(payload, ensure_ascii=True, indent=2, default=_json_default))
+
+
+def _load_operation_payload(*, payload_text: str | None, payload_file: str | None) -> dict[str, object]:
+    if payload_text is None and payload_file is None:
+        return {}
+    raw_payload = (
+        payload_text
+        if payload_text is not None
+        else Path(payload_file).resolve().read_text(encoding="utf-8")
+    )
+    parsed = json.loads(raw_payload)
+    if not isinstance(parsed, dict):
+        raise TypeError("operation payload must be a JSON object")
+    return parsed
+
+
+def _print_operation_error(error: OperationRegistryError) -> None:
+    payload = {
+        "error_code": error.error_code,
+        "message": str(error),
+    }
+    if error.operation_id is not None:
+        payload["operation_id"] = error.operation_id
+    if error.details:
+        payload["details"] = error.details
+    print(_serialize_json(payload), file=sys.stderr)
 
 
 def _build_runtime_regression_summary(runtime_plan: dict) -> dict:

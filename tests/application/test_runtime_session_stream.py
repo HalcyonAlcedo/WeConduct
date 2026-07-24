@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from queue import Queue
 from threading import Event, Thread
+import pytest
 
 from weconduct.application.runtime_session_stream import (
     RuntimeSessionStreamBroker,
@@ -129,3 +130,27 @@ def test_runtime_stream_redacts_sensitive_refs_at_event_boundary() -> None:
         "runtime.node",
         {"credential": "<sensitive-ref>"},
     )
+
+
+def test_runtime_stream_assigns_monotonic_cursors_and_supports_replay() -> None:
+    broker = RuntimeSessionStreamBroker(history_limit=3)
+
+    broker.publish_snapshot("session-replay", {"status": "running"})
+    broker.publish_event("session-replay", "runtime.node", {"node_id": "n1"})
+    broker.publish_event("session-replay", "runtime.completed", {"status": "completed"})
+
+    history = broker.get_events_since("session-replay", after_event_id=1)
+
+    assert history["oldest_event_id"] == 1
+    assert history["latest_event_id"] == 3
+    assert [event["event_id"] for event in history["events"]] == [2, 3]
+    assert history["events"][0]["event_name"] == "runtime.node"
+
+
+def test_runtime_stream_reports_expired_cursor_when_history_window_is_lost() -> None:
+    broker = RuntimeSessionStreamBroker(history_limit=2)
+    for index in range(3):
+        broker.publish_event("session-expired", "runtime.progress", {"index": index})
+
+    with pytest.raises(ValueError, match="event_cursor_expired"):
+        broker.get_events_since("session-expired", after_event_id=0)
