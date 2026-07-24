@@ -7,6 +7,13 @@ from .proxy import ProxyConfigurationError, ProxyResolver, ResolvedProxy
 from .tls import ResolvedTls, TlsConfigurationError, TlsResolver
 from .oauth import OAuthClientCredentialsRequest, OAuthConfigurationError, OAuthService, OAuthTokenState
 from .graphql_adapter import GraphQLAdapterError, GraphQLProtocolAdapter, GraphQLResult
+from .long_connection import (
+    SSEConnection,
+    SSEConnectionClosed,
+    SSEEvent,
+    WebSocketConnection,
+    WebSocketConnectionError,
+)
 from .service import NetworkRuntimeService
 
 __all__ = [
@@ -34,5 +41,10 @@ __all__ = [
     "GraphQLAdapterError",
     "GraphQLProtocolAdapter",
     "GraphQLResult",
+    "SSEConnection",
+    "SSEConnectionClosed",
+    "SSEEvent",
+    "WebSocketConnection",
+    "WebSocketConnectionError",
     "UnknownNetworkContextError",
 ]
