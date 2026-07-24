@@ -382,3 +382,22 @@ def test_network_http_request_is_registered_as_a_builtin_component() -> None:
     assert network_components["network.sse_connect"]["resource_id"] == "builtin:network.sse_connect"
     assert network_components["network.websocket_connect"]["resource_id"] == "builtin:network.websocket_connect"
     assert network_components["network.batch_request"]["resource_id"] == "builtin:network.batch_request"
+
+
+def test_legacy_http_request_is_not_exposed_or_executed() -> None:
+    builtin_keys = {
+        item["resource_key"]
+        for item in build_builtin_resource_registry()
+        if isinstance(item.get("resource_key"), str)
+    }
+    registry = RuntimeExecutorRegistry()
+
+    result = registry.execute(
+        "http.request",
+        {"node_id": "legacy-http", "node_kind": "http.request", "node_config": {}},
+        RuntimeContext(),
+    )
+
+    assert "http.request" not in builtin_keys
+    assert result["status"] == "failed"
+    assert result["error_code"] == "graph.upgrade_required"

@@ -207,7 +207,6 @@ class RuntimeExecutorRegistry:
         self._network_runtime_service = network_runtime_service
         self._executors = {
             "flow.start": self._execute_flow_start,
-            "http.request": self._execute_http_request,
             "network.http_request": self._execute_network_http_request,
             "network.download": self._execute_network_download,
             "network.upload": self._execute_network_upload,
@@ -332,6 +331,12 @@ class RuntimeExecutorRegistry:
         }
 
     def execute(self, node_kind: str | None, node: dict, context: RuntimeContext) -> dict:
+        if node_kind == "http.request":
+            return _failed_result(
+                node,
+                "graph.upgrade_required",
+                "http.request must be upgraded to network.http_request before execution",
+            )
         if not isinstance(node_kind, str) or node_kind not in self._executors:
             return {
                 "status": "succeeded",
@@ -362,120 +367,6 @@ class RuntimeExecutorRegistry:
             ],
             "browser_config": browser_config,
         }
-
-    def _execute_http_request(self, node: dict, context: RuntimeContext) -> dict:
-        _check_cancellation(context)
-        node_config = _node_config(node)
-        method = str(_resolve_value(node_config.get("method", "GET"), context)).upper()
-        url = _resolve_value(node_config.get("url"), context)
-        if not isinstance(url, str) or not url.strip():
-            return _failed_result(node, "http.url_required", "http.request requires node_config.url")
-        try:
-            normalized_url = _validate_http_request_url(
-                url.strip(),
-                allow_local_network_access=self._is_local_network_access_allowed(),
-                allow_remote_network_access=self._is_remote_network_access_allowed(),
-            )
-        except ValueError as exc:
-            message = str(exc)
-            if "local network access is disabled" in message:
-                return _failed_result(node, "http.local_network_disabled", message)
-            if "remote network access is disabled" in message:
-                return _failed_result(node, "http.remote_network_disabled", message)
-            return _failed_result(node, "http.url_blocked", message)
-
-        headers = _resolve_value(node_config.get("headers", {}), context)
-        if not isinstance(headers, dict):
-            return _failed_result(node, "http.headers_invalid", "node_config.headers must be an object")
-
-        timeout_value = _resolve_value(node_config.get("timeout", 30), context)
-        try:
-            timeout = float(timeout_value)
-        except (TypeError, ValueError):
-            return _failed_result(node, "http.timeout_invalid", "node_config.timeout must be numeric")
-
-        body_value = _resolve_value(node_config.get("body"), context)
-        request_body = None
-        request_headers = {str(key): str(value) for key, value in headers.items()}
-        if body_value is not None:
-            if isinstance(body_value, (dict, list)):
-                request_body = json.dumps(body_value).encode("utf-8")
-                request_headers.setdefault("Content-Type", "application/json")
-            elif isinstance(body_value, bytes):
-                request_body = body_value
-            else:
-                request_body = str(body_value).encode("utf-8")
-
-        try:
-            request = urllib.request.Request(
-                normalized_url,
-                data=request_body,
-                headers=request_headers,
-                method=method,
-            )
-            response = urllib.request.urlopen(request, timeout=timeout)
-            close_response = _make_cleanup_action(response.close)
-            unregister_cleanup = context.cancellation_context.register_cleanup(close_response)
-            try:
-                raw_body = _read_http_response_body(
-                    response=response,
-                    context=context,
-                    timeout_seconds=timeout,
-                )
-                response_headers = {
-                    key.lower(): value for key, value in response.headers.items()
-                }
-                response_body = _decode_http_body(raw_body, response_headers)
-                result = {
-                    "status": "succeeded",
-                    "node_id": node["node_id"],
-                    "method": method,
-                    "url": normalized_url,
-                    "status_code": response.status,
-                    "headers": response_headers,
-                    "body": response_body,
-                    "body_text": raw_body.decode("utf-8", errors="replace"),
-                }
-            finally:
-                close_response()
-                unregister_cleanup()
-        except urllib.error.HTTPError as exc:
-            close_response = _make_cleanup_action(exc.close)
-            unregister_cleanup = context.cancellation_context.register_cleanup(close_response)
-            try:
-                raw_body = _read_http_response_body(
-                    response=exc,
-                    context=context,
-                    timeout_seconds=timeout,
-                )
-            finally:
-                close_response()
-                unregister_cleanup()
-            result = {
-                "status": "failed",
-                "node_id": node["node_id"],
-                "error_code": "http.status_error",
-                "message": f"http request failed with status {exc.code}",
-                "method": method,
-                "url": normalized_url,
-                "status_code": exc.code,
-                "headers": {key.lower(): value for key, value in exc.headers.items()},
-                "body": _decode_http_body(raw_body, dict(exc.headers.items())),
-                "body_text": raw_body.decode("utf-8", errors="replace"),
-            }
-        except RuntimeCancellationError:
-            raise
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-            result = {
-                "status": "failed",
-                "node_id": node["node_id"],
-                "error_code": "http.request_failed",
-                "message": str(exc),
-                "method": method,
-                "url": normalized_url,
-            }
-        context.variables["last_http_response"] = result
-        return result
 
     def _execute_network_http_request(
         self,

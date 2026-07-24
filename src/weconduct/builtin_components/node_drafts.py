@@ -833,43 +833,6 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             "index": -1,
         },
     },
-    "http.request": {
-        "lowered_kind": "execution",
-        "expansion_role": "action:request",
-        "ports": [
-            {
-                "port_id": "in",
-                "direction": "input",
-                "relation_layer": "control",
-                "semantic_slot": "in.control",
-            },
-            {
-                "port_id": "in:url",
-                "direction": "input",
-                "relation_layer": "data",
-                "semantic_slot": "in.url",
-            },
-            {
-                "port_id": "out",
-                "direction": "output",
-                "relation_layer": "control",
-                "semantic_slot": "out.control",
-            },
-            {
-                "port_id": "out:body",
-                "direction": "output",
-                "relation_layer": "data",
-                "semantic_slot": "out.body",
-            },
-        ],
-        "node_config": {
-            "method": "GET",
-            "url": "",
-            "headers": {},
-            "timeout": 30,
-            "body": None,
-        },
-    },
     "data.set_variable": {
         "lowered_kind": "execution",
         "expansion_role": "action:set_variable",
