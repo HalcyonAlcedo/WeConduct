@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
+import sys
+from threading import Event, RLock, Thread
 from typing import Mapping
+
+import httpx
+from httpx_sse import aconnect_sse
+import websockets
 
 
 class SSEConnectionClosed(RuntimeError):
@@ -138,3 +145,320 @@ class WebSocketConnection:
     def _ensure_open(self) -> None:
         if self._closed:
             raise WebSocketConnectionError("network.websocket_closed")
+
+
+def _consume_async_task_result(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except BaseException:
+        return
+
+
+class _AsyncHandleLoop:
+    """Run one long-lived client handle on a dedicated asyncio loop thread."""
+
+    def __init__(self, *, name: str) -> None:
+        # Windows ProactorEventLoop 无法稳定承载“主线程运行本地 fixture、后台线程
+        # 建立 websockets 客户端”的组合；长连接线程固定使用 selector loop，避免
+        # 后台连接超时并留下 Proactor server transport 断言。
+        self._loop = (
+            asyncio.SelectorEventLoop()
+            if sys.platform == "win32"
+            else asyncio.new_event_loop()
+        )
+        self._ready = Event()
+        self._closed = False
+        self._lock = RLock()
+        self._thread = Thread(target=self._run, daemon=True, name=name)
+        self._thread.start()
+        if not self._ready.wait(timeout=1):
+            raise RuntimeError("network.long_connection_loop_start_timeout")
+
+    def start_task(self, coroutine) -> object:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("network.long_connection_loop_closed")
+            return asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+
+    def submit(self, coroutine, *, timeout_seconds: float | None = None):
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("network.long_connection_loop_closed")
+            future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        try:
+            return future.result(timeout=timeout_seconds)
+        except FutureTimeoutError as exc:
+            future.cancel()
+            raise TimeoutError("network.long_connection_operation_timeout") from exc
+
+    def close(self, task_future: object | None = None) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        if task_future is not None and hasattr(task_future, "cancel"):
+            task_future.cancel()
+            try:
+                task_future.result(timeout=1)  # type: ignore[union-attr]
+            except BaseException:
+                pass
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=1)
+
+    def _run(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._ready.set()
+        self._loop.run_forever()
+        pending = asyncio.all_tasks(self._loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        self._loop.close()
+
+
+class SSEClientHandle:
+    """Synchronous facade for a pull-based SSE stream."""
+
+    def __init__(
+        self,
+        *,
+        url: str,
+        headers: Mapping[str, str] | None = None,
+        params: Mapping[str, str] | None = None,
+        timeout_seconds: float = 30.0,
+        max_queue_size: int = 100,
+    ) -> None:
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("network.sse_url_required")
+        if timeout_seconds <= 0:
+            raise ValueError("network.sse_timeout_invalid")
+        self.url = url.strip()
+        self.headers = {str(key): str(value) for key, value in (headers or {}).items()}
+        self.params = {str(key): str(value) for key, value in (params or {}).items()}
+        self.timeout_seconds = float(timeout_seconds)
+        self.connection = SSEConnection(max_queue_size=max_queue_size)
+        self._loop = _AsyncHandleLoop(name="weconduct-sse-client")
+        self._task_future = None
+        self._ready = Event()
+        self._lock = RLock()
+        self._closed = False
+        self._error: BaseException | None = None
+        self._status_code: int | None = None
+        self._response_headers: dict[str, str] = {}
+
+    @property
+    def last_event_id(self) -> str | None:
+        return self.connection.last_event_id
+
+    def start(self, *, timeout_seconds: float | None = None) -> dict[str, object]:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("network.sse_closed")
+            if self._task_future is None:
+                self._task_future = self._loop.start_task(self._run())
+        wait_timeout = timeout_seconds if timeout_seconds is not None else self.timeout_seconds
+        if not self._ready.wait(timeout=wait_timeout):
+            self.close()
+            raise TimeoutError("network.sse_connect_timeout")
+        if self._error is not None:
+            self.close()
+            raise RuntimeError(str(self._error)) from self._error
+        return {
+            "status_code": self._status_code,
+            "headers": dict(self._response_headers),
+            "url": self.url,
+        }
+
+    def receive(self, *, timeout_seconds: float | None = None) -> dict[str, object]:
+        self._ensure_started()
+        if self._closed:
+            raise RuntimeError("network.sse_closed")
+        try:
+            event = self._loop.submit(
+                self.connection.receive(timeout_seconds=timeout_seconds),
+                timeout_seconds=(timeout_seconds + 1 if timeout_seconds is not None else None),
+            )
+        except FutureTimeoutError as exc:
+            raise TimeoutError("network.sse_receive_timeout") from exc
+        return {
+            "event_id": event.event_id,
+            "event_type": event.event_type,
+            "data": event.data,
+            "retry_ms": event.retry_ms,
+        }
+
+    def reconnect_headers(self) -> dict[str, str]:
+        return self.connection.build_reconnect_headers()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        self._loop.close(self._task_future)
+
+    def _ensure_started(self) -> None:
+        if self._closed:
+            raise RuntimeError("network.sse_closed")
+        if self._task_future is None:
+            raise RuntimeError("network.sse_not_connected")
+
+    async def _run(self) -> None:
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout_seconds,
+                trust_env=False,
+                follow_redirects=False,
+            ) as client:
+                async with aconnect_sse(
+                    client,
+                    "GET",
+                    self.url,
+                    headers=self.headers,
+                    params=self.params,
+                ) as source:
+                    self._status_code = source.response.status_code
+                    self._response_headers = {
+                        str(key).lower(): str(value)
+                        for key, value in source.response.headers.items()
+                    }
+                    self._ready.set()
+                    async for event in source.aiter_sse():
+                        await self.connection.feed(event)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            self._error = exc
+            self._ready.set()
+        finally:
+            await self.connection.close()
+
+
+class WebSocketClientHandle:
+    """Synchronous facade for a pull-based WebSocket connection."""
+
+    def __init__(
+        self,
+        *,
+        url: str,
+        headers: Mapping[str, str] | None = None,
+        timeout_seconds: float = 30.0,
+        subprotocols: list[str] | None = None,
+    ) -> None:
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("network.websocket_url_required")
+        if timeout_seconds <= 0:
+            raise ValueError("network.websocket_timeout_invalid")
+        self.url = url.strip()
+        self.headers = {str(key): str(value) for key, value in (headers or {}).items()}
+        self.timeout_seconds = float(timeout_seconds)
+        self.subprotocols = list(subprotocols or [])
+        self.connection: WebSocketConnection | None = None
+        self._loop = _AsyncHandleLoop(name="weconduct-websocket-client")
+        self._task_future = None
+        self._ready = Event()
+        self._closed_event: asyncio.Event | None = None
+        self._lock = RLock()
+        self._closed = False
+        self._error: BaseException | None = None
+
+    def start(self, *, timeout_seconds: float | None = None) -> dict[str, object]:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("network.websocket_closed")
+            if self._task_future is None:
+                self._task_future = self._loop.start_task(self._run())
+        wait_timeout = timeout_seconds if timeout_seconds is not None else self.timeout_seconds
+        if not self._ready.wait(timeout=wait_timeout):
+            self.close()
+            raise TimeoutError("network.websocket_connect_timeout")
+        if self._error is not None:
+            self.close()
+            raise RuntimeError(str(self._error)) from self._error
+        return {"status": "connected", "url": self.url}
+
+    def send(self, value: object) -> None:
+        connection = self._ensure_connection()
+        self._loop.submit(connection.send(value), timeout_seconds=self.timeout_seconds)
+
+    def receive(self, *, timeout_seconds: float | None = None) -> object:
+        connection = self._ensure_connection()
+        try:
+            return self._loop.submit(
+                self._receive_async(connection, timeout_seconds),
+                timeout_seconds=timeout_seconds,
+            )
+        except TimeoutError as exc:
+            if str(exc) == "network.long_connection_operation_timeout":
+                raise TimeoutError("network.websocket_receive_timeout") from exc
+            raise
+
+    def ping(self, value: bytes | None = None) -> None:
+        connection = self._ensure_connection()
+        self._loop.submit(connection.ping(value), timeout_seconds=self.timeout_seconds)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        if self.connection is not None:
+            try:
+                self._loop.submit(self._close_async(), timeout_seconds=1)
+            except BaseException:
+                pass
+        self._loop.close(self._task_future)
+
+    def _ensure_connection(self) -> WebSocketConnection:
+        if self._closed:
+            raise RuntimeError("network.websocket_closed")
+        if self.connection is None:
+            raise RuntimeError("network.websocket_not_connected")
+        return self.connection
+
+    async def _run(self) -> None:
+        try:
+            socket = await websockets.connect(
+                self.url,
+                additional_headers=self.headers or None,
+                subprotocols=self.subprotocols or None,
+                proxy=None,
+                open_timeout=self.timeout_seconds,
+            )
+            self.connection = WebSocketConnection(socket)
+            self._closed_event = asyncio.Event()
+            self._ready.set()
+            await self._closed_event.wait()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            self._error = exc
+            self._ready.set()
+
+    async def _close_async(self) -> None:
+        if self._closed_event is not None:
+            self._closed_event.set()
+        if self.connection is not None:
+            await self.connection.close()
+
+    @staticmethod
+    async def _receive_async(
+        connection: WebSocketConnection,
+        timeout_seconds: float | None,
+    ) -> object:
+        if timeout_seconds is None:
+            return await connection.receive()
+        task = asyncio.create_task(connection.receive())
+        done, pending = await asyncio.wait({task}, timeout=timeout_seconds)
+        if not done:
+            # websockets.recv() may spend a long time unwinding cancellation on
+            # Windows. Leave this single pending receive attached to the loop;
+            # close() will terminate the connection and drain it. The public
+            # operation still returns at the configured deadline.
+            for pending_task in pending:
+                pending_task.add_done_callback(_consume_async_task_result)
+            raise TimeoutError("network.websocket_receive_timeout")
+        return await task

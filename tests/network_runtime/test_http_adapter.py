@@ -340,6 +340,9 @@ def test_network_http_request_is_registered_as_a_builtin_component() -> None:
             "network.download",
             "network.response_assert",
             "network.graphql_request",
+            "network.sse_connect",
+            "network.websocket_connect",
+            "network.batch_request",
         }
     }
 
@@ -349,6 +352,12 @@ def test_network_http_request_is_registered_as_a_builtin_component() -> None:
         "network.download",
         "network.response_assert",
         "network.graphql_request",
+        "network.sse_connect",
+        "network.websocket_connect",
+        "network.batch_request",
     }
     assert network_components["network.http_request"]["resource_id"] == "builtin:network.http_request"
     assert network_components["network.graphql_request"]["resource_id"] == "builtin:network.graphql_request"
+    assert network_components["network.sse_connect"]["resource_id"] == "builtin:network.sse_connect"
+    assert network_components["network.websocket_connect"]["resource_id"] == "builtin:network.websocket_connect"
+    assert network_components["network.batch_request"]["resource_id"] == "builtin:network.batch_request"

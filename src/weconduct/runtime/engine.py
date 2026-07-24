@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import asyncio
 from dataclasses import dataclass, field, replace
 import csv
 from datetime import datetime, timezone
@@ -32,6 +33,9 @@ from weconduct.network_runtime import (
     NetworkRuntimeService,
     ResponseBodyRef,
     ResponseBodyTooLargeError,
+    SSEClientHandle,
+    WebSocketClientHandle,
+    execute_batch,
 )
 from weconduct.runtime.execution_context import ExecutionSessionContext, ExecutionTokenContext
 from openpyxl import Workbook, load_workbook
@@ -204,6 +208,9 @@ class RuntimeExecutorRegistry:
             "network.download": self._execute_network_download,
             "network.upload": self._execute_network_upload,
             "network.graphql_request": self._execute_network_graphql_request,
+            "network.sse_connect": self._execute_network_sse_connect,
+            "network.websocket_connect": self._execute_network_websocket_connect,
+            "network.batch_request": self._execute_network_batch_request,
             "network.response_assert": self._execute_network_response_assert,
             "browser.navigate": self._execute_browser_navigate,
             "browser.fill": self._execute_browser_fill,
@@ -905,6 +912,272 @@ class RuntimeExecutorRegistry:
         )
         context.variables["last_graphql_response"] = output
         return output
+
+    def _execute_network_sse_connect(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        action = str(_resolve_value(node_config.get("action", "connect"), context)).strip().lower()
+        connection_id = _resolve_value(node_config.get("connection_id", node["node_id"]), context)
+        if not isinstance(connection_id, str) or not connection_id.strip():
+            return _failed_result(node, "network.sse_connection_id_required", "SSE connection_id is required")
+        connection_id = connection_id.strip()
+        connections = self._network_connection_store(context)
+        if action == "connect":
+            url = _resolve_value(node_config.get("url", node_config.get("endpoint")), context)
+            headers = _resolve_value(node_config.get("headers", {}), context)
+            params = _resolve_value(node_config.get("query", node_config.get("params", {})), context)
+            timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout", 30)), context)
+            max_queue_size = _resolve_value(node_config.get("max_queue_size", 100), context)
+            if not isinstance(url, str) or not url.strip():
+                return _failed_result(node, "network.sse_url_required", "SSE url is required")
+            if not isinstance(headers, dict) or not isinstance(params, dict):
+                return _failed_result(node, "network.sse_headers_invalid", "SSE headers and params must be objects")
+            try:
+                timeout_seconds = float(timeout_value)
+                queue_size = int(max_queue_size)
+                handle = SSEClientHandle(
+                    url=url,
+                    headers=headers,
+                    params=params,
+                    timeout_seconds=timeout_seconds,
+                    max_queue_size=queue_size,
+                )
+                metadata = handle.start(timeout_seconds=timeout_seconds)
+            except (TypeError, ValueError, TimeoutError, RuntimeError) as exc:
+                try:
+                    handle.close()  # type: ignore[has-type]
+                except UnboundLocalError:
+                    pass
+                return _failed_result(node, "network.sse_connect_failed", str(exc))
+            existing = connections.get(("sse", connection_id))
+            if existing is not None:
+                existing.close()
+            connections[("sse", connection_id)] = handle
+            return {
+                "status": "succeeded",
+                "node_id": node["node_id"],
+                "action": "connect",
+                "connection_id": connection_id,
+                **metadata,
+            }
+        handle = connections.get(("sse", connection_id))
+        if not isinstance(handle, SSEClientHandle):
+            return _failed_result(node, "network.sse_connection_not_found", "SSE connection was not found")
+        try:
+            if action == "receive":
+                timeout_value = _resolve_value(node_config.get("timeout_seconds"), context)
+                timeout_seconds = float(timeout_value) if timeout_value is not None else None
+                event = handle.receive(timeout_seconds=timeout_seconds)
+                return {
+                    "status": "succeeded",
+                    "node_id": node["node_id"],
+                    "action": "receive",
+                    "connection_id": connection_id,
+                    **event,
+                }
+            if action == "close":
+                handle.close()
+                connections.pop(("sse", connection_id), None)
+                return {
+                    "status": "succeeded",
+                    "node_id": node["node_id"],
+                    "action": "close",
+                    "connection_id": connection_id,
+                }
+            return _failed_result(node, "network.sse_action_invalid", f"unsupported SSE action: {action}")
+        except (TimeoutError, RuntimeError, ValueError) as exc:
+            return _failed_result(node, "network.sse_operation_failed", str(exc))
+
+    def _execute_network_websocket_connect(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        action = str(_resolve_value(node_config.get("action", "connect"), context)).strip().lower()
+        connection_id = _resolve_value(node_config.get("connection_id", node["node_id"]), context)
+        if not isinstance(connection_id, str) or not connection_id.strip():
+            return _failed_result(node, "network.websocket_connection_id_required", "WebSocket connection_id is required")
+        connection_id = connection_id.strip()
+        connections = self._network_connection_store(context)
+        if action == "connect":
+            url = _resolve_value(node_config.get("url", node_config.get("endpoint")), context)
+            headers = _resolve_value(node_config.get("headers", {}), context)
+            timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout", 30)), context)
+            subprotocols = _resolve_value(node_config.get("subprotocols", []), context)
+            if not isinstance(url, str) or not url.strip():
+                return _failed_result(node, "network.websocket_url_required", "WebSocket url is required")
+            if not isinstance(headers, dict) or not isinstance(subprotocols, list):
+                return _failed_result(node, "network.websocket_input_invalid", "WebSocket headers and subprotocols are invalid")
+            try:
+                timeout_seconds = float(timeout_value)
+                handle = WebSocketClientHandle(
+                    url=url,
+                    headers=headers,
+                    timeout_seconds=timeout_seconds,
+                    subprotocols=[str(item) for item in subprotocols],
+                )
+                metadata = handle.start(timeout_seconds=timeout_seconds)
+            except (TypeError, ValueError, TimeoutError, RuntimeError) as exc:
+                try:
+                    handle.close()  # type: ignore[has-type]
+                except UnboundLocalError:
+                    pass
+                return _failed_result(node, "network.websocket_connect_failed", str(exc))
+            existing = connections.get(("websocket", connection_id))
+            if existing is not None:
+                existing.close()
+            connections[("websocket", connection_id)] = handle
+            return {
+                "status": "succeeded",
+                "node_id": node["node_id"],
+                "action": "connect",
+                "connection_id": connection_id,
+                "connection_status": metadata.get("status", "connected"),
+                "url": metadata.get("url", url),
+            }
+        handle = connections.get(("websocket", connection_id))
+        if not isinstance(handle, WebSocketClientHandle):
+            return _failed_result(node, "network.websocket_connection_not_found", "WebSocket connection was not found")
+        try:
+            if action == "send":
+                handle.send(_resolve_value(node_config.get("value", node_config.get("message")), context))
+                return {
+                    "status": "succeeded",
+                    "node_id": node["node_id"],
+                    "action": "send",
+                    "connection_id": connection_id,
+                }
+            if action == "receive":
+                timeout_value = _resolve_value(node_config.get("timeout_seconds"), context)
+                timeout_seconds = float(timeout_value) if timeout_value is not None else None
+                message = handle.receive(timeout_seconds=timeout_seconds)
+                return {
+                    "status": "succeeded",
+                    "node_id": node["node_id"],
+                    "action": "receive",
+                    "connection_id": connection_id,
+                    "message": message,
+                }
+            if action == "ping":
+                value = _resolve_value(node_config.get("value"), context)
+                if isinstance(value, str):
+                    value = value.encode("utf-8")
+                if value is not None and not isinstance(value, bytes):
+                    return _failed_result(node, "network.websocket_ping_invalid", "WebSocket ping value must be bytes or text")
+                handle.ping(value)
+                return {
+                    "status": "succeeded",
+                    "node_id": node["node_id"],
+                    "action": "ping",
+                    "connection_id": connection_id,
+                }
+            if action == "close":
+                handle.close()
+                connections.pop(("websocket", connection_id), None)
+                return {
+                    "status": "succeeded",
+                    "node_id": node["node_id"],
+                    "action": "close",
+                    "connection_id": connection_id,
+                }
+            return _failed_result(node, "network.websocket_action_invalid", f"unsupported WebSocket action: {action}")
+        except (TimeoutError, RuntimeError, ValueError) as exc:
+            return _failed_result(node, "network.websocket_operation_failed", str(exc))
+
+    def _execute_network_batch_request(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        requests = _resolve_value(node_config.get("requests", node_config.get("items")), context)
+        max_concurrency = _resolve_value(node_config.get("max_concurrency", 1), context)
+        if not isinstance(requests, list):
+            return _failed_result(node, "network.batch_requests_invalid", "network.batch_request requires a request list")
+        if not isinstance(max_concurrency, int) or isinstance(max_concurrency, bool) or max_concurrency < 1:
+            return _failed_result(node, "network.batch_concurrency_invalid", "max_concurrency must be a positive integer")
+        session_context = context.execution_session_context
+        if session_context is None:
+            return _failed_result(node, "network.batch_session_missing", "network execution session is unavailable")
+        parent_token = context.execution_token_context
+
+        def execute_one(index: int, request_config: object) -> dict:
+            if not isinstance(request_config, dict):
+                return {
+                    "status": "failed",
+                    "error_code": "network.batch_item_invalid",
+                    "message": "batch request item must be an object",
+                }
+            item_config = dict(request_config)
+            if "context_strategy" not in item_config:
+                item_config["context_strategy"] = "fork" if parent_token.network_context_id else "new"
+            item_context = RuntimeContext(
+                variables=dict(context.variables),
+                flow_runtime=context.flow_runtime,
+                project_directory=context.project_directory,
+                workspace_root=context.workspace_root,
+                embedded_resource_paths=dict(context.embedded_resource_paths),
+                allowed_path_roots=context.allowed_path_roots,
+                runtime_settings=dict(context.runtime_settings),
+                execution_session_context=ExecutionSessionContext(
+                    session_id=session_context.session_id,
+                    token_context=parent_token,
+                    cancellation_context=context.cancellation_context,
+                    network_context_registry=session_context.network_context_registry,
+                ),
+                owns_cancellation_context=False,
+            )
+            try:
+                return self._execute_network_http_request(
+                    {
+                        "node_id": f"{node['node_id']}:{index}",
+                        "node_kind": "network.http_request",
+                        "node_config": item_config,
+                    },
+                    item_context,
+                )
+            finally:
+                item_context.close()
+
+        async def run_batch() -> list[object]:
+            async def run_item(index_and_config: tuple[int, object]) -> dict:
+                index, request_config = index_and_config
+                return await asyncio.to_thread(execute_one, index, request_config)
+
+            return await execute_batch(
+                list(enumerate(requests)),
+                run_item,
+                max_concurrency=max_concurrency,
+            )
+
+        try:
+            results = asyncio.run(run_batch())
+        except (RuntimeError, ValueError) as exc:
+            return _failed_result(node, "network.batch_failed", str(exc))
+        failed_count = sum(
+            1 for item in results if isinstance(item, dict) and item.get("status") == "failed"
+        )
+        output = {
+            "status": "failed" if failed_count else "succeeded",
+            "node_id": node["node_id"],
+            "results": results,
+            "succeeded_count": len(results) - failed_count,
+            "failed_count": failed_count,
+        }
+        context.variables["last_network_batch"] = output
+        return output
+
+    @staticmethod
+    def _network_connection_store(context: RuntimeContext) -> dict[tuple[str, str], object]:
+        store = context.flow_runtime.setdefault("network_connections", {})
+        if not isinstance(store, dict):
+            store = {}
+            context.flow_runtime["network_connections"] = store
+        if not context.flow_runtime.get("network_connections_cleanup_registered"):
+            context.flow_runtime["network_connections_cleanup_registered"] = True
+
+            def close_connections() -> None:
+                for handle in tuple(store.values()):
+                    try:
+                        handle.close()
+                    except BaseException:
+                        continue
+                store.clear()
+
+            context.register_cleanup("network-connections", close_connections)
+        return store
 
     def _resolve_network_runtime_service(self, context: RuntimeContext) -> NetworkRuntimeService:
         if self._network_runtime_service is not None:
