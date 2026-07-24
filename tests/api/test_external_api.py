@@ -211,6 +211,113 @@ def test_external_api_pending_input_submit_returns_202_and_hides_values(tmp_path
         server.server_close()
 
 
+def test_external_api_pending_input_submit_after_timeout_returns_410(tmp_path: Path) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    waiter = None
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        _request_json(f"{base_url}/api/ext/v1/host", token="external-secret")
+        service = server.workbench_service
+        request = PendingInputRequest(
+            request_id="request-timeout-api",
+            execution_id="execution-timeout-api",
+            node_id="node-timeout-api",
+            fields=(PendingInputField(field_id="name", label="Name"),),
+            timeout_seconds=0.02,
+        )
+        service._pending_input_service.create(request)  # type: ignore[attr-defined]
+        waiter = Thread(
+            target=service._pending_input_service.wait,  # type: ignore[attr-defined]
+            args=(request.request_id, CancellationContext()),
+            daemon=True,
+        )
+        waiter.start()
+        deadline = monotonic() + 1
+        while monotonic() < deadline:
+            snapshot = service.get_pending_input_snapshot(execution_id=request.execution_id)
+            if snapshot is not None and snapshot.status == "timed_out":
+                break
+            sleep(0.01)
+
+        status, payload = _request_json(
+            f"{base_url}/api/ext/v1/executions/{request.execution_id}/pending-input/{request.request_id}/submit",
+            method="POST",
+            payload={"values": {"name": "alice"}},
+            token="external-secret",
+        )
+
+        assert status == 410
+        assert payload["error_code"] == "operation.state_conflict"
+        assert payload["details"]["state"] == "timed_out"
+    finally:
+        if waiter is not None:
+            waiter.join(timeout=1)
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_pending_input_get_exposes_field_types_without_defaults(tmp_path: Path) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        _request_json(f"{base_url}/api/ext/v1/host", token="external-secret")
+        service = server.workbench_service
+        request = PendingInputRequest(
+            request_id="request-fields-api",
+            execution_id="execution-fields-api",
+            node_id="node-fields-api",
+            fields=(
+                PendingInputField(
+                    field_id="count",
+                    label="Count",
+                    value_type="number",
+                    default_value=3,
+                ),
+                PendingInputField(
+                    field_id="secret",
+                    label="Secret",
+                    value_type="password",
+                    sensitive=True,
+                ),
+            ),
+        )
+        service._pending_input_service.create(request)  # type: ignore[attr-defined]
+
+        status, payload = _request_json(
+            f"{base_url}/api/ext/v1/executions/{request.execution_id}/pending-input",
+            token="external-secret",
+        )
+
+        assert status == 200
+        assert payload["result"]["status"] == "created"
+        assert payload["result"]["fields"] == [
+            {
+                "field_id": "count",
+                "label": "Count",
+                "required": True,
+                "sensitive": False,
+                "type": "number",
+            },
+            {
+                "field_id": "secret",
+                "label": "Secret",
+                "required": True,
+                "sensitive": True,
+                "type": "password",
+            },
+        ]
+        assert "default_value" not in json.dumps(payload)
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
 def test_external_api_sse_replays_from_last_event_id(tmp_path: Path) -> None:
     server = _build_server(tmp_path, enabled=True, token="external-secret")
     thread = Thread(target=server.serve_forever, daemon=True)

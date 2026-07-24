@@ -711,6 +711,11 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 "operation.state_conflict": HTTPStatus.CONFLICT,
                 "operation.not_available": HTTPStatus.NOT_IMPLEMENTED,
             }.get(exc.error_code, HTTPStatus.INTERNAL_SERVER_ERROR)
+            if (
+                exc.error_code == "operation.state_conflict"
+                and exc.details.get("state") == "timed_out"
+            ):
+                status = HTTPStatus.GONE
             response_payload = {
                 "error_code": exc.error_code,
                 "message": str(exc),

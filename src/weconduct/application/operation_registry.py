@@ -310,7 +310,7 @@ def _normalize_dispatch_value_error(
         else:
             error_code = "operation.execution_failed"
     details: dict[str, object] = {}
-    for name in ("expected_revision", "current_revision", "recovery_action"):
+    for name in ("expected_revision", "current_revision", "recovery_action", "state"):
         value = getattr(error, name, None)
         if value is not None:
             details[name] = value

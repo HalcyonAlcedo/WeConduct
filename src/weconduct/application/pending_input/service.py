@@ -15,6 +15,16 @@ from .models import (
 )
 
 
+class PendingInputStateError(ValueError):
+    """State conflict carrying the terminal state for API status mapping."""
+
+    error_code = "operation.state_conflict"
+
+    def __init__(self, message: str, *, state: PendingInputStatus) -> None:
+        super().__init__(message)
+        self.state = state.value
+
+
 @dataclass
 class _PendingInputRecord:
     request: PendingInputRequest
@@ -99,6 +109,11 @@ class PendingInputService:
         with self._condition:
             record = self._require_record(request_id)
             if record.status != PendingInputStatus.WAITING:
+                if record.status == PendingInputStatus.TIMED_OUT:
+                    raise PendingInputStateError(
+                        "pending input request timed out",
+                        state=record.status,
+                    )
                 raise ValueError("pending input request is not waiting")
             normalized_values = self._validate_submission(record.request, values)
             record.values = normalized_values
