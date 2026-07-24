@@ -3,6 +3,7 @@ from .context_registry import NetworkContextRegistry, NetworkContextStrategy, Un
 from .http_adapter import HttpxAdapter
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
 from .resources import ResponseBodyRef, ResponseBodyStore, ResponseBodyTooLargeError
+from .proxy import ProxyConfigurationError, ProxyResolver, ResolvedProxy
 from .service import NetworkRuntimeService
 
 __all__ = [
@@ -17,5 +18,8 @@ __all__ = [
     "ResponseBodyRef",
     "ResponseBodyStore",
     "ResponseBodyTooLargeError",
+    "ProxyConfigurationError",
+    "ProxyResolver",
+    "ResolvedProxy",
     "UnknownNetworkContextError",
 ]
