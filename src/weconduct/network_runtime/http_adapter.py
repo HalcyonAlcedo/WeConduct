@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from http.cookies import CookieError, SimpleCookie
 import hashlib
 import hmac
 from pathlib import Path
 import ssl
 from time import perf_counter
+from typing import Mapping
 from urllib.parse import urljoin
 
 import httpx
@@ -54,7 +56,10 @@ class HttpxAdapter:
     ) -> NetworkResult:
         started_at = perf_counter()
         try:
-            headers = {**snapshot.headers, **operation.headers}
+            headers = _apply_static_auth(
+                {**snapshot.headers, **operation.headers},
+                snapshot.auth,
+            )
             query = {
                 **dict(httpx.URL(operation.url).params),
                 **snapshot.query,
@@ -225,6 +230,31 @@ def _parse_set_cookie_headers(headers: httpx.Headers) -> dict[str, str | None]:
             max_age = morsel["max-age"].strip().lower()
             changes[name] = None if max_age == "0" else morsel.value
     return changes
+
+
+def _apply_static_auth(headers: Mapping[str, str], auth: object) -> dict[str, str]:
+    effective = {str(name): str(value) for name, value in headers.items()}
+    if any(name.lower() == "authorization" for name in effective):
+        return effective
+    if not isinstance(auth, Mapping):
+        return effective
+    auth_type = auth.get("type")
+    if not isinstance(auth_type, str):
+        return effective
+    normalized_type = auth_type.strip().lower()
+    if normalized_type == "bearer":
+        token = auth.get("token")
+        if not isinstance(token, str) or not token:
+            raise ValueError("network.auth_invalid")
+        effective["Authorization"] = f"Bearer {token}"
+    elif normalized_type == "basic":
+        username = auth.get("username")
+        password = auth.get("password")
+        if not isinstance(username, str) or not isinstance(password, str):
+            raise ValueError("network.auth_invalid")
+        encoded = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        effective["Authorization"] = f"Basic {encoded}"
+    return effective
 
 
 def _verify_certificate_pins(response: httpx.Response, pins: tuple[str, ...]) -> None:

@@ -398,6 +398,10 @@ class RuntimeExecutorRegistry:
         body_value = _resolve_value(node_config.get("body"), context)
         request_headers = {str(key): str(value) for key, value in headers.items()}
         request_query = {str(key): str(value) for key, value in query.items()}
+        connection_overrides: dict[str, object] = {}
+        for name in ("auth", "tls", "proxy"):
+            if name in node_config:
+                connection_overrides[name] = _resolve_value(node_config[name], context)
         if isinstance(body_value, (dict, list)):
             try:
                 request_content = json.dumps(body_value).encode("utf-8")
@@ -422,6 +426,7 @@ class RuntimeExecutorRegistry:
             "headers": request_headers,
             "query": request_query,
             "timeout_seconds": timeout_seconds,
+            **connection_overrides,
         }
         try:
             token_context = context.execution_token_context
@@ -449,10 +454,11 @@ class RuntimeExecutorRegistry:
             context_snapshot = context_registry.snapshot(session_id, token_context)
         except ValueError as exc:
             return _failed_result(node, "network.context_invalid", str(exc))
-        request_snapshot = replace(
-            context_snapshot,
-            headers={**context_snapshot.headers, **request_headers},
-        )
+        request_snapshot_values: dict[str, object] = {
+            "headers": {**context_snapshot.headers, **request_headers},
+            **connection_overrides,
+        }
+        request_snapshot = replace(context_snapshot, **request_snapshot_values)
         operation = NetworkOperation(
             operation_id=node["node_id"],
             session_id=session_id,

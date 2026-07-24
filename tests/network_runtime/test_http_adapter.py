@@ -109,6 +109,70 @@ def test_httpx_adapter_merges_context_and_node_query_and_cookie_values(tmp_path)
     assert observed["cookie"] == "session=context-cookie"
 
 
+def test_httpx_adapter_applies_static_bearer_auth_from_network_context(tmp_path) -> None:
+    observed: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed["authorization"] = request.headers.get("authorization", "")
+        return httpx.Response(200, request=request)
+
+    adapter = HttpxAdapter(
+        transport=httpx.MockTransport(handler),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+    try:
+        result = adapter.execute(
+            NetworkOperation(
+                operation_id="request-auth",
+                session_id="session-auth",
+                method="GET",
+                url="https://example.test/auth",
+            ),
+            NetworkContextSnapshot(
+                context_id="context-auth",
+                auth={"type": "bearer", "token": "context-token"},
+            ),
+        )
+    finally:
+        adapter.close()
+
+    assert result.status == "succeeded"
+    assert observed["authorization"] == "Bearer context-token"
+
+
+def test_httpx_adapter_applies_static_basic_auth_from_network_context(tmp_path) -> None:
+    observed: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed["authorization"] = request.headers.get("authorization", "")
+        return httpx.Response(200, request=request)
+
+    adapter = HttpxAdapter(
+        transport=httpx.MockTransport(handler),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+    try:
+        result = adapter.execute(
+            NetworkOperation(
+                operation_id="request-auth-basic",
+                session_id="session-auth-basic",
+                method="GET",
+                url="https://example.test/auth",
+            ),
+            NetworkContextSnapshot(
+                context_id="context-auth-basic",
+                auth={"type": "basic", "username": "alice", "password": "secret"},
+            ),
+        )
+    finally:
+        adapter.close()
+
+    assert result.status == "succeeded"
+    assert observed["authorization"] == "Basic YWxpY2U6c2VjcmV0"
+
+
 def test_httpx_adapter_isolates_non_default_tls_clients(tmp_path) -> None:
     adapter = HttpxAdapter(
         transport=httpx.MockTransport(
@@ -346,6 +410,52 @@ def test_network_http_request_writes_set_cookie_back_to_current_context() -> Non
 
     assert service.snapshots[0].cookies == {}
     assert service.snapshots[1].cookies == {"sid": "response-cookie"}
+
+
+def test_network_http_request_forwards_node_auth_tls_and_proxy_to_service_snapshot() -> None:
+    class StubNetworkRuntimeService:
+        def __init__(self) -> None:
+            self.snapshot: NetworkContextSnapshot | None = None
+
+        def submit(
+            self,
+            operation: NetworkOperation,
+            snapshot: NetworkContextSnapshot,
+        ) -> Future[NetworkResult]:
+            self.snapshot = snapshot
+            future: Future[NetworkResult] = Future()
+            future.set_result(
+                NetworkResult(
+                    status="succeeded",
+                    operation_id=operation.operation_id,
+                    session_id=operation.session_id,
+                    status_code=200,
+                )
+            )
+            return future
+
+    service = StubNetworkRuntimeService()
+    output = RuntimeExecutorRegistry(network_runtime_service=service).execute(
+        "network.http_request",
+        {
+            "node_id": "network-configured-request",
+            "node_kind": "network.http_request",
+            "node_config": {
+                "context_strategy": "new",
+                "url": "https://example.test/resource",
+                "auth": {"type": "bearer", "token": "runtime-token"},
+                "tls": {"verify": "insecure"},
+                "proxy": {"mode": "manual", "url": "http://proxy.example.test:8080"},
+            },
+        },
+        RuntimeContext(),
+    )
+
+    assert output["status"] == "succeeded"
+    assert service.snapshot is not None
+    assert service.snapshot.auth == {"type": "bearer", "token": "runtime-token"}
+    assert service.snapshot.tls == {"verify": "insecure"}
+    assert service.snapshot.proxy == {"mode": "manual", "url": "http://proxy.example.test:8080"}
 
 
 def test_network_http_request_is_registered_as_a_builtin_component() -> None:
