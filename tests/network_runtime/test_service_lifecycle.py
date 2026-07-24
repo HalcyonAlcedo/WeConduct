@@ -49,6 +49,31 @@ def _local_http_server():
         server.server_close()
 
 
+@contextmanager
+def _local_sse_server():
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(b"id: service-event\\ndata: payload\\n\\n")
+            self.wfile.flush()
+            sleep(1)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/events"
+    finally:
+        server.shutdown()
+        thread.join(timeout=1)
+        server.server_close()
+
+
 def test_network_runtime_service_executes_on_its_owned_loop_and_closes_cleanly(tmp_path) -> None:
     service = NetworkRuntimeService(
         transport=httpx.MockTransport(
@@ -158,3 +183,23 @@ def test_network_runtime_service_real_local_http_semantics(tmp_path) -> None:
     assert results["/redirect"].final_url == f"{base_url}/ok"
     assert results["/slow"].status == "failed"
     assert results["/slow"].transport_error is not None
+
+
+def test_network_runtime_service_cancels_service_owned_sse_connections(tmp_path) -> None:
+    with _local_sse_server() as url:
+        service = NetworkRuntimeService(
+            response_root_directory=tmp_path,
+            access_policy=NetworkAccessPolicy(allow_loopback=True),
+        )
+        try:
+            handle, metadata = service.connect_sse(
+                session_id="session-sse",
+                snapshot=NetworkContextSnapshot(context_id="context-sse"),
+                url=url,
+                timeout_seconds=1,
+            )
+            assert metadata["status_code"] == 200
+            service.cancel_session("session-sse")
+            assert handle._closed is True  # type: ignore[attr-defined]
+        finally:
+            service.close()

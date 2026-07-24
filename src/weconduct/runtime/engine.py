@@ -29,11 +29,11 @@ from weconduct.network_runtime import (
     GraphQLAdapterError,
     GraphQLProtocolAdapter,
     GraphQLSubscriptionProtocol,
+    NetworkAccessPolicy,
     NetworkContextRegistry,
     NetworkContextSnapshot,
     NetworkOperation,
     NetworkRuntimeService,
-    ProxyResolver,
     ResponseBodyRef,
     ResponseBodyTooLargeError,
     SSEClientHandle,
@@ -586,6 +586,56 @@ class RuntimeExecutorRegistry:
         )
         return registry
 
+    def _resolve_network_connection_snapshot(
+        self,
+        context: RuntimeContext,
+        node_config: dict,
+        *,
+        headers: dict[str, str],
+        query: dict[str, str],
+        timeout_seconds: float,
+        extra_overrides: dict[str, object] | None = None,
+    ) -> NetworkContextSnapshot:
+        session_id = context.execution_session_context.session_id
+        registry = self._resolve_network_context_registry(context)
+        raw_strategy = _resolve_value(node_config.get("context_strategy", "inherit"), context)
+        if not isinstance(raw_strategy, str):
+            raise ValueError("network context strategy must be a string")
+        strategy = raw_strategy.strip().lower()
+        overrides: dict[str, object] = {"headers": headers, "query": query}
+        if "timeout" in node_config or "timeout_seconds" in node_config:
+            overrides["timeout_seconds"] = timeout_seconds
+        for name, value in (extra_overrides or {}).items():
+            if value is not None:
+                overrides[name] = value
+        token_context = context.execution_token_context
+        if token_context.network_context_id is None and strategy == "inherit":
+            token_context = registry.create(session_id, **overrides)
+        else:
+            switch_context_id = _resolve_value(
+                node_config.get("switch_context_id", node_config.get("context_id")),
+                context,
+            )
+            token_context = registry.apply_strategy(
+                session_id,
+                token_context,
+                strategy=strategy,
+                overrides=overrides if strategy in {"new", "anonymous", "fork"} else None,
+                switch_context_id=switch_context_id if isinstance(switch_context_id, str) else None,
+            )
+        context.execution_token_context = token_context
+        snapshot = registry.snapshot(session_id, token_context)
+        effective_values: dict[str, object] = {
+            "headers": {**snapshot.headers, **headers},
+            "query": {**snapshot.query, **query},
+        }
+        if "timeout_seconds" in overrides:
+            effective_values["timeout_seconds"] = timeout_seconds
+        for name, value in (extra_overrides or {}).items():
+            if value is not None:
+                effective_values[name] = value
+        return replace(snapshot, **effective_values)
+
     def _execute_network_response_assert(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
         response = _resolve_value(node_config.get("response"), context)
@@ -839,7 +889,7 @@ class RuntimeExecutorRegistry:
             operation_name = _resolve_value(node_config.get("operation_name"), context)
             variables = _resolve_value(node_config.get("variables", {}), context)
             headers = _resolve_value(node_config.get("headers", {}), context)
-            proxy_config = _resolve_value(node_config.get("proxy", {"mode": "direct"}), context)
+            proxy_config = _resolve_value(node_config["proxy"], context) if "proxy" in node_config else None
             subprotocol = _resolve_value(
                 node_config.get("subprotocol", "graphql-transport-ws"),
                 context,
@@ -855,7 +905,7 @@ class RuntimeExecutorRegistry:
             if (
                 not isinstance(variables, dict)
                 or not isinstance(headers, dict)
-                or not isinstance(proxy_config, dict)
+                or (proxy_config is not None and not isinstance(proxy_config, dict))
             ):
                 return _failed_result(node, "network.graphql_input_invalid", "GraphQL variables, headers and proxy must be objects")
             try:
@@ -869,15 +919,27 @@ class RuntimeExecutorRegistry:
                     headers=headers,
                     subprotocol=subprotocol if isinstance(subprotocol, str) else "graphql-transport-ws",
                 )
-                resolved_proxy = ProxyResolver().resolve(proxy_config, endpoint)
-                handle = WebSocketClientHandle(
+                snapshot = self._resolve_network_connection_snapshot(
+                    context,
+                    node_config,
+                    headers={str(key): str(value) for key, value in headers.items()},
+                    query={},
+                    timeout_seconds=timeout_seconds,
+                    extra_overrides={
+                        "proxy": proxy_config,
+                        "auth": _resolve_value(node_config["auth"], context) if "auth" in node_config else None,
+                        "tls": _resolve_value(node_config["tls"], context) if "tls" in node_config else None,
+                    },
+                )
+                service = self._resolve_network_runtime_service(context)
+                handle, metadata = service.connect_websocket(
+                    session_id=context.execution_session_context.session_id,
+                    snapshot=snapshot,
                     url=request.endpoint,
                     headers=request.headers,
-                    proxy=resolved_proxy.url,
                     timeout_seconds=timeout_seconds,
                     subprotocols=[request.subprotocol],
                 )
-                metadata = handle.start(timeout_seconds=timeout_seconds)
                 handle.send(json.dumps(GraphQLSubscriptionProtocol.connection_init(), ensure_ascii=False))
                 handle.send(
                     json.dumps(
@@ -990,26 +1052,38 @@ class RuntimeExecutorRegistry:
             url = _resolve_value(node_config.get("url", node_config.get("endpoint")), context)
             headers = _resolve_value(node_config.get("headers", {}), context)
             params = _resolve_value(node_config.get("query", node_config.get("params", {})), context)
-            proxy_config = _resolve_value(node_config.get("proxy", {"mode": "direct"}), context)
+            proxy_config = _resolve_value(node_config["proxy"], context) if "proxy" in node_config else None
             timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout", 30)), context)
             max_queue_size = _resolve_value(node_config.get("max_queue_size", 100), context)
             if not isinstance(url, str) or not url.strip():
                 return _failed_result(node, "network.sse_url_required", "SSE url is required")
-            if not isinstance(headers, dict) or not isinstance(params, dict) or not isinstance(proxy_config, dict):
+            if not isinstance(headers, dict) or not isinstance(params, dict) or (proxy_config is not None and not isinstance(proxy_config, dict)):
                 return _failed_result(node, "network.sse_headers_invalid", "SSE headers, params and proxy must be objects")
             try:
                 timeout_seconds = float(timeout_value)
                 queue_size = int(max_queue_size)
-                resolved_proxy = ProxyResolver().resolve(proxy_config, url)
-                handle = SSEClientHandle(
+                snapshot = self._resolve_network_connection_snapshot(
+                    context,
+                    node_config,
+                    headers={str(key): str(value) for key, value in headers.items()},
+                    query={str(key): str(value) for key, value in params.items()},
+                    timeout_seconds=timeout_seconds,
+                    extra_overrides={
+                        "proxy": proxy_config,
+                        "auth": _resolve_value(node_config["auth"], context) if "auth" in node_config else None,
+                        "tls": _resolve_value(node_config["tls"], context) if "tls" in node_config else None,
+                    },
+                )
+                service = self._resolve_network_runtime_service(context)
+                handle, metadata = service.connect_sse(
+                    session_id=context.execution_session_context.session_id,
+                    snapshot=snapshot,
                     url=url,
-                    headers=headers,
-                    params=params,
-                    proxy=resolved_proxy.url,
+                    headers={str(key): str(value) for key, value in headers.items()},
+                    params={str(key): str(value) for key, value in params.items()},
                     timeout_seconds=timeout_seconds,
                     max_queue_size=queue_size,
                 )
-                metadata = handle.start(timeout_seconds=timeout_seconds)
             except (TypeError, ValueError, TimeoutError, RuntimeError) as exc:
                 try:
                     handle.close()  # type: ignore[has-type]
@@ -1066,24 +1140,36 @@ class RuntimeExecutorRegistry:
         if action == "connect":
             url = _resolve_value(node_config.get("url", node_config.get("endpoint")), context)
             headers = _resolve_value(node_config.get("headers", {}), context)
-            proxy_config = _resolve_value(node_config.get("proxy", {"mode": "direct"}), context)
+            proxy_config = _resolve_value(node_config["proxy"], context) if "proxy" in node_config else None
             timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout", 30)), context)
             subprotocols = _resolve_value(node_config.get("subprotocols", []), context)
             if not isinstance(url, str) or not url.strip():
                 return _failed_result(node, "network.websocket_url_required", "WebSocket url is required")
-            if not isinstance(headers, dict) or not isinstance(subprotocols, list) or not isinstance(proxy_config, dict):
+            if not isinstance(headers, dict) or not isinstance(subprotocols, list) or (proxy_config is not None and not isinstance(proxy_config, dict)):
                 return _failed_result(node, "network.websocket_input_invalid", "WebSocket headers, subprotocols and proxy are invalid")
             try:
                 timeout_seconds = float(timeout_value)
-                resolved_proxy = ProxyResolver().resolve(proxy_config, url)
-                handle = WebSocketClientHandle(
+                snapshot = self._resolve_network_connection_snapshot(
+                    context,
+                    node_config,
+                    headers={str(key): str(value) for key, value in headers.items()},
+                    query={},
+                    timeout_seconds=timeout_seconds,
+                    extra_overrides={
+                        "proxy": proxy_config,
+                        "auth": _resolve_value(node_config["auth"], context) if "auth" in node_config else None,
+                        "tls": _resolve_value(node_config["tls"], context) if "tls" in node_config else None,
+                    },
+                )
+                service = self._resolve_network_runtime_service(context)
+                handle, metadata = service.connect_websocket(
+                    session_id=context.execution_session_context.session_id,
+                    snapshot=snapshot,
                     url=url,
-                    headers=headers,
-                    proxy=resolved_proxy.url,
+                    headers={str(key): str(value) for key, value in headers.items()},
                     timeout_seconds=timeout_seconds,
                     subprotocols=[str(item) for item in subprotocols],
                 )
-                metadata = handle.start(timeout_seconds=timeout_seconds)
             except (TypeError, ValueError, TimeoutError, RuntimeError) as exc:
                 try:
                     handle.close()  # type: ignore[has-type]
@@ -1256,7 +1342,12 @@ class RuntimeExecutorRegistry:
         service = context.flow_runtime.get("network_runtime_service")
         if isinstance(service, NetworkRuntimeService):
             return service
-        service = NetworkRuntimeService(response_root_directory=Path(tempfile.gettempdir()))
+        service = NetworkRuntimeService(
+            response_root_directory=Path(tempfile.gettempdir()),
+            access_policy=NetworkAccessPolicy(
+                allow_loopback=self._is_local_network_access_allowed(),
+            ),
+        )
         context.flow_runtime["network_runtime_service"] = service
         context.register_cleanup("network-runtime-service", service.close)
         return service

@@ -11,6 +11,20 @@ import websockets
 from weconduct.runtime.engine import RuntimeContext, RuntimeExecutorRegistry
 
 
+class _StubSseHandle:
+    def close(self) -> None:
+        return
+
+
+class _StubNetworkRuntimeService:
+    def __init__(self) -> None:
+        self.snapshots = []
+
+    def connect_sse(self, **kwargs):
+        self.snapshots.append(kwargs["snapshot"])
+        return _StubSseHandle(), {"status_code": 200, "headers": {}, "url": kwargs["url"]}
+
+
 @contextmanager
 def _sse_server():
     class Handler(BaseHTTPRequestHandler):
@@ -66,7 +80,7 @@ class _WebSocketServer:
 def test_network_sse_connect_node_supports_connect_receive_and_close() -> None:
     with _sse_server() as url:
         context = RuntimeContext()
-        registry = RuntimeExecutorRegistry()
+        registry = RuntimeExecutorRegistry(runtime_settings={"allow_local_network_access": True})
         try:
             connected = registry.execute(
                 "network.sse_connect",
@@ -111,10 +125,27 @@ def test_network_sse_connect_node_supports_connect_receive_and_close() -> None:
             context.close()
 
 
+def test_network_sse_connect_node_uses_network_runtime_service_snapshot() -> None:
+    service = _StubNetworkRuntimeService()
+    output = RuntimeExecutorRegistry(network_runtime_service=service).execute(
+        "network.sse_connect",
+        {
+            "node_id": "sse-service-connect",
+            "node_kind": "network.sse_connect",
+            "node_config": {"url": "https://example.test/events", "connection_id": "stream"},
+        },
+        RuntimeContext(),
+    )
+
+    assert output["status"] == "succeeded"
+    assert len(service.snapshots) == 1
+    assert service.snapshots[0].context_id is not None
+
+
 def test_network_websocket_connect_node_supports_send_receive_ping_and_close() -> None:
     server = _WebSocketServer()
     context = RuntimeContext()
-    registry = RuntimeExecutorRegistry()
+    registry = RuntimeExecutorRegistry(runtime_settings={"allow_local_network_access": True})
     try:
         url = f"ws://127.0.0.1:{server.port}"
         connected = registry.execute(

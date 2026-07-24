@@ -87,8 +87,18 @@ def test_network_graphql_subscription_uses_websocket_transport(monkeypatch) -> N
         def close(self):
             self.closed = True
 
+    class StubNetworkRuntimeService:
+        def connect_websocket(self, **kwargs):
+            handle = FakeWebSocketClientHandle(
+                url=kwargs["url"],
+                headers=kwargs.get("headers"),
+                timeout_seconds=kwargs.get("timeout_seconds", 30.0),
+                subprotocols=kwargs.get("subprotocols"),
+            )
+            return handle, handle.start(timeout_seconds=kwargs.get("timeout_seconds"))
+
     monkeypatch.setattr(engine_module, "WebSocketClientHandle", FakeWebSocketClientHandle)
-    registry = RuntimeExecutorRegistry()
+    registry = RuntimeExecutorRegistry(network_runtime_service=StubNetworkRuntimeService())
     context = RuntimeContext()
     node = {
         "node_id": "subscription-node",
