@@ -4,6 +4,7 @@ from .http_adapter import HttpxAdapter
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
 from .resources import ResponseBodyRef, ResponseBodyStore, ResponseBodyTooLargeError
 from .proxy import ProxyConfigurationError, ProxyResolver, ResolvedProxy
+from .tls import ResolvedTls, TlsConfigurationError, TlsResolver
 from .service import NetworkRuntimeService
 
 __all__ = [
@@ -21,5 +22,8 @@ __all__ = [
     "ProxyConfigurationError",
     "ProxyResolver",
     "ResolvedProxy",
+    "ResolvedTls",
+    "TlsConfigurationError",
+    "TlsResolver",
     "UnknownNetworkContextError",
 ]
