@@ -103,6 +103,27 @@ def test_httpx_adapter_merges_context_and_node_query_and_cookie_values(tmp_path)
     assert observed["cookie"] == "session=context-cookie"
 
 
+def test_httpx_adapter_isolates_non_default_tls_clients(tmp_path) -> None:
+    adapter = HttpxAdapter(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, request=request)
+        ),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+
+    default_client = adapter._client  # type: ignore[attr-defined]
+    insecure_client = adapter._client_for_snapshot(  # type: ignore[attr-defined]
+        NetworkContextSnapshot(context_id="tls-insecure", tls={"verify": "insecure"})
+    )
+    same_insecure_client = adapter._client_for_snapshot(  # type: ignore[attr-defined]
+        NetworkContextSnapshot(context_id="tls-insecure-2", tls={"verify": "insecure"})
+    )
+
+    assert insecure_client is not default_client
+    assert same_insecure_client is insecure_client
+
+
 def test_network_http_request_node_delegates_to_network_runtime_service() -> None:
     class StubNetworkRuntimeService:
         def __init__(self) -> None:

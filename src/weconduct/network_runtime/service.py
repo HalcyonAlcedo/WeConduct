@@ -127,8 +127,8 @@ class NetworkRuntimeService:
             task.cancel()
         if active_tasks:
             await asyncio.gather(*active_tasks, return_exceptions=True)
+        await self._adapter.aclose()
         await self._client.aclose()
-        self._adapter.close()
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)

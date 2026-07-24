@@ -10,6 +10,7 @@ import httpx
 from .access_policy import NetworkAccessPolicy
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
 from .resources import ResponseBodyStore
+from .tls import TlsResolver
 
 
 class HttpxAdapter:
@@ -21,6 +22,7 @@ class HttpxAdapter:
         access_policy: NetworkAccessPolicy | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        self._transport = transport
         self._client = client or httpx.AsyncClient(
             transport=transport,
             trust_env=False,
@@ -30,6 +32,7 @@ class HttpxAdapter:
         self._response_root_directory = Path(response_root_directory)
         self._access_policy = access_policy or NetworkAccessPolicy()
         self._stores: dict[str, ResponseBodyStore] = {}
+        self._tls_clients: dict[tuple[object, ...], httpx.AsyncClient] = {}
 
     def execute(
         self,
@@ -55,9 +58,10 @@ class HttpxAdapter:
             if operation.upload_file_path is not None:
                 content = _iter_upload_file_chunks(operation.upload_file_path)
             request_url = operation.url
+            client = self._client_for_snapshot(snapshot)
             for _ in range(10):
                 self._access_policy.validate_url(request_url)
-                async with self._client.stream(
+                async with client.stream(
                     operation.method,
                     request_url,
                     headers=headers,
@@ -126,8 +130,34 @@ class HttpxAdapter:
         for session_id in list(self._stores):
             self.close_session(session_id)
 
+    def _client_for_snapshot(self, snapshot: NetworkContextSnapshot) -> httpx.AsyncClient:
+        tls_config = snapshot.tls if isinstance(snapshot.tls, dict) else {}
+        resolved = TlsResolver().resolve(tls_config)
+        if resolved.verify == "system" and resolved.client_cert is None:
+            return self._client
+        key = (
+            resolved.verify,
+            resolved.client_cert,
+            resolved.certificate_pins,
+        )
+        cached = self._tls_clients.get(key)
+        if cached is not None:
+            return cached
+        client = httpx.AsyncClient(
+            transport=self._transport,
+            verify=resolved.verify,
+            cert=resolved.client_cert,
+            trust_env=False,
+            follow_redirects=False,
+        )
+        self._tls_clients[key] = client
+        return client
+
     async def aclose(self) -> None:
         self.close()
+        for client in tuple(self._tls_clients.values()):
+            await client.aclose()
+        self._tls_clients.clear()
         if self._owns_client:
             await self._client.aclose()
 
