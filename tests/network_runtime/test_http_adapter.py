@@ -16,7 +16,12 @@ from weconduct.runtime.engine import RuntimeContext, RuntimeExecutorRegistry
 def test_httpx_adapter_returns_404_as_a_normal_network_response(tmp_path) -> None:
     adapter = HttpxAdapter(
         transport=httpx.MockTransport(
-            lambda request: httpx.Response(404, text="missing", request=request)
+            lambda request: httpx.Response(
+                404,
+                text="missing",
+                headers={"set-cookie": "sid=from-response; Path=/"},
+                request=request,
+            )
         ),
         response_root_directory=tmp_path,
         access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
@@ -34,6 +39,7 @@ def test_httpx_adapter_returns_404_as_a_normal_network_response(tmp_path) -> Non
     assert result.status_code == 404
     assert result.duration_ms is not None
     assert result.duration_ms >= 0
+    assert result.set_cookies == {"sid": "from-response"}
     assert result.transport_error is None
     assert result.body_ref.read_text() == "missing"
 
@@ -246,6 +252,52 @@ def test_network_http_request_binds_and_reuses_a_session_network_context() -> No
     assert service.snapshots[0].headers == {"X-Shared": "initial"}
     assert service.snapshots[1].headers == {"X-Shared": "port-input"}
     assert service.snapshots[2].headers == {"X-Shared": "initial"}
+
+
+def test_network_http_request_writes_set_cookie_back_to_current_context() -> None:
+    class StubNetworkRuntimeService:
+        def __init__(self) -> None:
+            self.snapshots: list[NetworkContextSnapshot] = []
+
+        def submit(
+            self,
+            operation: NetworkOperation,
+            snapshot: NetworkContextSnapshot,
+        ) -> Future[NetworkResult]:
+            self.snapshots.append(snapshot)
+            future: Future[NetworkResult] = Future()
+            future.set_result(
+                NetworkResult(
+                    status="succeeded",
+                    operation_id=operation.operation_id,
+                    session_id=operation.session_id,
+                    status_code=200,
+                    set_cookies={"sid": "response-cookie"}
+                    if len(self.snapshots) == 1
+                    else {},
+                )
+            )
+            return future
+
+    service = StubNetworkRuntimeService()
+    registry = RuntimeExecutorRegistry(network_runtime_service=service)
+    context = RuntimeContext()
+    first = {
+        "node_id": "cookie-first",
+        "node_kind": "network.http_request",
+        "node_config": {"context_strategy": "new", "url": "https://example.test/first"},
+    }
+    second = {
+        "node_id": "cookie-second",
+        "node_kind": "network.http_request",
+        "node_config": {"context_strategy": "inherit", "url": "https://example.test/second"},
+    }
+
+    registry.execute("network.http_request", first, context)
+    registry.execute("network.http_request", second, context)
+
+    assert service.snapshots[0].cookies == {}
+    assert service.snapshots[1].cookies == {"sid": "response-cookie"}
 
 
 def test_network_http_request_is_registered_as_a_builtin_component() -> None:

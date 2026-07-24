@@ -65,5 +65,6 @@ class NetworkResult:
     headers: Mapping[str, str] = field(default_factory=dict)
     body_ref: ResponseBodyRef | None = None
     final_url: str | None = None
+    set_cookies: Mapping[str, str | None] = field(default_factory=dict, repr=False)
     duration_ms: float | None = None
     transport_error: str | None = None

@@ -577,6 +577,15 @@ class RuntimeExecutorRegistry:
         if result.status != "succeeded":
             error_code = result.transport_error or "network.request_failed"
             return _failed_result(node, error_code, result.transport_error or "network request failed")
+        if result.set_cookies:
+            try:
+                context.execution_token_context = context_registry.apply_overrides(
+                    session_id,
+                    context.execution_token_context,
+                    {"cookies": dict(result.set_cookies)},
+                )
+            except ValueError as exc:
+                return _failed_result(node, "network.context_update_failed", str(exc))
         output = {
             "status": "succeeded",
             "node_id": node["node_id"],

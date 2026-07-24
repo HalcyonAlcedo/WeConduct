@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 from time import perf_counter
 from urllib.parse import urljoin
@@ -118,6 +119,7 @@ class HttpxAdapter:
             headers=dict(response.headers),
             body_ref=body_ref,
             final_url=str(response.url),
+            set_cookies=_parse_set_cookie_headers(response.headers),
             duration_ms=(perf_counter() - started_at) * 1000,
         )
 
@@ -166,3 +168,17 @@ async def _iter_upload_file_chunks(path: Path, *, chunk_size: int = 64 * 1024):
     with Path(path).open("rb") as handle:
         while chunk := await asyncio.to_thread(handle.read, chunk_size):
             yield chunk
+
+
+def _parse_set_cookie_headers(headers: httpx.Headers) -> dict[str, str | None]:
+    changes: dict[str, str | None] = {}
+    for raw_header in headers.get_list("set-cookie"):
+        parsed = SimpleCookie()
+        try:
+            parsed.load(raw_header)
+        except (CookieError, ValueError):
+            continue
+        for name, morsel in parsed.items():
+            max_age = morsel["max-age"].strip().lower()
+            changes[name] = None if max_age == "0" else morsel.value
+    return changes
