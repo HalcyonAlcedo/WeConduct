@@ -334,7 +334,13 @@ def test_network_http_request_is_registered_as_a_builtin_component() -> None:
         item["resource_key"]: item
         for item in registry
         if item["resource_key"]
-        in {"network.http_request", "network.upload", "network.download", "network.response_assert"}
+        in {
+            "network.http_request",
+            "network.upload",
+            "network.download",
+            "network.response_assert",
+            "network.graphql_request",
+        }
     }
 
     assert set(network_components) == {
@@ -342,5 +348,7 @@ def test_network_http_request_is_registered_as_a_builtin_component() -> None:
         "network.upload",
         "network.download",
         "network.response_assert",
+        "network.graphql_request",
     }
     assert network_components["network.http_request"]["resource_id"] == "builtin:network.http_request"
+    assert network_components["network.graphql_request"]["resource_id"] == "builtin:network.graphql_request"

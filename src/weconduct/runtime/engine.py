@@ -25,6 +25,7 @@ from zipfile import BadZipFile
 from typing import Any, Callable
 
 from weconduct.network_runtime import (
+    GraphQLProtocolAdapter,
     NetworkContextRegistry,
     NetworkContextSnapshot,
     NetworkOperation,
@@ -202,6 +203,7 @@ class RuntimeExecutorRegistry:
             "network.http_request": self._execute_network_http_request,
             "network.download": self._execute_network_download,
             "network.upload": self._execute_network_upload,
+            "network.graphql_request": self._execute_network_graphql_request,
             "network.response_assert": self._execute_network_response_assert,
             "browser.navigate": self._execute_browser_navigate,
             "browser.fill": self._execute_browser_fill,
@@ -841,6 +843,67 @@ class RuntimeExecutorRegistry:
             output["error_code"] = "network.response_assertion_failed"
             output["message"] = "one or more network response assertions failed"
         context.variables["last_network_assertion"] = output
+        return output
+
+    def _execute_network_graphql_request(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        endpoint = _resolve_value(node_config.get("endpoint", node_config.get("url")), context)
+        query = _resolve_value(node_config.get("query"), context)
+        operation_name = _resolve_value(node_config.get("operation_name"), context)
+        variables = _resolve_value(node_config.get("variables", {}), context)
+        headers = _resolve_value(node_config.get("headers", {}), context)
+        if not isinstance(endpoint, str) or not endpoint.strip():
+            return _failed_result(node, "network.graphql_endpoint_required", "GraphQL endpoint is required")
+        if not isinstance(query, str) or not query.strip():
+            return _failed_result(node, "network.graphql_query_required", "GraphQL query is required")
+        if not isinstance(variables, dict) or not isinstance(headers, dict):
+            return _failed_result(node, "network.graphql_input_invalid", "GraphQL variables and headers must be objects")
+        try:
+            graphql_operation = GraphQLProtocolAdapter().build_operation(
+                endpoint=endpoint.strip(),
+                query=query,
+                session_id=context.execution_session_context.session_id,
+                operation_name=operation_name if isinstance(operation_name, str) else None,
+                variables=variables,
+                headers=headers,
+            )
+            body = json.loads(graphql_operation.content or b"{}")
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            return _failed_result(node, "network.graphql_request_invalid", str(exc))
+        request_node = dict(node)
+        request_config = dict(node_config)
+        request_config.update(
+            {
+                "url": endpoint,
+                "method": "POST",
+                "headers": headers,
+                # GraphQL 查询已经序列化到 body，不能让普通 HTTP 执行器把
+                # node_config.query 中的查询文本当作 URL query 参数。
+                "query": {},
+                "body": body,
+            }
+        )
+        request_node["node_config"] = request_config
+        output = self._execute_network_http_request(request_node, context)
+        if output.get("status") != "succeeded":
+            return output
+        body_ref = output.get("body_ref")
+        if not isinstance(body_ref, ResponseBodyRef):
+            return _failed_result(node, "network.graphql_response_invalid", "GraphQL response body is unavailable")
+        try:
+            graphql_result = GraphQLProtocolAdapter().parse_response(
+                body_ref.read_json(max_bytes=4 * 1024 * 1024)
+            )
+        except (ValueError, ResponseBodyTooLargeError) as exc:
+            return _failed_result(node, "network.graphql_response_invalid", str(exc))
+        output.update(
+            {
+                "data": graphql_result.data,
+                "errors": [dict(item) for item in graphql_result.errors],
+                "extensions": dict(graphql_result.extensions),
+            }
+        )
+        context.variables["last_graphql_response"] = output
         return output
 
     def _resolve_network_runtime_service(self, context: RuntimeContext) -> NetworkRuntimeService:
