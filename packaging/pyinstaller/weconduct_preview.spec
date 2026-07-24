@@ -68,10 +68,78 @@ network_runtime_packages = (
     "socksio",
     "python_socks",
 )
-network_hiddenimports: list[str] = []
+
+# Do not collect every optional integration of these packages.  In particular,
+# authlib's Django/Flask integrations, websockets' legacy/sync stacks and
+# python-socks' curio backend are not part of the WeConduct runner.
+network_runtime_submodules: dict[str, set[str]] = {
+    "httpx": {
+        "httpx",
+        "httpx._client",
+        "httpx._config",
+        "httpx._models",
+        "httpx._transports",
+        "httpx._transports.base",
+        "httpx._transports.default",
+        "httpx._transports.asgi",
+        "httpx._transports.wsgi",
+    },
+    "httpx_sse": {"httpx_sse", "httpx_sse._api"},
+    "websockets": {
+        "websockets",
+        "websockets.asyncio",
+        "websockets.asyncio.client",
+        "websockets.asyncio.connection",
+        "websockets.asyncio.server",
+        "websockets.client",
+        "websockets.exceptions",
+        "websockets.frames",
+        "websockets.headers",
+        "websockets.http11",
+        "websockets.protocol",
+        "websockets.server",
+        "websockets.streams",
+    },
+    "graphql": {
+        "graphql",
+        "graphql.error",
+        "graphql.execution",
+        "graphql.language",
+        "graphql.pyutils",
+        "graphql.type",
+        "graphql.utilities",
+    },
+    "authlib": {"authlib", "authlib.oauth2"},
+    "cryptography": {
+        "cryptography",
+        "cryptography.hazmat",
+        "cryptography.hazmat.bindings",
+        "cryptography.hazmat.primitives",
+        "cryptography.x509",
+    },
+    "msgpack": {"msgpack", "msgpack._cmsgpack", "msgpack.fallback"},
+    "socksio": {"socksio"},
+    "python_socks": {
+        "python_socks",
+        "python_socks.async_",
+        "python_socks.async_.asyncio",
+        "python_socks.async_.asyncio._proxy",
+    },
+}
+network_hiddenimports: list[str] = [
+    "weconduct.network_runtime.windows_proxy_worker",
+]
 network_binaries: list[tuple[str, str]] = []
 for package_name in network_runtime_packages:
-    network_hiddenimports.extend(collect_submodules(package_name))
+    allowed_modules = network_runtime_submodules[package_name]
+    network_hiddenimports.extend(
+        collect_submodules(
+            package_name,
+            filter=lambda module_name, allowed=allowed_modules: module_name in allowed,
+        )
+    )
+
+for package_name in ("cryptography", "msgpack"):
     network_binaries.extend(collect_dynamic_libs(package_name))
 
 a = Analysis(
@@ -83,7 +151,14 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[str(root / "packaging" / "pyinstaller" / "desktop_shell_runtime_hook.py")],
-    excludes=[],
+    excludes=[
+        "websockets.legacy",
+        "websockets.sync",
+        "authlib.integrations.django_client",
+        "authlib.integrations.flask_client",
+        "django",
+        "curio",
+    ],
     noarchive=False,
 )
 # The runtime hook appends "desktop-shell" so the bundled executable opens the

@@ -84,3 +84,17 @@ def test_preview_packaging_collects_network_runtime_dependencies() -> None:
         "python_socks",
     ):
         assert package_name in spec_text
+
+
+def test_preview_packaging_uses_filtered_network_submodule_collection() -> None:
+    root = Path(__file__).resolve().parents[1]
+    spec_text = (
+        root / "packaging" / "pyinstaller" / "weconduct_preview.spec"
+    ).read_text(encoding="utf-8")
+
+    assert "collect_submodules(" in spec_text
+    assert "filter=lambda module_name" in spec_text
+    assert "network_hiddenimports.extend(collect_submodules(package_name))" not in spec_text
+    assert "weconduct.network_runtime.windows_proxy_worker" in spec_text
+    assert '"websockets.legacy"' in spec_text
+    assert '"websockets.sync"' in spec_text
