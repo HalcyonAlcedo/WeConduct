@@ -117,6 +117,73 @@ def test_network_http_request_node_delegates_to_network_runtime_service() -> Non
     assert service.operation.headers["Content-Type"] == "application/json"
 
 
+def test_network_http_request_binds_and_reuses_a_session_network_context() -> None:
+    class StubNetworkRuntimeService:
+        def __init__(self) -> None:
+            self.snapshots: list[NetworkContextSnapshot] = []
+
+        def submit(
+            self,
+            operation: NetworkOperation,
+            snapshot: NetworkContextSnapshot,
+        ) -> Future[NetworkResult]:
+            self.snapshots.append(snapshot)
+            future: Future[NetworkResult] = Future()
+            future.set_result(
+                NetworkResult(
+                    status="succeeded",
+                    operation_id=operation.operation_id,
+                    session_id=operation.session_id,
+                    status_code=200,
+                )
+            )
+            return future
+
+    service = StubNetworkRuntimeService()
+    registry = RuntimeExecutorRegistry(network_runtime_service=service)
+    context = RuntimeContext()
+    first_node = {
+        "node_id": "network-node-1",
+        "node_kind": "network.http_request",
+        "node_config": {
+            "context_strategy": "new",
+            "method": "GET",
+            "url": "https://example.test/first",
+            "headers": {"X-Shared": "initial"},
+        },
+    }
+    port_override_node = {
+        "node_id": "network-node-2",
+        "node_kind": "network.http_request",
+        "node_config": {
+            "context_strategy": "inherit",
+            "method": "GET",
+            "url": "https://example.test/second",
+        },
+        "__runtime_input_overrides__": {"headers": {"X-Shared": "port-input"}},
+    }
+    inherited_node = {
+        "node_id": "network-node-3",
+        "node_kind": "network.http_request",
+        "node_config": {
+            "context_strategy": "inherit",
+            "method": "GET",
+            "url": "https://example.test/third",
+        },
+    }
+
+    first_output = registry.execute("network.http_request", first_node, context)
+    second_output = registry.execute("network.http_request", port_override_node, context)
+    third_output = registry.execute("network.http_request", inherited_node, context)
+
+    assert first_output["network_context_id"] is not None
+    assert second_output["network_context_id"] == first_output["network_context_id"]
+    assert third_output["network_context_id"] == first_output["network_context_id"]
+    assert service.snapshots[0].headers == {"X-Shared": "initial"}
+    assert service.snapshots[1].headers == {"X-Shared": "port-input"}
+    assert service.snapshots[2].headers == {"X-Shared": "initial"}
+
+
 def test_network_http_request_is_registered_as_a_builtin_component() -> None:
     registry = build_builtin_resource_registry()
 

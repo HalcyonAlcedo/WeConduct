@@ -68,6 +68,9 @@ from weconduct.application.project_python_runtime import (
 from weconduct.application.debug_controller import DebugController
 from weconduct.application.debug_session_history import DebugSessionHistoryStore
 from weconduct.application.execution_core import ExecutionCore
+from weconduct.application.network_context_validation import (
+    collect_network_context_join_ambiguities,
+)
 from weconduct.application.graph_upgrades import (
     CURRENT_GRAPH_DATA_VERSION,
     GRAPH_DATA_UPGRADERS,
@@ -5918,6 +5921,9 @@ class CompilationWorkbenchService:
                 execution_session_context=ExecutionSessionContext(
                     session_id=parent_runtime_context.execution_session_context.session_id,
                     token_context=parent_runtime_context.execution_token_context,
+                    network_context_registry=(
+                        parent_runtime_context.execution_session_context.network_context_registry
+                    ),
                 ),
                 owns_cancellation_context=False,
             )
@@ -11456,6 +11462,11 @@ class CompilationWorkbenchService:
                 graph_model=graph_model,
             )
         )
+        diagnostics.extend(
+            self._collect_network_context_join_validation_diagnostics(
+                graph_model=graph_model,
+            )
+        )
 
         for node in graph_model.nodes:
             if node.node_id in node_ids_seen:
@@ -11775,6 +11786,37 @@ class CompilationWorkbenchService:
             )
         )
 
+        return diagnostics
+
+    def _collect_network_context_join_validation_diagnostics(
+        self,
+        *,
+        graph_model: GraphModel,
+    ) -> list[dict]:
+        diagnostics: list[dict] = []
+        for ambiguity in collect_network_context_join_ambiguities(graph_model):
+            diagnostics.append(
+                {
+                    "category": "network.context_join_ambiguous",
+                    "message": (
+                        "control.join receives different network contexts; its successor must "
+                        "select a context explicitly"
+                    ),
+                    "object_ref": ambiguity.join_node_id,
+                    "stage_extension": self._build_graph_validation_stage_extension(
+                        graph_model,
+                        subject_ref=ambiguity.join_node_id,
+                        rule="network.context_join_requires_explicit_selection",
+                        result="failed",
+                        graph_ref={
+                            "graph_model_id": graph_model.graph_model_id,
+                            "node_id": ambiguity.join_node_id,
+                            "context_labels": list(ambiguity.context_labels),
+                            "successor_node_ids": list(ambiguity.successor_node_ids),
+                        },
+                    ),
+                }
+            )
         return diagnostics
 
     def _collect_builtin_parameter_validation_diagnostics(

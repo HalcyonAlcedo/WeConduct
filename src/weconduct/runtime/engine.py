@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import csv
 from datetime import datetime, timezone
 import ipaddress
@@ -24,6 +24,7 @@ from zipfile import BadZipFile
 from typing import Any, Callable
 
 from weconduct.network_runtime import (
+    NetworkContextRegistry,
     NetworkContextSnapshot,
     NetworkOperation,
     NetworkRuntimeService,
@@ -487,6 +488,49 @@ class RuntimeExecutorRegistry:
         else:
             request_content = str(body_value)
         session_id = context.execution_session_context.session_id
+        context_registry = self._resolve_network_context_registry(context)
+        raw_strategy = _resolve_value(node_config.get("context_strategy", "inherit"), context)
+        if not isinstance(raw_strategy, str):
+            return _failed_result(
+                node,
+                "network.context_strategy_invalid",
+                "network context strategy must be a string",
+            )
+        context_strategy = raw_strategy.strip().lower()
+        context_overrides = {
+            "headers": request_headers,
+            "timeout_seconds": timeout_seconds,
+        }
+        try:
+            token_context = context.execution_token_context
+            if token_context.network_context_id is None and context_strategy == "inherit":
+                token_context = context_registry.create(session_id, **context_overrides)
+            else:
+                switch_context_id = _resolve_value(
+                    node_config.get("switch_context_id", node_config.get("context_id")),
+                    context,
+                )
+                token_context = context_registry.apply_strategy(
+                    session_id,
+                    token_context,
+                    strategy=context_strategy,
+                    overrides=(
+                        context_overrides
+                        if context_strategy in {"new", "anonymous", "fork"}
+                        else None
+                    ),
+                    switch_context_id=(
+                        switch_context_id if isinstance(switch_context_id, str) else None
+                    ),
+                )
+            context.execution_token_context = token_context
+            context_snapshot = context_registry.snapshot(session_id, token_context)
+        except ValueError as exc:
+            return _failed_result(node, "network.context_invalid", str(exc))
+        request_snapshot = replace(
+            context_snapshot,
+            headers={**context_snapshot.headers, **request_headers},
+        )
         operation = NetworkOperation(
             operation_id=node["node_id"],
             session_id=session_id,
@@ -503,9 +547,7 @@ class RuntimeExecutorRegistry:
         try:
             result = service.submit(
                 operation,
-                NetworkContextSnapshot(
-                    context_id=context.execution_token_context.network_context_id,
-                ),
+                request_snapshot,
             ).result(timeout=timeout_seconds + 1)
         except Exception as exc:
             return _failed_result(node, "network.request_failed", str(exc))
@@ -525,6 +567,22 @@ class RuntimeExecutorRegistry:
         }
         context.variables["last_network_response"] = output
         return output
+
+    def _resolve_network_context_registry(self, context: RuntimeContext) -> NetworkContextRegistry:
+        session_context = context.execution_session_context
+        if session_context is None:
+            raise RuntimeError("runtime context is missing its execution session context")
+        registry = session_context.network_context_registry
+        if isinstance(registry, NetworkContextRegistry):
+            return registry
+        registry = NetworkContextRegistry()
+        session_context.network_context_registry = registry
+        session_id = session_context.session_id
+        context.register_cleanup(
+            "network-context-registry",
+            lambda: registry.clear_session(session_id),
+        )
+        return registry
 
     def _resolve_network_runtime_service(self, context: RuntimeContext) -> NetworkRuntimeService:
         if self._network_runtime_service is not None:

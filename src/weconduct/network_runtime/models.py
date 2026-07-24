@@ -10,7 +10,19 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class NetworkContextSnapshot:
     context_id: str | None
-    headers: Mapping[str, str] = field(default_factory=dict)
+    context_epoch: int | None = None
+    parent_id: str | None = None
+    branch_id: str | None = None
+    base_url: str | None = None
+    headers: Mapping[str, str] = field(default_factory=dict, repr=False)
+    query: Mapping[str, str] = field(default_factory=dict, repr=False)
+    cookies: Mapping[str, str] = field(default_factory=dict, repr=False)
+    auth: object | None = field(default=None, repr=False)
+    tls: object | None = None
+    proxy: object | None = None
+    timeout_seconds: float | None = None
+    response_limits: Mapping[str, object] = field(default_factory=dict)
+    retry_policy: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

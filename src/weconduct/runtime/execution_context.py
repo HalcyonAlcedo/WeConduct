@@ -45,6 +45,7 @@ class ExecutionSessionContext:
     session_id: str
     token_context: ExecutionTokenContext = field(default_factory=ExecutionTokenContext)
     cancellation_context: object | None = None
+    network_context_registry: object | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.session_id, str) or not self.session_id.strip():
