@@ -79,7 +79,20 @@ class SSEConnection:
         if self._closed:
             return
         self._closed = True
-        await self._queue.put(None)
+        # Closing must never wait behind a full event queue.  Pending consumers
+        # should be woken immediately; queued events are session-local and are
+        # intentionally discarded once the handle is closed.
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        try:
+            self._queue.put_nowait(None)
+        except asyncio.QueueFull:
+            # A concurrent consumer can only make space after this point; the
+            # closed flag still makes subsequent receive calls fail fast.
+            pass
 
     @staticmethod
     def _normalize_event(event: Mapping[str, object] | object) -> SSEEvent:

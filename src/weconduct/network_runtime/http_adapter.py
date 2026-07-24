@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
+import ssl
 from time import perf_counter
 from urllib.parse import urljoin
 
@@ -140,7 +141,13 @@ class HttpxAdapter:
     ) -> httpx.AsyncClient:
         tls_config = snapshot.tls if isinstance(snapshot.tls, dict) else {}
         resolved = TlsResolver().resolve(tls_config)
-        verify_argument: str | bool = True if resolved.verify == "system" else resolved.verify
+        verify_argument: ssl.SSLContext | bool
+        if resolved.verify == "system":
+            verify_argument = True
+        elif resolved.verify is False:
+            verify_argument = False
+        else:
+            verify_argument = ssl.create_default_context(cafile=resolved.verify)
         proxy_config = snapshot.proxy if isinstance(snapshot.proxy, dict) else {"mode": "direct"}
         resolved_proxy = ProxyResolver().resolve(proxy_config, target_url)
         if (
@@ -151,7 +158,6 @@ class HttpxAdapter:
             return self._client
         key = (
             resolved.verify,
-            verify_argument,
             resolved.client_cert,
             resolved.certificate_pins,
             resolved_proxy.mode,

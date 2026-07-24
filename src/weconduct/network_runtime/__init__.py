@@ -4,6 +4,7 @@ from .http_adapter import HttpxAdapter
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
 from .resources import ResponseBodyRef, ResponseBodyStore, ResponseBodyTooLargeError
 from .proxy import ProxyConfigurationError, ProxyResolver, ResolvedProxy
+from .windows_proxy_worker import WindowsProxyResolverWorker
 from .tls import ResolvedTls, TlsConfigurationError, TlsResolver
 from .oauth import OAuthClientCredentialsRequest, OAuthConfigurationError, OAuthService, OAuthTokenState
 from .graphql_adapter import (
@@ -41,6 +42,7 @@ __all__ = [
     "ProxyConfigurationError",
     "ProxyResolver",
     "ResolvedProxy",
+    "WindowsProxyResolverWorker",
     "ResolvedTls",
     "TlsConfigurationError",
     "TlsResolver",

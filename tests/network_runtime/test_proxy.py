@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from weconduct.network_runtime.proxy import ProxyConfigurationError, ProxyResolver
+from weconduct.network_runtime.proxy import ProxyConfigurationError, ProxyResolver, ResolvedProxy
+from weconduct.network_runtime.windows_proxy_worker import _parse_winhttp_proxy_list
 
 
 def test_proxy_resolver_returns_explicit_direct_mode() -> None:
@@ -45,3 +46,61 @@ def test_proxy_resolver_uses_explicit_environment_mapping_only() -> None:
 
     assert resolved.mode == "http"
     assert resolved.url == "http://proxy.example.test:3128"
+
+
+def test_proxy_resolver_delegates_windows_system_and_pac_modes_to_isolated_worker() -> None:
+    class FakeWindowsWorker:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str | None]] = []
+
+        def resolve(self, target_url: str, *, mode: str, pac_url: str | None = None) -> ResolvedProxy:
+            self.calls.append((target_url, mode, pac_url))
+            return ResolvedProxy(mode="http", url="http://proxy.example.test:8080", source=mode)
+
+    worker = FakeWindowsWorker()
+    resolver = ProxyResolver(windows_worker=worker)
+
+    windows = resolver.resolve(
+        {"mode": "windows_system"},
+        "https://example.test/resource",
+    )
+    pac = resolver.resolve(
+        {"mode": "pac", "pac_url": "https://proxy.example.test/proxy.pac"},
+        "https://example.test/resource",
+    )
+
+    assert windows.mode == "http"
+    assert pac.mode == "http"
+    assert worker.calls == [
+        ("https://example.test/resource", "windows_system", None),
+        ("https://example.test/resource", "pac", "https://proxy.example.test/proxy.pac"),
+    ]
+
+
+def test_proxy_resolver_rejects_worker_failure_without_direct_fallback() -> None:
+    class FailingWorker:
+        def resolve(self, target_url: str, *, mode: str, pac_url: str | None = None) -> ResolvedProxy:
+            raise RuntimeError("worker unavailable")
+
+    resolver = ProxyResolver(windows_worker=FailingWorker())
+
+    with pytest.raises(ProxyConfigurationError, match="proxy resolution failed"):
+        resolver.resolve({"mode": "wpad"}, "https://example.test/resource")
+
+
+def test_winhttp_proxy_list_preserves_order_and_only_allows_explicit_direct() -> None:
+    resolved = _parse_winhttp_proxy_list(
+        "https=proxy.example.test:8443;DIRECT",
+        "https://example.test/resource",
+        source="pac",
+    )
+    assert resolved.mode == "http"
+    assert resolved.url == "http://proxy.example.test:8443"
+
+    direct = _parse_winhttp_proxy_list(
+        "DIRECT",
+        "https://example.test/resource",
+        source="pac",
+    )
+    assert direct.mode == "direct"
+    assert direct.url is None

@@ -18,9 +18,19 @@ class ResolvedProxy:
 
 
 class ProxyResolver:
-    def __init__(self, *, environment: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        environment: Mapping[str, str] | None = None,
+        windows_worker: object | None = None,
+    ) -> None:
         source = os.environ if environment is None else environment
         self._environment = {str(key).upper(): str(value) for key, value in source.items()}
+        if windows_worker is None:
+            from .windows_proxy_worker import WindowsProxyResolverWorker
+
+            windows_worker = WindowsProxyResolverWorker()
+        self._windows_worker = windows_worker
 
     def resolve(self, configuration: Mapping[str, object], target_url: str) -> ResolvedProxy:
         if not isinstance(configuration, Mapping):
@@ -39,9 +49,26 @@ class ProxyResolver:
         if normalized_mode == "environment":
             return self._resolve_environment(target_url)
         if normalized_mode in {"windows_system", "pac", "wpad"}:
-            raise ProxyConfigurationError(
-                f"proxy configuration is not implemented: {normalized_mode}"
-            )
+            pac_url = configuration.get("pac_url")
+            if pac_url is not None and not isinstance(pac_url, str):
+                raise ProxyConfigurationError("proxy configuration is invalid: pac_url must be a string")
+            worker = self._windows_worker
+            resolve = getattr(worker, "resolve", None)
+            if not callable(resolve):
+                raise ProxyConfigurationError("proxy resolution failed: worker is unavailable")
+            try:
+                resolved = resolve(
+                    target_url,
+                    mode=normalized_mode,
+                    pac_url=pac_url.strip() if isinstance(pac_url, str) and pac_url.strip() else None,
+                )
+            except ProxyConfigurationError:
+                raise
+            except BaseException as exc:
+                raise ProxyConfigurationError("proxy resolution failed") from exc
+            if not isinstance(resolved, ResolvedProxy):
+                raise ProxyConfigurationError("proxy resolution failed: invalid worker result")
+            return resolved
         raise ProxyConfigurationError(f"proxy configuration is invalid: unsupported mode {mode!r}")
 
     def _resolve_environment(self, target_url: str) -> ResolvedProxy:
