@@ -11,6 +11,7 @@ import httpx
 from .access_policy import NetworkAccessPolicy
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
 from .resources import ResponseBodyStore
+from .proxy import ProxyResolver
 from .tls import TlsResolver
 
 
@@ -59,7 +60,7 @@ class HttpxAdapter:
             if operation.upload_file_path is not None:
                 content = _iter_upload_file_chunks(operation.upload_file_path)
             request_url = operation.url
-            client = self._client_for_snapshot(snapshot)
+            client = self._client_for_snapshot(snapshot, request_url)
             for _ in range(10):
                 self._access_policy.validate_url(request_url)
                 async with client.stream(
@@ -132,23 +133,38 @@ class HttpxAdapter:
         for session_id in list(self._stores):
             self.close_session(session_id)
 
-    def _client_for_snapshot(self, snapshot: NetworkContextSnapshot) -> httpx.AsyncClient:
+    def _client_for_snapshot(
+        self,
+        snapshot: NetworkContextSnapshot,
+        target_url: str = "https://example.invalid/",
+    ) -> httpx.AsyncClient:
         tls_config = snapshot.tls if isinstance(snapshot.tls, dict) else {}
         resolved = TlsResolver().resolve(tls_config)
-        if resolved.verify == "system" and resolved.client_cert is None:
+        verify_argument: str | bool = True if resolved.verify == "system" else resolved.verify
+        proxy_config = snapshot.proxy if isinstance(snapshot.proxy, dict) else {"mode": "direct"}
+        resolved_proxy = ProxyResolver().resolve(proxy_config, target_url)
+        if (
+            resolved.verify == "system"
+            and resolved.client_cert is None
+            and resolved_proxy.mode == "direct"
+        ):
             return self._client
         key = (
             resolved.verify,
+            verify_argument,
             resolved.client_cert,
             resolved.certificate_pins,
+            resolved_proxy.mode,
+            resolved_proxy.url,
         )
         cached = self._tls_clients.get(key)
         if cached is not None:
             return cached
         client = httpx.AsyncClient(
             transport=self._transport,
-            verify=resolved.verify,
+            verify=verify_argument,
             cert=resolved.client_cert,
+            proxy=resolved_proxy.url,
             trust_env=False,
             follow_redirects=False,
         )

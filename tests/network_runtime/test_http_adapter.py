@@ -130,6 +130,33 @@ def test_httpx_adapter_isolates_non_default_tls_clients(tmp_path) -> None:
     assert same_insecure_client is insecure_client
 
 
+def test_httpx_adapter_isolates_manual_proxy_clients(tmp_path) -> None:
+    adapter = HttpxAdapter(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, request=request)
+        ),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+
+    direct_client = adapter._client  # type: ignore[attr-defined]
+    proxy_client = adapter._client_for_snapshot(  # type: ignore[attr-defined]
+        NetworkContextSnapshot(
+            context_id="proxy-1",
+            proxy={"mode": "manual", "url": "http://proxy.example.test:8080"},
+        )
+    )
+    same_proxy_client = adapter._client_for_snapshot(  # type: ignore[attr-defined]
+        NetworkContextSnapshot(
+            context_id="proxy-2",
+            proxy={"mode": "manual", "url": "http://proxy.example.test:8080"},
+        )
+    )
+
+    assert proxy_client is not direct_client
+    assert same_proxy_client is proxy_client
+
+
 def test_network_http_request_node_delegates_to_network_runtime_service() -> None:
     class StubNetworkRuntimeService:
         def __init__(self) -> None:
