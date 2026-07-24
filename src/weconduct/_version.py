@@ -5,4 +5,4 @@ so it must stay dependency-free (no imports from any weconduct subpackage). Keep
 this value in sync with ``pyproject.toml`` ``[project].version`` on each release.
 """
 
-APP_VERSION = "0.8.2"
+APP_VERSION = "0.9.0"
