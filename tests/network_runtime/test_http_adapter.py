@@ -32,6 +32,8 @@ def test_httpx_adapter_returns_404_as_a_normal_network_response(tmp_path) -> Non
 
     assert result.status == "succeeded"
     assert result.status_code == 404
+    assert result.duration_ms is not None
+    assert result.duration_ms >= 0
     assert result.transport_error is None
     assert result.body_ref.read_text() == "missing"
 
@@ -187,8 +189,17 @@ def test_network_http_request_binds_and_reuses_a_session_network_context() -> No
 def test_network_http_request_is_registered_as_a_builtin_component() -> None:
     registry = build_builtin_resource_registry()
 
-    network_http_request = next(
-        item for item in registry if item["resource_key"] == "network.http_request"
-    )
+    network_components = {
+        item["resource_key"]: item
+        for item in registry
+        if item["resource_key"]
+        in {"network.http_request", "network.upload", "network.download", "network.response_assert"}
+    }
 
-    assert network_http_request["resource_id"] == "builtin:network.http_request"
+    assert set(network_components) == {
+        "network.http_request",
+        "network.upload",
+        "network.download",
+        "network.response_assert",
+    }
+    assert network_components["network.http_request"]["resource_id"] == "builtin:network.http_request"

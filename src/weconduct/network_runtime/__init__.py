@@ -2,7 +2,7 @@ from .access_policy import NetworkAccessPolicy
 from .context_registry import NetworkContextRegistry, NetworkContextStrategy, UnknownNetworkContextError
 from .http_adapter import HttpxAdapter
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
-from .resources import ResponseBodyRef, ResponseBodyStore
+from .resources import ResponseBodyRef, ResponseBodyStore, ResponseBodyTooLargeError
 from .service import NetworkRuntimeService
 
 __all__ = [
@@ -16,5 +16,6 @@ __all__ = [
     "NetworkRuntimeService",
     "ResponseBodyRef",
     "ResponseBodyStore",
+    "ResponseBodyTooLargeError",
     "UnknownNetworkContextError",
 ]

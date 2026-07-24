@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Mapping
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, Mapping
 
 if TYPE_CHECKING:
     from .resources import ResponseBodyRef
@@ -33,7 +34,9 @@ class NetworkOperation:
     url: str
     headers: Mapping[str, str] = field(default_factory=dict)
     content: bytes | str | None = None
+    upload_file_path: Path | None = None
     timeout_seconds: float = 30.0
+    response_storage: Literal["auto", "file"] = "auto"
 
     def __post_init__(self) -> None:
         if not self.operation_id.strip():
@@ -46,6 +49,10 @@ class NetworkOperation:
             raise ValueError("url must be a non-empty string")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
+        if self.response_storage not in {"auto", "file"}:
+            raise ValueError("response_storage must be 'auto' or 'file'")
+        if self.upload_file_path is not None and self.content is not None:
+            raise ValueError("upload_file_path and content cannot both be set")
 
 
 @dataclass(frozen=True)
@@ -57,4 +64,5 @@ class NetworkResult:
     headers: Mapping[str, str] = field(default_factory=dict)
     body_ref: ResponseBodyRef | None = None
     final_url: str | None = None
+    duration_ms: float | None = None
     transport_error: str | None = None

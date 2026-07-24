@@ -5,6 +5,7 @@ import binascii
 from dataclasses import dataclass, field, replace
 import csv
 from datetime import datetime, timezone
+import hashlib
 import ipaddress
 import json
 import os
@@ -28,6 +29,8 @@ from weconduct.network_runtime import (
     NetworkContextSnapshot,
     NetworkOperation,
     NetworkRuntimeService,
+    ResponseBodyRef,
+    ResponseBodyTooLargeError,
 )
 from weconduct.runtime.execution_context import ExecutionSessionContext, ExecutionTokenContext
 from openpyxl import Workbook, load_workbook
@@ -197,6 +200,9 @@ class RuntimeExecutorRegistry:
             "flow.start": self._execute_flow_start,
             "http.request": self._execute_http_request,
             "network.http_request": self._execute_network_http_request,
+            "network.download": self._execute_network_download,
+            "network.upload": self._execute_network_upload,
+            "network.response_assert": self._execute_network_response_assert,
             "browser.navigate": self._execute_browser_navigate,
             "browser.fill": self._execute_browser_fill,
             "browser.check": self._execute_browser_check,
@@ -458,7 +464,14 @@ class RuntimeExecutorRegistry:
         context.variables["last_http_response"] = result
         return result
 
-    def _execute_network_http_request(self, node: dict, context: RuntimeContext) -> dict:
+    def _execute_network_http_request(
+        self,
+        node: dict,
+        context: RuntimeContext,
+        *,
+        response_storage: str = "auto",
+        upload_file_path: Path | None = None,
+    ) -> dict:
         _check_cancellation(context)
         node_config = _node_config(node)
         method = _resolve_value(node_config.get("method", "GET"), context)
@@ -537,8 +550,10 @@ class RuntimeExecutorRegistry:
             method=method.strip().upper(),
             url=url.strip(),
             headers=request_headers,
-            content=request_content,
+            content=None if upload_file_path is not None else request_content,
+            upload_file_path=upload_file_path,
             timeout_seconds=timeout_seconds,
+            response_storage=response_storage,
         )
         service = self._resolve_network_runtime_service(context)
         unregister = context.cancellation_context.register_cleanup(
@@ -563,9 +578,77 @@ class RuntimeExecutorRegistry:
             "headers": dict(result.headers),
             "body_ref": result.body_ref,
             "final_url": result.final_url,
+            "duration_ms": result.duration_ms,
             "network_context_id": context.execution_token_context.network_context_id,
         }
         context.variables["last_network_response"] = output
+        return output
+
+    def _execute_network_download(self, node: dict, context: RuntimeContext) -> dict:
+        output = self._execute_network_http_request(
+            node,
+            context,
+            response_storage="file",
+        )
+        if output.get("status") != "succeeded":
+            return output
+        body_ref = output.get("body_ref")
+        if not isinstance(body_ref, ResponseBodyRef):
+            return _failed_result(
+                node,
+                "network.response_body_unavailable",
+                "network.download requires a response body",
+            )
+        checksum = hashlib.sha256()
+        for chunk in body_ref.iter_chunks():
+            checksum.update(chunk)
+        output.update(
+            {
+                "file_size": body_ref.size_bytes,
+                "media_type": body_ref.content_type,
+                "checksum_sha256": checksum.hexdigest(),
+            }
+        )
+        context.variables["last_network_download"] = output
+        return output
+
+    def _execute_network_upload(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        source_value = _resolve_value(node_config.get("file_path"), context)
+        if not isinstance(source_value, str) or not source_value.strip():
+            return _failed_result(
+                node,
+                "network.upload_file_required",
+                "network.upload requires file_path",
+            )
+        upload_path = Path(source_value).expanduser()
+        try:
+            _validate_path_within_allowed_roots(upload_path, context)
+        except ValueError as exc:
+            return _failed_result(node, "network.upload_path_denied", str(exc))
+        if not upload_path.is_file():
+            return _failed_result(
+                node,
+                "network.upload_file_missing",
+                f"network.upload file was not found: {upload_path}",
+            )
+        upload_node = dict(node)
+        upload_config = dict(node_config)
+        upload_headers = upload_config.get("headers")
+        headers = dict(upload_headers) if isinstance(upload_headers, dict) else {}
+        media_type = _resolve_value(upload_config.get("media_type"), context)
+        if isinstance(media_type, str) and media_type.strip():
+            headers.setdefault("Content-Type", media_type.strip())
+        upload_config["headers"] = headers
+        upload_node["node_config"] = upload_config
+        output = self._execute_network_http_request(
+            upload_node,
+            context,
+            upload_file_path=upload_path,
+        )
+        if output.get("status") == "succeeded":
+            output["uploaded_size"] = upload_path.stat().st_size
+        context.variables["last_network_upload"] = output
         return output
 
     def _resolve_network_context_registry(self, context: RuntimeContext) -> NetworkContextRegistry:
@@ -583,6 +666,167 @@ class RuntimeExecutorRegistry:
             lambda: registry.clear_session(session_id),
         )
         return registry
+
+    def _execute_network_response_assert(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        response = _resolve_value(node_config.get("response"), context)
+        if not isinstance(response, dict):
+            response = context.variables.get("last_network_response")
+        if not isinstance(response, dict):
+            return _failed_result(
+                node,
+                "network.response_required",
+                "network.response_assert requires a response input",
+            )
+
+        report: list[dict[str, object]] = []
+        status_code = response.get("status_code")
+        headers = response.get("headers")
+        normalized_headers = {
+            str(name).lower(): str(value)
+            for name, value in headers.items()
+        } if isinstance(headers, dict) else {}
+        body_ref = response.get("body_ref")
+        expected_status_codes = _resolve_value(node_config.get("expected_status_codes"), context)
+        if expected_status_codes is not None:
+            expected_codes = _normalize_expected_status_codes(expected_status_codes)
+            if expected_codes is None:
+                return _failed_result(
+                    node,
+                    "network.assertion_config_invalid",
+                    "expected_status_codes must be an integer or a list of integers",
+                )
+            if status_code not in expected_codes:
+                report.append(
+                    {
+                        "kind": "status_code",
+                        "expected": sorted(expected_codes),
+                        "actual": status_code,
+                    }
+                )
+
+        required_headers = _resolve_value(node_config.get("required_headers"), context)
+        if required_headers is not None:
+            if not isinstance(required_headers, dict):
+                return _failed_result(
+                    node,
+                    "network.assertion_config_invalid",
+                    "required_headers must be an object",
+                )
+            for name, expected_value in required_headers.items():
+                normalized_name = str(name).lower()
+                actual_value = normalized_headers.get(normalized_name)
+                if actual_value != str(expected_value):
+                    report.append(
+                        {
+                            "kind": "header",
+                            "header": normalized_name,
+                            "expected": str(expected_value),
+                            "actual": actual_value,
+                        }
+                    )
+
+        max_size_bytes = _resolve_value(node_config.get("max_size_bytes"), context)
+        if max_size_bytes is not None:
+            if not _is_non_negative_int(max_size_bytes):
+                return _failed_result(
+                    node,
+                    "network.assertion_config_invalid",
+                    "max_size_bytes must be a non-negative integer",
+                )
+            actual_size = body_ref.size_bytes if isinstance(body_ref, ResponseBodyRef) else None
+            if actual_size is None or actual_size > max_size_bytes:
+                report.append(
+                    {
+                        "kind": "size",
+                        "expected_max": max_size_bytes,
+                        "actual": actual_size,
+                    }
+                )
+
+        max_duration_ms = _resolve_value(node_config.get("max_duration_ms"), context)
+        if max_duration_ms is not None:
+            if not _is_non_negative_number(max_duration_ms):
+                return _failed_result(
+                    node,
+                    "network.assertion_config_invalid",
+                    "max_duration_ms must be a non-negative number",
+                )
+            actual_duration = response.get("duration_ms")
+            if not _is_non_negative_number(actual_duration) or actual_duration > max_duration_ms:
+                report.append(
+                    {
+                        "kind": "duration",
+                        "expected_max": max_duration_ms,
+                        "actual": actual_duration,
+                    }
+                )
+
+        body_contains = _resolve_value(node_config.get("body_contains"), context)
+        json_path_equals = _resolve_value(node_config.get("json_path_equals"), context)
+        if body_contains is not None or json_path_equals is not None:
+            if not isinstance(body_ref, ResponseBodyRef):
+                report.append({"kind": "body", "message": "response body is unavailable"})
+            else:
+                read_limit = _resolve_response_assert_read_limit(node_config, body_ref.size_bytes)
+                try:
+                    body_text = body_ref.read_text(max_bytes=read_limit)
+                except ResponseBodyTooLargeError:
+                    report.append(
+                        {
+                            "kind": "body",
+                            "message": "response body exceeds assertion read limit",
+                            "size_bytes": body_ref.size_bytes,
+                            "read_limit": read_limit,
+                        }
+                    )
+                else:
+                    if body_contains is not None:
+                        if not isinstance(body_contains, str):
+                            return _failed_result(
+                                node,
+                                "network.assertion_config_invalid",
+                                "body_contains must be a string",
+                            )
+                        if body_contains not in body_text:
+                            report.append({"kind": "body_contains", "expected": body_contains})
+                    if json_path_equals is not None:
+                        if not isinstance(json_path_equals, dict):
+                            return _failed_result(
+                                node,
+                                "network.assertion_config_invalid",
+                                "json_path_equals must be an object",
+                            )
+                        try:
+                            payload = json.loads(body_text)
+                        except json.JSONDecodeError:
+                            report.append({"kind": "json", "message": "response body is not valid JSON"})
+                        else:
+                            for json_path, expected_value in json_path_equals.items():
+                                actual_value, found = _resolve_simple_json_path(payload, str(json_path))
+                                if not found or actual_value != expected_value:
+                                    report.append(
+                                        {
+                                            "kind": "json_path",
+                                            "path": str(json_path),
+                                            "expected": expected_value,
+                                            "actual": actual_value if found else None,
+                                        }
+                                    )
+
+        output = {
+            "status": "succeeded" if not report else "failed",
+            "node_id": node["node_id"],
+            "passed": not report,
+            "failed": bool(report),
+            "response": response,
+            "assertion_report": report,
+        }
+        if report:
+            output["error_code"] = "network.response_assertion_failed"
+            output["message"] = "one or more network response assertions failed"
+        context.variables["last_network_assertion"] = output
+        return output
 
     def _resolve_network_runtime_service(self, context: RuntimeContext) -> NetworkRuntimeService:
         if self._network_runtime_service is not None:
@@ -3257,6 +3501,62 @@ def _failed_result(node: dict, error_code: str, message: str) -> dict:
         "error_code": error_code,
         "message": message,
     }
+
+
+def _normalize_expected_status_codes(value: object) -> set[int] | None:
+    if _is_non_negative_int(value):
+        return {value}
+    if not isinstance(value, list):
+        return None
+    if not value or not all(_is_non_negative_int(item) for item in value):
+        return None
+    return set(value)
+
+
+def _is_non_negative_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_non_negative_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+
+
+def _resolve_response_assert_read_limit(node_config: dict, body_size_bytes: int) -> int:
+    configured_limit = node_config.get("body_read_limit_bytes")
+    if _is_non_negative_int(configured_limit):
+        return configured_limit
+    return min(body_size_bytes, 4 * 1024 * 1024)
+
+
+def _resolve_simple_json_path(payload: object, json_path: str) -> tuple[object | None, bool]:
+    if not json_path.startswith("$"):
+        return None, False
+    current = payload
+    remaining = json_path[1:]
+    while remaining:
+        if remaining.startswith("."):
+            remaining = remaining[1:]
+            match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", remaining)
+            if match is None or not isinstance(current, dict):
+                return None, False
+            key = match.group(1)
+            if key not in current:
+                return None, False
+            current = current[key]
+            remaining = remaining[len(key) :]
+            continue
+        if remaining.startswith("["):
+            match = re.match(r"\[(\d+)\]", remaining)
+            if match is None or not isinstance(current, list):
+                return None, False
+            index = int(match.group(1))
+            if index >= len(current):
+                return None, False
+            current = current[index]
+            remaining = remaining[len(match.group(0)) :]
+            continue
+        return None, False
+    return current, True
 
 
 def _last_node_output(context: RuntimeContext) -> Any:

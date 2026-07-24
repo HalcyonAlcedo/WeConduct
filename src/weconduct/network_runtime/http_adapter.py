@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from time import perf_counter
 from urllib.parse import urljoin
 
 import httpx
@@ -42,8 +43,12 @@ class HttpxAdapter:
         operation: NetworkOperation,
         snapshot: NetworkContextSnapshot,
     ) -> NetworkResult:
+        started_at = perf_counter()
         try:
             headers = {**snapshot.headers, **operation.headers}
+            content = operation.content
+            if operation.upload_file_path is not None:
+                content = _iter_upload_file_chunks(operation.upload_file_path)
             request_url = operation.url
             for _ in range(10):
                 self._access_policy.validate_url(request_url)
@@ -51,7 +56,7 @@ class HttpxAdapter:
                     operation.method,
                     request_url,
                     headers=headers,
-                    content=operation.content,
+                    content=content,
                     timeout=operation.timeout_seconds,
                 ) as response:
                     redirect_target = response.headers.get("location")
@@ -66,6 +71,7 @@ class HttpxAdapter:
                         body_ref = await store.create_from_async_chunks(
                             response.aiter_bytes(),
                             content_type=response.headers.get("content-type"),
+                            force_file=operation.response_storage == "file",
                         )
                         break
                     request_url = urljoin(request_url, redirect_target)
@@ -75,6 +81,7 @@ class HttpxAdapter:
                     operation_id=operation.operation_id,
                     session_id=operation.session_id,
                     transport_error="network.too_many_redirects",
+                    duration_ms=(perf_counter() - started_at) * 1000,
                 )
         except asyncio.CancelledError:
             return NetworkResult(
@@ -82,6 +89,7 @@ class HttpxAdapter:
                 operation_id=operation.operation_id,
                 session_id=operation.session_id,
                 transport_error="network.cancelled",
+                duration_ms=(perf_counter() - started_at) * 1000,
             )
         except (httpx.HTTPError, ValueError) as exc:
             return NetworkResult(
@@ -89,6 +97,7 @@ class HttpxAdapter:
                 operation_id=operation.operation_id,
                 session_id=operation.session_id,
                 transport_error=str(exc),
+                duration_ms=(perf_counter() - started_at) * 1000,
             )
         return NetworkResult(
             status="succeeded",
@@ -98,6 +107,7 @@ class HttpxAdapter:
             headers=dict(response.headers),
             body_ref=body_ref,
             final_url=str(response.url),
+            duration_ms=(perf_counter() - started_at) * 1000,
         )
 
     def close_session(self, session_id: str) -> None:
@@ -113,3 +123,9 @@ class HttpxAdapter:
         self.close()
         if self._owns_client:
             await self._client.aclose()
+
+
+async def _iter_upload_file_chunks(path: Path, *, chunk_size: int = 64 * 1024):
+    with Path(path).open("rb") as handle:
+        while chunk := await asyncio.to_thread(handle.read, chunk_size):
+            yield chunk
