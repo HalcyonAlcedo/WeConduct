@@ -26,12 +26,7 @@ class NetworkRuntimeService:
         self._adapter = HttpxAdapter(
             response_root_directory=response_root_directory,
             access_policy=self._access_policy,
-            client=httpx.AsyncClient(
-                transport=transport,
-                trust_env=False,
-                follow_redirects=False,
-                http2=True,
-            ),
+            transport=transport,
         )
         self._client = self._adapter._client
         self._loop = asyncio.new_event_loop()
@@ -255,7 +250,6 @@ class NetworkRuntimeService:
         if active_tasks:
             await asyncio.gather(*active_tasks, return_exceptions=True)
         await self._adapter.aclose()
-        await self._client.aclose()
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)

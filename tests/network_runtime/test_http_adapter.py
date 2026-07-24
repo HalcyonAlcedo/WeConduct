@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import Future
+import socket
+from threading import Thread
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 
@@ -9,6 +13,7 @@ from weconduct.network_runtime.access_policy import NetworkAccessPolicy
 from weconduct.network_runtime.models import NetworkContextSnapshot, NetworkOperation
 from weconduct.network_runtime.models import NetworkResult
 from weconduct.network_runtime.resources import ResponseBodyRef
+from weconduct.network_runtime.transport import PinnedDnsAsyncHTTPTransport
 from weconduct.builtin_components import build_builtin_resource_registry
 from weconduct.runtime.engine import RuntimeContext, RuntimeExecutorRegistry
 
@@ -42,6 +47,75 @@ def test_httpx_adapter_returns_404_as_a_normal_network_response(tmp_path) -> Non
     assert result.set_cookies == {"sid": "from-response"}
     assert result.transport_error is None
     assert result.body_ref.read_text() == "missing"
+
+
+def test_httpx_adapter_default_client_uses_pinned_dns_transport(tmp_path) -> None:
+    adapter = HttpxAdapter(response_root_directory=tmp_path)
+    try:
+        assert isinstance(adapter._client._transport, PinnedDnsAsyncHTTPTransport)
+    finally:
+        adapter.close()
+        asyncio.run(adapter.aclose())
+
+
+def test_httpx_adapter_binds_connection_to_prevalidated_dns_answer(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, *_: object) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    hostname_resolution_count = 0
+    original_getaddrinfo = socket.getaddrinfo
+
+    def resolve_target(host: str, port: int | None, *args: object, **kwargs: object):
+        nonlocal hostname_resolution_count
+        if host == "rebind.example.test":
+            hostname_resolution_count += 1
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    socket.IPPROTO_TCP,
+                    "",
+                    ("127.0.0.1", port),
+                )
+            ]
+        return original_getaddrinfo(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve_target)
+    adapter = HttpxAdapter(
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allow_loopback=True),
+    )
+    try:
+        result = adapter.execute(
+            NetworkOperation(
+                operation_id="dns-pin",
+                session_id="dns-pin-session",
+                method="GET",
+                url=f"http://rebind.example.test:{server.server_port}/status",
+            ),
+            NetworkContextSnapshot(context_id="dns-pin-context"),
+        )
+    finally:
+        adapter.close()
+        asyncio.run(adapter.aclose())
+        server.shutdown()
+        thread.join(timeout=1)
+        server.server_close()
+
+    assert result.status == "succeeded"
+    assert result.status_code == 204
+    assert hostname_resolution_count == 1
 
 
 def test_httpx_adapter_revalidates_redirect_destinations(tmp_path) -> None:

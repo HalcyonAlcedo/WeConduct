@@ -485,7 +485,13 @@ def _local_http2_server(tmp_path: Path):
 
 def test_httpx_adapter_uses_local_http_proxy_without_direct_fallback(tmp_path: Path) -> None:
     with _local_http_proxy() as (proxy_url, observed):
-        adapter = HttpxAdapter(response_root_directory=tmp_path, access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}))
+        adapter = HttpxAdapter(
+            response_root_directory=tmp_path,
+            access_policy=NetworkAccessPolicy(
+                allow_loopback=True,
+                allowed_hostnames={"example.test"},
+            ),
+        )
         try:
             result = adapter.execute(
                 NetworkOperation(operation_id="proxy-1", session_id="session-proxy", method="GET", url="http://example.test/resource"),
@@ -496,7 +502,9 @@ def test_httpx_adapter_uses_local_http_proxy_without_direct_fallback(tmp_path: P
 
     assert result.status == "succeeded", result.transport_error
     assert result.status_code == 200
-    assert observed == ["http://example.test/resource"]
+    assert len(observed) == 1
+    assert observed[0].endswith("/resource")
+    assert "example.test" not in observed[0]
 
 
 def test_httpx_adapter_forwards_through_real_local_socks5_proxy(tmp_path: Path) -> None:

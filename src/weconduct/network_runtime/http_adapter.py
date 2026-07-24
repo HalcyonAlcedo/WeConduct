@@ -18,6 +18,7 @@ from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
 from .resources import ResponseBodyStore
 from .proxy import ProxyResolver
 from .tls import ResolvedTls, TlsResolver
+from .transport import PinnedDnsAsyncHTTPTransport
 
 
 class HttpxAdapter:
@@ -30,15 +31,10 @@ class HttpxAdapter:
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._transport = transport
-        self._client = client or httpx.AsyncClient(
-            transport=transport,
-            trust_env=False,
-            follow_redirects=False,
-            http2=True,
-        )
+        self._access_policy = access_policy or NetworkAccessPolicy()
+        self._client = client or self._build_client()
         self._owns_client = client is None
         self._response_root_directory = Path(response_root_directory)
-        self._access_policy = access_policy or NetworkAccessPolicy()
         self._stores: dict[str, ResponseBodyStore] = {}
         self._tls_clients: dict[tuple[object, ...], httpx.AsyncClient] = {}
 
@@ -73,7 +69,12 @@ class HttpxAdapter:
             resolved_tls = TlsResolver().resolve(tls_config)
             client = self._client_for_snapshot(snapshot, request_url, resolved_tls=resolved_tls)
             for _ in range(10):
-                self._access_policy.validate_url(request_url)
+                resolved_target = self._access_policy.validate_url(request_url)
+                request_extensions = (
+                    {"weconduct.resolved_network_target": resolved_target}
+                    if resolved_target is not None
+                    else None
+                )
                 async with client.stream(
                     operation.method,
                     request_url,
@@ -82,6 +83,7 @@ class HttpxAdapter:
                     cookies=snapshot.cookies,
                     content=content,
                     timeout=operation.timeout_seconds,
+                    extensions=request_extensions,
                 ) as response:
                     _verify_certificate_pins(response, resolved_tls.certificate_pins)
                     redirect_target = response.headers.get("location")
@@ -192,16 +194,37 @@ class HttpxAdapter:
         cached = self._tls_clients.get(key)
         if cached is not None:
             return cached
-        client = httpx.AsyncClient(
-            transport=self._transport,
-            verify=verify_argument,
-            proxy=resolved_proxy.url,
+        client = self._build_client(verify=verify_argument, proxy=resolved_proxy.url)
+        self._tls_clients[key] = client
+        return client
+
+    def _build_client(
+        self,
+        *,
+        verify: ssl.SSLContext | bool = True,
+        proxy: str | None = None,
+    ) -> httpx.AsyncClient:
+        if self._transport is not None:
+            return httpx.AsyncClient(
+                transport=self._transport,
+                verify=verify,
+                proxy=proxy,
+                trust_env=False,
+                follow_redirects=False,
+                http2=True,
+            )
+        return httpx.AsyncClient(
+            transport=PinnedDnsAsyncHTTPTransport(
+                access_policy=self._access_policy,
+                verify=verify,
+                proxy=proxy,
+                trust_env=False,
+                http2=True,
+            ),
             trust_env=False,
             follow_redirects=False,
             http2=True,
         )
-        self._tls_clients[key] = client
-        return client
 
     async def aclose(self) -> None:
         self.close()
