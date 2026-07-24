@@ -6027,153 +6027,6 @@ class CompilationWorkbenchService:
                 token_context=child_context.execution_token_context,
             )
 
-    def _execute_pending_input_request_node(
-        self,
-        *,
-        executable_node: dict,
-        runtime_context: RuntimeContext,
-    ) -> dict:
-        node_config = executable_node.get("node_config")
-        if not isinstance(node_config, dict):
-            node_config = {}
-        raw_fields = node_config.get("fields")
-        if not isinstance(raw_fields, list):
-            return self._record_runtime_node_output(
-                runtime_context=runtime_context,
-                executable_node=executable_node,
-                output={
-                    "status": "failed",
-                    "node_id": executable_node["node_id"],
-                    "error_code": "runtime.input_fields_invalid",
-                    "message": "input.request node_config.fields must be a list",
-                },
-            )
-        try:
-            fields = tuple(
-                PendingInputField(
-                    field_id=item["field_id"],
-                    label=item["label"],
-                    value_type=item.get("value_type", "string"),
-                    sensitive=item.get("sensitive", False),
-                    required=item.get("required", True),
-                    **(
-                        {"default_value": item["default_value"]}
-                        if "default_value" in item
-                        else {}
-                    ),
-                )
-                for item in raw_fields
-                if isinstance(item, dict)
-            )
-            if len(fields) != len(raw_fields):
-                raise ValueError("input.request fields must be objects")
-            session_id = runtime_context.execution_session_context.session_id
-            request = PendingInputRequest(
-                request_id=f"{session_id}:{executable_node['node_id']}",
-                execution_id=session_id,
-                node_id=executable_node["node_id"],
-                fields=fields,
-                timeout_seconds=node_config.get("timeout_seconds", 0),
-            )
-            snapshot = self._pending_input_service.create(request)
-        except (KeyError, TypeError, ValueError) as exc:
-            return self._record_runtime_node_output(
-                runtime_context=runtime_context,
-                executable_node=executable_node,
-                output={
-                    "status": "failed",
-                    "node_id": executable_node["node_id"],
-                    "error_code": "runtime.input_request_invalid",
-                    "message": str(exc),
-                },
-            )
-        self._runtime_stream_broker.publish_event(
-            session_id,
-            "runtime.pending_input",
-            {
-                "session_id": session_id,
-                "request_id": snapshot.request_id,
-                "node_id": snapshot.node_id,
-                "status": snapshot.status,
-                "fields": [
-                    {
-                        "field_id": field.field_id,
-                        "label": field.label,
-                        "value_type": field.value_type,
-                        "sensitive": field.sensitive,
-                        "required": field.required,
-                    }
-                    for field in snapshot.fields
-                ],
-            },
-        )
-        result = self._pending_input_service.wait(
-            snapshot.request_id,
-            runtime_context.cancellation_context,
-        )
-        if result.status == PendingInputStatus.CANCELLED:
-            return self._record_runtime_node_output(
-                runtime_context=runtime_context,
-                executable_node=executable_node,
-                output={
-                    "status": "cancelled",
-                    "node_id": executable_node["node_id"],
-                    "reason": runtime_context.cancellation_context.reason,
-                },
-            )
-        if result.status == PendingInputStatus.TIMED_OUT:
-            default_values = {
-                field.field_id: field.default_value
-                for field in request.fields
-                if field.has_default
-            }
-            if len(default_values) != len(request.fields):
-                return self._record_runtime_node_output(
-                    runtime_context=runtime_context,
-                    executable_node=executable_node,
-                    output={
-                        "status": "timed_out",
-                        "node_id": executable_node["node_id"],
-                        "request_id": snapshot.request_id,
-                        "port_id": self._resolve_runtime_control_output_port_id(
-                            executable_node=executable_node,
-                            semantic_slot="control.timeout",
-                        ),
-                    },
-                )
-            values = default_values
-        else:
-            values = dict(result.values)
-        sensitive_values = self._get_runtime_sensitive_value_service(session_id)
-        output = {
-            "status": "succeeded",
-            "node_id": executable_node["node_id"],
-            "request_id": snapshot.request_id,
-            "port_id": self._resolve_runtime_control_output_port_id(
-                executable_node=executable_node,
-                semantic_slot="control.next",
-            ),
-        }
-        for field in request.fields:
-            value = values[field.field_id]
-            output[field.field_id] = (
-                sensitive_values.create(
-                    value,
-                    scope_id=session_id,
-                    source="runtime_input",
-                )
-                if field.sensitive
-                else value
-            )
-        return self._record_runtime_node_output(
-            runtime_context=runtime_context,
-            executable_node=executable_node,
-            output=output,
-        )
-
-    def _get_runtime_sensitive_value_service(self, session_id: str) -> SensitiveValueService:
-        with self._runtime_execution_lock:
-            return self._runtime_sensitive_values.setdefault(session_id, SensitiveValueService())
 
         def queue_control_edges(
             *,
@@ -7019,6 +6872,154 @@ class CompilationWorkbenchService:
                 if child_context.browser_runtime is parent_runtime_context.browser_runtime:
                     child_context.browser_runtime = {}
                 child_context.close()
+
+    def _execute_pending_input_request_node(
+        self,
+        *,
+        executable_node: dict,
+        runtime_context: RuntimeContext,
+    ) -> dict:
+        node_config = executable_node.get("node_config")
+        if not isinstance(node_config, dict):
+            node_config = {}
+        raw_fields = node_config.get("fields")
+        if not isinstance(raw_fields, list):
+            return self._record_runtime_node_output(
+                runtime_context=runtime_context,
+                executable_node=executable_node,
+                output={
+                    "status": "failed",
+                    "node_id": executable_node["node_id"],
+                    "error_code": "runtime.input_fields_invalid",
+                    "message": "input.request node_config.fields must be a list",
+                },
+            )
+        try:
+            fields = tuple(
+                PendingInputField(
+                    field_id=item["field_id"],
+                    label=item["label"],
+                    value_type=item.get("value_type", "string"),
+                    sensitive=item.get("sensitive", False),
+                    required=item.get("required", True),
+                    **(
+                        {"default_value": item["default_value"]}
+                        if "default_value" in item
+                        else {}
+                    ),
+                )
+                for item in raw_fields
+                if isinstance(item, dict)
+            )
+            if len(fields) != len(raw_fields):
+                raise ValueError("input.request fields must be objects")
+            session_id = runtime_context.execution_session_context.session_id
+            request = PendingInputRequest(
+                request_id=f"{session_id}:{executable_node['node_id']}",
+                execution_id=session_id,
+                node_id=executable_node["node_id"],
+                fields=fields,
+                timeout_seconds=node_config.get("timeout_seconds", 0),
+            )
+            snapshot = self._pending_input_service.create(request)
+        except (KeyError, TypeError, ValueError) as exc:
+            return self._record_runtime_node_output(
+                runtime_context=runtime_context,
+                executable_node=executable_node,
+                output={
+                    "status": "failed",
+                    "node_id": executable_node["node_id"],
+                    "error_code": "runtime.input_request_invalid",
+                    "message": str(exc),
+                },
+            )
+        self._runtime_stream_broker.publish_event(
+            session_id,
+            "runtime.pending_input",
+            {
+                "session_id": session_id,
+                "request_id": snapshot.request_id,
+                "node_id": snapshot.node_id,
+                "status": snapshot.status,
+                "fields": [
+                    {
+                        "field_id": field.field_id,
+                        "label": field.label,
+                        "value_type": field.value_type,
+                        "sensitive": field.sensitive,
+                        "required": field.required,
+                    }
+                    for field in snapshot.fields
+                ],
+            },
+        )
+        result = self._pending_input_service.wait(
+            snapshot.request_id,
+            runtime_context.cancellation_context,
+        )
+        if result.status == PendingInputStatus.CANCELLED:
+            return self._record_runtime_node_output(
+                runtime_context=runtime_context,
+                executable_node=executable_node,
+                output={
+                    "status": "cancelled",
+                    "node_id": executable_node["node_id"],
+                    "reason": runtime_context.cancellation_context.reason,
+                },
+            )
+        if result.status == PendingInputStatus.TIMED_OUT:
+            default_values = {
+                field.field_id: field.default_value
+                for field in request.fields
+                if field.has_default
+            }
+            if len(default_values) != len(request.fields):
+                return self._record_runtime_node_output(
+                    runtime_context=runtime_context,
+                    executable_node=executable_node,
+                    output={
+                        "status": "timed_out",
+                        "node_id": executable_node["node_id"],
+                        "request_id": snapshot.request_id,
+                        "port_id": self._resolve_runtime_control_output_port_id(
+                            executable_node=executable_node,
+                            semantic_slot="control.timeout",
+                        ),
+                    },
+                )
+            values = default_values
+        else:
+            values = dict(result.values)
+        sensitive_values = self._get_runtime_sensitive_value_service(session_id)
+        output = {
+            "status": "succeeded",
+            "node_id": executable_node["node_id"],
+            "request_id": snapshot.request_id,
+            "port_id": self._resolve_runtime_control_output_port_id(
+                executable_node=executable_node,
+                semantic_slot="control.next",
+            ),
+        }
+        for field in request.fields:
+            value = values[field.field_id]
+            output[field.field_id] = (
+                sensitive_values.create(
+                    value,
+                    scope_id=session_id,
+                    source="runtime_input",
+                )
+                if field.sensitive
+                else value
+            )
+        return self._record_runtime_node_output(
+            runtime_context=runtime_context,
+            executable_node=executable_node,
+            output=output,
+        )
+
+    def _get_runtime_sensitive_value_service(self, session_id: str) -> SensitiveValueService:
+        with self._runtime_execution_lock:
+            return self._runtime_sensitive_values.setdefault(session_id, SensitiveValueService())
 
     def _get_component_call_stack(self, runtime_context: RuntimeContext) -> list[str]:
         call_stack = runtime_context.flow_runtime.get("component_call_stack", [])
@@ -11050,7 +11051,13 @@ class CompilationWorkbenchService:
                 return [], False
             return deepcopy(existing_ports), False
 
+        legacy_control_slot_aliases = {
+            "in.control": {"in.control", "control.previous", "control.in"},
+            "out.control": {"out.control", "control.next", "control.out"},
+        }
+
         def existing_port_id_for_slot(slot: str, direction: str, fallback: str) -> str:
+            accepted_slots = legacy_control_slot_aliases.get(slot, {slot})
             if isinstance(existing_ports, list):
                 for port in existing_ports:
                     if not isinstance(port, dict):
@@ -11059,7 +11066,7 @@ class CompilationWorkbenchService:
                         continue
                     semantic_slot = port.get("semantic_slot")
                     port_id = port.get("port_id")
-                    if semantic_slot == slot and isinstance(port_id, str) and port_id.strip():
+                    if semantic_slot in accepted_slots and isinstance(port_id, str) and port_id.strip():
                         return port_id.strip()
             return fallback
 
@@ -11170,12 +11177,18 @@ class CompilationWorkbenchService:
                     result[field_id] = {}
             return result
 
+        legacy_control_slot_aliases = {
+            "in.control": {"in.control", "control.previous", "control.in"},
+            "out.control": {"out.control", "control.next", "control.out"},
+        }
+
         def existing_port_id_for_slot(slot: str, direction: str, fallback: str) -> str:
+            accepted_slots = legacy_control_slot_aliases.get(slot, {slot})
             if isinstance(existing_ports, list):
                 for port in existing_ports:
                     if not isinstance(port, dict) or port.get("direction") != direction:
                         continue
-                    if port.get("semantic_slot") != slot:
+                    if port.get("semantic_slot") not in accepted_slots:
                         continue
                     port_id = port.get("port_id")
                     if isinstance(port_id, str) and port_id.strip():

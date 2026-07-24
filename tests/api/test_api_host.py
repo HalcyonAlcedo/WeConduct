@@ -1850,10 +1850,10 @@ def test_api_debug_continue_route_accepts_async_service_result(
         self: CompilationWorkbenchService,
         *,
         session_id: str,
-        settle_timeout_ms: int = 75,
+        settle_timeout_ms: int = 500,
     ) -> dict:
         assert session_id == "debug-session-mock"
-        assert settle_timeout_ms == 75
+        assert settle_timeout_ms == 500
         return {"status": "accepted", "debug_session": {"session_id": session_id, "status": "running"}}
 
     monkeypatch.setattr(CompilationWorkbenchService, "continue_debug_session", fail_sync_continue)

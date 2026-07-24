@@ -103,3 +103,25 @@ def test_python_run_schema_normalization_is_idempotent_and_removes_deleted_field
     assert "in.retry_count" not in reduced_slots
     assert "out.logged_in" not in reduced_slots
     assert "out.metadata.request_id" not in reduced_slots
+
+
+def test_python_run_preserves_legacy_control_port_ids_used_by_existing_edges() -> None:
+    service = CompilationWorkbenchService()
+    legacy_graph = _python_graph(
+        ports=[
+            {
+                "port_id": "control-in",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "control.previous",
+            },
+        ],
+    )
+
+    normalized = service.normalize_graph_document(legacy_graph)
+    node = normalized["graph_model"].nodes[0]
+    control_input = next(
+        port for port in node.ports if port.semantic_slot == "in.control"
+    )
+
+    assert control_input.port_id == "control-in"

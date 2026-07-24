@@ -1672,7 +1672,10 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     raise ValueError("invalid debug session path")
                 self._read_optional_json_request_body()
                 result = self.server.execute_debug_action(
-                    lambda: service.continue_debug_session_async(session_id=session_id)
+                    lambda: service.continue_debug_session_async(
+                        session_id=session_id,
+                        settle_timeout_ms=500,
+                    )
                 )
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
