@@ -4,6 +4,7 @@ import { useGraphStore } from '@/stores/graphStore'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useCompilationStore } from '@/stores/compilationStore'
 import { useResourceStore } from '@/stores/resourceStore'
+import NodePlaintextRiskNotice from '@/components/common/NodePlaintextRiskNotice.vue'
 import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
 import MonacoEditor from '@/components/input/MonacoEditor.vue'
 import { postFileDialog, postGraphNormalize } from '@/services/api'
@@ -229,7 +230,7 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
         <div class="mep-row"><label>{{ t('framework.metadataEditor.grid.expansionRole', '扩展角色') }}</label><span>{{ selectedNode.expansion_role }}</span></div>
       </div>
       <div v-if="selectedNode.node_kind === 'graph.call_subgraph'" class="mep-section"><h5>{{ t('framework.metadataEditor.subgraph.title', '目标子图 Schema') }}</h5><div v-if="!targetSubgraph" class="mep-empty-cfg">{{ t('framework.metadataEditor.subgraph.notFound', '未找到目标子图资源') }}</div><template v-else><div class="mep-schema-block"><h6>{{ t('framework.metadataEditor.subgraph.inputSchema', '输入 Schema') }}</h6><div v-for="f in schemaFields(targetSubgraph.input_schema)" :key="f.key" class="mep-schema-row"><span class="mep-schema-key">{{ f.key }}</span><span class="mep-schema-type">{{ f.type }}</span><span v-if="f.required" class="mep-schema-req">{{ t('framework.metadataEditor.schema.required', '必填') }}</span></div></div><div class="mep-schema-block"><h6>{{ t('framework.metadataEditor.subgraph.outputSchema', '输出 Schema') }}</h6><div v-for="f in schemaFields(targetSubgraph.output_schema)" :key="f.key" class="mep-schema-row"><span class="mep-schema-key">{{ f.key }}</span><span class="mep-schema-type">{{ f.type }}</span></div></div></template></div>
-      <div class="mep-section"><h5>{{ t('framework.metadataEditor.config.title', '节点配置 (node_config)') }}</h5><div class="mep-config">
+      <div class="mep-section"><h5>{{ t('framework.metadataEditor.config.title', '节点配置 (node_config)') }}</h5><NodePlaintextRiskNotice /><div class="mep-config">
         <!-- Generic fields -->
         <div v-for="f in paramFields.filter(p => p.type !== 'object-map' && p.type !== 'typed-value' && p.type !== 'branch-list' && p.type !== 'code' && p.type !== 'component-schema')" :key="f.key" class="mep-cfg-row"><label :title="f.key">{{ tr('nodegraph.base.field.' + f.key, f.key) }}</label>
           <span v-if="isFieldBound(f.key)" class="mep-bound">{{ getCfgVal(f.key) }} <em>⇠ {{ isFieldBound(f.key)!.nodeName }}:{{ isFieldBound(f.key)!.portId }}</em></span>

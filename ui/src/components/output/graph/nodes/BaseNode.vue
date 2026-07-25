@@ -9,6 +9,7 @@ import { useToastStore } from '@/stores/toastStore'
 import { PARAM_TEMPLATES } from '@/config/fieldTemplates'
 import type { FieldTemplate } from '@/config/fieldTemplates'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
+import NodePlaintextRiskNotice from '@/components/common/NodePlaintextRiskNotice.vue'
 import { t, tr, resourceLocale } from '@/i18n'
 
 const toast = useToastStore()
@@ -281,6 +282,7 @@ async function applyBranches() {
         <div class="vf-node-body">
           <span class="vf-node-label" :style="titleZoomStyle">{{ displayLabel }}</span>
           <div v-if="showDetail && graphPreferences.show_inline_config_summary && configSections.length" class="vf-config">
+            <NodePlaintextRiskNotice />
             <template v-for="(sec, si) in configSections" :key="si">
               <div v-if="sec.section" class="vf-cfg-section">{{ tr('nodegraph.base.field.' + sec.section, sec.section) }}</div>
               <div v-for="e in sec.rows" :key="e.path" class="vf-cfg-row">

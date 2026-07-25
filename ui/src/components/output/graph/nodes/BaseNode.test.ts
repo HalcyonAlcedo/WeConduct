@@ -105,4 +105,24 @@ describe('BaseNode', () => {
     expect(wrapper.find('.vf-disabled-badge').exists()).toBe(false)
     expect(wrapper.find('.vf-config').exists()).toBe(false)
   })
+
+  it('显示内联节点配置时持续显示明文敏感数据风险提示', () => {
+    workspaceSnapshotState.snapshot.graph_workspace.graph_preferences.show_inline_config_summary = true
+
+    const wrapper = mount(BaseNode, {
+      props: {
+        id: 'node-a',
+        data: {
+          label: '节点A',
+          nodeId: 'node-a',
+          kind: 'control',
+          expansionRole: 'main',
+          nodeKind: 'control.jump_to_step',
+          ports: [],
+        },
+      },
+    })
+
+    expect(wrapper.get('.node-plaintext-risk-notice').text()).toContain('节点配置会随项目保存')
+  })
 })
