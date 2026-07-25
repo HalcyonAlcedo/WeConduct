@@ -498,6 +498,7 @@ class NetworkRuntimeService:
                     scope_id=operation.session_id,
                     client_id=client_id,
                     scope=scope,
+                    snapshot=snapshot,
                 )
             else:
                 request = self._oauth_service.build_client_credentials_request(
@@ -511,6 +512,7 @@ class NetworkRuntimeService:
                     self._oauth_service.exchange_client_credentials,
                     request=request,
                     scope_id=operation.session_id,
+                    snapshot=snapshot,
                 )
             self._oauth_tokens[key] = token_state
         from weconduct.application.sensitive_values.models import SensitiveConsumer

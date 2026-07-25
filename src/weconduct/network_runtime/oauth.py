@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import ssl
 from time import time
 from typing import TYPE_CHECKING, Mapping
 from urllib.parse import urlsplit
@@ -10,6 +11,9 @@ from uuid import uuid4
 import httpx
 
 from .access_policy import NetworkAccessPolicy
+from .models import NetworkContextSnapshot
+from .proxy import ProxyResolver
+from .tls import TlsResolver, build_ssl_context, verify_response_certificate_pins
 
 if TYPE_CHECKING:
     from weconduct.application.sensitive_values.models import SensitiveRef
@@ -132,6 +136,7 @@ class OAuthService:
         *,
         request: OAuthClientCredentialsRequest,
         scope_id: str,
+        snapshot: NetworkContextSnapshot | None = None,
     ) -> OAuthTokenState:
         if not isinstance(request, OAuthClientCredentialsRequest):
             raise OAuthConfigurationError("oauth.request_invalid")
@@ -149,6 +154,7 @@ class OAuthService:
             request.token_url,
             data=data,
             auth=(request.client_id, secret),
+            snapshot=snapshot,
         )
         return self.accept_token_response(
             request_id=request.request_id,
@@ -164,6 +170,7 @@ class OAuthService:
         scope_id: str,
         client_id: str | None = None,
         scope: str | None = None,
+        snapshot: NetworkContextSnapshot | None = None,
     ) -> OAuthTokenState:
         parsed = urlsplit(token_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -176,7 +183,7 @@ class OAuthService:
         if isinstance(scope, str) and scope.strip():
             data["scope"] = scope.strip()
         auth = (client_id.strip(), "") if isinstance(client_id, str) and client_id.strip() else None
-        response = self._post_token(token_url, data=data, auth=auth)
+        response = self._post_token(token_url, data=data, auth=auth, snapshot=snapshot)
         return self.accept_token_response(
             request_id=f"oauth-refresh-{uuid4().hex}",
             scope_id=scope_id,
@@ -189,15 +196,24 @@ class OAuthService:
         *,
         data: Mapping[str, str],
         auth: tuple[str, str] | None,
+        snapshot: NetworkContextSnapshot | None,
     ) -> Mapping[str, object]:
         try:
             self._access_policy.validate_url(token_url)
+            tls_config = snapshot.tls if isinstance(getattr(snapshot, "tls", None), dict) else {}
+            resolved_tls = TlsResolver().resolve(tls_config)
+            verify: ssl.SSLContext | bool = build_ssl_context(resolved_tls)
+            proxy_config = snapshot.proxy if isinstance(getattr(snapshot, "proxy", None), dict) else {"mode": "direct"}
+            resolved_proxy = ProxyResolver().resolve(proxy_config, token_url)
             with httpx.Client(
                 transport=self._transport,
                 timeout=self._timeout_seconds,
+                verify=verify,
+                proxy=resolved_proxy.url,
                 trust_env=False,
             ) as client:
                 response = client.post(token_url, data=dict(data), auth=auth)
+            verify_response_certificate_pins(response, resolved_tls.certificate_pins)
         except (httpx.HTTPError, ValueError) as exc:
             raise OAuthConfigurationError("oauth.token_exchange_failed") from exc
         if response.status_code < 200 or response.status_code >= 300:
