@@ -4,6 +4,7 @@ from concurrent.futures import Future
 
 from weconduct.network_runtime.errors import build_network_error
 from weconduct.network_runtime.models import NetworkContextSnapshot, NetworkOperation, NetworkResult
+from weconduct.application.sensitive_values.service import SensitiveValueService
 from weconduct.runtime.engine import RuntimeContext, RuntimeExecutorRegistry
 
 
@@ -60,3 +61,16 @@ def test_http_request_node_preserves_structured_network_failure() -> None:
         "network_context_id": output["network_error"]["network_context_id"],
         "retry_attempt": 1,
     }
+
+
+def test_runtime_executor_passes_sensitive_service_to_owned_network_runtime() -> None:
+    sensitive_values = SensitiveValueService()
+    context = RuntimeContext()
+    context.flow_runtime["sensitive_value_service"] = sensitive_values
+    registry = RuntimeExecutorRegistry()
+
+    service = registry._resolve_network_runtime_service(context)  # type: ignore[attr-defined]
+    try:
+        assert service._sensitive_values is sensitive_values  # type: ignore[attr-defined]
+    finally:
+        context.close()

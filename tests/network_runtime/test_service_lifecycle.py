@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ssl
 from threading import Thread
@@ -12,6 +13,7 @@ import httpx
 from weconduct.network_runtime.models import NetworkContextSnapshot, NetworkOperation
 from weconduct.network_runtime.access_policy import NetworkAccessPolicy
 from weconduct.network_runtime.service import NetworkRuntimeService
+from weconduct.application.sensitive_values.service import SensitiveValueService
 
 
 @contextmanager
@@ -98,6 +100,149 @@ def test_network_runtime_service_executes_on_its_owned_loop_and_closes_cleanly(t
 
     assert result.status_code == 204
     assert service.is_closed is True
+
+
+def test_network_runtime_service_resolves_and_caches_oauth_client_credentials(tmp_path) -> None:
+    observed: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request)
+        if request.url.path == "/token":
+            return httpx.Response(
+                200,
+                request=request,
+                json={"access_token": "oauth-access-token", "token_type": "Bearer", "expires_in": 60},
+            )
+        assert request.headers["Authorization"] == "Bearer oauth-access-token"
+        return httpx.Response(204, request=request)
+
+    sensitive_values = SensitiveValueService()
+    secret = sensitive_values.create(
+        "oauth-client-secret",
+        scope_id="oauth-session",
+        source="runtime_input",
+    )
+    service = NetworkRuntimeService(
+        transport=httpx.MockTransport(handler),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+        sensitive_values=sensitive_values,
+    )
+    snapshot = NetworkContextSnapshot(
+        context_id="oauth-context",
+        auth={
+            "type": "oauth_client_credentials",
+            "token_url": "https://example.test/token",
+            "client_id": "oauth-client",
+            "client_secret": secret,
+            "scope": "read",
+        },
+    )
+    try:
+        for operation_id in ("oauth-request-1", "oauth-request-2"):
+            result = service.submit(
+                NetworkOperation(
+                    operation_id=operation_id,
+                    session_id="oauth-session",
+                    method="GET",
+                    url="https://example.test/resource",
+                ),
+                snapshot,
+            ).result(timeout=2)
+            assert result.status_code == 204
+    finally:
+        service.close()
+
+    assert [request.url.path for request in observed] == ["/token", "/resource", "/resource"]
+    assert all("oauth-client-secret" not in repr(request) for request in observed)
+
+
+def test_network_runtime_service_returns_structured_error_for_invalid_oauth_config(tmp_path) -> None:
+    service = NetworkRuntimeService(
+        transport=httpx.MockTransport(lambda request: httpx.Response(204, request=request)),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+        sensitive_values=SensitiveValueService(),
+    )
+    try:
+        result = service.submit(
+            NetworkOperation(
+                operation_id="oauth-invalid",
+                session_id="oauth-invalid-session",
+                method="GET",
+                url="https://example.test/resource",
+                node_id="oauth-invalid-node",
+            ),
+            NetworkContextSnapshot(
+                context_id="oauth-invalid-context",
+                auth={"type": "oauth_client_credentials"},
+            ),
+        ).result(timeout=2)
+    finally:
+        service.close()
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.error_code == "network.oauth_failed"
+    assert result.error.node_id == "oauth-invalid-node"
+    assert result.error.network_context_id == "oauth-invalid-context"
+
+
+def test_network_runtime_service_refreshes_cached_oauth_token(tmp_path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/token":
+            grant_type = request.content.decode("utf-8")
+            if "refresh_token" in grant_type:
+                return httpx.Response(
+                    200,
+                    request=request,
+                    json={"access_token": "refreshed-access", "expires_in": 60},
+                )
+            return httpx.Response(
+                200,
+                request=request,
+                json={"access_token": "initial-access", "refresh_token": "refresh-secret", "expires_in": 60},
+            )
+        return httpx.Response(204, request=request)
+
+    sensitive_values = SensitiveValueService()
+    client_secret = sensitive_values.create("client-secret", scope_id="refresh-session", source="runtime_input")
+    service = NetworkRuntimeService(
+        transport=httpx.MockTransport(handler),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+        sensitive_values=sensitive_values,
+    )
+    snapshot = NetworkContextSnapshot(
+        context_id="refresh-context",
+        auth={
+            "type": "oauth_client_credentials",
+            "token_url": "https://example.test/token",
+            "client_id": "oauth-client",
+            "client_secret": client_secret,
+        },
+    )
+    try:
+        first = service.submit(
+            NetworkOperation("oauth-refresh-1", "refresh-session", "GET", "https://example.test/resource"),
+            snapshot,
+        ).result(timeout=2)
+        key = ("refresh-session", "refresh-context")
+        service._oauth_tokens[key] = replace(service._oauth_tokens[key], expires_at=0)  # type: ignore[attr-defined]
+        second = service.submit(
+            NetworkOperation("oauth-refresh-2", "refresh-session", "GET", "https://example.test/resource"),
+            snapshot,
+        ).result(timeout=2)
+    finally:
+        service.close()
+
+    assert first.status_code == second.status_code == 204
+    assert [request.url.path for request in requests] == ["/token", "/resource", "/token", "/resource"]
+    assert "grant_type=refresh_token" in requests[2].content.decode("utf-8")
+    assert requests[3].headers["Authorization"] == "Bearer refreshed-access"
 
 
 def test_network_runtime_service_cancels_active_session_requests(tmp_path) -> None:
@@ -279,6 +424,55 @@ def test_network_runtime_service_applies_auth_and_tls_snapshot_to_sse_handle(
     assert captured["headers"] == {"Authorization": "Bearer stream-token"}
     assert isinstance(captured["ssl_context"], ssl.SSLContext)
     assert captured["certificate_pins"] == ("a" * 64,)
+
+
+def test_network_runtime_service_applies_oauth_credentials_to_sse_handle(tmp_path, monkeypatch) -> None:
+    import weconduct.network_runtime.service as service_module
+
+    captured: dict[str, object] = {}
+
+    class StubSSEClientHandle:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def start(self, *, timeout_seconds: float) -> dict[str, object]:
+            return {"status_code": 200, "headers": {}, "url": "https://example.test/events"}
+
+        def close(self) -> None:
+            return None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/token"
+        return httpx.Response(200, request=request, json={"access_token": "stream-token", "expires_in": 60})
+
+    monkeypatch.setattr(service_module, "SSEClientHandle", StubSSEClientHandle)
+    sensitive_values = SensitiveValueService()
+    secret = sensitive_values.create("stream-secret", scope_id="oauth-sse", source="runtime_input")
+    service = NetworkRuntimeService(
+        transport=httpx.MockTransport(handler),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+        sensitive_values=sensitive_values,
+    )
+    try:
+        handle, _ = service.connect_sse(
+            session_id="oauth-sse",
+            snapshot=NetworkContextSnapshot(
+                context_id="oauth-sse-context",
+                auth={
+                    "type": "oauth_client_credentials",
+                    "token_url": "https://example.test/token",
+                    "client_id": "stream-client",
+                    "client_secret": secret,
+                },
+            ),
+            url="https://example.test/events",
+        )
+        service.release_connection("oauth-sse", handle)
+    finally:
+        service.close()
+
+    assert captured["headers"] == {"Authorization": "Bearer stream-token"}
 
 
 def test_network_runtime_service_real_local_http_semantics(tmp_path) -> None:

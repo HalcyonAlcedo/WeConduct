@@ -1758,6 +1758,7 @@ class RuntimeExecutorRegistry:
             access_policy=NetworkAccessPolicy(
                 allow_loopback=self._is_local_network_access_allowed(),
             ),
+            sensitive_values=context.flow_runtime.get("sensitive_value_service"),
         )
         context.flow_runtime["network_runtime_service"] = service
         context.register_cleanup("network-runtime-service", service.close)

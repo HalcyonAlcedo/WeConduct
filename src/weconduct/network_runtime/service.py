@@ -8,7 +8,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 import random
 from threading import Event, RLock, Thread
-from time import monotonic
+from time import monotonic, time
 from typing import Mapping
 
 import httpx
@@ -19,6 +19,7 @@ from .errors import build_network_error
 from .http_adapter import HttpxAdapter
 from .long_connection import SSEClientHandle, WebSocketClientHandle
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
+from .oauth import OAuthService, OAuthTokenState
 from .proxy import ProxyResolver
 from .tls import TlsResolver, build_ssl_context
 
@@ -172,6 +173,7 @@ class NetworkRuntimeService:
         transport: httpx.AsyncBaseTransport | httpx.BaseTransport | None = None,
         response_root_directory: Path,
         access_policy: NetworkAccessPolicy | None = None,
+        sensitive_values: object | None = None,
     ) -> None:
         self._access_policy = access_policy or NetworkAccessPolicy()
         self._adapter = HttpxAdapter(
@@ -186,6 +188,17 @@ class NetworkRuntimeService:
         self._lock = RLock()
         self._active_tasks: dict[str, set[asyncio.Task[NetworkResult]]] = {}
         self._long_connections: dict[str, set[object]] = {}
+        self._sensitive_values = sensitive_values
+        self._oauth_service = (
+            OAuthService(
+                sensitive_values=sensitive_values,  # type: ignore[arg-type]
+                transport=transport,  # type: ignore[arg-type]
+                access_policy=self._access_policy,
+            )
+            if sensitive_values is not None
+            else None
+        )
+        self._oauth_tokens: dict[tuple[str, str | None], OAuthTokenState] = {}
         self._thread = Thread(target=self._run_loop, daemon=True, name="weconduct-network")
         self._thread.start()
         self._ready.wait(timeout=1)
@@ -213,6 +226,7 @@ class NetworkRuntimeService:
 
     def cancel_session(self, session_id: str) -> None:
         self._close_session_connections(session_id)
+        self._clear_session_oauth(session_id)
         with self._lock:
             if self._closed:
                 return
@@ -220,6 +234,7 @@ class NetworkRuntimeService:
 
     def close(self) -> None:
         self._close_all_connections()
+        self._oauth_tokens.clear()
         with self._lock:
             if self._closed:
                 return
@@ -242,12 +257,24 @@ class NetworkRuntimeService:
         max_queue_size: int = 100,
     ) -> tuple[SSEClientHandle, dict[str, object]]:
         self._require_open()
-        proxy = self._resolve_proxy(snapshot, url)
-        resolved_tls = TlsResolver().resolve(snapshot.tls if isinstance(snapshot.tls, dict) else {})
+        effective_snapshot = self._resolve_oauth_snapshot_sync(
+            operation=NetworkOperation(
+                operation_id="network.sse_connect",
+                session_id=session_id,
+                method="GET",
+                url=url,
+            ),
+            snapshot=snapshot,
+            timeout_seconds=timeout_seconds,
+        )
+        proxy = self._resolve_proxy(effective_snapshot, url)
+        resolved_tls = TlsResolver().resolve(
+            effective_snapshot.tls if isinstance(effective_snapshot.tls, dict) else {}
+        )
         handle = SSEClientHandle(
             url=url,
-            headers=self._effective_headers(snapshot, headers),
-            params={**dict(snapshot.query), **(params or {})},
+            headers=self._effective_headers(effective_snapshot, headers),
+            params={**dict(effective_snapshot.query), **(params or {})},
             proxy=proxy,
             timeout_seconds=timeout_seconds,
             max_queue_size=max_queue_size,
@@ -274,11 +301,23 @@ class NetworkRuntimeService:
         subprotocols: list[str] | None = None,
     ) -> tuple[WebSocketClientHandle, dict[str, object]]:
         self._require_open()
-        proxy = self._resolve_proxy(snapshot, url)
-        resolved_tls = TlsResolver().resolve(snapshot.tls if isinstance(snapshot.tls, dict) else {})
+        effective_snapshot = self._resolve_oauth_snapshot_sync(
+            operation=NetworkOperation(
+                operation_id="network.websocket_connect",
+                session_id=session_id,
+                method="GET",
+                url=url,
+            ),
+            snapshot=snapshot,
+            timeout_seconds=timeout_seconds,
+        )
+        proxy = self._resolve_proxy(effective_snapshot, url)
+        resolved_tls = TlsResolver().resolve(
+            effective_snapshot.tls if isinstance(effective_snapshot.tls, dict) else {}
+        )
         handle = WebSocketClientHandle(
             url=url,
-            headers=self._effective_headers(snapshot, headers),
+            headers=self._effective_headers(effective_snapshot, headers),
             proxy=proxy,
             timeout_seconds=timeout_seconds,
             subprotocols=subprotocols,
@@ -380,10 +419,27 @@ class NetworkRuntimeService:
         can_retry = _retry_is_allowed(operation, snapshot, policy)
         result: NetworkResult | None = None
         for attempt_index in range(policy["max_attempts"]):
+            try:
+                effective_snapshot = await self._resolve_oauth_snapshot(operation, snapshot)
+            except ValueError as exc:
+                error = build_network_error(
+                    exc,
+                    operation=operation,
+                    snapshot=snapshot,
+                    error_code="network.oauth_failed",
+                    retry_attempt=attempt_index + 1,
+                )
+                return NetworkResult(
+                    status="failed",
+                    operation_id=operation.operation_id,
+                    session_id=operation.session_id,
+                    transport_error=error.error_code,
+                    error=error,
+                )
             result = _with_retry_attempt(
-                await self._adapter.execute_async(operation, snapshot),
+                await self._adapter.execute_async(operation, effective_snapshot),
                 operation=operation,
-                snapshot=snapshot,
+                snapshot=effective_snapshot,
                 retry_attempt=attempt_index + 1,
             )
             if not can_retry or not _is_retryable_result(result, policy):
@@ -411,6 +467,79 @@ class NetworkRuntimeService:
         for task in tuple(self._active_tasks.get(session_id, ())):
             task.cancel()
         self._adapter.close_session(session_id)
+
+    async def _resolve_oauth_snapshot(
+        self,
+        operation: NetworkOperation,
+        snapshot: NetworkContextSnapshot,
+    ) -> NetworkContextSnapshot:
+        auth = snapshot.auth
+        if not isinstance(auth, Mapping):
+            return snapshot
+        auth_type = auth.get("type")
+        if not isinstance(auth_type, str) or auth_type.strip().lower() != "oauth_client_credentials":
+            return snapshot
+        if self._oauth_service is None or self._sensitive_values is None:
+            raise ValueError("network.oauth_sensitive_values_unavailable")
+        key = (operation.session_id, snapshot.context_id)
+        token_state = self._oauth_tokens.get(key)
+        if token_state is None or (
+            token_state.expires_at is not None and token_state.expires_at <= time() + 5
+        ):
+            token_url = auth.get("token_url")
+            client_id = auth.get("client_id")
+            client_secret = auth.get("client_secret")
+            scope = auth.get("scope")
+            if token_state is not None and token_state.refresh_token is not None:
+                token_state = await asyncio.to_thread(
+                    self._oauth_service.refresh_access_token,
+                    token_url=token_url,
+                    refresh_token=token_state.refresh_token,
+                    scope_id=operation.session_id,
+                    client_id=client_id,
+                    scope=scope,
+                )
+            else:
+                request = self._oauth_service.build_client_credentials_request(
+                    token_url=token_url,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    scope=scope,
+                    scope_id=operation.session_id,
+                )
+                token_state = await asyncio.to_thread(
+                    self._oauth_service.exchange_client_credentials,
+                    request=request,
+                    scope_id=operation.session_id,
+                )
+            self._oauth_tokens[key] = token_state
+        from weconduct.application.sensitive_values.models import SensitiveConsumer
+
+        access_token = self._sensitive_values.resolve(
+            token_state.access_token,
+            consumer=SensitiveConsumer.NETWORK_RUNTIME,
+        )
+        if not isinstance(access_token, str) or not access_token:
+            raise ValueError("network.oauth_access_token_invalid")
+        return replace(snapshot, auth={"type": "bearer", "token": access_token})
+
+    def _resolve_oauth_snapshot_sync(
+        self,
+        *,
+        operation: NetworkOperation,
+        snapshot: NetworkContextSnapshot,
+        timeout_seconds: float,
+    ) -> NetworkContextSnapshot:
+        future = asyncio.run_coroutine_threadsafe(
+            self._resolve_oauth_snapshot(operation, snapshot),
+            self._loop,
+        )
+        return future.result(timeout=timeout_seconds)
+
+    def _clear_session_oauth(self, session_id: str) -> None:
+        for key in tuple(self._oauth_tokens):
+            if key[0] == session_id:
+                self._oauth_tokens.pop(key, None)
 
     def _register_long_connection(self, session_id: str, handle: object) -> None:
         with self._lock:
