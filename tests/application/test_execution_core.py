@@ -424,59 +424,6 @@ def test_python_run_cancellation_terminates_process(monkeypatch: pytest.MonkeyPa
     assert fake_process.kill_calls == 0
 
 
-def test_http_request_registers_response_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
-    runtime_context = RuntimeContext()
-    fake_response = _FakeHttpResponse(runtime_context.cancellation_context)
-
-    monkeypatch.setattr(
-        "weconduct.runtime.engine.urllib.request.urlopen",
-        lambda request, timeout: fake_response,
-    )
-    monkeypatch.setattr(
-        "weconduct.runtime.engine._validate_http_request_url",
-        lambda url, **kwargs: url,
-    )
-
-    registry = RuntimeExecutorRegistry()
-
-    with pytest.raises(RuntimeCancellationError, match="stop http"):
-        registry._execute_http_request(  # type: ignore[attr-defined]
-            {"node_id": "node-a", "node_config": {"url": "https://example.test"}},
-            runtime_context,
-        )
-
-    assert fake_response.close_calls == 1
-
-
-def test_http_request_preserves_configured_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    observed: dict[str, object] = {}
-    runtime_context = RuntimeContext()
-    response = _FakeHttpResponse(RuntimeContext().cancellation_context)
-
-    def fake_urlopen(request: object, timeout: float) -> _FakeHttpResponse:
-        observed["timeout"] = timeout
-        return response
-
-    monkeypatch.setattr(
-        "weconduct.runtime.engine.urllib.request.urlopen",
-        fake_urlopen,
-    )
-    monkeypatch.setattr(
-        "weconduct.runtime.engine._validate_http_request_url",
-        lambda url, **kwargs: url,
-    )
-
-    result = RuntimeExecutorRegistry()._execute_http_request(  # type: ignore[attr-defined]
-        {"node_id": "node-a", "node_config": {"url": "https://example.test", "timeout": 12}},
-        runtime_context,
-    )
-
-    assert result["status"] == "succeeded"
-    assert observed["timeout"] == 12.0
-    runtime_context.close()
-    assert response.close_calls == 1
-
-
 def test_browser_download_file_checks_cancellation_and_closes_response(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -85,19 +85,15 @@ class SSEConnection:
         if self._closed:
             return
         self._closed = True
-        # Closing must never wait behind a full event queue.  Pending consumers
-        # should be woken immediately; queued events are session-local and are
-        # intentionally discarded once the handle is closed.
-        while not self._queue.empty():
-            try:
-                self._queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
+        # Events already received before the peer closes remain available to
+        # pull-based nodes. A later receive observes the closed state after
+        # draining them, while an empty queue still receives an immediate wakeup.
         try:
-            self._queue.put_nowait(None)
+            if self._queue.empty():
+                self._queue.put_nowait(None)
         except asyncio.QueueFull:
-            # A concurrent consumer can only make space after this point; the
-            # closed flag still makes subsequent receive calls fail fast.
+            # A pending consumer can drain the queued event; its next receive
+            # sees the closed flag and fails without waiting.
             pass
 
     @staticmethod

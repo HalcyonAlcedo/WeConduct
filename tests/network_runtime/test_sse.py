@@ -75,6 +75,22 @@ def test_sse_connection_close_wakes_receive() -> None:
     asyncio.run(run())
 
 
+def test_sse_connection_keeps_queued_events_available_after_stream_closes() -> None:
+    async def run() -> None:
+        connection = SSEConnection()
+        await connection.feed({"id": "queued-event", "data": "queued-payload"})
+        await connection.close()
+
+        event = await connection.receive()
+
+        assert event.event_id == "queued-event"
+        assert event.data == "queued-payload"
+        with pytest.raises(SSEConnectionClosed, match="network.sse_closed"):
+            await connection.receive()
+
+    asyncio.run(run())
+
+
 def test_sse_connection_consumes_real_httpx_sse_stream() -> None:
     async def run() -> None:
         with _sse_server() as url:
