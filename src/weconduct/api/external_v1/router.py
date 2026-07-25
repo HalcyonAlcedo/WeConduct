@@ -2,14 +2,19 @@ from __future__ import annotations
 
 from hashlib import sha256
 from http import HTTPStatus
-import json
 from typing import Callable, Mapping
 from urllib.parse import urlparse
 import uuid
 
-from weconduct.application.operations import HostOperationService, OperationRegistryError
+from weconduct.application.operations import (
+    HostOperationService,
+    OperationCaller,
+    OperationRegistryError,
+)
+from weconduct.application.operations.models import IdempotencyCapability
 
 from .auth import ExternalApiAuthenticator
+from .events import ExternalExecutionEventStream
 
 
 def resolve_external_operation(
@@ -87,7 +92,7 @@ class ExternalV1Router:
             return True
 
         payload: dict[str, object] = {}
-        idempotency_cache_key: str | None = None
+        idempotency_key: str | None = None
         service = None
         try:
             service = handler._get_service()
@@ -99,54 +104,67 @@ class ExternalV1Router:
                     "external_api_project_allowed_roots",
                     (),
                 ),
+                audit_trail=getattr(handler.server, "external_api_audit_trail", None),
+                idempotency_store=getattr(
+                    handler.server,
+                    "external_api_idempotency_store",
+                    None,
+                ),
             )
             request_id = handler.headers.get("X-Request-ID") or f"request-{uuid.uuid4().hex[:12]}"
+            caller = self._build_caller()
             operation_id, payload = resolve_external_operation(
                 method=method,
                 request_path=request_path,
                 read_payload=self._read_optional_json_body_or_empty,
             )
             if operation_id == "execution.events.subscribe":
-                self._write_execution_events(service=service, execution_id=payload["execution_id"], request_id=request_id)
+                operation_service.invoke(operation_id, payload, caller=caller)
+                ExternalExecutionEventStream(handler=handler, service=service).write(
+                    execution_id=payload["execution_id"],
+                    request_id=request_id,
+                )
                 return True
             descriptor = operation_service.describe(operation_id)
-            idempotency_cache_key = self._get_idempotency_cache_key(operation_id=operation_id, enabled=descriptor.idempotency_capability)
-            if operation_id == "project.save" and idempotency_cache_key is None:
+            idempotency_key = self._get_idempotency_key(
+                enabled=descriptor.idempotency_capability is IdempotencyCapability.SUPPORTED,
+            )
+            if operation_id == "project.save" and idempotency_key is None:
                 raise OperationRegistryError(
                     "operation.idempotency_key_required",
                     "Idempotency-Key is required for project.save",
                     operation_id=operation_id,
                 )
-            if idempotency_cache_key is not None:
-                replay = handler.server.begin_external_idempotency(idempotency_cache_key)
-                if replay is not None:
-                    state, status_value, cached_payload = replay
-                    if state == "in_progress":
-                        handler._write_json(HTTPStatus.CONFLICT, {"error_code": "operation.in_progress", "message": "an identical operation is already in progress", "request_id": request_id, "operation_id": operation_id})
-                    else:
-                        handler._write_json(HTTPStatus(status_value), cached_payload)
-                    return True
-            result = operation_service.execute(operation_id, payload)
+            result = operation_service.invoke(
+                operation_id,
+                payload,
+                caller=caller,
+                idempotency_key=idempotency_key,
+            )
             response_status = HTTPStatus.ACCEPTED if operation_id in {"execution.start", "pending_input.submit"} else HTTPStatus.OK
-            response_payload = {"operation_id": operation_id, "contract_version": descriptor.contract_version, "request_id": request_id, "result": result}
-            if idempotency_cache_key is not None:
-                handler.server.complete_external_idempotency(idempotency_cache_key, status=response_status, payload=response_payload)
+            response_payload = {
+                "operation_id": operation_id,
+                "contract_version": descriptor.contract_version,
+                "request_id": request_id,
+                "idempotency_replayed": result.replayed,
+                "result": dict(result),
+            }
             handler._write_json(response_status, response_payload)
         except OperationRegistryError as exc:
             status = {
                 "operation.not_found": HTTPStatus.NOT_FOUND,
                 "operation.input_invalid": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "operation.path_denied": HTTPStatus.FORBIDDEN,
+                "operation.permission_denied": HTTPStatus.FORBIDDEN,
                 "operation.state_conflict": HTTPStatus.CONFLICT,
                 "graph.revision_conflict": HTTPStatus.CONFLICT,
+                "operation.in_progress": HTTPStatus.CONFLICT,
                 "operation.idempotency_key_required": HTTPStatus.PRECONDITION_REQUIRED,
                 "operation.not_available": HTTPStatus.NOT_IMPLEMENTED,
             }.get(exc.error_code, HTTPStatus.INTERNAL_SERVER_ERROR)
             if exc.error_code == "operation.state_conflict" and exc.details.get("state") == "timed_out":
                 status = HTTPStatus.GONE
             response_payload = {"error_code": exc.error_code, "message": str(exc), "details": dict(exc.details), "request_id": handler.headers.get("X-Request-ID"), "operation_id": exc.operation_id}
-            if idempotency_cache_key is not None:
-                handler.server.complete_external_idempotency(idempotency_cache_key, status=status, payload=response_payload)
             handler._write_json(status, response_payload)
         except ValueError as exc:
             error_code = str(exc) if str(exc).startswith("execution.") else "operation.input_invalid"
@@ -161,8 +179,6 @@ class ExternalV1Router:
                     except (ValueError, KeyError):
                         details = {}
             response_payload = {"error_code": error_code, "message": str(exc), "details": details, "request_id": handler.headers.get("X-Request-ID")}
-            if idempotency_cache_key is not None:
-                handler.server.complete_external_idempotency(idempotency_cache_key, status=status, payload=response_payload)
             handler._write_json(status, response_payload)
         return True
 
@@ -170,60 +186,17 @@ class ExternalV1Router:
         payload = self._handler._read_optional_json_request_body()
         return payload if isinstance(payload, dict) else {}
 
-    def _get_idempotency_cache_key(self, *, operation_id: str, enabled: bool) -> str | None:
+    def _get_idempotency_key(self, *, enabled: bool) -> str | None:
         if not enabled:
             return None
         raw_key = self._handler.headers.get("Idempotency-Key")
         if not isinstance(raw_key, str) or not (idempotency_key := raw_key.strip()):
             return None
-        _, _, caller_token = self._handler.headers.get("Authorization", "").partition(" ")
-        if not caller_token:
-            return None
-        return f"{sha256(caller_token.encode('utf-8')).hexdigest()}:{operation_id}:{idempotency_key}"
+        return idempotency_key
 
-    def _write_execution_events(self, *, service: object, execution_id: object, request_id: str) -> None:
-        if not isinstance(execution_id, str):
-            raise ValueError("execution.event_cursor_invalid")
-        raw_cursor = self._handler.headers.get("Last-Event-ID")
-        if raw_cursor is None or not raw_cursor.strip():
-            after_event_id = 0
-        else:
-            try:
-                after_event_id = int(raw_cursor.strip())
-            except ValueError as exc:
-                raise ValueError("execution.event_cursor_invalid") from exc
-            if after_event_id < 0:
-                raise ValueError("execution.event_cursor_invalid")
-        replay = service.get_runtime_stream_events_since(session_id=execution_id, after_event_id=after_event_id)
-        handler = self._handler
-        handler.send_response(HTTPStatus.OK.value)
-        handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        handler.send_header("Cache-Control", "no-cache")
-        handler.send_header("Connection", "close")
-        handler.end_headers()
-        handler.close_connection = True
-        last_event_id = after_event_id
-        for event in replay["events"]:
-            self._write_sse_event(event_id=str(event["event_id"]), event_name=event["event_name"], payload={"request_id": request_id, "result": event["payload"]})
-            last_event_id = int(event["event_id"])
-            if event["event_name"] in {"runtime.completed", "runtime.failed", "runtime.aborted"}:
-                break
-        else:
-            snapshot = service.get_runtime_stream_snapshot(session_id=execution_id)
-            if snapshot.get("status") in {"completed", "failed", "aborted"}:
-                latest = service.get_runtime_stream_events_since(session_id=execution_id, after_event_id=last_event_id)
-                for event in latest["events"]:
-                    self._write_sse_event(event_id=str(event["event_id"]), event_name=event["event_name"], payload={"request_id": request_id, "result": event["payload"]})
-                return
-            for _event_name, _payload in service.iter_runtime_stream_events(session_id=execution_id):
-                replayed = service.get_runtime_stream_events_since(session_id=execution_id, after_event_id=last_event_id)
-                for event in replayed["events"]:
-                    self._write_sse_event(event_id=str(event["event_id"]), event_name=event["event_name"], payload={"request_id": request_id, "result": event["payload"]})
-                    last_event_id = int(event["event_id"])
-                    if event["event_name"] in {"runtime.completed", "runtime.failed", "runtime.aborted"}:
-                        return
-
-    def _write_sse_event(self, *, event_id: str, event_name: str, payload: Mapping[str, object]) -> None:
-        body = f"id: {event_id}\nevent: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
-        self._handler.wfile.write(body)
-        self._handler.wfile.flush()
+    def _build_caller(self) -> OperationCaller:
+        _, _, token = self._handler.headers.get("Authorization", "").partition(" ")
+        return OperationCaller(
+            caller_id=f"external:{sha256(token.encode('utf-8')).hexdigest()}",
+            permissions=frozenset({"operation.invoke"}),
+        )

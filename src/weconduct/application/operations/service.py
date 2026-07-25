@@ -6,7 +6,15 @@ from typing import Mapping
 
 from weconduct.application.sensitive_values.redaction import redact_sensitive_payload
 
-from .models import OperationRegistryError
+from .models import (
+    InMemoryOperationAuditTrail,
+    InMemoryOperationIdempotencyStore,
+    IdempotencyCapability,
+    OperationAuditRecord,
+    OperationCaller,
+    OperationInvocationResult,
+    OperationRegistryError,
+)
 from .registry import OperationRegistry
 
 
@@ -20,6 +28,8 @@ class HostOperationService:
         registry: OperationRegistry | None = None,
         host_metadata: Mapping[str, object] | None = None,
         project_path_allowed_roots: tuple[str | Path, ...] | None = None,
+        audit_trail: InMemoryOperationAuditTrail | None = None,
+        idempotency_store: InMemoryOperationIdempotencyStore | None = None,
     ) -> None:
         self._service = service
         self._registry = registry or OperationRegistry.build_stable_public()
@@ -29,6 +39,8 @@ class HostOperationService:
             if project_path_allowed_roots is None
             else tuple(Path(root).expanduser().resolve() for root in project_path_allowed_roots)
         )
+        self._audit_trail = audit_trail or InMemoryOperationAuditTrail()
+        self._idempotency_store = idempotency_store or InMemoryOperationIdempotencyStore()
 
     def list_descriptors(self, *, exposure: str | None = None):
         return self._registry.list_descriptors(exposure=exposure)
@@ -36,22 +48,148 @@ class HostOperationService:
     def describe(self, operation_id: str):
         return self._registry.describe(operation_id)
 
-    def execute(self, operation_id: str, payload: Mapping[str, object] | None = None) -> dict[str, object]:
+    def invoke(
+        self,
+        operation_id: str,
+        payload: Mapping[str, object] | None,
+        *,
+        caller: OperationCaller,
+        idempotency_key: str | None = None,
+    ) -> OperationInvocationResult:
         descriptor = self._registry.describe(operation_id)
         request = dict(payload or {})
-        self._registry.validate_input(descriptor, request)
+        reserved_idempotency_key: str | None = None
         try:
+            self._assert_permissions(descriptor.required_permissions, caller=caller, operation_id=operation_id)
+            request = self._registry.validate_input(descriptor, request)
+            if idempotency_key is not None and descriptor.idempotency_capability is IdempotencyCapability.SUPPORTED:
+                normalized_key = idempotency_key.strip()
+                if not normalized_key:
+                    raise OperationRegistryError(
+                        "operation.input_invalid",
+                        "idempotency key must not be empty",
+                        operation_id=operation_id,
+                    )
+                replay = self._idempotency_store.reserve_or_replay(
+                    caller_id=caller.caller_id,
+                    operation_id=operation_id,
+                    idempotency_key=normalized_key,
+                )
+                if replay is not None:
+                    return OperationInvocationResult(replay, replayed=True)
+                reserved_idempotency_key = normalized_key
             result = self._dispatch(operation_id, request)
         except OperationRegistryError:
+            self._release_idempotency_reservation(
+                caller=caller,
+                operation_id=operation_id,
+                idempotency_key=reserved_idempotency_key,
+            )
+            self._record_audit(
+                operation_id=operation_id,
+                caller=caller,
+                outcome="rejected",
+                payload=request,
+            )
             raise
         except ValueError as exc:
-            raise _normalize_dispatch_value_error(exc, operation_id=operation_id) from exc
+            self._release_idempotency_reservation(
+                caller=caller,
+                operation_id=operation_id,
+                idempotency_key=reserved_idempotency_key,
+            )
+            error = _normalize_dispatch_value_error(exc, operation_id=operation_id)
+            self._record_audit(
+                operation_id=operation_id,
+                caller=caller,
+                outcome="failed",
+                payload=request,
+            )
+            raise error from exc
         except Exception as exc:
+            self._release_idempotency_reservation(
+                caller=caller,
+                operation_id=operation_id,
+                idempotency_key=reserved_idempotency_key,
+            )
+            self._record_audit(
+                operation_id=operation_id,
+                caller=caller,
+                outcome="failed",
+                payload=request,
+            )
             raise OperationRegistryError("operation.execution_failed", str(exc), operation_id=operation_id) from exc
         normalized = _normalize_value(result)
         if not isinstance(normalized, dict):
             normalized = {"result": normalized}
-        return redact_sensitive_payload(self._filter_output(operation_id, normalized))
+        public_result = redact_sensitive_payload(self._filter_output(operation_id, normalized))
+        validated_result = self._registry.validate_output(descriptor, public_result)
+        if reserved_idempotency_key is not None:
+            self._idempotency_store.complete(
+                caller_id=caller.caller_id,
+                operation_id=operation_id,
+                idempotency_key=reserved_idempotency_key,
+                result=validated_result,
+            )
+        self._record_audit(
+            operation_id=operation_id,
+            caller=caller,
+            outcome="succeeded",
+            payload=request,
+        )
+        return OperationInvocationResult(validated_result, replayed=False)
+
+    def _release_idempotency_reservation(
+        self,
+        *,
+        caller: OperationCaller,
+        operation_id: str,
+        idempotency_key: str | None,
+    ) -> None:
+        if idempotency_key is None:
+            return
+        self._idempotency_store.release(
+            caller_id=caller.caller_id,
+            operation_id=operation_id,
+            idempotency_key=idempotency_key,
+        )
+
+    @property
+    def audit_trail(self) -> InMemoryOperationAuditTrail:
+        return self._audit_trail
+
+    def _assert_permissions(
+        self,
+        required_permissions: frozenset[str],
+        *,
+        caller: OperationCaller,
+        operation_id: str,
+    ) -> None:
+        if required_permissions.issubset(caller.permissions):
+            return
+        raise OperationRegistryError(
+            "operation.permission_denied",
+            "caller does not have the required operation permission",
+            operation_id=operation_id,
+            details={"required_permissions": sorted(required_permissions)},
+        )
+
+    def _record_audit(
+        self,
+        *,
+        operation_id: str,
+        caller: OperationCaller,
+        outcome: str,
+        payload: Mapping[str, object],
+    ) -> None:
+        self._audit_trail.append(
+            OperationAuditRecord(
+                operation_id=operation_id,
+                caller_id=caller.caller_id,
+                outcome=outcome,  # type: ignore[arg-type]
+                input_summary=redact_sensitive_payload(dict(payload)),
+            )
+        )
 
     def _dispatch(self, operation_id: str, payload: dict[str, object]) -> object:
         service = self._service

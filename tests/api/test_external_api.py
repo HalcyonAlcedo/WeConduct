@@ -572,7 +572,10 @@ def test_external_api_replays_idempotent_graph_replace_response(tmp_path: Path) 
 
         assert first_status == 200
         assert second_status == first_status
-        assert second == first
+        assert second["result"] == first["result"]
+        assert first["idempotency_replayed"] is False
+        assert second["idempotency_replayed"] is True
+        assert second["request_id"] != first["request_id"]
     finally:
         server.shutdown()
         thread.join(timeout=2)

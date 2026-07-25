@@ -41,6 +41,10 @@ from weconduct.application.compilation_workbench_service import (
     DIAGNOSTIC_SEVERITY_RANK,
     ProjectPythonRuntimeExportError,
 )
+from weconduct.application.operations import (
+    InMemoryOperationAuditTrail,
+    InMemoryOperationIdempotencyStore,
+)
 from weconduct.api.external_v1 import ExternalV1Router
 
 DEFAULT_WORKSPACE_STATE_PATH = (
@@ -559,6 +563,10 @@ class WeConductApiServer(ThreadingHTTPServer):
         self.external_api_token: str | None = None
         self.external_api_project_allowed_roots: tuple[Path, ...] = ()
         self.external_api_instance_id = uuid.uuid4().hex
+        self.external_api_audit_trail = InMemoryOperationAuditTrail()
+        self.external_api_idempotency_store = InMemoryOperationIdempotencyStore(
+            limit=EXTERNAL_IDEMPOTENCY_CACHE_LIMIT
+        )
         self._external_idempotency_lock = RLock()
         self._external_idempotency_cache: OrderedDict[
             str, tuple[str, int | None, dict[str, object] | None]

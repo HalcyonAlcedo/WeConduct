@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from weconduct.application.operation_registry import (
+from weconduct.application.operations import (
+    HostOperationService,
+    OperationCaller,
     OperationRegistry,
     OperationRegistryError,
+)
+
+
+_TEST_CALLER = OperationCaller(
+    caller_id="test:operation-registry",
+    permissions=frozenset({"operation.invoke"}),
 )
 
 
@@ -71,94 +79,105 @@ def test_operation_service_executes_through_explicit_registry() -> None:
     registry = OperationRegistry.build_stable_public()
     service = HostOperationService(service=_FakeService(), registry=registry)
 
-    result = service.execute(
+    result = service.invoke(
         "graph.replace",
         {"graph_document": {"document_id": "graph:workspace"}, "expected_revision": 4},
+        caller=_TEST_CALLER,
     )
 
     assert result["status"] == "saved"
     assert result["expected_revision"] == 4
 
 
-def test_operation_registry_exposes_stable_descriptors_and_dispatches_contracts() -> None:
-    registry = OperationRegistry(service=_FakeService())
+def test_operation_service_exposes_stable_descriptors_and_dispatches_contracts() -> None:
+    service = HostOperationService(service=_FakeService())
 
-    descriptor = registry.describe("graph.replace")
+    descriptor = service.describe("graph.replace")
     assert descriptor.operation_id == "graph.replace"
-    assert descriptor.exposure == "stable_public"
+    assert descriptor.exposure.value == "stable_public"
     assert descriptor.execution_mode == "sync"
 
-    result = registry.execute(
+    result = service.invoke(
         "graph.replace",
         {"graph_document": {"document_id": "graph:workspace"}, "expected_revision": 4},
+        caller=_TEST_CALLER,
     )
     assert result["status"] == "saved"
     assert result["expected_revision"] == 4
 
-    started = registry.execute("execution.start", {"graph_document": None})
+    started = service.invoke(
+        "execution.start",
+        {"graph_document": None},
+        caller=_TEST_CALLER,
+    )
     assert started["runtime_session"]["session_id"] == "e-1"
 
 
-def test_operation_registry_rejects_unknown_operation_and_missing_fields() -> None:
-    registry = OperationRegistry(service=_FakeService())
+def test_operation_service_rejects_unknown_operation_and_missing_fields() -> None:
+    service = HostOperationService(service=_FakeService())
 
     with pytest.raises(OperationRegistryError) as not_found:
-        registry.execute("internal.missing", {})
+        service.invoke("internal.missing", {}, caller=_TEST_CALLER)
     assert not_found.value.error_code == "operation.not_found"
     with pytest.raises(OperationRegistryError) as invalid_input:
-        registry.execute("project.create", {})
+        service.invoke("project.create", {}, caller=_TEST_CALLER)
     assert invalid_input.value.error_code == "operation.input_invalid"
 
     with pytest.raises(OperationRegistryError) as missing_graph_revision:
-        registry.execute(
+        service.invoke(
             "graph.replace",
             {"graph_document": {"document_id": "graph:workspace"}},
+            caller=_TEST_CALLER,
         )
     assert missing_graph_revision.value.error_code == "operation.input_invalid"
 
     with pytest.raises(OperationRegistryError) as invalid_graph_revision:
-        registry.execute(
+        service.invoke(
             "graph.replace",
             {
                 "graph_document": {"document_id": "graph:workspace"},
                 "expected_revision": "latest",
             },
+            caller=_TEST_CALLER,
         )
     assert invalid_graph_revision.value.error_code == "operation.input_invalid"
 
     with pytest.raises(OperationRegistryError) as invalid_graph_document:
-        registry.execute(
+        service.invoke(
             "graph.replace",
             {"graph_document": "not-a-document", "expected_revision": 0},
+            caller=_TEST_CALLER,
         )
     assert invalid_graph_document.value.error_code == "operation.input_invalid"
 
     with pytest.raises(OperationRegistryError) as unsupported_graph_document:
-        registry.execute(
+        service.invoke(
             "graph.replace",
             {
                 "graph_document": {"document_id": "resource:custom-node-graph"},
                 "expected_revision": 0,
             },
+            caller=_TEST_CALLER,
         )
     assert unsupported_graph_document.value.error_code == "operation.input_invalid"
 
 
-def test_operation_registry_redacts_descriptor_output_to_contract_fields() -> None:
-    registry = OperationRegistry(service=_FakeService())
+def test_operation_service_redacts_descriptor_output_to_contract_fields() -> None:
+    service = HostOperationService(service=_FakeService())
 
-    capabilities = registry.execute("host.capabilities", {})
+    capabilities = service.invoke("host.capabilities", {}, caller=_TEST_CALLER)
 
     assert capabilities == {"capabilities": {"network": {"available": True}}}
 
 
-def test_operation_registry_normalizes_pending_input_state_conflicts() -> None:
-    registry = OperationRegistry(service=_PendingInputErrorService())
+def test_operation_service_normalizes_pending_input_state_conflicts() -> None:
+    service = HostOperationService(service=_PendingInputErrorService())
 
     with pytest.raises(OperationRegistryError) as error:
-        registry.execute(
+        service.invoke(
             "pending_input.submit",
             {"execution_id": "e-1", "request_id": "r-1", "values": {}},
+            caller=_TEST_CALLER,
         )
 
     assert error.value.error_code == "operation.state_conflict"

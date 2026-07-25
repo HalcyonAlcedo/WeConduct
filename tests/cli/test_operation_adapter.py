@@ -8,6 +8,44 @@ from weconduct.application.pending_input.models import PendingInputField, Pendin
 from weconduct.cli.main import _prompt_pending_input_values, _run_runtime_session_with_cli_input
 
 
+def test_cli_operation_adapter_uses_shared_invoke_with_cli_caller() -> None:
+    from weconduct.cli.operation_adapter import CliOperationAdapter
+
+    calls: list[dict[str, object]] = []
+
+    class _OperationService:
+        def describe(self, operation_id: str) -> object:
+            return type("Descriptor", (), {"operation_id": operation_id, "contract_version": "1"})()
+
+        def invoke(
+            self,
+            operation_id: str,
+            payload: dict[str, object],
+            *,
+            caller: object,
+            idempotency_key: str | None,
+        ) -> dict[str, object]:
+            calls.append(
+                {
+                    "operation_id": operation_id,
+                    "payload": payload,
+                    "caller": caller,
+                    "idempotency_key": idempotency_key,
+                }
+            )
+            return {"capabilities": {}}
+
+    descriptor, result = CliOperationAdapter(_OperationService()).invoke(
+        "host.capabilities",
+        {},
+    )
+
+    assert descriptor.contract_version == "1"
+    assert result == {"capabilities": {}}
+    assert calls[0]["caller"].caller_id == "cli:local"
+    assert calls[0]["caller"].permissions == frozenset({"operation.invoke"})
+
+
 def test_cli_operation_uses_operation_registry_and_json_contract(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         sys,
