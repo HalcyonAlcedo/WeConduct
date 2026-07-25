@@ -394,9 +394,11 @@ class CompilationWorkbenchService:
         self._refresh_state_from_store()
         graph_model = self._resolve_graph_document_by_document_id(document_id)
         graph_model, _ = self._normalize_graph_model(graph_model)
+        graph_document_meta = self._get_graph_document_meta()
         return {
             "graph_model": graph_model,
             "view": self._build_graph_document_view(graph_model),
+            "revision": graph_document_meta["save_revision"],
         }
 
     def get_project_document(self) -> dict:
@@ -8943,6 +8945,7 @@ class CompilationWorkbenchService:
         graph_document_payload: dict,
         *,
         expected_graph_document_save_revision: int | None = None,
+        require_expected_revision: bool = False,
     ) -> dict:
         self._refresh_state_from_store()
         self._assert_project_package_allows_mutation("save_graph_document")
@@ -8965,6 +8968,7 @@ class CompilationWorkbenchService:
             self._persist_graph_document(
                 graph_model,
                 expected_graph_document_save_revision=expected_graph_document_save_revision,
+                require_expected_revision=require_expected_revision,
             )
             self._refresh_workspace_graph_validation_snapshot()
         else:
@@ -11462,6 +11466,7 @@ class CompilationWorkbenchService:
         graph_model: GraphModel,
         *,
         expected_graph_document_save_revision: int | None = None,
+        require_expected_revision: bool = False,
     ) -> None:
         save_conflict_policy = self._get_graph_save_conflict_policy()
 
@@ -11476,7 +11481,7 @@ class CompilationWorkbenchService:
             if (
                 expected_graph_document_save_revision is not None
                 and expected_graph_document_save_revision != save_revision
-                and save_conflict_policy == "strict"
+                and (save_conflict_policy == "strict" or require_expected_revision)
             ):
                 raise GraphDocumentRevisionConflictError(
                     expected_revision=expected_graph_document_save_revision,

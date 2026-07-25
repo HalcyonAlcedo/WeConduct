@@ -29,7 +29,7 @@ class OperationRegistry:
             "project.save": OperationDescriptor("project.save", side_effect_level="write", idempotency_capability=True),
             "project.close": OperationDescriptor("project.close", side_effect_level="write"),
             "graph.get": OperationDescriptor("graph.get", output_schema=object_schema),
-            "graph.replace": OperationDescriptor("graph.replace", input_schema={"required": ["graph_document"]}, side_effect_level="write", idempotency_capability=True),
+            "graph.replace": OperationDescriptor("graph.replace", input_schema={"required": ["graph_document", "expected_revision"]}, side_effect_level="write", idempotency_capability=True),
             "graph.validate": OperationDescriptor("graph.validate", input_schema={"required": ["graph_document"]}),
             "graph.compile": OperationDescriptor("graph.compile", side_effect_level="write"),
             "graph.node_draft.build": OperationDescriptor("graph.node_draft.build", input_schema={"required": ["resource_key"]}),
@@ -63,3 +63,29 @@ class OperationRegistry:
             raise OperationRegistryError("operation.input_invalid", "field must be a string: project_name", operation_id=descriptor.operation_id)
         if descriptor.operation_id == "pending_input.submit" and not isinstance(payload.get("values"), dict):
             raise OperationRegistryError("operation.input_invalid", "field must be an object: values", operation_id=descriptor.operation_id)
+        if descriptor.operation_id == "graph.replace":
+            expected_revision = payload.get("expected_revision")
+            if (
+                not isinstance(expected_revision, int)
+                or isinstance(expected_revision, bool)
+                or expected_revision < 0
+            ):
+                raise OperationRegistryError(
+                    "operation.input_invalid",
+                    "field must be a non-negative integer: expected_revision",
+                    operation_id=descriptor.operation_id,
+                )
+            graph_document = payload.get("graph_document")
+            if not isinstance(graph_document, Mapping):
+                raise OperationRegistryError(
+                    "operation.input_invalid",
+                    "field must be an object: graph_document",
+                    operation_id=descriptor.operation_id,
+                )
+            document_id = graph_document.get("document_id")
+            if document_id is not None and document_id != "graph:workspace":
+                raise OperationRegistryError(
+                    "operation.input_invalid",
+                    "graph.replace only supports the workspace graph",
+                    operation_id=descriptor.operation_id,
+                )

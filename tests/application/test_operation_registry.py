@@ -21,11 +21,18 @@ class _FakeService:
     def get_graph_document(self, *, document_id=None) -> dict:
         return {"graph_model": {"document_id": document_id or "graph:workspace"}}
 
-    def save_graph_document(self, graph_document_payload: dict, *, expected_graph_document_save_revision=None) -> dict:
+    def save_graph_document(
+        self,
+        graph_document_payload: dict,
+        *,
+        expected_graph_document_save_revision=None,
+        require_expected_revision: bool = False,
+    ) -> dict:
         return {
             "status": "saved",
             "graph_document": graph_document_payload,
             "expected_revision": expected_graph_document_save_revision,
+            "require_expected_revision": require_expected_revision,
         }
 
     def validate_graph_document(self, graph_document_payload: dict) -> dict:
@@ -101,6 +108,40 @@ def test_operation_registry_rejects_unknown_operation_and_missing_fields() -> No
     with pytest.raises(OperationRegistryError) as invalid_input:
         registry.execute("project.create", {})
     assert invalid_input.value.error_code == "operation.input_invalid"
+
+    with pytest.raises(OperationRegistryError) as missing_graph_revision:
+        registry.execute(
+            "graph.replace",
+            {"graph_document": {"document_id": "graph:workspace"}},
+        )
+    assert missing_graph_revision.value.error_code == "operation.input_invalid"
+
+    with pytest.raises(OperationRegistryError) as invalid_graph_revision:
+        registry.execute(
+            "graph.replace",
+            {
+                "graph_document": {"document_id": "graph:workspace"},
+                "expected_revision": "latest",
+            },
+        )
+    assert invalid_graph_revision.value.error_code == "operation.input_invalid"
+
+    with pytest.raises(OperationRegistryError) as invalid_graph_document:
+        registry.execute(
+            "graph.replace",
+            {"graph_document": "not-a-document", "expected_revision": 0},
+        )
+    assert invalid_graph_document.value.error_code == "operation.input_invalid"
+
+    with pytest.raises(OperationRegistryError) as unsupported_graph_document:
+        registry.execute(
+            "graph.replace",
+            {
+                "graph_document": {"document_id": "resource:custom-node-graph"},
+                "expected_revision": 0,
+            },
+        )
+    assert unsupported_graph_document.value.error_code == "operation.input_invalid"
 
 
 def test_operation_registry_redacts_descriptor_output_to_contract_fields() -> None:

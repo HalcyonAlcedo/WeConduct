@@ -169,6 +169,7 @@ def test_external_api_dispatches_graph_get_and_graph_validate(tmp_path: Path) ->
         assert status == 200
         assert graph["operation_id"] == "graph.get"
         graph_document = graph["result"]["graph_model"]
+        assert graph["result"]["revision"] == 0
 
         status, validated = _request_json(
             f"{base_url}/api/ext/v1/graph/validate",
@@ -178,6 +179,16 @@ def test_external_api_dispatches_graph_get_and_graph_validate(tmp_path: Path) ->
         )
         assert status == 200
         assert validated["operation_id"] == "graph.validate"
+
+        status, rejected = _request_json(
+            f"{base_url}/api/ext/v1/graph",
+            method="PUT",
+            payload={"graph_document": graph_document},
+            token="external-secret",
+        )
+        assert status == 422
+        assert rejected["error_code"] == "operation.input_invalid"
+        assert rejected["operation_id"] == "graph.replace"
     finally:
         server.shutdown()
         thread.join(timeout=2)
@@ -201,6 +212,67 @@ def test_external_api_rejects_project_open_outside_configured_allowed_roots(tmp_
         assert status == 403
         assert payload["error_code"] == "operation.path_denied"
         assert payload["operation_id"] == "project.open"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_requires_idempotency_key_for_project_save(tmp_path: Path) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, payload = _request_json(
+            f"{base_url}/api/ext/v1/project/save",
+            method="POST",
+            payload={},
+            token="external-secret",
+        )
+
+        assert status == 428
+        assert payload["error_code"] == "operation.idempotency_key_required"
+        assert payload["operation_id"] == "project.save"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_returns_revision_conflict_for_stale_graph_replace(tmp_path: Path) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, graph = _request_json(
+            f"{base_url}/api/ext/v1/graph",
+            token="external-secret",
+        )
+        assert status == 200
+        payload = {
+            "graph_document": graph["result"]["graph_model"],
+            "expected_revision": graph["result"]["revision"],
+        }
+
+        first_status, _ = _request_json(
+            f"{base_url}/api/ext/v1/graph",
+            method="PUT",
+            payload=payload,
+            token="external-secret",
+        )
+        stale_status, stale = _request_json(
+            f"{base_url}/api/ext/v1/graph",
+            method="PUT",
+            payload=payload,
+            token="external-secret",
+        )
+
+        assert first_status == 200
+        assert stale_status == 409
+        assert stale["error_code"] == "graph.revision_conflict"
+        assert stale["details"] == {"expected_revision": 0, "current_revision": 1}
     finally:
         server.shutdown()
         thread.join(timeout=2)
@@ -477,7 +549,10 @@ def test_external_api_replays_idempotent_graph_replace_response(tmp_path: Path) 
             token="external-secret",
         )
         assert status == 200
-        payload = {"graph_document": graph["result"]["graph_model"]}
+        payload = {
+            "graph_document": graph["result"]["graph_model"],
+            "expected_revision": graph["result"]["revision"],
+        }
         headers = {"Idempotency-Key": "replace-once"}
 
         first_status, first = _request_json(
@@ -518,7 +593,10 @@ def test_external_api_rejects_duplicate_idempotent_request_while_in_progress(tmp
             token="external-secret",
         )
         assert status == 200
-        payload = {"graph_document": graph["result"]["graph_model"]}
+        payload = {
+            "graph_document": graph["result"]["graph_model"],
+            "expected_revision": graph["result"]["revision"],
+        }
         original_save = server.workbench_service.save_graph_document
 
         def blocked_save(*args, **kwargs):

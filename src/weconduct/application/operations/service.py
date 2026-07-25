@@ -86,7 +86,11 @@ class HostOperationService:
         if operation_id == "graph.get":
             return service.get_graph_document(document_id=payload.get("document_id"))
         if operation_id == "graph.replace":
-            return service.save_graph_document(payload["graph_document"], expected_graph_document_save_revision=payload.get("expected_revision"))
+            return service.save_graph_document(
+                payload["graph_document"],
+                expected_graph_document_save_revision=payload["expected_revision"],
+                require_expected_revision=True,
+            )
         if operation_id == "graph.validate":
             return service.validate_graph_document(payload["graph_document"])
         if operation_id == "graph.compile":
@@ -166,6 +170,11 @@ def _normalize_dispatch_value_error(error: ValueError, *, operation_id: str) -> 
         error_code = "operation.state_conflict"
     elif str(error).startswith("pending input"):
         error_code = "operation.input_invalid"
+    elif (
+        isinstance(getattr(error, "expected_revision", None), int)
+        and isinstance(getattr(error, "current_revision", None), int)
+    ):
+        error_code = "graph.revision_conflict"
     else:
         error_code = "operation.execution_failed"
     details = {name: value for name in ("expected_revision", "current_revision", "recovery_action", "state") if (value := getattr(error, name, None)) is not None}

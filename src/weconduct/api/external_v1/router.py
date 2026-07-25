@@ -111,6 +111,12 @@ class ExternalV1Router:
                 return True
             descriptor = operation_service.describe(operation_id)
             idempotency_cache_key = self._get_idempotency_cache_key(operation_id=operation_id, enabled=descriptor.idempotency_capability)
+            if operation_id == "project.save" and idempotency_cache_key is None:
+                raise OperationRegistryError(
+                    "operation.idempotency_key_required",
+                    "Idempotency-Key is required for project.save",
+                    operation_id=operation_id,
+                )
             if idempotency_cache_key is not None:
                 replay = handler.server.begin_external_idempotency(idempotency_cache_key)
                 if replay is not None:
@@ -132,6 +138,8 @@ class ExternalV1Router:
                 "operation.input_invalid": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "operation.path_denied": HTTPStatus.FORBIDDEN,
                 "operation.state_conflict": HTTPStatus.CONFLICT,
+                "graph.revision_conflict": HTTPStatus.CONFLICT,
+                "operation.idempotency_key_required": HTTPStatus.PRECONDITION_REQUIRED,
                 "operation.not_available": HTTPStatus.NOT_IMPLEMENTED,
             }.get(exc.error_code, HTTPStatus.INTERNAL_SERVER_ERROR)
             if exc.error_code == "operation.state_conflict" and exc.details.get("state") == "timed_out":
