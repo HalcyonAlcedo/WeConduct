@@ -8,10 +8,12 @@ from threading import Event, RLock, Thread
 import httpx
 
 from .access_policy import NetworkAccessPolicy
+from .authentication import apply_static_auth
 from .http_adapter import HttpxAdapter
 from .long_connection import SSEClientHandle, WebSocketClientHandle
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
 from .proxy import ProxyResolver
+from .tls import TlsResolver, build_ssl_context
 
 
 class NetworkRuntimeService:
@@ -92,6 +94,7 @@ class NetworkRuntimeService:
     ) -> tuple[SSEClientHandle, dict[str, object]]:
         self._require_open()
         proxy = self._resolve_proxy(snapshot, url)
+        resolved_tls = TlsResolver().resolve(snapshot.tls if isinstance(snapshot.tls, dict) else {})
         handle = SSEClientHandle(
             url=url,
             headers=self._effective_headers(snapshot, headers),
@@ -100,6 +103,8 @@ class NetworkRuntimeService:
             timeout_seconds=timeout_seconds,
             max_queue_size=max_queue_size,
             access_policy=self._access_policy,
+            ssl_context=build_ssl_context(resolved_tls),
+            certificate_pins=resolved_tls.certificate_pins,
         )
         try:
             metadata = handle.start(timeout_seconds=timeout_seconds)
@@ -121,6 +126,7 @@ class NetworkRuntimeService:
     ) -> tuple[WebSocketClientHandle, dict[str, object]]:
         self._require_open()
         proxy = self._resolve_proxy(snapshot, url)
+        resolved_tls = TlsResolver().resolve(snapshot.tls if isinstance(snapshot.tls, dict) else {})
         handle = WebSocketClientHandle(
             url=url,
             headers=self._effective_headers(snapshot, headers),
@@ -128,6 +134,8 @@ class NetworkRuntimeService:
             timeout_seconds=timeout_seconds,
             subprotocols=subprotocols,
             access_policy=self._access_policy,
+            ssl_context=build_ssl_context(resolved_tls),
+            certificate_pins=resolved_tls.certificate_pins,
         )
         try:
             metadata = handle.start(timeout_seconds=timeout_seconds)
@@ -236,7 +244,7 @@ class NetworkRuntimeService:
             effective["Cookie"] = "; ".join(
                 f"{name}={value}" for name, value in snapshot.cookies.items()
             )
-        return effective
+        return apply_static_auth(effective, snapshot.auth)
 
     @staticmethod
     def _resolve_proxy(snapshot: NetworkContextSnapshot, url: str) -> str | None:

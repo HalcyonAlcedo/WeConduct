@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import hmac
 from pathlib import Path
 import re
+import ssl
 from typing import Mapping
 
 
@@ -83,3 +86,59 @@ class TlsResolver:
         if not path.is_file():
             raise TlsConfigurationError(f"{label} does not exist: {path}")
         return str(path.resolve())
+
+
+def build_ssl_context(resolved_tls: ResolvedTls) -> ssl.SSLContext:
+    if resolved_tls.verify is False:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    elif resolved_tls.verify == "system":
+        context = ssl.create_default_context()
+    else:
+        context = ssl.create_default_context(cafile=resolved_tls.verify)
+    if resolved_tls.client_cert is not None:
+        context.load_cert_chain(*resolved_tls.client_cert)
+    return context
+
+
+def verify_certificate_pins_from_der(
+    certificate: bytes | None,
+    pins: tuple[str, ...],
+) -> None:
+    if not pins:
+        return
+    if not isinstance(certificate, bytes) or not certificate:
+        raise ValueError("network.tls_pin_unavailable")
+    digest = hashlib.sha256(certificate).hexdigest()
+    if not any(hmac.compare_digest(digest, pin) for pin in pins):
+        raise ValueError("network.tls_pin_mismatch")
+
+
+def verify_response_certificate_pins(response: object, pins: tuple[str, ...]) -> None:
+    if not pins:
+        return
+    extensions = getattr(response, "extensions", None)
+    stream = extensions.get("network_stream") if isinstance(extensions, Mapping) else None
+    get_extra_info = getattr(stream, "get_extra_info", None)
+    if not callable(get_extra_info):
+        raise ValueError("network.tls_pin_unavailable")
+    ssl_object = get_extra_info("ssl_object")
+    get_peer_certificate = getattr(ssl_object, "getpeercert", None)
+    if not callable(get_peer_certificate):
+        raise ValueError("network.tls_pin_unavailable")
+    verify_certificate_pins_from_der(get_peer_certificate(binary_form=True), pins)
+
+
+def verify_websocket_certificate_pins(socket: object, pins: tuple[str, ...]) -> None:
+    if not pins:
+        return
+    transport = getattr(socket, "transport", None)
+    get_extra_info = getattr(transport, "get_extra_info", None)
+    if not callable(get_extra_info):
+        raise ValueError("network.tls_pin_unavailable")
+    ssl_object = get_extra_info("ssl_object")
+    get_peer_certificate = getattr(ssl_object, "getpeercert", None)
+    if not callable(get_peer_certificate):
+        raise ValueError("network.tls_pin_unavailable")
+    verify_certificate_pins_from_der(get_peer_certificate(binary_form=True), pins)

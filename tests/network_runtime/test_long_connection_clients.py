@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socket
 from threading import Thread
+from urllib.parse import urlsplit
 
 import pytest
 import websockets
@@ -56,6 +58,41 @@ def test_sse_client_handle_connects_and_pulls_events() -> None:
             handle.close()
 
 
+def test_sse_client_handle_uses_its_prevalidated_dns_answer(monkeypatch) -> None:
+    with _sse_server() as local_url:
+        parsed = urlsplit(local_url)
+        hostname_resolution_count = 0
+        original_getaddrinfo = socket.getaddrinfo
+
+        def resolve_target(host: str, port: int | None, *args: object, **kwargs: object):
+            nonlocal hostname_resolution_count
+            if host == "rebind.example.test":
+                hostname_resolution_count += 1
+                return [
+                    (
+                        socket.AF_INET,
+                        socket.SOCK_STREAM,
+                        socket.IPPROTO_TCP,
+                        "",
+                        ("127.0.0.1", port),
+                    )
+                ]
+            return original_getaddrinfo(host, port, *args, **kwargs)
+
+        monkeypatch.setattr(socket, "getaddrinfo", resolve_target)
+        handle = SSEClientHandle(
+            url=f"http://rebind.example.test:{parsed.port}{parsed.path}",
+            access_policy=_LOCAL_ACCESS_POLICY,
+        )
+        try:
+            handle.start(timeout_seconds=2)
+            assert handle.receive(timeout_seconds=2)["data"] == "payload"
+        finally:
+            handle.close()
+
+    assert hostname_resolution_count == 1
+
+
 def test_websocket_client_handle_supports_pull_operations_and_close() -> None:
     async def run() -> None:
         async def handler(socket) -> None:
@@ -79,6 +116,51 @@ def test_websocket_client_handle_supports_pull_operations_and_close() -> None:
             await asyncio.to_thread(handle.close)
             server.close()
             await server.wait_closed()
+
+    import asyncio
+
+    asyncio.run(run())
+
+
+def test_websocket_client_handle_uses_its_prevalidated_dns_answer(monkeypatch) -> None:
+    async def run() -> None:
+        async def handler(connection) -> None:
+            await connection.wait_closed()
+
+        server = await websockets.serve(handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        hostname_resolution_count = 0
+        original_getaddrinfo = socket.getaddrinfo
+
+        def resolve_target(host: str, target_port: int | None, *args: object, **kwargs: object):
+            nonlocal hostname_resolution_count
+            if host == "rebind.example.test":
+                hostname_resolution_count += 1
+                return [
+                    (
+                        socket.AF_INET,
+                        socket.SOCK_STREAM,
+                        socket.IPPROTO_TCP,
+                        "",
+                        ("127.0.0.1", target_port),
+                    )
+                ]
+            return original_getaddrinfo(host, target_port, *args, **kwargs)
+
+        monkeypatch.setattr(socket, "getaddrinfo", resolve_target)
+        handle = WebSocketClientHandle(
+            url=f"ws://rebind.example.test:{port}/events",
+            access_policy=_LOCAL_ACCESS_POLICY,
+        )
+        try:
+            metadata = await asyncio.to_thread(handle.start, timeout_seconds=2)
+            assert metadata["status"] == "connected"
+        finally:
+            await asyncio.to_thread(handle.close)
+            server.close()
+            await server.wait_closed()
+
+        assert hostname_resolution_count == 1
 
     import asyncio
 

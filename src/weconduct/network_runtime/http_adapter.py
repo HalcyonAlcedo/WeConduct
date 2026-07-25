@@ -1,23 +1,20 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from http.cookies import CookieError, SimpleCookie
-import hashlib
-import hmac
 from pathlib import Path
 import ssl
 from time import perf_counter
-from typing import Mapping
 from urllib.parse import urljoin
 
 import httpx
 
 from .access_policy import NetworkAccessPolicy
+from .authentication import apply_static_auth
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
 from .resources import ResponseBodyStore
 from .proxy import ProxyResolver
-from .tls import ResolvedTls, TlsResolver
+from .tls import ResolvedTls, TlsResolver, verify_response_certificate_pins
 from .transport import PinnedDnsAsyncHTTPTransport
 
 
@@ -52,7 +49,7 @@ class HttpxAdapter:
     ) -> NetworkResult:
         started_at = perf_counter()
         try:
-            headers = _apply_static_auth(
+            headers = apply_static_auth(
                 {**snapshot.headers, **operation.headers},
                 snapshot.auth,
             )
@@ -85,7 +82,7 @@ class HttpxAdapter:
                     timeout=operation.timeout_seconds,
                     extensions=request_extensions,
                 ) as response:
-                    _verify_certificate_pins(response, resolved_tls.certificate_pins)
+                    verify_response_certificate_pins(response, resolved_tls.certificate_pins)
                     redirect_target = response.headers.get("location")
                     if response.status_code not in {301, 302, 303, 307, 308} or not redirect_target:
                         store = self._stores.setdefault(
@@ -253,47 +250,3 @@ def _parse_set_cookie_headers(headers: httpx.Headers) -> dict[str, str | None]:
             max_age = morsel["max-age"].strip().lower()
             changes[name] = None if max_age == "0" else morsel.value
     return changes
-
-
-def _apply_static_auth(headers: Mapping[str, str], auth: object) -> dict[str, str]:
-    effective = {str(name): str(value) for name, value in headers.items()}
-    if any(name.lower() == "authorization" for name in effective):
-        return effective
-    if not isinstance(auth, Mapping):
-        return effective
-    auth_type = auth.get("type")
-    if not isinstance(auth_type, str):
-        return effective
-    normalized_type = auth_type.strip().lower()
-    if normalized_type == "bearer":
-        token = auth.get("token")
-        if not isinstance(token, str) or not token:
-            raise ValueError("network.auth_invalid")
-        effective["Authorization"] = f"Bearer {token}"
-    elif normalized_type == "basic":
-        username = auth.get("username")
-        password = auth.get("password")
-        if not isinstance(username, str) or not isinstance(password, str):
-            raise ValueError("network.auth_invalid")
-        encoded = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
-        effective["Authorization"] = f"Basic {encoded}"
-    return effective
-
-
-def _verify_certificate_pins(response: httpx.Response, pins: tuple[str, ...]) -> None:
-    if not pins:
-        return
-    stream = response.extensions.get("network_stream")
-    get_extra_info = getattr(stream, "get_extra_info", None)
-    if not callable(get_extra_info):
-        raise ValueError("network.tls_pin_unavailable")
-    ssl_object = get_extra_info("ssl_object")
-    get_peer_certificate = getattr(ssl_object, "getpeercert", None)
-    if not callable(get_peer_certificate):
-        raise ValueError("network.tls_pin_unavailable")
-    certificate = get_peer_certificate(binary_form=True)
-    if not isinstance(certificate, bytes) or not certificate:
-        raise ValueError("network.tls_pin_unavailable")
-    digest = hashlib.sha256(certificate).hexdigest()
-    if not any(hmac.compare_digest(digest, pin) for pin in pins):
-        raise ValueError("network.tls_pin_mismatch")

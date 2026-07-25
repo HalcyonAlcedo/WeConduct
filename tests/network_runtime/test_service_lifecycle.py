@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import ssl
 from threading import Thread
 from time import sleep
 
@@ -151,6 +152,47 @@ def test_network_runtime_service_reuses_its_single_async_client(tmp_path) -> Non
 
     service.close()
     assert client.is_closed is True
+
+
+def test_network_runtime_service_applies_auth_and_tls_snapshot_to_sse_handle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import weconduct.network_runtime.service as service_module
+
+    captured: dict[str, object] = {}
+
+    class StubSSEClientHandle:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def start(self, *, timeout_seconds: float) -> dict[str, object]:
+            return {"status_code": 200, "headers": {}, "url": "https://example.test/events"}
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(service_module, "SSEClientHandle", StubSSEClientHandle)
+    service = NetworkRuntimeService(
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+    try:
+        service.connect_sse(
+            session_id="sse-auth-tls",
+            snapshot=NetworkContextSnapshot(
+                context_id="sse-auth-tls-context",
+                auth={"type": "bearer", "token": "stream-token"},
+                tls={"certificate_pins": ["a" * 64]},
+            ),
+            url="https://example.test/events",
+        )
+    finally:
+        service.close()
+
+    assert captured["headers"] == {"Authorization": "Bearer stream-token"}
+    assert isinstance(captured["ssl_context"], ssl.SSLContext)
+    assert captured["certificate_pins"] == ("a" * 64,)
 
 
 def test_network_runtime_service_real_local_http_semantics(tmp_path) -> None:

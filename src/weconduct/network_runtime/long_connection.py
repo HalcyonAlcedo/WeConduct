@@ -3,15 +3,19 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
+import ssl
 import sys
 from threading import Event, RLock, Thread
 from typing import Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from httpx_sse import aconnect_sse
 import websockets
 
-from .access_policy import NetworkAccessPolicy
+from .access_policy import NetworkAccessPolicy, ResolvedNetworkTarget
+from .tls import verify_response_certificate_pins, verify_websocket_certificate_pins
+from .transport import PinnedDnsAsyncHTTPTransport
 
 
 class SSEConnectionClosed(RuntimeError):
@@ -247,17 +251,23 @@ class SSEClientHandle:
         timeout_seconds: float = 30.0,
         max_queue_size: int = 100,
         access_policy: NetworkAccessPolicy | None = None,
+        ssl_context: ssl.SSLContext | None = None,
+        certificate_pins: tuple[str, ...] = (),
+        resolved_target: ResolvedNetworkTarget | None = None,
     ) -> None:
         if not isinstance(url, str) or not url.strip():
             raise ValueError("network.sse_url_required")
         if timeout_seconds <= 0:
             raise ValueError("network.sse_timeout_invalid")
         self.url = url.strip()
-        (access_policy or NetworkAccessPolicy()).validate_url(self.url)
+        self._access_policy = access_policy or NetworkAccessPolicy()
+        self._resolved_target = resolved_target or self._access_policy.validate_url(self.url)
         self.headers = {str(key): str(value) for key, value in (headers or {}).items()}
         self.params = {str(key): str(value) for key, value in (params or {}).items()}
         self.proxy = proxy.strip() if isinstance(proxy, str) and proxy.strip() else None
         self.timeout_seconds = float(timeout_seconds)
+        self.ssl_context = ssl_context
+        self.certificate_pins = tuple(certificate_pins)
         self.connection = SSEConnection(max_queue_size=max_queue_size)
         self._loop = _AsyncHandleLoop(name="weconduct-sse-client")
         self._task_future = None
@@ -327,19 +337,36 @@ class SSEClientHandle:
 
     async def _run(self) -> None:
         try:
+            transport = PinnedDnsAsyncHTTPTransport(
+                access_policy=self._access_policy,
+                verify=self.ssl_context or True,
+                proxy=self.proxy,
+                trust_env=False,
+                http2=True,
+            )
             async with httpx.AsyncClient(
+                transport=transport,
                 timeout=self.timeout_seconds,
                 trust_env=False,
                 follow_redirects=False,
-                proxy=self.proxy,
             ) as client:
+                extensions = (
+                    {"weconduct.resolved_network_target": self._resolved_target}
+                    if self._resolved_target is not None
+                    else None
+                )
                 async with aconnect_sse(
                     client,
                     "GET",
                     self.url,
                     headers=self.headers,
                     params=self.params,
+                    extensions=extensions,
                 ) as source:
+                    verify_response_certificate_pins(
+                        source.response,
+                        self.certificate_pins,
+                    )
                     self._status_code = source.response.status_code
                     self._response_headers = {
                         str(key).lower(): str(value)
@@ -369,13 +396,17 @@ class WebSocketClientHandle:
         timeout_seconds: float = 30.0,
         subprotocols: list[str] | None = None,
         access_policy: NetworkAccessPolicy | None = None,
+        ssl_context: ssl.SSLContext | None = None,
+        certificate_pins: tuple[str, ...] = (),
+        resolved_target: ResolvedNetworkTarget | None = None,
     ) -> None:
         if not isinstance(url, str) or not url.strip():
             raise ValueError("network.websocket_url_required")
         if timeout_seconds <= 0:
             raise ValueError("network.websocket_timeout_invalid")
         self.url = url.strip()
-        (access_policy or NetworkAccessPolicy()).validate_url(
+        self._access_policy = access_policy or NetworkAccessPolicy()
+        self._resolved_target = resolved_target or self._access_policy.validate_url(
             self.url,
             allowed_schemes=frozenset({"ws", "wss"}),
         )
@@ -383,6 +414,8 @@ class WebSocketClientHandle:
         self.proxy = proxy.strip() if isinstance(proxy, str) and proxy.strip() else None
         self.timeout_seconds = float(timeout_seconds)
         self.subprotocols = list(subprotocols or [])
+        self.ssl_context = ssl_context
+        self.certificate_pins = tuple(certificate_pins)
         self.connection: WebSocketConnection | None = None
         self._loop = _AsyncHandleLoop(name="weconduct-websocket-client")
         self._task_future = None
@@ -447,23 +480,64 @@ class WebSocketClientHandle:
         return self.connection
 
     async def _run(self) -> None:
+        socket = None
         try:
+            connect_url, headers, connect_options = self._build_connect_arguments()
             socket = await websockets.connect(
-                self.url,
-                additional_headers=self.headers or None,
+                connect_url,
+                additional_headers=headers or None,
                 subprotocols=self.subprotocols or None,
                 proxy=self.proxy,
                 open_timeout=self.timeout_seconds,
+                **connect_options,
             )
+            verify_websocket_certificate_pins(socket, self.certificate_pins)
             self.connection = WebSocketConnection(socket)
             self._closed_event = asyncio.Event()
             self._ready.set()
             await self._closed_event.wait()
         except asyncio.CancelledError:
+            if socket is not None:
+                await socket.close()
             raise
         except BaseException as exc:
+            if socket is not None:
+                await socket.close()
             self._error = exc
             self._ready.set()
+
+    def _build_connect_arguments(self) -> tuple[str, dict[str, str], dict[str, object]]:
+        parsed = urlsplit(self.url)
+        headers = dict(self.headers)
+        options: dict[str, object] = {}
+        if parsed.scheme == "wss" and self.ssl_context is not None:
+            options["ssl"] = self.ssl_context
+        if self._resolved_target is None:
+            return self.url, headers, options
+        connect_host = self._resolved_target.addresses[0]
+        original_host = parsed.hostname or ""
+        if self.proxy:
+            authority = original_host
+            default_port = 443 if parsed.scheme == "wss" else 80
+            if self._resolved_target.port != default_port:
+                authority = f"{authority}:{self._resolved_target.port}"
+            headers.setdefault("Host", authority)
+            pinned_authority = connect_host
+            if ":" in connect_host:
+                pinned_authority = f"[{connect_host}]"
+            if self._resolved_target.port != default_port:
+                pinned_authority = f"{pinned_authority}:{self._resolved_target.port}"
+            connect_url = urlunsplit(
+                (parsed.scheme, pinned_authority, parsed.path, parsed.query, parsed.fragment)
+            )
+            if parsed.scheme == "wss":
+                options["server_hostname"] = original_host
+            return connect_url, headers, options
+        options["host"] = connect_host
+        options["port"] = self._resolved_target.port
+        if parsed.scheme == "wss":
+            options["server_hostname"] = original_host
+        return self.url, headers, options
 
     async def _close_async(self) -> None:
         if self._closed_event is not None:
