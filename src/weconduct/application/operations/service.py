@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Mapping
+import platform
 
 from weconduct.application.sensitive_values.redaction import redact_sensitive_payload
+from weconduct._version import APP_VERSION
 
 from .models import (
     InMemoryOperationAuditTrail,
@@ -196,7 +198,17 @@ class HostOperationService:
         service = self._service
         if operation_id == "host.describe":
             health = service.get_runtime_health()
-            return {"service": "weconduct", "api_version": health.get("api_version"), "host_mode": health.get("host_mode"), **self._host_metadata}
+            return {
+                "service": "weconduct",
+                "application_version": APP_VERSION,
+                "platform": platform.system().strip().lower(),
+                "api_version": health.get("api_version"),
+                "host_mode": health.get("host_mode"),
+                "instance_id": self._host_metadata.get(
+                    "instance_id",
+                    health.get("workspace_session_id"),
+                ),
+            }
         if operation_id == "host.capabilities":
             return {"capabilities": service.get_runtime_health().get("capabilities", {})}
         if operation_id == "project.current.get":
@@ -208,10 +220,11 @@ class HostOperationService:
                     project_directory,
                     operation_id=operation_id,
                 )
-            return service.create_project(
+            created = service.create_project(
                 project_name=payload["project_name"],
                 project_directory=project_directory,
             )
+            return _with_current_graph_revision(service, created)
         if operation_id == "project.open":
             self._assert_project_path_allowed(payload["project_path"], operation_id=operation_id)
             return service.open_project(project_path=payload["project_path"])
@@ -303,15 +316,18 @@ def _normalize_value(value: object) -> object:
 
 
 def _normalize_dispatch_value_error(error: ValueError, *, operation_id: str) -> OperationRegistryError:
+    message = str(error)
     explicit_code = getattr(error, "error_code", None)
     if isinstance(explicit_code, str) and explicit_code.strip():
         error_code = explicit_code.strip()
-    elif str(error) == "pending input request was not found":
+    elif message == "pending input request was not found":
         error_code = "operation.not_found"
-    elif str(error) == "pending input request is not waiting":
+    elif message == "pending input request is not waiting":
         error_code = "operation.state_conflict"
-    elif str(error).startswith("pending input"):
+    elif message.startswith("pending input"):
         error_code = "operation.input_invalid"
+    elif message in {"project.close_active_execution", "project.close_unsaved_changes"}:
+        error_code = "operation.state_conflict"
     elif (
         isinstance(getattr(error, "expected_revision", None), int)
         and isinstance(getattr(error, "current_revision", None), int)
@@ -320,7 +336,9 @@ def _normalize_dispatch_value_error(error: ValueError, *, operation_id: str) -> 
     else:
         error_code = "operation.execution_failed"
     details = {name: value for name in ("expected_revision", "current_revision", "recovery_action", "state") if (value := getattr(error, name, None)) is not None}
-    return OperationRegistryError(error_code, str(error), operation_id=operation_id, details=details)
+    if message.startswith("project.close_"):
+        details["state"] = message.removeprefix("project.close_")
+    return OperationRegistryError(error_code, message, operation_id=operation_id, details=details)
 
 
 def _public_project_document(document: object) -> dict[str, object]:
@@ -330,7 +348,28 @@ def _public_project_document(document: object) -> dict[str, object]:
     if not isinstance(project, Mapping):
         return {"project": {}}
     allowed = {key: project.get(key) for key in ("project_id", "project_name", "project_schema_version", "project_status", "main_graph_document_id", "resource_registry_revision", "is_dirty", "last_compile_status", "last_runtime_status", "last_runtime_session_id") if key in project}
-    return {"project": allowed}
+    public_document: dict[str, object] = {"project": allowed}
+    graph_workspace = document.get("graph_workspace")
+    if isinstance(graph_workspace, Mapping):
+        revision = graph_workspace.get("graph_document_save_revision")
+        if isinstance(revision, int) and revision >= 0:
+            public_document["revision"] = revision
+    return public_document
+
+
+def _with_current_graph_revision(service: object, result: object) -> object:
+    if not isinstance(result, Mapping):
+        return result
+    get_graph_document = getattr(service, "get_graph_document", None)
+    if not callable(get_graph_document):
+        return result
+    graph_document = get_graph_document()
+    if not isinstance(graph_document, Mapping):
+        return result
+    revision = graph_document.get("revision")
+    if not isinstance(revision, int) or revision < 0:
+        return result
+    return {**result, "revision": revision}
 
 
 def _public_pending_input_snapshot(snapshot: object) -> dict[str, object]:

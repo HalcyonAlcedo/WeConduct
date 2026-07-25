@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import platform
+
 from pydantic import BaseModel
 import pytest
 
 import weconduct.application.operations as operations
 from weconduct.application.operations import OperationRegistry
+from weconduct._version import APP_VERSION
 
 
 def test_stable_public_descriptors_use_pydantic_input_and_output_models() -> None:
@@ -113,3 +116,102 @@ def test_stable_operation_filters_undeclared_output_fields() -> None:
     )
 
     assert result == {"project_name": "demo", "project_directory": None}
+
+
+def test_host_describe_exposes_version_platform_and_instance_identity() -> None:
+    result = operations.HostOperationService(
+        service=_HostService(),
+        host_metadata={"instance_id": "instance-contract-test"},
+    ).invoke(
+        "host.describe",
+        {},
+        caller=operations.OperationCaller(
+            caller_id="external:host-describe-contract",
+            permissions=frozenset({"operation.invoke"}),
+        ),
+    )
+
+    assert result["application_version"] == APP_VERSION
+    assert result["platform"] == platform.system().strip().lower()
+    assert result["api_version"] == "0.9"
+    assert result["instance_id"] == "instance-contract-test"
+
+
+def test_project_current_exposes_project_summary_with_graph_revision() -> None:
+    class _ProjectService(_HostService):
+        def get_project_document(self) -> dict[str, object]:
+            return {
+                "project": {
+                    "project_id": "project-contract-test",
+                    "project_status": "ready",
+                },
+                "graph_workspace": {"graph_document_save_revision": 7},
+            }
+
+    result = operations.HostOperationService(service=_ProjectService()).invoke(
+        "project.current.get",
+        {},
+        caller=operations.OperationCaller(
+            caller_id="external:project-current-contract",
+            permissions=frozenset({"operation.invoke"}),
+        ),
+    )
+
+    assert result == {
+        "project": {
+            "project_id": "project-contract-test",
+            "project_status": "ready",
+        },
+        "revision": 7,
+    }
+
+
+def test_project_create_exposes_new_graph_revision() -> None:
+    class _ProjectCreateService(_HostService):
+        def get_graph_document(self, *, document_id: str | None = None) -> dict[str, object]:
+            assert document_id is None
+            return {"revision": 8}
+
+    result = operations.HostOperationService(service=_ProjectCreateService()).invoke(
+        "project.create",
+        {"project_name": "contract-project"},
+        caller=operations.OperationCaller(
+            caller_id="external:project-create-contract",
+            permissions=frozenset({"operation.invoke"}),
+        ),
+    )
+
+    assert result == {
+        "project_name": "contract-project",
+        "project_directory": None,
+        "revision": 8,
+    }
+
+
+@pytest.mark.parametrize(
+    ("failure", "state"),
+    [
+        ("project.close_active_execution", "active_execution"),
+        ("project.close_unsaved_changes", "unsaved_changes"),
+    ],
+)
+def test_project_close_returns_a_state_conflict_when_close_is_rejected(
+    failure: str,
+    state: str,
+) -> None:
+    class _ProjectCloseService(_HostService):
+        def close_project(self) -> dict[str, object]:
+            raise ValueError(failure)
+
+    with pytest.raises(operations.OperationRegistryError) as error:
+        operations.HostOperationService(service=_ProjectCloseService()).invoke(
+            "project.close",
+            {},
+            caller=operations.OperationCaller(
+                caller_id="external:project-close-contract",
+                permissions=frozenset({"operation.invoke"}),
+            ),
+        )
+
+    assert error.value.error_code == "operation.state_conflict"
+    assert error.value.details["state"] == state

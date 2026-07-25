@@ -51,10 +51,18 @@ class OperationRegistry:
             )
 
         descriptors = {
-            "host.describe": descriptor("host.describe", "service", "api_version", "host_mode", "instance_id"),
+            "host.describe": descriptor(
+                "host.describe",
+                "service",
+                "application_version",
+                "platform",
+                "api_version",
+                "host_mode",
+                "instance_id",
+            ),
             "host.capabilities": descriptor("host.capabilities", "capabilities"),
-            "project.current.get": descriptor("project.current.get", "project"),
-            "project.create": descriptor("project.create", "status", "project", "graph_document", "project_name", "project_directory", input_model=ProjectCreateInput, side_effect_level=SideEffectLevel.WRITE, idempotency_capability=IdempotencyCapability.SUPPORTED),
+            "project.current.get": descriptor("project.current.get", "project", "revision"),
+            "project.create": descriptor("project.create", "status", "project", "graph_document", "project_name", "project_directory", "revision", input_model=ProjectCreateInput, side_effect_level=SideEffectLevel.WRITE, idempotency_capability=IdempotencyCapability.SUPPORTED),
             "project.open": descriptor("project.open", "status", "project", "graph_document", input_model=ProjectOpenInput, side_effect_level=SideEffectLevel.WRITE),
             "project.save": descriptor("project.save", "status", "project", "graph_document", input_model=ProjectSaveInput, side_effect_level=SideEffectLevel.WRITE, idempotency_capability=IdempotencyCapability.SUPPORTED),
             "project.close": descriptor("project.close", "status", "project", side_effect_level=SideEffectLevel.WRITE),
