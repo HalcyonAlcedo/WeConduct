@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 
-from weconduct.api.server import WeConductApiHandler
+from weconduct.api.server import WeConductApiHandler, WeConductApiServer
 
 
 def test_090_operations_and_external_v1_are_explicit_packages() -> None:
@@ -19,3 +19,11 @@ def test_090_external_v1_handler_entry_is_thin_router_delegation() -> None:
 
     assert "ExternalV1Router" in source
     assert "_resolve_external_operation" not in source
+
+
+def test_090_api_server_does_not_keep_a_second_external_idempotency_cache() -> None:
+    source = inspect.getsource(WeConductApiServer)
+
+    assert "begin_external_idempotency" not in source
+    assert "complete_external_idempotency" not in source
+    assert "external_api_idempotency_store" in source

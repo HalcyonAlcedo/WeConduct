@@ -1,7 +1,6 @@
 import json
 import ipaddress
 import mimetypes
-from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -567,58 +566,7 @@ class WeConductApiServer(ThreadingHTTPServer):
         self.external_api_idempotency_store = InMemoryOperationIdempotencyStore(
             limit=EXTERNAL_IDEMPOTENCY_CACHE_LIMIT
         )
-        self._external_idempotency_lock = RLock()
-        self._external_idempotency_cache: OrderedDict[
-            str, tuple[str, int | None, dict[str, object] | None]
-        ] = OrderedDict()
         super().__init__(*args, **kwargs)
-
-    def begin_external_idempotency(self, key: str) -> tuple[str, int, dict[str, object]] | None:
-        """Reserve an external idempotency key or return its completed response."""
-        with self._external_idempotency_lock:
-            entry = self._external_idempotency_cache.get(key)
-            if entry is not None:
-                self._external_idempotency_cache.move_to_end(key)
-                state, status, payload = entry
-                if state == "completed" and status is not None and payload is not None:
-                    return state, status, deepcopy(payload)
-                return "in_progress", 0, {}
-            self._external_idempotency_cache[key] = ("in_progress", None, None)
-            self._trim_external_idempotency_cache()
-        return None
-
-    def complete_external_idempotency(
-        self,
-        key: str,
-        *,
-        status: HTTPStatus,
-        payload: dict[str, object],
-    ) -> None:
-        """Store a redacted response for a previously reserved idempotency key."""
-        with self._external_idempotency_lock:
-            if key not in self._external_idempotency_cache:
-                return
-            self._external_idempotency_cache[key] = (
-                "completed",
-                status.value,
-                deepcopy(payload),
-            )
-            self._external_idempotency_cache.move_to_end(key)
-            self._trim_external_idempotency_cache()
-
-    def _trim_external_idempotency_cache(self) -> None:
-        while len(self._external_idempotency_cache) > EXTERNAL_IDEMPOTENCY_CACHE_LIMIT:
-            removable_key = next(
-                (
-                    cache_key
-                    for cache_key, entry in self._external_idempotency_cache.items()
-                    if entry[0] == "completed"
-                ),
-                None,
-            )
-            if removable_key is None:
-                return
-            self._external_idempotency_cache.pop(removable_key, None)
 
     def execute_debug_action(
         self,
