@@ -21,6 +21,16 @@ def test_response_body_store_spills_payload_larger_than_four_mib_to_session_file
     assert body_ref.path.exists() is False
 
 
+def test_memory_response_ref_cannot_be_read_after_its_session_store_closes(tmp_path) -> None:
+    store = ResponseBodyStore(session_id="session-1", root_directory=tmp_path)
+    body_ref = store.create(b"session-only", content_type="text/plain")
+
+    store.close()
+
+    with pytest.raises(RuntimeError, match="network.response_body_unavailable"):
+        body_ref.read_bytes()
+
+
 def test_response_body_store_streams_large_async_payload_to_session_file(tmp_path) -> None:
     async def chunks():
         for _ in range(5):

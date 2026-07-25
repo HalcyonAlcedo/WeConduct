@@ -44,6 +44,13 @@ class PendingInputService:
         with self._condition:
             if request.request_id in self._records:
                 raise ValueError("pending input request already exists")
+            if any(
+                record.request.execution_id == request.execution_id
+                and record.status
+                in {PendingInputStatus.CREATED, PendingInputStatus.WAITING}
+                for record in self._records.values()
+            ):
+                raise ValueError("execution already has a pending input request")
             self._records[request.request_id] = _PendingInputRecord(
                 request=request,
                 status=PendingInputStatus.CREATED,
@@ -62,6 +69,8 @@ class PendingInputService:
                 request_id
                 for request_id, record in self._records.items()
                 if record.request.execution_id == execution_id
+                and record.status
+                in {PendingInputStatus.CREATED, PendingInputStatus.WAITING}
             ]
             if not matches:
                 return None

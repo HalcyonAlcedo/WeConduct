@@ -24,6 +24,7 @@ def upgrade_graph_payload(
     *,
     from_version: str,
     target_version: str = CURRENT_GRAPH_DATA_VERSION,
+    validate_stage: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Apply the complete graph-data upgrade path without changing metadata."""
     current_version = from_version.strip()
@@ -33,6 +34,8 @@ def upgrade_graph_payload(
     upgraded_payload = deepcopy(payload)
     for upgrader in build_graph_upgrade_path(current_version, target_version):
         upgraded_payload = upgrader.transform(upgraded_payload)
+        if validate_stage is not None:
+            validate_stage(deepcopy(upgraded_payload))
         current_version = upgrader.to_version
     if current_version != target_version:
         raise ValueError(

@@ -55,3 +55,19 @@ def test_090_frozen_preview_runner_smoke(tmp_path: Path) -> None:
     payload = json.loads(completed.stdout)
     assert payload["status"] == "passed"
     assert payload["failing_checks"] == []
+
+    capabilities = subprocess.run(
+        [str(executable), "operation", "host.capabilities", "--payload", "{}"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        cwd=tmp_path,
+    )
+
+    assert capabilities.returncode == 0, capabilities.stderr
+    capability_payload = json.loads(capabilities.stdout)
+    network = capability_payload["result"]["capabilities"]["network"]
+    assert network["available"] is True
+    assert network["protocols"]["http2"] is True
+    assert network["protocols"]["websocket"] is True

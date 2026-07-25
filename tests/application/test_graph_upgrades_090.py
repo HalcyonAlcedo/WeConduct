@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import weconduct.application.graph_upgrades as graph_upgrades
 from weconduct.application import CompilationWorkbenchService
-from weconduct.application.graph_upgrades import upgrade_graph_payload
+from weconduct.application.graph_upgrades import GraphDataUpgrader, upgrade_graph_payload
 from weconduct.contracts import GraphModel
 import pytest
 
@@ -78,6 +79,39 @@ def test_upgrade_090_payload_is_idempotent() -> None:
     }
 
     assert upgrade_graph_payload(payload, from_version="0.9.0", target_version="0.9.0") == payload
+
+
+def test_upgrade_graph_payload_validates_every_migration_stage(monkeypatch) -> None:
+    monkeypatch.setattr(
+        graph_upgrades,
+        "GRAPH_DATA_UPGRADERS",
+        (
+            GraphDataUpgrader(
+                from_version="test-start",
+                to_version="test-middle",
+                upgrader_id="test-invalid-stage",
+                transform=lambda payload: {**payload, "stage": "invalid"},
+            ),
+            GraphDataUpgrader(
+                from_version="test-middle",
+                to_version="test-end",
+                upgrader_id="test-later-stage",
+                transform=lambda payload: {**payload, "stage": "valid"},
+            ),
+        ),
+    )
+
+    def validate_stage(payload: dict) -> None:
+        if payload.get("stage") == "invalid":
+            raise ValueError("invalid intermediate graph payload")
+
+    with pytest.raises(ValueError, match="invalid intermediate graph payload"):
+        upgrade_graph_payload(
+            {"stage": "source"},
+            from_version="test-start",
+            target_version="test-end",
+            validate_stage=validate_stage,
+        )
 
 
 def test_workbench_exposes_062_to_090_upgrade_path() -> None:

@@ -399,12 +399,19 @@ class RuntimeExecutorRegistry:
         except (TypeError, ValueError):
             return _failed_result(node, "network.timeout_invalid", "network timeout must be numeric")
         body_value = _resolve_value(node_config.get("body"), context)
-        request_headers = {str(key): str(value) for key, value in headers.items()}
+        request_headers = _normalize_network_headers(
+            {str(key): value for key, value in headers.items()},
+            context,
+        )
         request_query = {str(key): str(value) for key, value in query.items()}
         connection_overrides: dict[str, object] = {}
         for name in ("auth", "tls", "proxy", "retry_policy"):
             if name in node_config:
-                connection_overrides[name] = _resolve_value(node_config[name], context)
+                connection_overrides[name] = _normalize_network_connection_value(
+                    name,
+                    _resolve_value(node_config[name], context),
+                    context,
+                )
         if isinstance(body_value, (dict, list)):
             try:
                 request_content = json.dumps(body_value).encode("utf-8")
@@ -519,7 +526,7 @@ class RuntimeExecutorRegistry:
                 context.execution_token_context = context_registry.apply_overrides(
                     session_id,
                     context.execution_token_context,
-                    {"cookies": dict(result.set_cookies)},
+                    {"cookies": _normalize_network_cookies(result.set_cookies, context)},
                 )
             except ValueError as exc:
                 return _failed_result(node, "network.context_update_failed", str(exc))
@@ -786,12 +793,13 @@ class RuntimeExecutorRegistry:
         if not isinstance(raw_strategy, str):
             raise ValueError("network context strategy must be a string")
         strategy = raw_strategy.strip().lower()
-        overrides: dict[str, object] = {"headers": headers, "query": query}
+        normalized_headers = _normalize_network_headers(headers, context)
+        overrides: dict[str, object] = {"headers": normalized_headers, "query": query}
         if "timeout" in node_config or "timeout_seconds" in node_config:
             overrides["timeout_seconds"] = timeout_seconds
         for name, value in (extra_overrides or {}).items():
             if value is not None:
-                overrides[name] = value
+                overrides[name] = _normalize_network_connection_value(name, value, context)
         token_context = context.execution_token_context
         if token_context.network_context_id is None and strategy == "inherit":
             token_context = registry.create(session_id, **overrides)
@@ -810,14 +818,14 @@ class RuntimeExecutorRegistry:
         context.execution_token_context = token_context
         snapshot = registry.snapshot(session_id, token_context)
         effective_values: dict[str, object] = {
-            "headers": {**snapshot.headers, **headers},
+            "headers": {**snapshot.headers, **normalized_headers},
             "query": {**snapshot.query, **query},
         }
         if "timeout_seconds" in overrides:
             effective_values["timeout_seconds"] = timeout_seconds
         for name, value in (extra_overrides or {}).items():
             if value is not None:
-                effective_values[name] = value
+                effective_values[name] = _normalize_network_connection_value(name, value, context)
         return replace(snapshot, **effective_values)
 
     def _execute_network_response_assert(self, node: dict, context: RuntimeContext) -> dict:
@@ -1753,12 +1761,14 @@ class RuntimeExecutorRegistry:
         service = context.flow_runtime.get("network_runtime_service")
         if isinstance(service, NetworkRuntimeService):
             return service
+        audit_event_sink = context.flow_runtime.get("network_audit_event_sink")
         service = NetworkRuntimeService(
             response_root_directory=Path(tempfile.gettempdir()),
             access_policy=NetworkAccessPolicy(
                 allow_loopback=self._is_local_network_access_allowed(),
             ),
             sensitive_values=context.flow_runtime.get("sensitive_value_service"),
+            audit_event_sink=audit_event_sink if callable(audit_event_sink) else None,
         )
         context.flow_runtime["network_runtime_service"] = service
         context.register_cleanup("network-runtime-service", service.close)
@@ -4943,6 +4953,130 @@ def _close_method(target: object, method_name: str) -> None:
 
 def _check_cancellation(context: RuntimeContext) -> None:
     context.cancellation_context.check()
+
+
+def _normalize_network_connection_value(name: str, value: object, context: RuntimeContext) -> object:
+    if name == "auth":
+        return _normalize_network_auth(value, context)
+    if name == "proxy":
+        return _normalize_network_proxy(value, context)
+    return value
+
+
+def _normalize_network_auth(value: object, context: RuntimeContext) -> object:
+    if not isinstance(value, Mapping):
+        return value
+    normalized = dict(value)
+    auth_type = normalized.get("type")
+    if not isinstance(auth_type, str):
+        return normalized
+    sensitive_fields_by_type = {
+        "bearer": ("token",),
+        "basic": ("username", "password"),
+        "oauth_client_credentials": ("client_secret", "refresh_token"),
+    }
+    for field_name in sensitive_fields_by_type.get(auth_type.strip().lower(), ()):
+        if field_name in normalized:
+            normalized[field_name] = _to_sensitive_ref(normalized[field_name], context)
+    return normalized
+
+
+def _normalize_network_proxy(value: object, context: RuntimeContext) -> object:
+    if not isinstance(value, Mapping):
+        return value
+    normalized = dict(value)
+    if normalized.get("mode") != "manual":
+        return normalized
+    raw_url = normalized.get("url")
+    if not isinstance(raw_url, str):
+        return normalized
+    try:
+        parsed = urllib.parse.urlsplit(raw_url)
+        port = parsed.port
+    except ValueError:
+        return normalized
+    if parsed.username is None and parsed.password is None:
+        return normalized
+    if parsed.hostname is None:
+        return normalized
+    hostname = parsed.hostname
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    netloc = hostname if port is None else f"{hostname}:{port}"
+    normalized["url"] = urllib.parse.urlunsplit(
+        (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+    if parsed.username is not None:
+        normalized["username"] = _to_sensitive_ref(
+            urllib.parse.unquote(parsed.username),
+            context,
+        )
+    if parsed.password is not None:
+        normalized["password"] = _to_sensitive_ref(
+            urllib.parse.unquote(parsed.password),
+            context,
+        )
+    return normalized
+
+
+def _normalize_network_headers(
+    headers: Mapping[str, object],
+    context: RuntimeContext,
+) -> dict[str, object]:
+    from weconduct.application.sensitive_values.models import SensitiveRef
+
+    return {
+        name: (
+            _to_sensitive_ref(
+                value if isinstance(value, (str, SensitiveRef)) else str(value),
+                context,
+            )
+            if name.strip().lower()
+            in {
+                "authorization",
+                "proxy-authorization",
+                "cookie",
+                "set-cookie",
+                "x-api-key",
+                "x-auth-token",
+                "x-access-token",
+            }
+            else value if isinstance(value, (str, SensitiveRef)) else str(value)
+        )
+        for name, value in headers.items()
+    }
+
+
+def _normalize_network_cookies(
+    cookies: Mapping[str, str | None],
+    context: RuntimeContext,
+) -> dict[str, object]:
+    return {
+        name: _to_sensitive_ref(value, context) if isinstance(value, str) else value
+        for name, value in cookies.items()
+    }
+
+
+def _to_sensitive_ref(value: object, context: RuntimeContext) -> object:
+    from weconduct.application.sensitive_values.models import SensitiveRef
+    from weconduct.application.sensitive_values.service import SensitiveValueService
+
+    if isinstance(value, SensitiveRef) or not isinstance(value, str):
+        return value
+    session_id = context.execution_session_context.session_id
+    sensitive_values = context.flow_runtime.get("sensitive_value_service")
+    if not isinstance(sensitive_values, SensitiveValueService):
+        sensitive_values = SensitiveValueService()
+        context.flow_runtime["sensitive_value_service"] = sensitive_values
+        context.register_cleanup(
+            "runtime-sensitive-values",
+            lambda: sensitive_values.revoke_scope(session_id),
+        )
+    return sensitive_values.create(
+        value,
+        scope_id=session_id,
+        source="plaintext_literal",
+    )
 
 
 def _wait_for_timeout_with_cancellation(page: Page, timeout_ms: int, context: RuntimeContext) -> None:

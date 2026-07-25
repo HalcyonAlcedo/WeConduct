@@ -503,8 +503,7 @@ def test_httpx_adapter_uses_local_http_proxy_without_direct_fallback(tmp_path: P
     assert result.status == "succeeded", result.transport_error
     assert result.status_code == 200
     assert len(observed) == 1
-    assert observed[0].endswith("/resource")
-    assert "example.test" not in observed[0]
+    assert observed[0] == "http://example.test/resource"
 
 
 def test_httpx_adapter_forwards_through_real_local_socks5_proxy(tmp_path: Path) -> None:

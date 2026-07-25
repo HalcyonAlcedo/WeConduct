@@ -8,6 +8,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 
+from weconduct.application.sensitive_values.models import SensitiveConsumer, SensitiveRef
+from weconduct.application.sensitive_values.service import SensitiveValueService
 from weconduct.network_runtime.http_adapter import HttpxAdapter
 from weconduct.network_runtime.access_policy import NetworkAccessPolicy
 from weconduct.network_runtime.models import NetworkContextSnapshot, NetworkOperation
@@ -499,9 +501,10 @@ def test_network_http_request_writes_set_cookie_back_to_current_context() -> Non
             )
             return future
 
+    sensitive_values = SensitiveValueService()
     service = StubNetworkRuntimeService()
     registry = RuntimeExecutorRegistry(network_runtime_service=service)
-    context = RuntimeContext()
+    context = RuntimeContext(flow_runtime={"sensitive_value_service": sensitive_values})
     first = {
         "node_id": "cookie-first",
         "node_kind": "network.http_request",
@@ -517,19 +520,26 @@ def test_network_http_request_writes_set_cookie_back_to_current_context() -> Non
     registry.execute("network.http_request", second, context)
 
     assert service.snapshots[0].cookies == {}
-    assert service.snapshots[1].cookies == {"sid": "response-cookie"}
+    response_cookie = service.snapshots[1].cookies["sid"]
+    assert isinstance(response_cookie, SensitiveRef)
+    assert sensitive_values.resolve(
+        response_cookie,
+        consumer=SensitiveConsumer.NETWORK_RUNTIME,
+    ) == "response-cookie"
 
 
 def test_network_http_request_forwards_node_auth_tls_and_proxy_to_service_snapshot() -> None:
     class StubNetworkRuntimeService:
         def __init__(self) -> None:
             self.snapshot: NetworkContextSnapshot | None = None
+            self.operation: NetworkOperation | None = None
 
         def submit(
             self,
             operation: NetworkOperation,
             snapshot: NetworkContextSnapshot,
         ) -> Future[NetworkResult]:
+            self.operation = operation
             self.snapshot = snapshot
             future: Future[NetworkResult] = Future()
             future.set_result(
@@ -561,9 +571,146 @@ def test_network_http_request_forwards_node_auth_tls_and_proxy_to_service_snapsh
 
     assert output["status"] == "succeeded"
     assert service.snapshot is not None
-    assert service.snapshot.auth == {"type": "bearer", "token": "runtime-token"}
+    assert isinstance(service.snapshot.auth, dict)
+    assert service.snapshot.auth["type"] == "bearer"
+    assert isinstance(service.snapshot.auth["token"], SensitiveRef)
     assert service.snapshot.tls == {"verify": "insecure"}
     assert service.snapshot.proxy == {"mode": "manual", "url": "http://proxy.example.test:8080"}
+
+
+def test_network_http_request_converts_node_credentials_to_sensitive_refs() -> None:
+    class StubNetworkRuntimeService:
+        def __init__(self) -> None:
+            self.snapshot: NetworkContextSnapshot | None = None
+            self.operation: NetworkOperation | None = None
+
+        def submit(
+            self,
+            operation: NetworkOperation,
+            snapshot: NetworkContextSnapshot,
+        ) -> Future[NetworkResult]:
+            self.operation = operation
+            self.snapshot = snapshot
+            future: Future[NetworkResult] = Future()
+            future.set_result(
+                NetworkResult(
+                    status="succeeded",
+                    operation_id=operation.operation_id,
+                    session_id=operation.session_id,
+                    status_code=200,
+                )
+            )
+            return future
+
+    sensitive_values = SensitiveValueService()
+    service = StubNetworkRuntimeService()
+    output = RuntimeExecutorRegistry(network_runtime_service=service).execute(
+        "network.http_request",
+        {
+            "node_id": "network-sensitive-request",
+            "node_kind": "network.http_request",
+            "node_config": {
+                "context_strategy": "new",
+                "url": "https://example.test/resource",
+                "headers": {
+                    "Authorization": "Bearer node-header-secret",
+                    "Cookie": "session=node-cookie-secret",
+                    "Accept": "application/json",
+                },
+                "auth": {
+                    "type": "basic",
+                    "username": "node-basic-user",
+                    "password": "node-basic-password",
+                },
+                "proxy": {
+                    "mode": "manual",
+                    "url": "http://proxy-user:proxy-password@proxy.example.test:8080",
+                },
+            },
+        },
+        RuntimeContext(flow_runtime={"sensitive_value_service": sensitive_values}),
+    )
+
+    assert output["status"] == "succeeded"
+    assert service.snapshot is not None
+    assert isinstance(service.snapshot.auth, dict)
+    assert isinstance(service.snapshot.auth["username"], SensitiveRef)
+    assert isinstance(service.snapshot.auth["password"], SensitiveRef)
+    assert sensitive_values.resolve(
+        service.snapshot.auth["username"],
+        consumer=SensitiveConsumer.NETWORK_RUNTIME,
+    ) == "node-basic-user"
+    assert isinstance(service.snapshot.headers["Authorization"], SensitiveRef)
+    assert isinstance(service.snapshot.headers["Cookie"], SensitiveRef)
+    assert service.snapshot.headers["Accept"] == "application/json"
+    assert service.operation is not None
+    assert isinstance(service.operation.headers["Authorization"], SensitiveRef)
+    assert isinstance(service.operation.headers["Cookie"], SensitiveRef)
+    assert isinstance(service.snapshot.proxy, dict)
+    assert service.snapshot.proxy["url"] == "http://proxy.example.test:8080"
+    assert isinstance(service.snapshot.proxy["username"], SensitiveRef)
+    assert isinstance(service.snapshot.proxy["password"], SensitiveRef)
+    assert "node-header-secret" not in repr(service.snapshot)
+    assert "proxy-password" not in repr(service.snapshot)
+
+
+def test_network_http_request_preserves_sensitive_header_port_input_as_a_reference() -> None:
+    class StubNetworkRuntimeService:
+        def __init__(self) -> None:
+            self.operation: NetworkOperation | None = None
+            self.snapshot: NetworkContextSnapshot | None = None
+
+        def submit(
+            self,
+            operation: NetworkOperation,
+            snapshot: NetworkContextSnapshot,
+        ) -> Future[NetworkResult]:
+            self.operation = operation
+            self.snapshot = snapshot
+            future: Future[NetworkResult] = Future()
+            future.set_result(
+                NetworkResult(
+                    status="succeeded",
+                    operation_id=operation.operation_id,
+                    session_id=operation.session_id,
+                    status_code=200,
+                )
+            )
+            return future
+
+    sensitive_values = SensitiveValueService()
+    context = RuntimeContext(flow_runtime={"sensitive_value_service": sensitive_values})
+    header_token = sensitive_values.create(
+        "Bearer runtime-port-secret",
+        scope_id=context.execution_session_context.session_id,
+        source="runtime_input",
+    )
+    context.variables["header_token"] = header_token
+    service = StubNetworkRuntimeService()
+
+    output = RuntimeExecutorRegistry(network_runtime_service=service).execute(
+        "network.http_request",
+        {
+            "node_id": "network-sensitive-header-port",
+            "node_kind": "network.http_request",
+            "node_config": {
+                "context_strategy": "new",
+                "url": "https://example.test/resource",
+                "headers": {"Authorization": "${header_token}"},
+            },
+        },
+        context,
+    )
+
+    assert output["status"] == "succeeded"
+    assert service.snapshot is not None
+    assert service.operation is not None
+    assert isinstance(service.snapshot.headers["Authorization"], SensitiveRef)
+    assert isinstance(service.operation.headers["Authorization"], SensitiveRef)
+    assert sensitive_values.resolve(
+        service.operation.headers["Authorization"],
+        consumer=SensitiveConsumer.NETWORK_RUNTIME,
+    ) == "Bearer runtime-port-secret"
 
 
 def test_network_http_request_is_registered_as_a_builtin_component() -> None:

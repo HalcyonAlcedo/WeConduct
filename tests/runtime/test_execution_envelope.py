@@ -51,6 +51,22 @@ def test_execution_envelope_rejects_undeclared_outputs_and_domain_escape() -> No
         envelope.context.data.get("secret")
 
 
+def test_execution_envelope_rejects_booleans_for_integer_and_number_fields() -> None:
+    envelope = ExecutionEnvelope(
+        inputs={},
+        metadata={},
+        output_schema={
+            "count": FieldSchema("count", "integer"),
+            "ratio": FieldSchema("ratio", "number"),
+        },
+    )
+
+    with pytest.raises(ExecutionEnvelopeError, match="field type is invalid: count"):
+        envelope.context.outputs.set("count", True)
+    with pytest.raises(ExecutionEnvelopeError, match="field type is invalid: ratio"):
+        envelope.context.outputs.set("ratio", False)
+
+
 def test_execution_envelope_discards_staged_values_on_failure_or_cancel() -> None:
     envelope = ExecutionEnvelope(
         inputs={},

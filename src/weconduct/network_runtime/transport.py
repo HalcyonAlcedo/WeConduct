@@ -80,16 +80,21 @@ class PinnedDnsAsyncHTTPTransport(httpx.AsyncHTTPTransport):
         target_host = request.url.host
         target_port = request.url.port
         connect_port = target_port or (443 if request.url.scheme == "https" else 80)
-        resolved_target = request.extensions.get("weconduct.resolved_network_target")
-        if (
-            isinstance(resolved_target, ResolvedNetworkTarget)
-            and resolved_target.hostname == target_host.lower()
-            and resolved_target.port == connect_port
-        ):
-            addresses = resolved_target.addresses
+        if isinstance(self._pool, httpcore.AsyncHTTPProxy):
+            # The proxy pool connects through its own proxy origin. Resolving the target
+            # here both defeats proxy-side DNS and rejects deliberately non-resolvable names.
+            connect_host = request.url.raw_host
         else:
-            addresses = self._access_policy.resolve_connect_addresses(target_host, connect_port)
-        connect_host = addresses[0].encode("ascii")
+            resolved_target = request.extensions.get("weconduct.resolved_network_target")
+            if (
+                isinstance(resolved_target, ResolvedNetworkTarget)
+                and resolved_target.hostname == target_host.lower()
+                and resolved_target.port == connect_port
+            ):
+                addresses = resolved_target.addresses
+            else:
+                addresses = self._access_policy.resolve_connect_addresses(target_host, connect_port)
+            connect_host = addresses[0].encode("ascii")
         extensions = {**request.extensions, "sni_hostname": target_host}
         core_request = httpcore.Request(
             method=request.method,

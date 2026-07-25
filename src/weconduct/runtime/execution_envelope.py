@@ -187,6 +187,7 @@ def _validate_value(schema: FieldSchema, value: object) -> None:
         if schema.allow_none:
             return
         raise ExecutionEnvelopeError("python.field_type_invalid", f"field does not allow null: {schema.field_id}")
+    normalized_type = schema.value_type.strip().lower()
     expected = {
         "any": None,
         "object": dict,
@@ -195,8 +196,14 @@ def _validate_value(schema: FieldSchema, value: object) -> None:
         "number": (int, float),
         "integer": int,
         "boolean": bool,
-    }.get(schema.value_type.strip().lower())
-    if expected is not None and not isinstance(value, expected):
+    }.get(normalized_type)
+    if (
+        expected is not None
+        and (
+            not isinstance(value, expected)
+            or (normalized_type in {"integer", "number"} and isinstance(value, bool))
+        )
+    ):
         raise ExecutionEnvelopeError("python.field_type_invalid", f"field type is invalid: {schema.field_id}")
 
 

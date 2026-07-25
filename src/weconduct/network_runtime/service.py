@@ -9,7 +9,8 @@ from pathlib import Path
 import random
 from threading import Event, RLock, Thread
 from time import monotonic, time
-from typing import Mapping
+from typing import Callable, Mapping
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 
@@ -174,6 +175,7 @@ class NetworkRuntimeService:
         response_root_directory: Path,
         access_policy: NetworkAccessPolicy | None = None,
         sensitive_values: object | None = None,
+        audit_event_sink: Callable[[str, dict[str, object]], None] | None = None,
     ) -> None:
         self._access_policy = access_policy or NetworkAccessPolicy()
         self._adapter = HttpxAdapter(
@@ -189,6 +191,7 @@ class NetworkRuntimeService:
         self._active_tasks: dict[str, set[asyncio.Task[NetworkResult]]] = {}
         self._long_connections: dict[str, set[object]] = {}
         self._sensitive_values = sensitive_values
+        self._audit_event_sink = audit_event_sink
         self._oauth_service = (
             OAuthService(
                 sensitive_values=sensitive_values,  # type: ignore[arg-type]
@@ -257,13 +260,14 @@ class NetworkRuntimeService:
         max_queue_size: int = 100,
     ) -> tuple[SSEClientHandle, dict[str, object]]:
         self._require_open()
+        operation = NetworkOperation(
+            operation_id="network.sse_connect",
+            session_id=session_id,
+            method="GET",
+            url=url,
+        )
         effective_snapshot = self._resolve_oauth_snapshot_sync(
-            operation=NetworkOperation(
-                operation_id="network.sse_connect",
-                session_id=session_id,
-                method="GET",
-                url=url,
-            ),
+            operation=operation,
             snapshot=snapshot,
             timeout_seconds=timeout_seconds,
         )
@@ -271,6 +275,7 @@ class NetworkRuntimeService:
         resolved_tls = TlsResolver().resolve(
             effective_snapshot.tls if isinstance(effective_snapshot.tls, dict) else {}
         )
+        self._emit_tls_audit_events(operation, effective_snapshot, resolved_tls.audit_events)
         handle = SSEClientHandle(
             url=url,
             headers=self._effective_headers(effective_snapshot, headers),
@@ -301,13 +306,14 @@ class NetworkRuntimeService:
         subprotocols: list[str] | None = None,
     ) -> tuple[WebSocketClientHandle, dict[str, object]]:
         self._require_open()
+        operation = NetworkOperation(
+            operation_id="network.websocket_connect",
+            session_id=session_id,
+            method="GET",
+            url=url,
+        )
         effective_snapshot = self._resolve_oauth_snapshot_sync(
-            operation=NetworkOperation(
-                operation_id="network.websocket_connect",
-                session_id=session_id,
-                method="GET",
-                url=url,
-            ),
+            operation=operation,
             snapshot=snapshot,
             timeout_seconds=timeout_seconds,
         )
@@ -315,6 +321,7 @@ class NetworkRuntimeService:
         resolved_tls = TlsResolver().resolve(
             effective_snapshot.tls if isinstance(effective_snapshot.tls, dict) else {}
         )
+        self._emit_tls_audit_events(operation, effective_snapshot, resolved_tls.audit_events)
         handle = WebSocketClientHandle(
             url=url,
             headers=self._effective_headers(effective_snapshot, headers),
@@ -417,6 +424,10 @@ class NetworkRuntimeService:
 
         start_time = monotonic()
         can_retry = _retry_is_allowed(operation, snapshot, policy)
+        resolved_tls = TlsResolver().resolve(
+            snapshot.tls if isinstance(snapshot.tls, dict) else {}
+        )
+        self._emit_tls_audit_events(operation, snapshot, resolved_tls.audit_events)
         result: NetworkResult | None = None
         for attempt_index in range(policy["max_attempts"]):
             try:
@@ -436,8 +447,9 @@ class NetworkRuntimeService:
                     transport_error=error.error_code,
                     error=error,
                 )
+            effective_operation = self._resolve_static_sensitive_operation(operation)
             result = _with_retry_attempt(
-                await self._adapter.execute_async(operation, effective_snapshot),
+                await self._adapter.execute_async(effective_operation, effective_snapshot),
                 operation=operation,
                 snapshot=effective_snapshot,
                 retry_attempt=attempt_index + 1,
@@ -473,12 +485,13 @@ class NetworkRuntimeService:
         operation: NetworkOperation,
         snapshot: NetworkContextSnapshot,
     ) -> NetworkContextSnapshot:
-        auth = snapshot.auth
+        oauth_snapshot = self._resolve_static_sensitive_snapshot(snapshot)
+        auth = oauth_snapshot.auth
         if not isinstance(auth, Mapping):
-            return snapshot
+            return oauth_snapshot
         auth_type = auth.get("type")
         if not isinstance(auth_type, str) or auth_type.strip().lower() != "oauth_client_credentials":
-            return snapshot
+            return oauth_snapshot
         if self._oauth_service is None or self._sensitive_values is None:
             raise ValueError("network.oauth_sensitive_values_unavailable")
         key = (operation.session_id, snapshot.context_id)
@@ -498,7 +511,7 @@ class NetworkRuntimeService:
                     scope_id=operation.session_id,
                     client_id=client_id,
                     scope=scope,
-                    snapshot=snapshot,
+                    snapshot=oauth_snapshot,
                 )
             else:
                 request = self._oauth_service.build_client_credentials_request(
@@ -512,7 +525,7 @@ class NetworkRuntimeService:
                     self._oauth_service.exchange_client_credentials,
                     request=request,
                     scope_id=operation.session_id,
-                    snapshot=snapshot,
+                    snapshot=oauth_snapshot,
                 )
             self._oauth_tokens[key] = token_state
         from weconduct.application.sensitive_values.models import SensitiveConsumer
@@ -523,7 +536,9 @@ class NetworkRuntimeService:
         )
         if not isinstance(access_token, str) or not access_token:
             raise ValueError("network.oauth_access_token_invalid")
-        return replace(snapshot, auth={"type": "bearer", "token": access_token})
+        return self._resolve_static_sensitive_snapshot(
+            replace(oauth_snapshot, auth={"type": "bearer", "token": access_token})
+        )
 
     def _resolve_oauth_snapshot_sync(
         self,
@@ -542,6 +557,99 @@ class NetworkRuntimeService:
         for key in tuple(self._oauth_tokens):
             if key[0] == session_id:
                 self._oauth_tokens.pop(key, None)
+
+    def _emit_tls_audit_events(
+        self,
+        operation: NetworkOperation,
+        snapshot: NetworkContextSnapshot,
+        event_names: tuple[str, ...],
+    ) -> None:
+        if self._audit_event_sink is None:
+            return
+        for event_name in event_names:
+            self._audit_event_sink(
+                event_name,
+                {
+                    "event_kind": event_name,
+                    "session_id": operation.session_id,
+                    "operation_id": operation.operation_id,
+                    "network_context_id": snapshot.context_id,
+                },
+            )
+
+    def _resolve_static_sensitive_snapshot(
+        self,
+        snapshot: NetworkContextSnapshot,
+    ) -> NetworkContextSnapshot:
+        auth = snapshot.auth
+        if isinstance(auth, Mapping):
+            normalized_auth = dict(auth)
+            auth_type = normalized_auth.get("type")
+            fields = (
+                ("token",)
+                if isinstance(auth_type, str) and auth_type.strip().lower() == "bearer"
+                else ("username", "password")
+                if isinstance(auth_type, str) and auth_type.strip().lower() == "basic"
+                else ()
+            )
+            for field_name in fields:
+                if field_name in normalized_auth:
+                    normalized_auth[field_name] = self._resolve_sensitive_text(
+                        normalized_auth[field_name]
+                    )
+            auth = normalized_auth
+
+        headers = self._resolve_sensitive_mapping(snapshot.headers)
+        cookies = self._resolve_sensitive_mapping(snapshot.cookies)
+
+        proxy = snapshot.proxy
+        if isinstance(proxy, Mapping):
+            normalized_proxy = dict(proxy)
+            username = self._resolve_sensitive_text(normalized_proxy.pop("username", None))
+            password = self._resolve_sensitive_text(normalized_proxy.pop("password", None))
+            if username is not None or password is not None:
+                raw_url = normalized_proxy.get("url")
+                if not isinstance(raw_url, str):
+                    raise ValueError("network.proxy_credentials_invalid")
+                normalized_proxy["url"] = _with_proxy_credentials(
+                    raw_url,
+                    username=username,
+                    password=password,
+                )
+            proxy = normalized_proxy
+        return replace(snapshot, auth=auth, headers=headers, cookies=cookies, proxy=proxy)
+
+    def _resolve_static_sensitive_operation(
+        self,
+        operation: NetworkOperation,
+    ) -> NetworkOperation:
+        return replace(operation, headers=self._resolve_sensitive_mapping(operation.headers))
+
+    def _resolve_sensitive_mapping(
+        self,
+        values: Mapping[str, object],
+    ) -> dict[str, str]:
+        return {
+            str(name): resolved
+            for name, value in values.items()
+            if isinstance((resolved := self._resolve_sensitive_text(value)), str)
+        }
+
+    def _resolve_sensitive_text(self, value: object) -> str | None:
+        from weconduct.application.sensitive_values.models import SensitiveConsumer, SensitiveRef
+
+        if value is None:
+            return None
+        if isinstance(value, SensitiveRef):
+            if self._sensitive_values is None:
+                raise ValueError("network.sensitive_values_unavailable")
+            value = self._sensitive_values.resolve(
+                value,
+                consumer=SensitiveConsumer.NETWORK_RUNTIME,
+            )
+        if not isinstance(value, str):
+            raise ValueError("network.sensitive_value_invalid")
+        return value
 
     def _register_long_connection(self, session_id: str, handle: object) -> None:
         with self._lock:
@@ -578,16 +686,17 @@ class NetworkRuntimeService:
             if self._closed:
                 raise RuntimeError("network runtime service is closed")
 
-    @staticmethod
     def _effective_headers(
+        self,
         snapshot: NetworkContextSnapshot,
-        headers: dict[str, str] | None,
+        headers: Mapping[str, object] | None,
     ) -> dict[str, str]:
-        effective = {str(key): str(value) for key, value in snapshot.headers.items()}
-        effective.update({str(key): str(value) for key, value in (headers or {}).items()})
+        effective = self._resolve_sensitive_mapping(snapshot.headers)
+        effective.update(self._resolve_sensitive_mapping(headers or {}))
         if snapshot.cookies and not any(key.lower() == "cookie" for key in effective):
             effective["Cookie"] = "; ".join(
-                f"{name}={value}" for name, value in snapshot.cookies.items()
+                f"{name}={value}"
+                for name, value in self._resolve_sensitive_mapping(snapshot.cookies).items()
             )
         return apply_static_auth(effective, snapshot.auth)
 
@@ -609,3 +718,24 @@ class NetworkRuntimeService:
         self._ready.set()
         self._loop.run_forever()
         self._loop.close()
+
+
+def _with_proxy_credentials(
+    raw_url: str,
+    *,
+    username: str | None,
+    password: str | None,
+) -> str:
+    parsed = urlsplit(raw_url)
+    if not parsed.scheme or not parsed.hostname:
+        raise ValueError("network.proxy_credentials_invalid")
+    hostname = parsed.hostname
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    host_port = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
+    userinfo = quote(username or "", safe="")
+    if password is not None:
+        userinfo = f"{userinfo}:{quote(password, safe='')}"
+    return urlunsplit(
+        (parsed.scheme, f"{userinfo}@{host_port}", parsed.path, parsed.query, parsed.fragment)
+    )

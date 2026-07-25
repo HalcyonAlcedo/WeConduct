@@ -170,6 +170,23 @@ def test_operation_service_redacts_descriptor_output_to_contract_fields() -> Non
     assert capabilities == {"capabilities": {"network": {"available": True}}}
 
 
+def test_host_capabilities_expose_runtime_network_and_security_features() -> None:
+    from weconduct.application import CompilationWorkbenchService
+
+    result = HostOperationService(service=CompilationWorkbenchService()).invoke(
+        "host.capabilities",
+        {},
+        caller=_TEST_CALLER,
+    )
+
+    capabilities = result["capabilities"]
+    assert capabilities["network"]["available"] is True
+    assert capabilities["network"]["protocols"]["http2"] is True
+    assert capabilities["sensitive_input"]["available"] is True
+    assert capabilities["external_api_v1"]["available"] is True
+    assert capabilities["python_run"]["dynamic_schema"] is True
+
+
 def test_operation_service_normalizes_pending_input_state_conflicts() -> None:
     service = HostOperationService(service=_PendingInputErrorService())
 

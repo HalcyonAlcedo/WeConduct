@@ -70,6 +70,24 @@ def test_context_registry_fork_is_isolated_from_later_parent_updates() -> None:
     assert registry.snapshot(session_id, forked).headers == {"X-Request": "parent"}
 
 
+def test_anonymous_context_strips_platform_default_authentication_and_cookies() -> None:
+    registry = NetworkContextRegistry(
+        platform_defaults={
+            "auth": {"type": "bearer", "token": "platform-secret"},
+            "headers": {"Authorization": "Bearer platform-secret", "Accept": "application/json"},
+            "cookies": {"session": "platform-secret"},
+        }
+    )
+    root = registry.create("session-1")
+
+    anonymous = registry.apply_strategy("session-1", root, strategy="anonymous")
+    snapshot = registry.snapshot("session-1", anonymous)
+
+    assert snapshot.auth is None
+    assert snapshot.cookies == {}
+    assert snapshot.headers == {"Accept": "application/json"}
+
+
 def test_context_registry_rejects_switch_to_another_session_and_cleans_up_session() -> None:
     registry = NetworkContextRegistry()
     session_one_context = registry.create("session-1")

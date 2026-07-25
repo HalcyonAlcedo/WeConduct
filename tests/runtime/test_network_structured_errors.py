@@ -74,3 +74,17 @@ def test_runtime_executor_passes_sensitive_service_to_owned_network_runtime() ->
         assert service._sensitive_values is sensitive_values  # type: ignore[attr-defined]
     finally:
         context.close()
+
+
+def test_runtime_executor_passes_network_audit_sink_to_owned_network_runtime() -> None:
+    audit_events: list[tuple[str, dict[str, object]]] = []
+    audit_sink = lambda event_name, payload: audit_events.append((event_name, payload))
+    context = RuntimeContext(flow_runtime={"network_audit_event_sink": audit_sink})
+    registry = RuntimeExecutorRegistry()
+
+    service = registry._resolve_network_runtime_service(context)  # type: ignore[attr-defined]
+    try:
+        assert service._audit_event_sink is audit_sink  # type: ignore[attr-defined]
+        assert audit_events == []
+    finally:
+        context.close()

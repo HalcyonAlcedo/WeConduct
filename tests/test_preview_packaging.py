@@ -84,6 +84,7 @@ def test_preview_packaging_collects_network_runtime_dependencies() -> None:
         "python_socks",
     ):
         assert package_name in spec_text
+    assert '    "h2",' in spec_text
 
 
 def test_preview_packaging_uses_filtered_network_submodule_collection() -> None:

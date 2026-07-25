@@ -59,6 +59,7 @@ datas.extend(_collect_bundled_python_runtime_entries(bundled_python_home))
 
 network_runtime_packages = (
     "httpx",
+    "h2",
     "httpx_sse",
     "websockets",
     "graphql",
@@ -85,6 +86,18 @@ network_runtime_submodules: dict[str, set[str]] = {
         "httpx._transports.wsgi",
     },
     "httpx_sse": {"httpx_sse", "httpx_sse._api"},
+    "h2": {
+        "h2",
+        "h2.config",
+        "h2.connection",
+        "h2.events",
+        "h2.exceptions",
+        "h2.frame_buffer",
+        "h2.settings",
+        "h2.stream",
+        "h2.utilities",
+        "h2.windows",
+    },
     "websockets": {
         "websockets",
         "websockets.asyncio",

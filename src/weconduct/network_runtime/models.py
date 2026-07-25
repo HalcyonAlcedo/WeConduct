@@ -19,9 +19,9 @@ class NetworkContextSnapshot:
     parent_id: str | None = None
     branch_id: str | None = None
     base_url: str | None = None
-    headers: Mapping[str, str] = field(default_factory=dict, repr=False)
+    headers: Mapping[str, object] = field(default_factory=dict, repr=False)
     query: Mapping[str, str] = field(default_factory=dict, repr=False)
-    cookies: Mapping[str, str] = field(default_factory=dict, repr=False)
+    cookies: Mapping[str, object] = field(default_factory=dict, repr=False)
     auth: object | None = field(default=None, repr=False)
     tls: object | None = None
     proxy: object | None = None
@@ -36,7 +36,7 @@ class NetworkOperation:
     session_id: str
     method: str
     url: str
-    headers: Mapping[str, str] = field(default_factory=dict)
+    headers: Mapping[str, object] = field(default_factory=dict)
     query: Mapping[str, str] = field(default_factory=dict)
     content: bytes | str | None = None
     upload_file_path: Path | None = None

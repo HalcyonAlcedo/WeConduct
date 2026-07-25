@@ -83,12 +83,17 @@ class ExternalV1Router:
         request_path = urlparse(handler.path).path
         if not request_path.startswith("/api/ext/v1"):
             return False
+        request_id = handler.headers.get("X-Request-ID")
+        if not isinstance(request_id, str) or not request_id.strip():
+            request_id = f"request-{uuid.uuid4().hex[:12]}"
+        else:
+            request_id = request_id.strip()
         if not getattr(handler.server, "external_api_enabled", False):
-            handler._write_json(HTTPStatus.NOT_FOUND, {"error_code": "external_api.disabled", "message": "external API is disabled"})
+            handler._write_json(HTTPStatus.NOT_FOUND, {"error_code": "external_api.disabled", "message": "external API is disabled", "request_id": request_id})
             return True
         authenticator = ExternalApiAuthenticator(getattr(handler.server, "external_api_token", None))
         if not authenticator.accepts(handler.headers.get("Authorization", "")):
-            handler._write_json(HTTPStatus.UNAUTHORIZED, {"error_code": "external_api.unauthorized", "message": "valid bearer token is required"})
+            handler._write_json(HTTPStatus.UNAUTHORIZED, {"error_code": "external_api.unauthorized", "message": "valid bearer token is required", "request_id": request_id})
             return True
 
         payload: dict[str, object] = {}
@@ -111,7 +116,6 @@ class ExternalV1Router:
                     None,
                 ),
             )
-            request_id = handler.headers.get("X-Request-ID") or f"request-{uuid.uuid4().hex[:12]}"
             caller = self._build_caller()
             operation_id, payload = resolve_external_operation(
                 method=method,
@@ -164,7 +168,7 @@ class ExternalV1Router:
             }.get(exc.error_code, HTTPStatus.INTERNAL_SERVER_ERROR)
             if exc.error_code == "operation.state_conflict" and exc.details.get("state") == "timed_out":
                 status = HTTPStatus.GONE
-            response_payload = {"error_code": exc.error_code, "message": str(exc), "details": dict(exc.details), "request_id": handler.headers.get("X-Request-ID"), "operation_id": exc.operation_id}
+            response_payload = {"error_code": exc.error_code, "message": str(exc), "details": dict(exc.details), "request_id": request_id, "operation_id": exc.operation_id}
             handler._write_json(status, response_payload)
         except ValueError as exc:
             error_code = str(exc) if str(exc).startswith("execution.") else "operation.input_invalid"
@@ -178,7 +182,7 @@ class ExternalV1Router:
                         details = {"oldest_event_id": replay.get("oldest_event_id"), "latest_event_id": replay.get("latest_event_id")}
                     except (ValueError, KeyError):
                         details = {}
-            response_payload = {"error_code": error_code, "message": str(exc), "details": details, "request_id": handler.headers.get("X-Request-ID")}
+            response_payload = {"error_code": error_code, "message": str(exc), "details": details, "request_id": request_id}
             handler._write_json(status, response_payload)
         return True
 

@@ -30,6 +30,55 @@ def test_pending_input_rejects_default_value_for_sensitive_field() -> None:
         )
 
 
+def test_pending_input_rejects_second_active_request_for_same_execution() -> None:
+    service = PendingInputService()
+    service.create(
+        PendingInputRequest(
+            request_id="request-first",
+            execution_id="execution-1",
+            node_id="node-first",
+            fields=(PendingInputField(field_id="value", label="Value"),),
+        )
+    )
+
+    with pytest.raises(ValueError, match="execution already has a pending input request"):
+        service.create(
+            PendingInputRequest(
+                request_id="request-second",
+                execution_id="execution-1",
+                node_id="node-second",
+                fields=(PendingInputField(field_id="value", label="Value"),),
+            )
+        )
+
+
+def test_pending_input_returns_active_request_after_a_prior_request_is_terminal() -> None:
+    service = PendingInputService()
+    service.create(
+        PendingInputRequest(
+            request_id="request-first",
+            execution_id="execution-1",
+            node_id="node-first",
+            fields=(PendingInputField(field_id="value", label="Value"),),
+        )
+    )
+    service.cancel_session("execution-1")
+    service.create(
+        PendingInputRequest(
+            request_id="request-second",
+            execution_id="execution-1",
+            node_id="node-second",
+            fields=(PendingInputField(field_id="value", label="Value"),),
+        )
+    )
+
+    snapshot = service.get_snapshot_for_execution("execution-1")
+
+    assert snapshot is not None
+    assert snapshot.request_id == "request-second"
+    assert snapshot.status == "created"
+
+
 def test_pending_input_submits_multiple_fields_atomically() -> None:
     service = PendingInputService()
     request = PendingInputRequest(

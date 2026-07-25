@@ -82,8 +82,14 @@ class NetworkContextRegistry:
                 return self._to_token_context(record)
 
             if normalized_strategy == "anonymous":
-                anonymous_values = self._strip_anonymous_values(normalized_overrides)
-                record = self._create_record(session_id, values=anonymous_values)
+                anonymous_values = self._strip_anonymous_values(
+                    self._build_initial_values(normalized_overrides)
+                )
+                record = self._create_record(
+                    session_id,
+                    values=anonymous_values,
+                    include_platform_defaults=False,
+                )
                 return self._to_token_context(record)
 
             if normalized_strategy == "fork":
@@ -142,9 +148,9 @@ class NetworkContextRegistry:
                 parent_id=record.parent_id,
                 branch_id=record.branch_id,
                 base_url=self._optional_str(values.get("base_url")),
-                headers=self._string_mapping(values.get("headers")),
+                headers=self._object_mapping(values.get("headers")),
                 query=self._string_mapping(values.get("query")),
-                cookies=self._string_mapping(values.get("cookies")),
+                cookies=self._object_mapping(values.get("cookies")),
                 auth=values.get("auth"),
                 tls=values.get("tls"),
                 proxy=values.get("proxy"),

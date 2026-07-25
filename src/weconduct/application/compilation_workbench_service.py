@@ -76,6 +76,7 @@ from weconduct.application.graph_upgrades import (
     GRAPH_DATA_UPGRADERS,
     upgrade_graph_payload,
 )
+from weconduct.application.runtime_capabilities import build_runtime_capabilities
 from weconduct.application.graph_runtime_projection import GraphRuntimeProjectionBuilder
 from weconduct.contracts.debugger import DEBUG_SESSION_ACTIVE_STATUSES
 from weconduct.contracts.debugger import DEBUG_SESSION_TERMINAL_STATUSES
@@ -3886,8 +3887,8 @@ class CompilationWorkbenchService:
         request_id: str,
         values: dict[str, object],
     ):
-        snapshot = self._pending_input_service.get_snapshot_for_execution(execution_id)
-        if snapshot is None or snapshot.request_id != request_id:
+        snapshot = self._pending_input_service.get_snapshot(request_id)
+        if snapshot.execution_id != execution_id:
             raise ValueError("pending input request was not found")
         return self._pending_input_service.submit(request_id, values)
 
@@ -4239,6 +4240,21 @@ class CompilationWorkbenchService:
                             result=None,
                         ),
                     )
+
+                def publish_network_audit_event(event_name: str, payload: dict[str, object]) -> None:
+                    audit_event = {
+                        "event_kind": event_name,
+                        "recorded_at": datetime.now(timezone.utc).isoformat(),
+                        "session_id": session_id,
+                    }
+                    for field_name in ("operation_id", "network_context_id"):
+                        value = payload.get(field_name)
+                        if isinstance(value, str) and value:
+                            audit_event[field_name] = value
+                    event_log.append(audit_event)
+                    publish_live_update("runtime.security", audit_event)
+
+                runtime_context.flow_runtime["network_audit_event_sink"] = publish_network_audit_event
 
                 if runtime_execution_settings.get("show_security_warnings_in_runtime", True):
                     for security_event in self._build_runtime_security_events(
@@ -10294,12 +10310,7 @@ class CompilationWorkbenchService:
         }
 
     def _build_capabilities_metadata(self) -> dict:
-        return {
-            "compiler_available": True,
-            "graph_workspace_available": True,
-            "runtime_available": True,
-            "debug_available": True,
-        }
+        return build_runtime_capabilities()
 
     def _build_entrypoints_metadata(self) -> dict:
         return {
@@ -15768,6 +15779,7 @@ class CompilationWorkbenchService:
             payload,
             from_version=previous_version,
             target_version=GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION,
+            validate_stage=lambda stage_payload: GraphModel.model_validate(stage_payload),
         )
         if upgrade_path:
             upgrade_history.append(

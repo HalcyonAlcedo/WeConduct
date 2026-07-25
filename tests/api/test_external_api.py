@@ -195,6 +195,31 @@ def test_external_api_dispatches_graph_get_and_graph_validate(tmp_path: Path) ->
         server.server_close()
 
 
+def test_external_api_error_response_generates_request_id_when_header_is_absent(
+    tmp_path: Path,
+) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, payload = _request_json(
+            f"{base_url}/api/ext/v1/graph",
+            method="PUT",
+            payload={"graph_document": {}},
+            token="external-secret",
+        )
+
+        assert status == 422
+        assert payload["error_code"] == "operation.input_invalid"
+        assert isinstance(payload["request_id"], str)
+        assert payload["request_id"].startswith("request-")
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
 def test_external_api_rejects_project_open_outside_configured_allowed_roots(tmp_path: Path) -> None:
     server = _build_server(tmp_path, enabled=True, token="external-secret")
     server.external_api_project_allowed_roots = (tmp_path / "allowed-projects",)

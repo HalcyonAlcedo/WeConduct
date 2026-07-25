@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from tempfile import mkdtemp
@@ -20,6 +20,11 @@ class ResponseBodyTooLargeError(RuntimeError):
         )
 
 
+@dataclass
+class _ResponseBodyLease:
+    closed: bool = False
+
+
 @dataclass(frozen=True)
 class ResponseBodyRef:
     session_id: str
@@ -28,8 +33,10 @@ class ResponseBodyRef:
     content_type: str | None
     _payload: bytes | None = None
     path: Path | None = None
+    _lease: _ResponseBodyLease | None = field(default=None, repr=False, compare=False)
 
     def read_bytes(self, *, max_bytes: int | None = None) -> bytes:
+        self._ensure_available()
         self._ensure_read_limit(max_bytes)
         if self.storage_kind == "memory" and self._payload is not None:
             return self._payload
@@ -44,6 +51,7 @@ class ResponseBodyRef:
         return json.loads(self.read_text(max_bytes=max_bytes))
 
     def iter_chunks(self, *, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
+        self._ensure_available()
         if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size <= 0:
             raise ValueError("chunk_size must be a positive integer")
         if self.storage_kind == "memory" and self._payload is not None:
@@ -73,6 +81,10 @@ class ResponseBodyRef:
         if self.size_bytes > max_bytes:
             raise ResponseBodyTooLargeError(size_bytes=self.size_bytes, max_bytes=max_bytes)
 
+    def _ensure_available(self) -> None:
+        if self._lease is not None and self._lease.closed:
+            raise RuntimeError("network.response_body_unavailable")
+
 
 class ResponseBodyStore:
     def __init__(self, *, session_id: str, root_directory: Path) -> None:
@@ -81,6 +93,7 @@ class ResponseBodyStore:
             mkdtemp(prefix=f"weconduct-{session_id}-", dir=root_directory)
         )
         self._closed = False
+        self._lease = _ResponseBodyLease()
 
     def create(self, payload: bytes, *, content_type: str | None) -> ResponseBodyRef:
         if self._closed:
@@ -92,6 +105,7 @@ class ResponseBodyStore:
                 size_bytes=len(payload),
                 content_type=content_type,
                 _payload=payload,
+                _lease=self._lease,
             )
         path = self._directory / f"response-{len(list(self._directory.iterdir()))}.bin"
         path.write_bytes(payload)
@@ -101,6 +115,7 @@ class ResponseBodyStore:
             size_bytes=len(payload),
             content_type=content_type,
             path=path,
+            _lease=self._lease,
         )
 
     async def create_from_async_chunks(
@@ -143,6 +158,7 @@ class ResponseBodyStore:
                 size_bytes=size_bytes,
                 content_type=content_type,
                 _payload=bytes(payload),
+                _lease=self._lease,
             )
         return ResponseBodyRef(
             session_id=self._session_id,
@@ -150,6 +166,7 @@ class ResponseBodyStore:
             size_bytes=size_bytes,
             content_type=content_type,
             path=path,
+            _lease=self._lease,
         )
 
     def _next_response_path(self) -> Path:
@@ -159,6 +176,7 @@ class ResponseBodyStore:
         if self._closed:
             return
         self._closed = True
+        self._lease.closed = True
         for path in self._directory.glob("*"):
             path.unlink(missing_ok=True)
         self._directory.rmdir()
