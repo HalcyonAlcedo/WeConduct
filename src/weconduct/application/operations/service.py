@@ -12,6 +12,7 @@ from .models import (
     IdempotencyCapability,
     OperationAuditRecord,
     OperationCaller,
+    OperationDescriptor,
     OperationInvocationResult,
     OperationRegistryError,
 )
@@ -122,7 +123,7 @@ class HostOperationService:
         normalized = _normalize_value(result)
         if not isinstance(normalized, dict):
             normalized = {"result": normalized}
-        public_result = redact_sensitive_payload(self._filter_output(operation_id, normalized))
+        public_result = redact_sensitive_payload(self._filter_output(descriptor, normalized))
         validated_result = self._registry.validate_output(descriptor, public_result)
         if reserved_idempotency_key is not None:
             self._idempotency_store.complete(
@@ -278,12 +279,15 @@ class HostOperationService:
         )
 
     @staticmethod
-    def _filter_output(operation_id: str, result: dict[str, object]) -> dict[str, object]:
-        if operation_id == "host.capabilities":
-            return {"capabilities": result.get("capabilities", {})}
-        if operation_id == "host.describe":
-            return {key: result.get(key) for key in ("service", "api_version", "host_mode", "instance_id") if result.get(key) is not None}
-        return result
+    def _filter_output(
+        descriptor: OperationDescriptor,
+        result: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            key: value
+            for key, value in result.items()
+            if key in descriptor.output_fields
+        }
 
 
 def _normalize_value(value: object) -> object:

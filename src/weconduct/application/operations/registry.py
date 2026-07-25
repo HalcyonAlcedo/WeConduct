@@ -22,6 +22,7 @@ from .models import (
     ProjectSaveInput,
     PublicOperationOutput,
     SideEffectLevel,
+    build_public_output_model,
 )
 
 
@@ -33,29 +34,41 @@ class OperationRegistry:
 
     @classmethod
     def build_stable_public(cls) -> "OperationRegistry":
+        def descriptor(
+            operation_id: str,
+            *output_fields: str,
+            **kwargs: object,
+        ) -> OperationDescriptor:
+            fields = frozenset(output_fields)
+            return OperationDescriptor(
+                operation_id,
+                output_model=build_public_output_model(
+                    f"{operation_id.replace('.', '_').title().replace('_', '')}Output",
+                    fields,
+                ),
+                output_fields=fields,
+                **kwargs,
+            )
+
         descriptors = {
-            "host.describe": OperationDescriptor(
-                "host.describe",
-            ),
-            "host.capabilities": OperationDescriptor(
-                "host.capabilities",
-            ),
-            "project.current.get": OperationDescriptor("project.current.get"),
-            "project.create": OperationDescriptor("project.create", input_model=ProjectCreateInput, side_effect_level=SideEffectLevel.WRITE, idempotency_capability=IdempotencyCapability.SUPPORTED),
-            "project.open": OperationDescriptor("project.open", input_model=ProjectOpenInput, side_effect_level=SideEffectLevel.WRITE),
-            "project.save": OperationDescriptor("project.save", input_model=ProjectSaveInput, side_effect_level=SideEffectLevel.WRITE, idempotency_capability=IdempotencyCapability.SUPPORTED),
-            "project.close": OperationDescriptor("project.close", side_effect_level=SideEffectLevel.WRITE),
-            "graph.get": OperationDescriptor("graph.get", input_model=GraphGetInput),
-            "graph.replace": OperationDescriptor("graph.replace", input_model=GraphReplaceInput, side_effect_level=SideEffectLevel.WRITE, idempotency_capability=IdempotencyCapability.SUPPORTED),
-            "graph.validate": OperationDescriptor("graph.validate", input_model=GraphDocumentInput),
-            "graph.compile": OperationDescriptor("graph.compile", input_model=ProjectSaveInput, side_effect_level=SideEffectLevel.WRITE),
-            "graph.node_draft.build": OperationDescriptor("graph.node_draft.build", input_model=GraphNodeDraftBuildInput),
-            "execution.start": OperationDescriptor("execution.start", input_model=ExecutionStartInput, side_effect_level=SideEffectLevel.EXECUTE, execution_mode="async", idempotency_capability=IdempotencyCapability.SUPPORTED),
-            "execution.get": OperationDescriptor("execution.get", input_model=ExecutionReferenceInput),
-            "execution.cancel": OperationDescriptor("execution.cancel", input_model=ExecutionCancelInput, side_effect_level=SideEffectLevel.EXECUTE, idempotency_capability=IdempotencyCapability.SUPPORTED),
-            "execution.events.subscribe": OperationDescriptor("execution.events.subscribe", input_model=ExecutionReferenceInput, execution_mode="async"),
-            "pending_input.get": OperationDescriptor("pending_input.get", input_model=ExecutionReferenceInput),
-            "pending_input.submit": OperationDescriptor("pending_input.submit", input_model=PendingInputSubmitInput, side_effect_level=SideEffectLevel.EXECUTE),
+            "host.describe": descriptor("host.describe", "service", "api_version", "host_mode", "instance_id"),
+            "host.capabilities": descriptor("host.capabilities", "capabilities"),
+            "project.current.get": descriptor("project.current.get", "project"),
+            "project.create": descriptor("project.create", "status", "project", "graph_document", "project_name", "project_directory", input_model=ProjectCreateInput, side_effect_level=SideEffectLevel.WRITE, idempotency_capability=IdempotencyCapability.SUPPORTED),
+            "project.open": descriptor("project.open", "status", "project", "graph_document", input_model=ProjectOpenInput, side_effect_level=SideEffectLevel.WRITE),
+            "project.save": descriptor("project.save", "status", "project", "graph_document", input_model=ProjectSaveInput, side_effect_level=SideEffectLevel.WRITE, idempotency_capability=IdempotencyCapability.SUPPORTED),
+            "project.close": descriptor("project.close", "status", "project", side_effect_level=SideEffectLevel.WRITE),
+            "graph.get": descriptor("graph.get", "graph_model", "view", "revision", input_model=GraphGetInput),
+            "graph.replace": descriptor("graph.replace", "status", "graph_model", "view", "graph_document", "expected_revision", "require_expected_revision", input_model=GraphReplaceInput, side_effect_level=SideEffectLevel.WRITE, idempotency_capability=IdempotencyCapability.SUPPORTED),
+            "graph.validate": descriptor("graph.validate", "status", "graph_model", "summary", "diagnostics", input_model=GraphDocumentInput),
+            "graph.compile": descriptor("graph.compile", "status", "request", "outcome", "view", "diagnostics", input_model=ProjectSaveInput, side_effect_level=SideEffectLevel.WRITE),
+            "graph.node_draft.build": descriptor("graph.node_draft.build", "resource", "node", "parameter_schema", "resource_key", "node_id", "position", input_model=GraphNodeDraftBuildInput),
+            "execution.start": descriptor("execution.start", "status", "request", "runtime_session", "runtime_plan", "node_states", "debug_snapshot", "diagnostic_events", "execution_summary", "result", "diagnostics", "diagnostic_links", "object_index", "message", "details", "runtime_preview", "runtime_preview_summary", input_model=ExecutionStartInput, side_effect_level=SideEffectLevel.EXECUTE, execution_mode="async", idempotency_capability=IdempotencyCapability.SUPPORTED),
+            "execution.get": descriptor("execution.get", "request", "runtime_session", "runtime_plan", "node_states", "debug_snapshot", "diagnostic_events", "execution_summary", "result", input_model=ExecutionReferenceInput),
+            "execution.cancel": descriptor("execution.cancel", "status", "request", "runtime_session", "runtime_plan", "node_states", "debug_snapshot", "diagnostic_events", "execution_summary", "result", input_model=ExecutionCancelInput, side_effect_level=SideEffectLevel.EXECUTE, idempotency_capability=IdempotencyCapability.SUPPORTED),
+            "execution.events.subscribe": descriptor("execution.events.subscribe", "execution_id", "stream", input_model=ExecutionReferenceInput, execution_mode="async"),
+            "pending_input.get": descriptor("pending_input.get", "execution_id", "request_id", "status", "fields", "timeout_seconds", "created_at", "deadline", input_model=ExecutionReferenceInput),
+            "pending_input.submit": descriptor("pending_input.submit", "execution_id", "request_id", "status", "fields", "timeout_seconds", "created_at", "deadline", input_model=PendingInputSubmitInput, side_effect_level=SideEffectLevel.EXECUTE),
         }
         return cls(descriptors)
 
@@ -97,6 +110,7 @@ class OperationRegistry:
         try:
             return descriptor.output_model.model_validate(dict(payload)).model_dump(
                 mode="json",
+                exclude_unset=True,
             )
         except ValidationError as exc:
             raise OperationRegistryError(

@@ -6,7 +6,7 @@ from enum import StrEnum
 from threading import RLock
 from typing import Any, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator
 
 
 class OperationRegistryError(ValueError):
@@ -35,7 +35,19 @@ class OperationInputModel(BaseModel):
 class PublicOperationOutput(BaseModel):
     """已由宿主过滤的公开对象输出。"""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
+
+
+def build_public_output_model(
+    name: str,
+    fields: frozenset[str],
+) -> type[PublicOperationOutput]:
+    """构造只承认 descriptor 明确字段的稳定公开输出模型。"""
+    return create_model(
+        name,
+        __base__=PublicOperationOutput,
+        **{field_name: (Any | None, None) for field_name in sorted(fields)},
+    )
 
 
 class EmptyOperationInput(OperationInputModel):
@@ -230,6 +242,7 @@ class OperationDescriptor:
     contract_version: str = "1"
     input_model: type[BaseModel] = EmptyOperationInput
     output_model: type[BaseModel] = PublicOperationOutput
+    output_fields: frozenset[str] = frozenset()
     required_permissions: frozenset[str] = frozenset({"operation.invoke"})
     side_effect_level: SideEffectLevel = SideEffectLevel.READ
     audit_policy: AuditPolicy = AuditPolicy.REQUIRED

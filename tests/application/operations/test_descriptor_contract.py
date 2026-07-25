@@ -15,6 +15,9 @@ def test_stable_public_descriptors_use_pydantic_input_and_output_models() -> Non
     for descriptor in descriptors:
         assert issubclass(descriptor.input_model, BaseModel)
         assert issubclass(descriptor.output_model, BaseModel)
+        output_schema = descriptor.output_model.model_json_schema()
+        assert output_schema["additionalProperties"] is False
+        assert set(output_schema["properties"]) == set(descriptor.output_fields)
 
 
 class _HostService:
@@ -97,3 +100,16 @@ def test_invoke_replays_idempotent_result_for_same_caller_and_key() -> None:
     assert replay == first
     assert first.replayed is False
     assert replay.replayed is True
+
+
+def test_stable_operation_filters_undeclared_output_fields() -> None:
+    result = operations.HostOperationService(service=_HostService()).invoke(
+        "project.create",
+        {"project_name": "demo"},
+        caller=operations.OperationCaller(
+            caller_id="external:output-contract",
+            permissions=frozenset({"operation.invoke"}),
+        ),
+    )
+
+    assert result == {"project_name": "demo", "project_directory": None}
