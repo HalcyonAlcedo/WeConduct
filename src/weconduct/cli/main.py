@@ -36,6 +36,7 @@ def main() -> int:
     regression_run_parser.add_argument("--output", default=None)
     serve_api_parser = subparsers.add_parser("serve-api")
     serve_api_parser.add_argument("--host", default="127.0.0.1")
+    serve_api_parser.add_argument("--allow-non-loopback", action="store_true")
     serve_api_parser.add_argument("--port", type=int, default=8000)
     serve_api_parser.add_argument("--workspace-state-path", default=None)
     serve_api_parser.add_argument("--preferences-path", default=None)
@@ -264,8 +265,16 @@ def main() -> int:
             preferences_path=preferences_path,
             ui_dist_path=ui_dist_path,
             api_token=args.api_token,
+            allow_non_loopback=args.allow_non_loopback,
         )
         runtime_host, runtime_port = server.server_address
+        if args.allow_non_loopback:
+            print(
+                "WARNING: non-loopback API binding was explicitly confirmed for "
+                f"{runtime_host}:{runtime_port}; verify the operating-system firewall rules.",
+                file=sys.stderr,
+                flush=True,
+            )
         print(
             "WeConduct server listening on "
             f"http://{runtime_host}:{runtime_port} "

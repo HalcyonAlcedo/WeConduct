@@ -1,4 +1,5 @@
 import json
+import ipaddress
 import mimetypes
 from collections import OrderedDict
 from copy import deepcopy
@@ -49,6 +50,48 @@ DEFAULT_PREFERENCES_PATH = Path(__file__).resolve().parents[3] / ".weconduct" / 
 DEFAULT_UI_DIST_PATH = Path(__file__).resolve().parents[3] / "ui" / "dist"
 EXTERNAL_IDEMPOTENCY_CACHE_LIMIT = 256
 DebugActionResult = TypeVar("DebugActionResult")
+
+
+def _validate_external_api_bind_host(
+    host: str,
+    *,
+    allow_non_loopback: bool,
+) -> None:
+    """拒绝未明确确认的外部 API 非回环监听地址。"""
+    normalized_host = host.strip().lower()
+    if normalized_host == "localhost":
+        return
+
+    try:
+        is_loopback = ipaddress.ip_address(normalized_host).is_loopback
+    except ValueError:
+        is_loopback = False
+
+    if not is_loopback and not allow_non_loopback:
+        raise ValueError(
+            "external_api.non_loopback_confirmation_required: "
+            "set allow_non_loopback=True only after reviewing the bind address and firewall exposure"
+        )
+
+
+def _load_external_api_program_configuration(preferences_path: Path) -> dict[str, object]:
+    configuration_service = ConfigurationService(
+        registry=build_builtin_configuration_registry(),
+        repositories={"program": FileProgramConfigurationRepository(preferences_path)},
+    )
+    values = configuration_service.get_values(scope="program")["values"]
+    security = values.get("security", {})
+    if not isinstance(security, dict):
+        return {
+            "enabled": False,
+            "token": None,
+            "project_allowed_roots": (),
+        }
+    return {
+        "enabled": security["external_api_enabled"],
+        "token": security["external_api_token"],
+        "project_allowed_roots": tuple(security["external_api_project_allowed_roots"]),
+    }
 
 
 def migrate_configuration_storage(preferences_path: str | Path) -> dict:
@@ -514,6 +557,7 @@ class WeConductApiServer(ThreadingHTTPServer):
         self._closing = False
         self.external_api_enabled = False
         self.external_api_token: str | None = None
+        self.external_api_project_allowed_roots: tuple[Path, ...] = ()
         self.external_api_instance_id = uuid.uuid4().hex
         self._external_idempotency_lock = RLock()
         self._external_idempotency_cache: OrderedDict[
@@ -3158,9 +3202,12 @@ def build_api_server(
     preferences_path: str | Path | None = None,
     ui_dist_path: str | Path | None = None,
     api_token: str | None = None,
-    external_api_enabled: bool = False,
+    external_api_enabled: bool | None = None,
     external_api_token: str | None = None,
+    external_api_project_allowed_roots: tuple[str | Path, ...] | None = None,
+    allow_non_loopback: bool = False,
 ) -> WeConductApiServer:
+    _validate_external_api_bind_host(host, allow_non_loopback=allow_non_loopback)
     server = WeConductApiServer((host, port), WeConductApiHandler)
     server.workspace_state_path = (
         Path(workspace_state_path)
@@ -3178,7 +3225,27 @@ def build_api_server(
     migration_result = migrate_configuration_storage(server.preferences_path)
     server.configuration_migration_result = migration_result["program"]
     server.graph_configuration_migration_result = migration_result["graph"]
+    external_api_configuration = _load_external_api_program_configuration(
+        server.preferences_path
+    )
     server.api_token = api_token
-    server.external_api_enabled = bool(external_api_enabled)
-    server.external_api_token = external_api_token
+    server.external_api_enabled = (
+        bool(external_api_configuration["enabled"])
+        if external_api_enabled is None
+        else bool(external_api_enabled)
+    )
+    server.external_api_token = (
+        external_api_configuration["token"]
+        if external_api_token is None
+        else external_api_token
+    )
+    configured_roots = external_api_configuration["project_allowed_roots"]
+    server.external_api_project_allowed_roots = tuple(
+        Path(root).expanduser().resolve()
+        for root in (
+            configured_roots
+            if external_api_project_allowed_roots is None
+            else external_api_project_allowed_roots
+        )
+    )
     return server

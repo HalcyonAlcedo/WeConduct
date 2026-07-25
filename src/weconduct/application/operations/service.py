@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+from pathlib import Path
 from typing import Mapping
 
 from weconduct.application.sensitive_values.redaction import redact_sensitive_payload
@@ -12,10 +13,22 @@ from .registry import OperationRegistry
 class HostOperationService:
     """在契约校验、敏感遮罩后，将稳定 operation_id 委托给宿主服务。"""
 
-    def __init__(self, *, service: object, registry: OperationRegistry | None = None, host_metadata: Mapping[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        service: object,
+        registry: OperationRegistry | None = None,
+        host_metadata: Mapping[str, object] | None = None,
+        project_path_allowed_roots: tuple[str | Path, ...] | None = None,
+    ) -> None:
         self._service = service
         self._registry = registry or OperationRegistry.build_stable_public()
         self._host_metadata = dict(host_metadata or {})
+        self._project_path_allowed_roots = (
+            None
+            if project_path_allowed_roots is None
+            else tuple(Path(root).expanduser().resolve() for root in project_path_allowed_roots)
+        )
 
     def list_descriptors(self, *, exposure: str | None = None):
         return self._registry.list_descriptors(exposure=exposure)
@@ -50,8 +63,18 @@ class HostOperationService:
         if operation_id == "project.current.get":
             return _public_project_document(service.get_project_document())
         if operation_id == "project.create":
-            return service.create_project(project_name=payload["project_name"], project_directory=payload.get("project_directory"))
+            project_directory = payload.get("project_directory")
+            if project_directory is not None:
+                self._assert_project_path_allowed(
+                    project_directory,
+                    operation_id=operation_id,
+                )
+            return service.create_project(
+                project_name=payload["project_name"],
+                project_directory=project_directory,
+            )
         if operation_id == "project.open":
+            self._assert_project_path_allowed(payload["project_path"], operation_id=operation_id)
             return service.open_project(project_path=payload["project_path"])
         if operation_id == "project.save":
             return service.save_project(graph_document_payload=payload.get("graph_document"))
@@ -88,6 +111,29 @@ class HostOperationService:
         if operation_id == "pending_input.submit":
             return _public_pending_input_snapshot(service.submit_pending_input(execution_id=payload["execution_id"], request_id=payload["request_id"], values=payload["values"]))
         raise OperationRegistryError("operation.not_found", f"operation not found: {operation_id}")
+
+    def _assert_project_path_allowed(self, raw_path: object, *, operation_id: str) -> None:
+        allowed_roots = self._project_path_allowed_roots
+        if allowed_roots is None:
+            return
+        if not isinstance(raw_path, (str, Path)) or not str(raw_path).strip():
+            raise OperationRegistryError(
+                "operation.input_invalid",
+                "project path must be a non-empty path",
+                operation_id=operation_id,
+            )
+        candidate = Path(raw_path).expanduser().resolve()
+        for root in allowed_roots:
+            try:
+                candidate.relative_to(root)
+                return
+            except ValueError:
+                continue
+        raise OperationRegistryError(
+            "operation.path_denied",
+            "project path is outside the configured external API allowed roots",
+            operation_id=operation_id,
+        )
 
     @staticmethod
     def _filter_output(operation_id: str, result: dict[str, object]) -> dict[str, object]:

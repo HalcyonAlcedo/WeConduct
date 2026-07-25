@@ -94,6 +94,11 @@ class ExternalV1Router:
             operation_service = HostOperationService(
                 service=service,
                 host_metadata={"instance_id": handler.server.external_api_instance_id},
+                project_path_allowed_roots=getattr(
+                    handler.server,
+                    "external_api_project_allowed_roots",
+                    (),
+                ),
             )
             request_id = handler.headers.get("X-Request-ID") or f"request-{uuid.uuid4().hex[:12]}"
             operation_id, payload = resolve_external_operation(
@@ -125,6 +130,7 @@ class ExternalV1Router:
             status = {
                 "operation.not_found": HTTPStatus.NOT_FOUND,
                 "operation.input_invalid": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "operation.path_denied": HTTPStatus.FORBIDDEN,
                 "operation.state_conflict": HTTPStatus.CONFLICT,
                 "operation.not_available": HTTPStatus.NOT_IMPLEMENTED,
             }.get(exc.error_code, HTTPStatus.INTERNAL_SERVER_ERROR)

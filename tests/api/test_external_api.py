@@ -7,7 +7,12 @@ from time import monotonic, sleep
 import urllib.error
 import urllib.request
 
+import pytest
+
 from weconduct.api import build_api_server
+from weconduct.application.configuration.program_repository import (
+    FileProgramConfigurationRepository,
+)
 from weconduct.application.pending_input.models import PendingInputField, PendingInputRequest
 from weconduct.runtime.engine import CancellationContext
 
@@ -59,6 +64,49 @@ def test_external_router_keeps_bearer_semantics_and_maps_the_fixed_host_route() 
         "host.describe",
         {},
     )
+
+
+def test_external_api_non_loopback_bind_requires_explicit_confirmation() -> None:
+    from weconduct.api.server import _validate_external_api_bind_host
+
+    with pytest.raises(ValueError, match="external_api.non_loopback_confirmation_required"):
+        _validate_external_api_bind_host("0.0.0.0", allow_non_loopback=False)
+
+    with pytest.raises(ValueError, match="external_api.non_loopback_confirmation_required"):
+        build_api_server(host="0.0.0.0", port=0)
+
+    _validate_external_api_bind_host("0.0.0.0", allow_non_loopback=True)
+    _validate_external_api_bind_host("127.0.0.1", allow_non_loopback=False)
+
+
+def test_build_api_server_loads_external_api_settings_from_program_configuration(
+    tmp_path: Path,
+) -> None:
+    preferences_path = tmp_path / "runtime" / "preferences.json"
+    allowed_root = tmp_path / "allowed-projects"
+    FileProgramConfigurationRepository(preferences_path).save(
+        {
+            "security": {
+                "external_api_enabled": True,
+                "external_api_token": "configured-external-token",
+                "external_api_project_allowed_roots": [str(allowed_root)],
+            }
+        }
+    )
+
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=preferences_path,
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    try:
+        assert server.external_api_enabled is True
+        assert server.external_api_token == "configured-external-token"
+        assert server.external_api_project_allowed_roots == (allowed_root.resolve(),)
+    finally:
+        server.server_close()
 
 
 def test_external_api_is_disabled_by_default(tmp_path: Path) -> None:
@@ -130,6 +178,29 @@ def test_external_api_dispatches_graph_get_and_graph_validate(tmp_path: Path) ->
         )
         assert status == 200
         assert validated["operation_id"] == "graph.validate"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_rejects_project_open_outside_configured_allowed_roots(tmp_path: Path) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    server.external_api_project_allowed_roots = (tmp_path / "allowed-projects",)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, payload = _request_json(
+            f"{base_url}/api/ext/v1/project/open",
+            method="POST",
+            payload={"project_path": str(tmp_path / "outside-projects" / "project.weconduct.json")},
+            token="external-secret",
+        )
+
+        assert status == 403
+        assert payload["error_code"] == "operation.path_denied"
+        assert payload["operation_id"] == "project.open"
     finally:
         server.shutdown()
         thread.join(timeout=2)

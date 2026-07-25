@@ -117,6 +117,18 @@ def _register_program_fields(registry: ConfigurationRegistry) -> None:
     _register_fields(
         registry,
         scope="program",
+        domain="security",
+        consumer="build_api_server",
+        risk_level="high",
+        fields=(
+            ("external_api_enabled", "boolean", False),
+            ("external_api_token", "nullable_string", None),
+            ("external_api_project_allowed_roots", "string_list", []),
+        ),
+    )
+    _register_fields(
+        registry,
+        scope="program",
         domain="python_defaults",
         consumer="CompilationWorkbenchService._build_runtime_execution_settings",
         fields=(
@@ -304,6 +316,7 @@ def _register_fields(
     consumer: str,
     fields: tuple,
     field_consumers: dict[str, str] | None = None,
+    risk_level: str = "normal",
 ) -> None:
     for order, raw_field in enumerate(fields, start=1):
         key, field_type, default, *options = raw_field
@@ -315,6 +328,7 @@ def _register_fields(
                 field_type=field_type,
                 default=default,
                 consumer=(field_consumers or {}).get(key, consumer),
+                risk_level=risk_level,
                 order=order,
                 options=tuple(options[0]) if options else (),
             )

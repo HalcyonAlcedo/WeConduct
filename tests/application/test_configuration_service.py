@@ -103,6 +103,33 @@ def test_preview_high_risk_replace_requires_confirmation() -> None:
         )
 
 
+def test_builtin_external_api_configuration_requires_high_risk_confirmation() -> None:
+    service = ConfigurationService(
+        registry=build_builtin_configuration_registry(),
+        repositories={"program": InMemoryConfigurationRepository()},
+    )
+
+    preview = service.preview(
+        scope="program",
+        operations=[
+            {
+                "op": "replace",
+                "path": "/security/external_api_enabled",
+                "value": True,
+            }
+        ],
+    )
+
+    assert preview["confirmation_required"] is True
+    assert preview["high_risk_changes"] == [
+        {
+            "path": "/security/external_api_enabled",
+            "from": False,
+            "to": True,
+        }
+    ]
+
+
 def test_apply_collection_add_and_remove_persists_only_registered_field() -> None:
     service = build_service()
 
