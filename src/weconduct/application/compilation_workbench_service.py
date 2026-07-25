@@ -4456,6 +4456,30 @@ class CompilationWorkbenchService:
                             runtime_context.node_outputs[executable_node["node_id"]] = node_output
                             node_state["output"] = node_output
                     if (
+                        executable_node.get("node_kind") == "network.response_assert"
+                        and isinstance(node_output, dict)
+                        and node_output.get("status") == "failed"
+                        and node_output.get("error_code") == "network.response_assertion_failed"
+                        and scheduler_mode == "flow_graph"
+                        and any(
+                            edge.get("from_port_id") == "failed"
+                            for edge in control_edges_by_source.get(
+                                executable_node["node_id"],
+                                [],
+                            )
+                        )
+                    ):
+                        # 响应断言的失败端口是显式流程分支。只有实际连接时才
+                        # 吞掉节点失败；未连接时保留原有的失败会话语义。
+                        node_output = {
+                            **node_output,
+                            "status": "succeeded",
+                            "port_id": "failed",
+                            "assertion_status": "failed",
+                        }
+                        runtime_context.node_outputs[executable_node["node_id"]] = node_output
+                        node_state["output"] = node_output
+                    if (
                         isinstance(node_output, dict)
                         and node_output.get("status") == "cancelled"
                     ):
@@ -4773,10 +4797,7 @@ class CompilationWorkbenchService:
                             queue_control_edges(
                                 source_node_id=executable_node["node_id"],
                                 source_port_id=node_output.get("port_id")
-                                if (
-                                    executable_node.get("node_kind") == "input.request"
-                                    and isinstance(node_output, dict)
-                                )
+                                if isinstance(node_output, dict)
                                 else None,
                                 repeat_mode_value=repeat_mode,
                             )

@@ -3,6 +3,46 @@ from __future__ import annotations
 from copy import deepcopy
 
 
+def _network_control_ports(*, include_failed: bool = True) -> list[dict]:
+    ports = [
+        {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+        {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+    ]
+    if include_failed:
+        ports.append({"port_id": "failed", "direction": "output", "relation_layer": "control", "semantic_slot": "out.failed"})
+    return ports
+
+
+def _network_context_ports() -> list[dict]:
+    return [
+        {"port_id": "in:context_strategy", "direction": "input", "relation_layer": "data", "semantic_slot": "in.context_strategy"},
+        {"port_id": "in:switch_context_id", "direction": "input", "relation_layer": "data", "semantic_slot": "in.switch_context_id"},
+    ]
+
+
+def _network_security_override_ports() -> list[dict]:
+    return [
+        {"port_id": "in:headers", "direction": "input", "relation_layer": "data", "semantic_slot": "in.headers"},
+        {"port_id": "in:query", "direction": "input", "relation_layer": "data", "semantic_slot": "in.query"},
+        {"port_id": "in:auth", "direction": "input", "relation_layer": "data", "semantic_slot": "in.auth"},
+        {"port_id": "in:tls", "direction": "input", "relation_layer": "data", "semantic_slot": "in.tls"},
+        {"port_id": "in:proxy", "direction": "input", "relation_layer": "data", "semantic_slot": "in.proxy"},
+        {"port_id": "in:timeout", "direction": "input", "relation_layer": "data", "semantic_slot": "in.timeout"},
+    ]
+
+
+def _network_response_ports() -> list[dict]:
+    return [
+        {"port_id": "out:response", "direction": "output", "relation_layer": "data", "semantic_slot": "out.response"},
+        {"port_id": "out:status_code", "direction": "output", "relation_layer": "data", "semantic_slot": "out.status_code"},
+        {"port_id": "out:headers", "direction": "output", "relation_layer": "data", "semantic_slot": "out.headers"},
+        {"port_id": "out:body_ref", "direction": "output", "relation_layer": "data", "semantic_slot": "out.body_ref"},
+        {"port_id": "out:duration_ms", "direction": "output", "relation_layer": "data", "semantic_slot": "out.duration_ms"},
+        {"port_id": "out:final_url", "direction": "output", "relation_layer": "data", "semantic_slot": "out.final_url"},
+        {"port_id": "out:network_context_id", "direction": "output", "relation_layer": "data", "semantic_slot": "out.network_context_id"},
+    ]
+
+
 GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
     "flow.start": {
         "lowered_kind": "control",
@@ -3326,6 +3366,216 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
         "node_config": {
             "default_action": "accept",
             "prompt_text": "",
+        },
+    },
+    "network.http_request": {
+        "lowered_kind": "execution",
+        "expansion_role": "network:http_request",
+        "ports": (
+            _network_control_ports()
+            + _network_context_ports()
+            + [
+                {"port_id": "in:url", "direction": "input", "relation_layer": "data", "semantic_slot": "in.url"},
+                {"port_id": "in:method", "direction": "input", "relation_layer": "data", "semantic_slot": "in.method"},
+                {"port_id": "in:body", "direction": "input", "relation_layer": "data", "semantic_slot": "in.body"},
+            ]
+            + _network_security_override_ports()
+            + [
+                {"port_id": "in:retry_policy", "direction": "input", "relation_layer": "data", "semantic_slot": "in.retry_policy"},
+            ]
+            + _network_response_ports()
+            + [
+                {"port_id": "out:request_id", "direction": "output", "relation_layer": "data", "semantic_slot": "out.request_id"},
+                {"port_id": "out:transport_error", "direction": "output", "relation_layer": "data", "semantic_slot": "out.transport_error"},
+            ]
+        ),
+        "node_config": {
+            "context_strategy": "inherit",
+            "switch_context_id": None,
+            "method": "GET",
+            "url": "",
+            "headers": {},
+            "query": {},
+            "body": "",
+            "timeout": 30,
+            "retry_policy": {"max_attempts": 1},
+        },
+    },
+    "network.upload": {
+        "lowered_kind": "execution",
+        "expansion_role": "network:upload",
+        "ports": (
+            _network_control_ports()
+            + _network_context_ports()
+            + [
+                {"port_id": "in:url", "direction": "input", "relation_layer": "data", "semantic_slot": "in.url"},
+                {"port_id": "in:file_path", "direction": "input", "relation_layer": "data", "semantic_slot": "in.file_path"},
+                {"port_id": "in:field_name", "direction": "input", "relation_layer": "data", "semantic_slot": "in.field_name"},
+            ]
+            + _network_security_override_ports()
+            + _network_response_ports()
+        ),
+        "node_config": {
+            "context_strategy": "inherit",
+            "url": "",
+            "file_path": "",
+            "field_name": "file",
+            "headers": {},
+            "query": {},
+            "timeout": 30,
+        },
+    },
+    "network.download": {
+        "lowered_kind": "execution",
+        "expansion_role": "network:download",
+        "ports": (
+            _network_control_ports()
+            + _network_context_ports()
+            + [
+                {"port_id": "in:url", "direction": "input", "relation_layer": "data", "semantic_slot": "in.url"},
+                {"port_id": "in:method", "direction": "input", "relation_layer": "data", "semantic_slot": "in.method"},
+            ]
+            + _network_security_override_ports()
+            + _network_response_ports()
+            + [
+                {"port_id": "out:file_size", "direction": "output", "relation_layer": "data", "semantic_slot": "out.file_size"},
+                {"port_id": "out:checksum", "direction": "output", "relation_layer": "data", "semantic_slot": "out.checksum"},
+            ]
+        ),
+        "node_config": {
+            "context_strategy": "inherit",
+            "method": "GET",
+            "url": "",
+            "headers": {},
+            "query": {},
+            "timeout": 30,
+        },
+    },
+    "network.response_assert": {
+        "lowered_kind": "execution",
+        "expansion_role": "network:response_assert",
+        "ports": (
+            [
+                {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+                {"port_id": "passed", "direction": "output", "relation_layer": "control", "semantic_slot": "out.passed"},
+                {"port_id": "failed", "direction": "output", "relation_layer": "control", "semantic_slot": "out.failed"},
+                {"port_id": "in:response", "direction": "input", "relation_layer": "data", "semantic_slot": "in.response"},
+                {"port_id": "out:response", "direction": "output", "relation_layer": "data", "semantic_slot": "out.response"},
+                {"port_id": "out:assertion_report", "direction": "output", "relation_layer": "data", "semantic_slot": "out.assertion_report"},
+            ]
+        ),
+        "node_config": {
+            "expected_status_codes": None,
+            "required_headers": {},
+            "body_contains": None,
+            "json_path_equals": {},
+            "json_schema": None,
+            "max_duration_ms": None,
+            "max_size_bytes": None,
+        },
+    },
+    "network.graphql_request": {
+        "lowered_kind": "execution",
+        "expansion_role": "network:graphql_request",
+        "ports": (
+            _network_control_ports()
+            + _network_context_ports()
+            + [
+                {"port_id": "in:endpoint", "direction": "input", "relation_layer": "data", "semantic_slot": "in.endpoint"},
+                {"port_id": "in:query", "direction": "input", "relation_layer": "data", "semantic_slot": "in.query"},
+                {"port_id": "in:operation_name", "direction": "input", "relation_layer": "data", "semantic_slot": "in.operation_name"},
+                {"port_id": "in:variables", "direction": "input", "relation_layer": "data", "semantic_slot": "in.variables"},
+                {"port_id": "in:extensions", "direction": "input", "relation_layer": "data", "semantic_slot": "in.extensions"},
+            ]
+            + _network_security_override_ports()
+            + [
+                {"port_id": "out:data", "direction": "output", "relation_layer": "data", "semantic_slot": "out.data"},
+                {"port_id": "out:errors", "direction": "output", "relation_layer": "data", "semantic_slot": "out.errors"},
+                {"port_id": "out:extensions", "direction": "output", "relation_layer": "data", "semantic_slot": "out.extensions"},
+                {"port_id": "out:response", "direction": "output", "relation_layer": "data", "semantic_slot": "out.response"},
+            ]
+        ),
+        "node_config": {
+            "context_strategy": "inherit",
+            "endpoint": "",
+            "query": "",
+            "operation_name": None,
+            "variables": {},
+            "extensions": {},
+            "headers": {},
+            "timeout": 30,
+        },
+    },
+    "network.sse_connect": {
+        "lowered_kind": "execution",
+        "expansion_role": "network:sse_connect",
+        "ports": (
+            _network_control_ports()
+            + _network_context_ports()
+            + [
+                {"port_id": "in:action", "direction": "input", "relation_layer": "data", "semantic_slot": "in.action"},
+                {"port_id": "in:connection_id", "direction": "input", "relation_layer": "data", "semantic_slot": "in.connection_id"},
+                {"port_id": "in:url", "direction": "input", "relation_layer": "data", "semantic_slot": "in.url"},
+            ]
+            + _network_security_override_ports()
+            + [
+                {"port_id": "out:connection_id", "direction": "output", "relation_layer": "data", "semantic_slot": "out.connection_id"},
+                {"port_id": "out:event", "direction": "output", "relation_layer": "data", "semantic_slot": "out.event"},
+            ]
+        ),
+        "node_config": {
+            "context_strategy": "inherit",
+            "action": "connect",
+            "connection_id": "",
+            "url": "",
+            "headers": {},
+            "timeout_seconds": None,
+        },
+    },
+    "network.websocket_connect": {
+        "lowered_kind": "execution",
+        "expansion_role": "network:websocket_connect",
+        "ports": (
+            _network_control_ports()
+            + _network_context_ports()
+            + [
+                {"port_id": "in:action", "direction": "input", "relation_layer": "data", "semantic_slot": "in.action"},
+                {"port_id": "in:connection_id", "direction": "input", "relation_layer": "data", "semantic_slot": "in.connection_id"},
+                {"port_id": "in:url", "direction": "input", "relation_layer": "data", "semantic_slot": "in.url"},
+                {"port_id": "in:message", "direction": "input", "relation_layer": "data", "semantic_slot": "in.message"},
+            ]
+            + _network_security_override_ports()
+            + [
+                {"port_id": "out:connection_id", "direction": "output", "relation_layer": "data", "semantic_slot": "out.connection_id"},
+                {"port_id": "out:message", "direction": "output", "relation_layer": "data", "semantic_slot": "out.message"},
+            ]
+        ),
+        "node_config": {
+            "context_strategy": "inherit",
+            "action": "connect",
+            "connection_id": "",
+            "url": "",
+            "message": None,
+            "headers": {},
+            "timeout_seconds": None,
+        },
+    },
+    "network.batch_request": {
+        "lowered_kind": "execution",
+        "expansion_role": "network:batch_request",
+        "ports": (
+            _network_control_ports()
+            + _network_context_ports()
+            + [
+                {"port_id": "in:requests", "direction": "input", "relation_layer": "data", "semantic_slot": "in.requests"},
+                {"port_id": "in:max_concurrency", "direction": "input", "relation_layer": "data", "semantic_slot": "in.max_concurrency"},
+                {"port_id": "out:results", "direction": "output", "relation_layer": "data", "semantic_slot": "out.results"},
+            ]
+        ),
+        "node_config": {
+            "context_strategy": "inherit",
+            "requests": [],
+            "max_concurrency": 1,
         },
     },
 }

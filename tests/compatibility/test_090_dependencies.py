@@ -12,6 +12,7 @@ def test_090_network_runtime_dependencies_are_importable() -> None:
         "graphql",
         "authlib",
         "cryptography",
+        "jsonschema",
         "msgpack",
         "socksio",
         "python_socks",

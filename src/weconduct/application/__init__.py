@@ -7,7 +7,7 @@ from .legacy_webcontrol_converter import (
     convert_legacy_webcontrol_project,
 )
 from .runtime_session_stream import RuntimeSessionStreamBroker
-from .operation_registry import OperationDescriptor, OperationRegistry, OperationRegistryError
+from .operations import HostOperationService, OperationDescriptor, OperationRegistry, OperationRegistryError
 from .update_service import UpdateService
 from .workspace_state_store import (
     FileWorkspaceStateStore,
@@ -21,6 +21,7 @@ __all__ = [
     "build_conversion_report",
     "convert_legacy_webcontrol_project",
     "RuntimeSessionStreamBroker",
+    "HostOperationService",
     "OperationDescriptor",
     "OperationRegistry",
     "OperationRegistryError",

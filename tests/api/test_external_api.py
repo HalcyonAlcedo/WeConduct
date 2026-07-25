@@ -49,6 +49,18 @@ def _build_server(tmp_path: Path, *, enabled: bool, token: str | None = None):
     )
 
 
+def test_external_router_keeps_bearer_semantics_and_maps_the_fixed_host_route() -> None:
+    from weconduct.api.external_v1.auth import ExternalApiAuthenticator
+    from weconduct.api.external_v1.router import resolve_external_operation
+
+    assert ExternalApiAuthenticator(expected_token="token").accepts("Bearer token")
+    assert not ExternalApiAuthenticator(expected_token="token").accepts("Bearer other")
+    assert resolve_external_operation(method="GET", request_path="/api/ext/v1/host") == (
+        "host.describe",
+        {},
+    )
+
+
 def test_external_api_is_disabled_by_default(tmp_path: Path) -> None:
     server = _build_server(tmp_path, enabled=False)
     thread = Thread(target=server.serve_forever, daemon=True)

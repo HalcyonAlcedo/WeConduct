@@ -25,6 +25,7 @@ import urllib.request
 from zipfile import BadZipFile
 from typing import Any, Callable, Mapping
 
+from jsonschema import Draft202012Validator, SchemaError
 from weconduct.network_runtime import (
     GraphQLAdapterError,
     GraphQLProtocolAdapter,
@@ -739,7 +740,8 @@ class RuntimeExecutorRegistry:
 
         body_contains = _resolve_value(node_config.get("body_contains"), context)
         json_path_equals = _resolve_value(node_config.get("json_path_equals"), context)
-        if body_contains is not None or json_path_equals is not None:
+        json_schema = _resolve_value(node_config.get("json_schema"), context)
+        if body_contains is not None or json_path_equals is not None or json_schema is not None:
             if not isinstance(body_ref, ResponseBodyRef):
                 report.append({"kind": "body", "message": "response body is unavailable"})
             else:
@@ -765,27 +767,64 @@ class RuntimeExecutorRegistry:
                             )
                         if body_contains not in body_text:
                             report.append({"kind": "body_contains", "expected": body_contains})
-                    if json_path_equals is not None:
-                        if not isinstance(json_path_equals, dict):
-                            return _failed_result(
-                                node,
-                                "network.assertion_config_invalid",
-                                "json_path_equals must be an object",
-                            )
+                    if json_path_equals is not None and not isinstance(json_path_equals, dict):
+                        return _failed_result(
+                            node,
+                            "network.assertion_config_invalid",
+                            "json_path_equals must be an object",
+                        )
+                    if json_path_equals is not None or json_schema is not None:
                         try:
                             payload = json.loads(body_text)
                         except json.JSONDecodeError:
                             report.append({"kind": "json", "message": "response body is not valid JSON"})
                         else:
-                            for json_path, expected_value in json_path_equals.items():
-                                actual_value, found = _resolve_simple_json_path(payload, str(json_path))
-                                if not found or actual_value != expected_value:
+                            if isinstance(json_path_equals, dict):
+                                for json_path, expected_value in json_path_equals.items():
+                                    actual_value, found = _resolve_simple_json_path(payload, str(json_path))
+                                    if not found or actual_value != expected_value:
+                                        report.append(
+                                            {
+                                                "kind": "json_path",
+                                                "path": str(json_path),
+                                                "expected": expected_value,
+                                                "actual": actual_value if found else None,
+                                            }
+                                        )
+                            if json_schema is not None:
+                                if not isinstance(json_schema, dict):
+                                    return _failed_result(
+                                        node,
+                                        "network.assertion_config_invalid",
+                                        "json_schema must be an object",
+                                    )
+                                try:
+                                    Draft202012Validator.check_schema(json_schema)
+                                except SchemaError as exc:
+                                    return _failed_result(
+                                        node,
+                                        "network.assertion_config_invalid",
+                                        f"json_schema is invalid: {exc.message}",
+                                    )
+                                schema_errors = sorted(
+                                    Draft202012Validator(json_schema).iter_errors(payload),
+                                    key=lambda error: (
+                                        list(error.absolute_path),
+                                        error.message,
+                                    ),
+                                )
+                                for schema_error in schema_errors:
+                                    path = "$"
+                                    if schema_error.absolute_path:
+                                        path += "".join(
+                                            f"[{item}]" if isinstance(item, int) else f".{item}"
+                                            for item in schema_error.absolute_path
+                                        )
                                     report.append(
                                         {
-                                            "kind": "json_path",
-                                            "path": str(json_path),
-                                            "expected": expected_value,
-                                            "actual": actual_value if found else None,
+                                            "kind": "json_schema",
+                                            "path": path,
+                                            "message": schema_error.message,
                                         }
                                     )
 

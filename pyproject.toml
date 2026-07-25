@@ -13,6 +13,7 @@ dependencies = [
   "graphql-core>=3.2,<4",
   "httpx[http2,socks]>=0.28,<1",
   "httpx-sse>=0.4,<1",
+  "jsonschema>=4.23,<5",
   "msgpack>=1.1,<2",
   "pydantic>=2.8,<3",
   "playwright>=1.53,<2",

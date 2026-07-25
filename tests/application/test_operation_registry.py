@@ -58,6 +58,21 @@ class _PendingInputErrorService(_FakeService):
         raise ValueError("pending input request is not waiting")
 
 
+def test_operation_service_executes_through_explicit_registry() -> None:
+    from weconduct.application.operations import HostOperationService, OperationRegistry
+
+    registry = OperationRegistry.build_stable_public()
+    service = HostOperationService(service=_FakeService(), registry=registry)
+
+    result = service.execute(
+        "graph.replace",
+        {"graph_document": {"document_id": "graph:workspace"}, "expected_revision": 4},
+    )
+
+    assert result["status"] == "saved"
+    assert result["expected_revision"] == 4
+
+
 def test_operation_registry_exposes_stable_descriptors_and_dispatches_contracts() -> None:
     registry = OperationRegistry(service=_FakeService())
 

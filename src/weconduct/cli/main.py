@@ -7,9 +7,9 @@ from threading import Thread
 
 from weconduct.application import (
     CompilationWorkbenchService,
-    OperationRegistry,
     OperationRegistryError,
 )
+from weconduct.application.operations import HostOperationService
 from weconduct.application.pending_input.models import PendingInputSnapshot
 from weconduct.application.preview_smoke import run_preview_smoke
 from weconduct.api import build_api_server
@@ -288,7 +288,7 @@ def main() -> int:
                 payload_file=args.payload_file,
             )
             service = CompilationWorkbenchService()
-            registry = OperationRegistry(service=service)
+            registry = HostOperationService(service=service)
             descriptor = registry.describe(args.operation_id)
             result = registry.execute(args.operation_id, payload)
             _print_json(
