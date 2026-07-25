@@ -59,7 +59,9 @@ class HttpxAdapter:
                 **operation.query,
             }
             content = operation.content
-            if operation.upload_file_path is not None:
+            if operation.upload_stream is not None:
+                content = operation.upload_stream
+            elif operation.upload_file_path is not None:
                 content = _iter_upload_file_chunks(operation.upload_file_path)
             request_url = operation.url
             tls_config = snapshot.tls if isinstance(snapshot.tls, dict) else {}

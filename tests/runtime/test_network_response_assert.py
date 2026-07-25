@@ -111,6 +111,35 @@ def test_response_assert_reports_json_schema_validation_failure(tmp_path) -> Non
     ]
 
 
+def test_response_assert_validates_final_redirect_target_and_graphql_errors() -> None:
+    context = RuntimeContext(
+        variables={
+            "last_network_response": {
+                "status_code": 200,
+                "headers": {},
+                "final_url": "https://api.example.test/login",
+                "errors": [{"message": "access denied"}],
+            }
+        }
+    )
+    node = {
+        "node_id": "assert-redirect-and-graphql",
+        "node_kind": "network.response_assert",
+        "node_config": {
+            "expected_final_url": "https://api.example.test/profile",
+            "require_no_graphql_errors": True,
+        },
+    }
+
+    output = RuntimeExecutorRegistry().execute("network.response_assert", node, context)
+
+    assert output["status"] == "failed"
+    assert {item["kind"] for item in output["assertion_report"]} == {
+        "redirect",
+        "graphql_errors",
+    }
+
+
 def test_response_assert_failure_routes_only_to_connected_failed_port(
     monkeypatch,
 ) -> None:

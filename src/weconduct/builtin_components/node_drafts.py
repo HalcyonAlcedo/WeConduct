@@ -3409,6 +3409,7 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             + _network_context_ports()
             + [
                 {"port_id": "in:url", "direction": "input", "relation_layer": "data", "semantic_slot": "in.url"},
+                {"port_id": "in:source", "direction": "input", "relation_layer": "data", "semantic_slot": "in.source"},
                 {"port_id": "in:file_path", "direction": "input", "relation_layer": "data", "semantic_slot": "in.file_path"},
                 {"port_id": "in:field_name", "direction": "input", "relation_layer": "data", "semantic_slot": "in.field_name"},
             ]
@@ -3419,7 +3420,14 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             "context_strategy": "inherit",
             "url": "",
             "file_path": "",
+            "source": None,
             "field_name": "file",
+            "file_name": None,
+            "multipart": False,
+            "multipart_fields": {},
+            "media_type": "application/octet-stream",
+            "checksum_sha256": None,
+            "max_upload_bytes": None,
             "headers": {},
             "query": {},
             "timeout": 30,
@@ -3470,6 +3478,8 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             "body_contains": None,
             "json_path_equals": {},
             "json_schema": None,
+            "expected_final_url": None,
+            "require_no_graphql_errors": False,
             "max_duration_ms": None,
             "max_size_bytes": None,
         },

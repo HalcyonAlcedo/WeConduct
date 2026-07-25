@@ -376,6 +376,7 @@ class RuntimeExecutorRegistry:
         *,
         response_storage: str = "auto",
         upload_file_path: Path | None = None,
+        upload_stream: Any = None,
     ) -> dict:
         _check_cancellation(context)
         node_config = _node_config(node)
@@ -400,7 +401,7 @@ class RuntimeExecutorRegistry:
         request_headers = {str(key): str(value) for key, value in headers.items()}
         request_query = {str(key): str(value) for key, value in query.items()}
         connection_overrides: dict[str, object] = {}
-        for name in ("auth", "tls", "proxy"):
+        for name in ("auth", "tls", "proxy", "retry_policy"):
             if name in node_config:
                 connection_overrides[name] = _resolve_value(node_config[name], context)
         if isinstance(body_value, (dict, list)):
@@ -467,8 +468,13 @@ class RuntimeExecutorRegistry:
             url=url.strip(),
             headers=request_headers,
             query=request_query,
-            content=None if upload_file_path is not None else request_content,
+            content=(
+                None
+                if upload_file_path is not None or upload_stream is not None
+                else request_content
+            ),
             upload_file_path=upload_file_path,
+            upload_stream=upload_stream,
             timeout_seconds=timeout_seconds,
             response_storage=response_storage,
         )
@@ -482,12 +488,18 @@ class RuntimeExecutorRegistry:
                 request_snapshot,
             ).result(timeout=timeout_seconds + 1)
         except Exception as exc:
-            return _failed_result(node, "network.request_failed", str(exc))
+            output = _failed_result(node, "network.request_failed", str(exc))
+            output["request_id"] = operation.request_id
+            output["transport_error"] = str(exc)
+            return output
         finally:
             unregister()
         if result.status != "succeeded":
             error_code = result.transport_error or "network.request_failed"
-            return _failed_result(node, error_code, result.transport_error or "network request failed")
+            output = _failed_result(node, error_code, result.transport_error or "network request failed")
+            output["request_id"] = operation.request_id
+            output["transport_error"] = result.transport_error
+            return output
         if result.set_cookies:
             try:
                 context.execution_token_context = context_registry.apply_overrides(
@@ -505,6 +517,7 @@ class RuntimeExecutorRegistry:
             "body_ref": result.body_ref,
             "final_url": result.final_url,
             "duration_ms": result.duration_ms,
+            "request_id": operation.request_id,
             "network_context_id": context.execution_token_context.network_context_id,
         }
         context.variables["last_network_response"] = output
@@ -540,40 +553,150 @@ class RuntimeExecutorRegistry:
 
     def _execute_network_upload(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
-        source_value = _resolve_value(node_config.get("file_path"), context)
-        if not isinstance(source_value, str) or not source_value.strip():
+        source_value = _resolve_value(node_config.get("source"), context)
+        if source_value is None:
+            source_value = _resolve_value(node_config.get("file_path"), context)
+        upload_path: Path | None = None
+        upload_stream: Any = None
+        upload_bytes: bytes | None = None
+        source_size: int
+        source_name = "upload.bin"
+        if isinstance(source_value, str) and source_value.strip():
+            upload_path = Path(source_value).expanduser()
+            try:
+                _validate_path_within_allowed_roots(upload_path, context)
+            except ValueError as exc:
+                return _failed_result(node, "network.upload_path_denied", str(exc))
+            if not upload_path.is_file():
+                return _failed_result(
+                    node,
+                    "network.upload_file_missing",
+                    f"network.upload file was not found: {upload_path}",
+                )
+            source_size = upload_path.stat().st_size
+            source_name = upload_path.name
+        elif isinstance(source_value, ResponseBodyRef):
+            source_size = source_value.size_bytes
+            upload_stream = _iter_response_body_upload_chunks(source_value)
+            source_name = source_value.path.name if source_value.path is not None else source_name
+        elif isinstance(source_value, (bytes, bytearray)):
+            upload_bytes = bytes(source_value)
+            source_size = len(upload_bytes)
+            upload_stream = _iter_bytes_upload_chunks(upload_bytes)
+        else:
             return _failed_result(
                 node,
-                "network.upload_file_required",
-                "network.upload requires file_path",
+                "network.upload_source_required",
+                "network.upload requires source bytes, a response body reference, or file_path",
             )
-        upload_path = Path(source_value).expanduser()
+
+        max_upload_bytes = _resolve_value(node_config.get("max_upload_bytes"), context)
+        if max_upload_bytes is not None:
+            if not _is_non_negative_int(max_upload_bytes):
+                return _failed_result(
+                    node,
+                    "network.upload_config_invalid",
+                    "max_upload_bytes must be a non-negative integer",
+                )
+            if source_size > max_upload_bytes:
+                return _failed_result(
+                    node,
+                    "network.upload_too_large",
+                    f"upload source is {source_size} bytes and exceeds the configured limit",
+                )
+
         try:
-            _validate_path_within_allowed_roots(upload_path, context)
-        except ValueError as exc:
-            return _failed_result(node, "network.upload_path_denied", str(exc))
-        if not upload_path.is_file():
-            return _failed_result(
-                node,
-                "network.upload_file_missing",
-                f"network.upload file was not found: {upload_path}",
+            source_checksum = _calculate_network_upload_checksum(
+                upload_path=upload_path,
+                response_ref=source_value if isinstance(source_value, ResponseBodyRef) else None,
+                payload=upload_bytes,
             )
+        except (OSError, RuntimeError) as exc:
+            return _failed_result(node, "network.upload_source_unavailable", str(exc))
+        expected_checksum = _resolve_value(node_config.get("checksum_sha256"), context)
+        if expected_checksum is not None:
+            if not isinstance(expected_checksum, str) or not re.fullmatch(
+                r"[0-9a-fA-F]{64}", expected_checksum.strip()
+            ):
+                return _failed_result(
+                    node,
+                    "network.upload_config_invalid",
+                    "checksum_sha256 must be a 64-character hexadecimal SHA-256 digest",
+                )
+            if source_checksum != expected_checksum.strip().lower():
+                return _failed_result(
+                    node,
+                    "network.upload_checksum_mismatch",
+                    "upload source does not match checksum_sha256",
+                )
+
         upload_node = dict(node)
         upload_config = dict(node_config)
         upload_headers = upload_config.get("headers")
         headers = dict(upload_headers) if isinstance(upload_headers, dict) else {}
         media_type = _resolve_value(upload_config.get("media_type"), context)
         if isinstance(media_type, str) and media_type.strip():
-            headers.setdefault("Content-Type", media_type.strip())
+            resolved_media_type = media_type.strip()
+        elif isinstance(source_value, ResponseBodyRef) and source_value.content_type:
+            resolved_media_type = source_value.content_type
+        else:
+            resolved_media_type = "application/octet-stream"
+        multipart = _resolve_value(upload_config.get("multipart", False), context)
+        if not isinstance(multipart, bool):
+            return _failed_result(
+                node,
+                "network.upload_config_invalid",
+                "multipart must be a boolean",
+            )
+        if multipart:
+            field_name = _resolve_value(upload_config.get("field_name", "file"), context)
+            multipart_fields = _resolve_value(upload_config.get("multipart_fields", {}), context)
+            file_name = _resolve_value(upload_config.get("file_name", source_name), context)
+            if not isinstance(field_name, str) or not field_name.strip():
+                return _failed_result(
+                    node,
+                    "network.upload_config_invalid",
+                    "field_name must be a non-empty string for multipart uploads",
+                )
+            if not isinstance(file_name, str) or not file_name.strip():
+                return _failed_result(
+                    node,
+                    "network.upload_config_invalid",
+                    "file_name must be a non-empty string for multipart uploads",
+                )
+            if not isinstance(multipart_fields, dict):
+                return _failed_result(
+                    node,
+                    "network.upload_config_invalid",
+                    "multipart_fields must be an object",
+                )
+            boundary = f"weconduct-upload-{hashlib.sha256((node['node_id'] + source_checksum).encode('utf-8')).hexdigest()[:24]}"
+            headers.setdefault("Content-Type", f"multipart/form-data; boundary={boundary}")
+            upload_stream = _iter_multipart_upload_chunks(
+                source_path=upload_path,
+                response_ref=source_value if isinstance(source_value, ResponseBodyRef) else None,
+                payload=upload_bytes,
+                field_name=field_name.strip(),
+                file_name=file_name.strip(),
+                media_type=resolved_media_type,
+                fields=multipart_fields,
+                boundary=boundary,
+            )
+            upload_path = None
+            upload_bytes = None
+        else:
+            headers.setdefault("Content-Type", resolved_media_type)
         upload_config["headers"] = headers
         upload_node["node_config"] = upload_config
         output = self._execute_network_http_request(
             upload_node,
             context,
             upload_file_path=upload_path,
+            upload_stream=upload_stream,
         )
         if output.get("status") == "succeeded":
-            output["uploaded_size"] = upload_path.stat().st_size
+            output["uploaded_size"] = source_size
+            output["source_checksum_sha256"] = source_checksum
         context.variables["last_network_upload"] = output
         return output
 
@@ -701,6 +824,44 @@ class RuntimeExecutorRegistry:
                             "actual": actual_value,
                         }
                     )
+
+        expected_final_url = _resolve_value(node_config.get("expected_final_url"), context)
+        if expected_final_url is not None:
+            if not isinstance(expected_final_url, str) or not expected_final_url.strip():
+                return _failed_result(
+                    node,
+                    "network.assertion_config_invalid",
+                    "expected_final_url must be a non-empty string",
+                )
+            actual_final_url = response.get("final_url")
+            if actual_final_url != expected_final_url.strip():
+                report.append(
+                    {
+                        "kind": "redirect",
+                        "expected": expected_final_url.strip(),
+                        "actual": actual_final_url,
+                    }
+                )
+
+        require_no_graphql_errors = _resolve_value(
+            node_config.get("require_no_graphql_errors"),
+            context,
+        )
+        if require_no_graphql_errors is not None:
+            if not isinstance(require_no_graphql_errors, bool):
+                return _failed_result(
+                    node,
+                    "network.assertion_config_invalid",
+                    "require_no_graphql_errors must be a boolean",
+                )
+            graphql_errors = response.get("errors")
+            if require_no_graphql_errors and isinstance(graphql_errors, (list, tuple)) and graphql_errors:
+                report.append(
+                    {
+                        "kind": "graphql_errors",
+                        "count": len(graphql_errors),
+                    }
+                )
 
         max_size_bytes = _resolve_value(node_config.get("max_size_bytes"), context)
         if max_size_bytes is not None:
@@ -852,13 +1013,18 @@ class RuntimeExecutorRegistry:
         query = _resolve_value(node_config.get("query"), context)
         operation_name = _resolve_value(node_config.get("operation_name"), context)
         variables = _resolve_value(node_config.get("variables", {}), context)
+        extensions = _resolve_value(node_config.get("extensions", {}), context)
         headers = _resolve_value(node_config.get("headers", {}), context)
         if not isinstance(endpoint, str) or not endpoint.strip():
             return _failed_result(node, "network.graphql_endpoint_required", "GraphQL endpoint is required")
         if not isinstance(query, str) or not query.strip():
             return _failed_result(node, "network.graphql_query_required", "GraphQL query is required")
-        if not isinstance(variables, dict) or not isinstance(headers, dict):
-            return _failed_result(node, "network.graphql_input_invalid", "GraphQL variables and headers must be objects")
+        if not isinstance(variables, dict) or not isinstance(extensions, dict) or not isinstance(headers, dict):
+            return _failed_result(
+                node,
+                "network.graphql_input_invalid",
+                "GraphQL variables, extensions and headers must be objects",
+            )
         try:
             graphql_operation = GraphQLProtocolAdapter().build_operation(
                 endpoint=endpoint.strip(),
@@ -866,6 +1032,7 @@ class RuntimeExecutorRegistry:
                 session_id=context.execution_session_context.session_id,
                 operation_name=operation_name if isinstance(operation_name, str) else None,
                 variables=variables,
+                extensions=extensions,
                 headers=headers,
             )
             body = json.loads(graphql_operation.content or b"{}")
@@ -5246,6 +5413,86 @@ def _validate_http_request_ip(
         return
     if not allow_remote_network_access:
         raise ValueError(f"remote network access is disabled for address: {ip}")
+
+
+def _calculate_network_upload_checksum(
+    *,
+    upload_path: Path | None,
+    response_ref: ResponseBodyRef | None,
+    payload: bytes | None,
+) -> str:
+    digest = hashlib.sha256()
+    if upload_path is not None:
+        with upload_path.open("rb") as handle:
+            while chunk := handle.read(64 * 1024):
+                digest.update(chunk)
+    elif response_ref is not None:
+        for chunk in response_ref.iter_chunks():
+            digest.update(chunk)
+    elif payload is not None:
+        digest.update(payload)
+    else:
+        raise RuntimeError("network.upload_source_unavailable")
+    return digest.hexdigest()
+
+
+async def _iter_bytes_upload_chunks(payload: bytes, *, chunk_size: int = 64 * 1024):
+    for offset in range(0, len(payload), chunk_size):
+        yield payload[offset : offset + chunk_size]
+
+
+async def _iter_response_body_upload_chunks(response_ref: ResponseBodyRef):
+    for chunk in response_ref.iter_chunks():
+        yield chunk
+
+
+async def _iter_multipart_upload_chunks(
+    *,
+    source_path: Path | None,
+    response_ref: ResponseBodyRef | None,
+    payload: bytes | None,
+    field_name: str,
+    file_name: str,
+    media_type: str,
+    fields: dict,
+    boundary: str,
+):
+    def safe_disposition_value(value: str, *, label: str) -> str:
+        if "\r" in value or "\n" in value:
+            raise ValueError(f"network.upload_config_invalid: {label} must not contain line breaks")
+        return value.replace('"', "'")
+
+    encoded_boundary = boundary.encode("ascii")
+    for name, value in fields.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("network.upload_config_invalid: multipart field names must be non-empty strings")
+        safe_name = safe_disposition_value(name.strip(), label="multipart field name")
+        yield b"--" + encoded_boundary + b"\r\n"
+        yield f'Content-Disposition: form-data; name="{safe_name}"\r\n\r\n'.encode("utf-8")
+        yield str(value).encode("utf-8")
+        yield b"\r\n"
+
+    safe_field_name = safe_disposition_value(field_name, label="field_name")
+    safe_file_name = safe_disposition_value(file_name, label="file_name")
+    yield b"--" + encoded_boundary + b"\r\n"
+    yield (
+        f'Content-Disposition: form-data; name="{safe_field_name}"; '
+        f'filename="{safe_file_name}"\r\n'
+    ).encode("utf-8")
+    yield f"Content-Type: {media_type}\r\n\r\n".encode("utf-8")
+    if source_path is not None:
+        with source_path.open("rb") as handle:
+            while chunk := await asyncio.to_thread(handle.read, 64 * 1024):
+                yield chunk
+    elif response_ref is not None:
+        async for chunk in _iter_response_body_upload_chunks(response_ref):
+            yield chunk
+    elif payload is not None:
+        async for chunk in _iter_bytes_upload_chunks(payload):
+            yield chunk
+    else:
+        raise RuntimeError("network.upload_source_unavailable")
+    yield b"\r\n--" + encoded_boundary + b"--\r\n"
 
 
 def _resolve_value(value: Any, context: RuntimeContext) -> Any:

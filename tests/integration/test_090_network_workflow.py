@@ -93,3 +93,37 @@ def test_090_network_workflow_runs_request_assert_download_and_cleanup() -> None
 
     context.close()
     assert context.browser_runtime == {}
+
+
+def test_network_http_request_exposes_request_id_and_transport_error() -> None:
+    class FailedNetworkService:
+        def submit(
+            self,
+            operation: NetworkOperation,
+            snapshot: NetworkContextSnapshot,
+        ) -> Future[NetworkResult]:
+            del snapshot
+            future: Future[NetworkResult] = Future()
+            future.set_result(
+                NetworkResult(
+                    status="failed",
+                    operation_id=operation.operation_id,
+                    session_id=operation.session_id,
+                    transport_error="network.connect_failed",
+                )
+            )
+            return future
+
+    output = RuntimeExecutorRegistry(network_runtime_service=FailedNetworkService()).execute(
+        "network.http_request",
+        {
+            "node_id": "request-with-id",
+            "node_kind": "network.http_request",
+            "node_config": {"url": "https://example.test/unavailable", "method": "GET"},
+        },
+        RuntimeContext(),
+    )
+
+    assert output["status"] == "failed"
+    assert output["request_id"].startswith("request-with-id-")
+    assert output["transport_error"] == "network.connect_failed"

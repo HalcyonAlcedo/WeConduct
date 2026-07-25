@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
+import random
 from threading import Event, RLock, Thread
+from time import monotonic
+from typing import Mapping
 
 import httpx
 
@@ -14,6 +19,130 @@ from .long_connection import SSEClientHandle, WebSocketClientHandle
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
 from .proxy import ProxyResolver
 from .tls import TlsResolver, build_ssl_context
+
+
+def _normalize_retry_policy(value: object) -> dict[str, object]:
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
+        raise ValueError("retry_policy must be an object")
+
+    def positive_int(name: str, default: int) -> int:
+        raw = value.get(name, default)
+        if not isinstance(raw, int) or isinstance(raw, bool) or raw < 1:
+            raise ValueError(f"{name} must be an integer greater than zero")
+        return raw
+
+    def non_negative_number(name: str, default: float | None) -> float | None:
+        raw = value.get(name, default)
+        if raw is None:
+            return None
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool) or raw < 0:
+            raise ValueError(f"{name} must be a non-negative number")
+        return float(raw)
+
+    status_codes_value = value.get("retry_status_codes", ())
+    if not isinstance(status_codes_value, (list, tuple, set)) or any(
+        not isinstance(status_code, int) or isinstance(status_code, bool)
+        for status_code in status_codes_value
+    ):
+        raise ValueError("retry_status_codes must be a list of integer status codes")
+    jitter_ratio = non_negative_number("jitter_ratio", 0.0)
+    assert jitter_ratio is not None
+    if jitter_ratio > 1:
+        raise ValueError("jitter_ratio must not exceed 1")
+    respect_retry_after = value.get("respect_retry_after", True)
+    if not isinstance(respect_retry_after, bool):
+        raise ValueError("respect_retry_after must be a boolean")
+    allow_non_idempotent = value.get("allow_non_idempotent", False)
+    if not isinstance(allow_non_idempotent, bool):
+        raise ValueError("allow_non_idempotent must be a boolean")
+    retry_transport_errors = value.get("retry_transport_errors", True)
+    if not isinstance(retry_transport_errors, bool):
+        raise ValueError("retry_transport_errors must be a boolean")
+    initial_delay_seconds = non_negative_number("initial_delay_seconds", 0.25)
+    max_delay_seconds = non_negative_number("max_delay_seconds", 30.0)
+    max_total_seconds = non_negative_number("max_total_seconds", None)
+    assert initial_delay_seconds is not None
+    assert max_delay_seconds is not None
+    if max_delay_seconds < initial_delay_seconds:
+        raise ValueError("max_delay_seconds must be greater than or equal to initial_delay_seconds")
+    return {
+        "max_attempts": positive_int("max_attempts", 1),
+        "retry_status_codes": frozenset(status_codes_value),
+        "retry_transport_errors": retry_transport_errors,
+        "initial_delay_seconds": initial_delay_seconds,
+        "max_delay_seconds": max_delay_seconds,
+        "max_total_seconds": max_total_seconds,
+        "jitter_ratio": jitter_ratio,
+        "respect_retry_after": respect_retry_after,
+        "allow_non_idempotent": allow_non_idempotent,
+    }
+
+
+def _retry_is_allowed(
+    operation: NetworkOperation,
+    snapshot: NetworkContextSnapshot,
+    policy: Mapping[str, object],
+) -> bool:
+    if policy["max_attempts"] == 1 or operation.upload_stream is not None:
+        return False
+    method = operation.method.upper()
+    if method in {"GET", "HEAD", "OPTIONS", "PUT", "DELETE", "TRACE"}:
+        return True
+    effective_headers = {str(name).lower() for name in (*snapshot.headers, *operation.headers)}
+    return bool(policy["allow_non_idempotent"]) or "idempotency-key" in effective_headers
+
+
+def _is_retryable_result(result: NetworkResult, policy: Mapping[str, object]) -> bool:
+    if result.status != "succeeded":
+        if result.transport_error in {"network.cancelled", "network.access_denied"}:
+            return False
+        return bool(policy["retry_transport_errors"])
+    retry_status_codes = policy["retry_status_codes"]
+    return isinstance(retry_status_codes, frozenset) and result.status_code in retry_status_codes
+
+
+def _retry_delay_seconds(
+    result: NetworkResult,
+    policy: Mapping[str, object],
+    *,
+    attempt_index: int,
+) -> float:
+    initial_delay = float(policy["initial_delay_seconds"])
+    max_delay = float(policy["max_delay_seconds"])
+    delay = min(max_delay, initial_delay * (2**attempt_index))
+    if bool(policy["respect_retry_after"]):
+        retry_after = _parse_retry_after(result.headers)
+        if retry_after is not None:
+            delay = min(max_delay, retry_after)
+    jitter_ratio = float(policy["jitter_ratio"])
+    if jitter_ratio:
+        delay *= random.uniform(1 - jitter_ratio, 1 + jitter_ratio)
+    return delay
+
+
+def _parse_retry_after(headers: Mapping[str, str]) -> float | None:
+    raw_value = next(
+        (
+            value
+            for name, value in headers.items()
+            if isinstance(name, str) and name.lower() == "retry-after" and isinstance(value, str)
+        ),
+        None,
+    )
+    if raw_value is None:
+        return None
+    try:
+        return max(0.0, float(raw_value.strip()))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(raw_value)
+        except (TypeError, ValueError, IndexError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, (parsed - datetime.now(timezone.utc)).total_seconds())
 
 
 class NetworkRuntimeService:
@@ -160,7 +289,7 @@ class NetworkRuntimeService:
         snapshot: NetworkContextSnapshot,
         result_future: Future[NetworkResult],
     ) -> None:
-        task = self._loop.create_task(self._adapter.execute_async(operation, snapshot))
+        task = self._loop.create_task(self._execute_with_retry(operation, snapshot))
         active_tasks = self._active_tasks.setdefault(operation.session_id, set())
         active_tasks.add(task)
 
@@ -192,6 +321,47 @@ class NetworkRuntimeService:
                 )
 
         task.add_done_callback(complete)
+
+    async def _execute_with_retry(
+        self,
+        operation: NetworkOperation,
+        snapshot: NetworkContextSnapshot,
+    ) -> NetworkResult:
+        try:
+            policy = _normalize_retry_policy(snapshot.retry_policy)
+        except ValueError as exc:
+            return NetworkResult(
+                status="failed",
+                operation_id=operation.operation_id,
+                session_id=operation.session_id,
+                transport_error=f"network.retry_policy_invalid: {exc}",
+            )
+
+        start_time = monotonic()
+        can_retry = _retry_is_allowed(operation, snapshot, policy)
+        result: NetworkResult | None = None
+        for attempt_index in range(policy["max_attempts"]):
+            result = await self._adapter.execute_async(operation, snapshot)
+            if not can_retry or not _is_retryable_result(result, policy):
+                return result
+            if attempt_index + 1 >= policy["max_attempts"]:
+                return result
+
+            delay_seconds = _retry_delay_seconds(
+                result,
+                policy,
+                attempt_index=attempt_index,
+            )
+            max_total_seconds = policy["max_total_seconds"]
+            if (
+                max_total_seconds is not None
+                and monotonic() - start_time + delay_seconds >= max_total_seconds
+            ):
+                return result
+            if delay_seconds > 0:
+                await asyncio.sleep(delay_seconds)
+        assert result is not None
+        return result
 
     def _cancel_session_on_loop(self, session_id: str) -> None:
         for task in tuple(self._active_tasks.get(session_id, ())):

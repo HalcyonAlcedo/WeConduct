@@ -87,7 +87,7 @@ def test_workbench_exposes_062_to_090_upgrade_path() -> None:
         {
             "from_version": "0.6.2",
             "to_version": "0.9.0",
-            "upgrader_id": "p090-http-request-to-network-http-request",
+            "upgrader_id": "p090-network-and-python-run-schema",
         }
     ]
 
@@ -129,7 +129,7 @@ def test_workbench_upgrade_applies_payload_transform_before_version_metadata() -
     assert upgraded.root_metadata["graph_compatibility"]["graph_data_version"] == "0.9.0"
     assert upgraded.root_metadata["graph_compatibility"]["upgrade_history"][-1][
         "upgrader_id"
-    ] == "p090-http-request-to-network-http-request"
+    ] == "p090-network-and-python-run-schema"
 
 
 def test_workbench_rejects_legacy_force_load_bypass() -> None:
@@ -137,3 +137,44 @@ def test_workbench_rejects_legacy_force_load_bypass() -> None:
 
     with pytest.raises(ValueError, match="upgrade_and_load"):
         service.apply_pending_graph_upgrade(decision="force_load")
+
+
+def test_upgrade_legacy_python_run_adds_dynamic_schema_defaults_without_changing_ports() -> None:
+    payload = {
+        "nodes": [
+            {
+                "node_id": "node-python",
+                "node_kind": "python.run",
+                "ports": [
+                    {
+                        "port_id": "legacy-in",
+                        "direction": "input",
+                        "relation_layer": "control",
+                        "semantic_slot": "in.control",
+                    },
+                    {
+                        "port_id": "legacy-out",
+                        "direction": "output",
+                        "relation_layer": "control",
+                        "semantic_slot": "out.control",
+                    },
+                ],
+                "node_config": {"code": "result = 1"},
+            }
+        ]
+    }
+
+    upgraded = upgrade_graph_payload(payload, from_version="0.6.2", target_version="0.9.0")
+
+    node = upgraded["nodes"][0]
+    assert node["node_kind"] == "python.run"
+    assert node["node_config"] == {
+        "code": "result = 1",
+        "inputs": {},
+        "input_schema": {},
+        "output_schema": {},
+        "metadata": {},
+        "metadata_schema": {},
+        "data_fields": [],
+    }
+    assert [port["port_id"] for port in node["ports"]] == ["legacy-in", "legacy-out"]

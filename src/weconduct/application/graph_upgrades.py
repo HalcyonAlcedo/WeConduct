@@ -74,7 +74,12 @@ def _upgrade_062_to_090(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("graph nodes must be a list before 0.9.0 upgrade")
 
     for raw_node in raw_nodes:
-        if not isinstance(raw_node, dict) or raw_node.get("node_kind") != "http.request":
+        if not isinstance(raw_node, dict):
+            continue
+        if raw_node.get("node_kind") == "python.run":
+            _upgrade_legacy_python_run_node(raw_node)
+            continue
+        if raw_node.get("node_kind") != "http.request":
             continue
         node_id = raw_node.get("node_id")
         if not isinstance(node_id, str) or not node_id.strip():
@@ -94,6 +99,20 @@ def _upgrade_062_to_090(payload: dict[str, Any]) -> dict[str, Any]:
             raw_ports=raw_node.get("ports"),
         )
     return upgraded_payload
+
+
+def _upgrade_legacy_python_run_node(raw_node: dict[str, Any]) -> None:
+    """Give legacy built-in Python nodes the explicit 0.9 dynamic schema shape."""
+    node_config = raw_node.get("node_config")
+    if not isinstance(node_config, dict):
+        node_config = {}
+        raw_node["node_config"] = node_config
+    node_config.setdefault("inputs", {})
+    node_config.setdefault("input_schema", {})
+    node_config.setdefault("output_schema", {})
+    node_config.setdefault("metadata", {})
+    node_config.setdefault("metadata_schema", {})
+    node_config.setdefault("data_fields", [])
 
 
 def _add_network_http_ports(*, node_id: str, raw_ports: object) -> list[dict[str, Any]]:
@@ -146,7 +165,7 @@ GRAPH_DATA_UPGRADERS = (
     GraphDataUpgrader(
         from_version="0.6.2",
         to_version=CURRENT_GRAPH_DATA_VERSION,
-        upgrader_id="p090-http-request-to-network-http-request",
+        upgrader_id="p090-network-and-python-run-schema",
         transform=_upgrade_062_to_090,
     ),
 )

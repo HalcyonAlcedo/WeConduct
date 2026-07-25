@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import AsyncIterable
 from typing import TYPE_CHECKING, Literal, Mapping
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from .resources import ResponseBodyRef
@@ -36,8 +38,10 @@ class NetworkOperation:
     query: Mapping[str, str] = field(default_factory=dict)
     content: bytes | str | None = None
     upload_file_path: Path | None = None
+    upload_stream: AsyncIterable[bytes] | None = None
     timeout_seconds: float = 30.0
     response_storage: Literal["auto", "file"] = "auto"
+    request_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.operation_id.strip():
@@ -52,8 +56,16 @@ class NetworkOperation:
             raise ValueError("timeout_seconds must be greater than zero")
         if self.response_storage not in {"auto", "file"}:
             raise ValueError("response_storage must be 'auto' or 'file'")
-        if self.upload_file_path is not None and self.content is not None:
-            raise ValueError("upload_file_path and content cannot both be set")
+        upload_sources = sum(
+            source is not None
+            for source in (self.content, self.upload_file_path, self.upload_stream)
+        )
+        if upload_sources > 1:
+            raise ValueError("content, upload_file_path and upload_stream are mutually exclusive")
+        if self.request_id is None:
+            object.__setattr__(self, "request_id", f"{self.operation_id}-{uuid4().hex}")
+        elif not isinstance(self.request_id, str) or not self.request_id.strip():
+            raise ValueError("request_id must be a non-empty string or None")
 
 
 @dataclass(frozen=True)

@@ -154,6 +154,86 @@ def test_network_runtime_service_reuses_its_single_async_client(tmp_path) -> Non
     assert client.is_closed is True
 
 
+def test_network_runtime_service_retries_configured_retryable_statuses(tmp_path) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        status_code = 503 if attempts == 1 else 200
+        return httpx.Response(status_code, request=request)
+
+    service = NetworkRuntimeService(
+        transport=httpx.MockTransport(handler),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+    try:
+        result = service.submit(
+            NetworkOperation(
+                operation_id="retry-status",
+                session_id="retry-status-session",
+                method="GET",
+                url="https://example.test/retry",
+            ),
+            NetworkContextSnapshot(
+                context_id="retry-status-context",
+                retry_policy={
+                    "max_attempts": 2,
+                    "retry_status_codes": [503],
+                    "initial_delay_seconds": 0,
+                    "jitter_ratio": 0,
+                },
+            ),
+        ).result(timeout=1)
+    finally:
+        service.close()
+
+    assert attempts == 2
+    assert result.status == "succeeded"
+    assert result.status_code == 200
+
+
+def test_network_runtime_service_does_not_retry_non_idempotent_method_without_opt_in(tmp_path) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(503, request=request)
+
+    service = NetworkRuntimeService(
+        transport=httpx.MockTransport(handler),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+    try:
+        result = service.submit(
+            NetworkOperation(
+                operation_id="retry-post",
+                session_id="retry-post-session",
+                method="POST",
+                url="https://example.test/retry",
+                content=b"body",
+            ),
+            NetworkContextSnapshot(
+                context_id="retry-post-context",
+                retry_policy={
+                    "max_attempts": 2,
+                    "retry_status_codes": [503],
+                    "initial_delay_seconds": 0,
+                    "jitter_ratio": 0,
+                },
+            ),
+        ).result(timeout=1)
+    finally:
+        service.close()
+
+    assert attempts == 1
+    assert result.status == "succeeded"
+    assert result.status_code == 503
+
+
 def test_network_runtime_service_applies_auth_and_tls_snapshot_to_sse_handle(
     tmp_path,
     monkeypatch,

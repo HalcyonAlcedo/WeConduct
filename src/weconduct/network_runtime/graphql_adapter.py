@@ -122,6 +122,7 @@ class GraphQLProtocolAdapter:
         session_id: str,
         operation_name: str | None = None,
         variables: Mapping[str, object] | None = None,
+        extensions: Mapping[str, object] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> NetworkOperation:
         self._validate_endpoint(endpoint)
@@ -142,6 +143,7 @@ class GraphQLProtocolAdapter:
             "query": query,
             "variables": dict(variables or {}),
             "operationName": operation_name,
+            "extensions": dict(extensions or {}),
         }
         request_headers = {str(key): str(value) for key, value in (headers or {}).items()}
         request_headers.setdefault("Content-Type", "application/json")
