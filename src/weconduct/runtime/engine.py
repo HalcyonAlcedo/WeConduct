@@ -477,6 +477,7 @@ class RuntimeExecutorRegistry:
             upload_stream=upload_stream,
             timeout_seconds=timeout_seconds,
             response_storage=response_storage,
+            node_id=node["node_id"],
         )
         service = self._resolve_network_runtime_service(context)
         unregister = context.cancellation_context.register_cleanup(
@@ -495,10 +496,22 @@ class RuntimeExecutorRegistry:
         finally:
             unregister()
         if result.status != "succeeded":
-            error_code = result.transport_error or "network.request_failed"
-            output = _failed_result(node, error_code, result.transport_error or "network request failed")
+            network_error = result.error
+            error_code = (
+                network_error.error_code
+                if network_error is not None
+                else result.transport_error or "network.request_failed"
+            )
+            message = (
+                network_error.message
+                if network_error is not None
+                else result.transport_error or "network request failed"
+            )
+            output = _failed_result(node, error_code, message)
             output["request_id"] = operation.request_id
             output["transport_error"] = result.transport_error
+            if network_error is not None:
+                output["network_error"] = network_error.to_dict()
             return output
         if result.set_cookies:
             try:

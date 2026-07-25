@@ -6,6 +6,8 @@ from collections.abc import AsyncIterable
 from typing import TYPE_CHECKING, Literal, Mapping
 from uuid import uuid4
 
+from .errors import NetworkExecutionError
+
 if TYPE_CHECKING:
     from .resources import ResponseBodyRef
 
@@ -42,6 +44,7 @@ class NetworkOperation:
     timeout_seconds: float = 30.0
     response_storage: Literal["auto", "file"] = "auto"
     request_id: str | None = None
+    node_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.operation_id.strip():
@@ -80,3 +83,4 @@ class NetworkResult:
     set_cookies: Mapping[str, str | None] = field(default_factory=dict, repr=False)
     duration_ms: float | None = None
     transport_error: str | None = None
+    error: NetworkExecutionError | None = None

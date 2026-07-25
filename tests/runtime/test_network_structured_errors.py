@@ -1,0 +1,62 @@
+from __future__ import annotations
+
+from concurrent.futures import Future
+
+from weconduct.network_runtime.errors import build_network_error
+from weconduct.network_runtime.models import NetworkContextSnapshot, NetworkOperation, NetworkResult
+from weconduct.runtime.engine import RuntimeContext, RuntimeExecutorRegistry
+
+
+def test_http_request_node_preserves_structured_network_failure() -> None:
+    class _NetworkRuntimeService:
+        def submit(
+            self,
+            operation: NetworkOperation,
+            snapshot: NetworkContextSnapshot,
+        ) -> Future[NetworkResult]:
+            future: Future[NetworkResult] = Future()
+            error = build_network_error(
+                "network.timeout",
+                operation=operation,
+                snapshot=snapshot,
+            )
+            future.set_result(
+                NetworkResult(
+                    status="failed",
+                    operation_id=operation.operation_id,
+                    session_id=operation.session_id,
+                    transport_error=error.error_code,
+                    error=error,
+                )
+            )
+            return future
+
+        def cancel_session(self, _session_id: str) -> None:
+            pass
+
+    output = RuntimeExecutorRegistry(
+        network_runtime_service=_NetworkRuntimeService()
+    ).execute(
+        "network.http_request",
+        {
+            "node_id": "http-structured-error",
+            "node_kind": "network.http_request",
+            "node_config": {
+                "method": "GET",
+                "url": "https://example.test/resource",
+            },
+        },
+        RuntimeContext(),
+    )
+
+    assert output["status"] == "failed"
+    assert output["error_code"] == "network.timeout"
+    assert output["network_error"] == {
+        "error_code": "network.timeout",
+        "message": "network.timeout",
+        "details": {},
+        "request_id": output["request_id"],
+        "node_id": "http-structured-error",
+        "network_context_id": output["network_error"]["network_context_id"],
+        "retry_attempt": 1,
+    }

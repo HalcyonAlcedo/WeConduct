@@ -144,6 +144,40 @@ def test_httpx_adapter_revalidates_redirect_destinations(tmp_path) -> None:
     assert "network.access_denied" in result.transport_error
 
 
+def test_httpx_adapter_returns_structured_error_context_for_policy_rejection(tmp_path) -> None:
+    from weconduct.network_runtime.errors import NetworkExecutionError
+
+    adapter = HttpxAdapter(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                302,
+                headers={"location": "http://127.0.0.1:8080/internal"},
+                request=request,
+            )
+        ),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+    operation = NetworkOperation(
+        operation_id="request-structured-error",
+        session_id="session-structured-error",
+        method="GET",
+        url="https://example.test/redirect",
+    )
+
+    result = adapter.execute(
+        operation,
+        NetworkContextSnapshot(context_id="context-structured-error"),
+    )
+
+    assert isinstance(result.error, NetworkExecutionError)
+    assert result.error.error_code == "network.access_denied"
+    assert result.error.request_id == operation.request_id
+    assert result.error.node_id is None
+    assert result.error.network_context_id == "context-structured-error"
+    assert result.error.retry_attempt == 1
+
+
 def test_httpx_adapter_merges_context_and_node_query_and_cookie_values(tmp_path) -> None:
     observed: dict[str, str] = {}
 

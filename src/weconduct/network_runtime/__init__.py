@@ -1,4 +1,5 @@
 from .access_policy import NetworkAccessPolicy
+from .errors import NetworkExecutionError
 from .context_registry import NetworkContextRegistry, NetworkContextStrategy, UnknownNetworkContextError
 from .http_adapter import HttpxAdapter
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
@@ -30,6 +31,7 @@ from .service import NetworkRuntimeService
 __all__ = [
     "HttpxAdapter",
     "NetworkAccessPolicy",
+    "NetworkExecutionError",
     "NetworkContextRegistry",
     "NetworkContextStrategy",
     "NetworkContextSnapshot",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
+from dataclasses import replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ import httpx
 
 from .access_policy import NetworkAccessPolicy
 from .authentication import apply_static_auth
+from .errors import build_network_error
 from .http_adapter import HttpxAdapter
 from .long_connection import SSEClientHandle, WebSocketClientHandle
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
@@ -101,6 +103,24 @@ def _is_retryable_result(result: NetworkResult, policy: Mapping[str, object]) ->
         return bool(policy["retry_transport_errors"])
     retry_status_codes = policy["retry_status_codes"]
     return isinstance(retry_status_codes, frozenset) and result.status_code in retry_status_codes
+
+
+def _with_retry_attempt(
+    result: NetworkResult,
+    *,
+    operation: NetworkOperation,
+    snapshot: NetworkContextSnapshot,
+    retry_attempt: int,
+) -> NetworkResult:
+    if result.status != "failed":
+        return result
+    error = result.error or build_network_error(
+        result.transport_error or "network.transport_failed",
+        operation=operation,
+        snapshot=snapshot,
+    )
+    error = error.with_retry_attempt(retry_attempt)
+    return replace(result, transport_error=error.error_code, error=error)
 
 
 def _retry_delay_seconds(
@@ -302,21 +322,33 @@ class NetworkRuntimeService:
             try:
                 result_future.set_result(completed_task.result())
             except asyncio.CancelledError:
+                error = build_network_error(
+                    "network.cancelled",
+                    operation=operation,
+                    snapshot=snapshot,
+                )
                 result_future.set_result(
                     NetworkResult(
                         status="failed",
                         operation_id=operation.operation_id,
                         session_id=operation.session_id,
-                        transport_error="network.cancelled",
+                        transport_error=error.error_code,
+                        error=error,
                     )
                 )
             except Exception as exc:
+                error = build_network_error(
+                    exc,
+                    operation=operation,
+                    snapshot=snapshot,
+                )
                 result_future.set_result(
                     NetworkResult(
                         status="failed",
                         operation_id=operation.operation_id,
                         session_id=operation.session_id,
-                        transport_error=str(exc),
+                        transport_error=error.error_code,
+                        error=error,
                     )
                 )
 
@@ -330,18 +362,30 @@ class NetworkRuntimeService:
         try:
             policy = _normalize_retry_policy(snapshot.retry_policy)
         except ValueError as exc:
+            error = build_network_error(
+                exc,
+                operation=operation,
+                snapshot=snapshot,
+                error_code="network.retry_policy_invalid",
+            )
             return NetworkResult(
                 status="failed",
                 operation_id=operation.operation_id,
                 session_id=operation.session_id,
-                transport_error=f"network.retry_policy_invalid: {exc}",
+                transport_error=error.error_code,
+                error=error,
             )
 
         start_time = monotonic()
         can_retry = _retry_is_allowed(operation, snapshot, policy)
         result: NetworkResult | None = None
         for attempt_index in range(policy["max_attempts"]):
-            result = await self._adapter.execute_async(operation, snapshot)
+            result = _with_retry_attempt(
+                await self._adapter.execute_async(operation, snapshot),
+                operation=operation,
+                snapshot=snapshot,
+                retry_attempt=attempt_index + 1,
+            )
             if not can_retry or not _is_retryable_result(result, policy):
                 return result
             if attempt_index + 1 >= policy["max_attempts"]:

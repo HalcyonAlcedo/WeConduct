@@ -11,6 +11,7 @@ import httpx
 
 from .access_policy import NetworkAccessPolicy
 from .authentication import apply_static_auth
+from .errors import build_network_error
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
 from .resources import ResponseBodyStore
 from .proxy import ProxyResolver
@@ -102,27 +103,41 @@ class HttpxAdapter:
                         break
                     request_url = urljoin(request_url, redirect_target)
             else:
+                error = build_network_error(
+                    "network.too_many_redirects",
+                    operation=operation,
+                    snapshot=snapshot,
+                )
                 return NetworkResult(
                     status="failed",
                     operation_id=operation.operation_id,
                     session_id=operation.session_id,
-                    transport_error="network.too_many_redirects",
+                    transport_error=error.error_code,
+                    error=error,
                     duration_ms=(perf_counter() - started_at) * 1000,
                 )
         except asyncio.CancelledError:
+            error = build_network_error(
+                "network.cancelled",
+                operation=operation,
+                snapshot=snapshot,
+            )
             return NetworkResult(
                 status="failed",
                 operation_id=operation.operation_id,
                 session_id=operation.session_id,
-                transport_error="network.cancelled",
+                transport_error=error.error_code,
+                error=error,
                 duration_ms=(perf_counter() - started_at) * 1000,
             )
         except (httpx.HTTPError, ValueError) as exc:
+            error = build_network_error(exc, operation=operation, snapshot=snapshot)
             return NetworkResult(
                 status="failed",
                 operation_id=operation.operation_id,
                 session_id=operation.session_id,
-                transport_error=str(exc),
+                transport_error=error.error_code,
+                error=error,
                 duration_ms=(perf_counter() - started_at) * 1000,
             )
         return NetworkResult(

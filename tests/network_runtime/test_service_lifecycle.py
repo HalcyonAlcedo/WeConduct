@@ -125,6 +125,12 @@ def test_network_runtime_service_cancels_active_session_requests(tmp_path) -> No
 
     assert result.status == "failed"
     assert result.transport_error == "network.cancelled"
+    assert result.error is not None
+    assert result.error.error_code == "network.cancelled"
+    assert result.error.request_id is not None
+    assert result.error.request_id.startswith("request-cancel-")
+    assert result.error.network_context_id == "context-1"
+    assert result.error.retry_attempt == 1
 
 
 def test_network_runtime_service_reuses_its_single_async_client(tmp_path) -> None:
