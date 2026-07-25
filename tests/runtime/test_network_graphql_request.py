@@ -181,3 +181,39 @@ def test_network_graphql_subscription_uses_websocket_transport(monkeypatch) -> N
     assert connected["status"] == "succeeded"
     assert received["data"] == {"updates": [{"id": "1"}]}
     assert json.loads(FakeWebSocketClientHandle.instances[0].sent[0])["type"] == "connection_init"
+
+
+def test_network_graphql_subscription_failure_exposes_structured_network_error() -> None:
+    output = RuntimeExecutorRegistry().execute(
+        "network.graphql_request",
+        {
+            "node_id": "graphql-subscription-invalid",
+            "node_kind": "network.graphql_request",
+            "node_config": {"action": "connect", "connection_id": "subscription-1"},
+        },
+        RuntimeContext(),
+    )
+
+    assert output["status"] == "failed"
+    assert output["error_code"] == "network.graphql_endpoint_required"
+    assert output["network_error"]["request_id"] == output["request_id"]
+    assert output["network_error"]["node_id"] == "graphql-subscription-invalid"
+    assert output["network_error"]["details"] == {"action": "connect"}
+
+
+def test_network_graphql_request_validation_failure_exposes_structured_network_error() -> None:
+    output = RuntimeExecutorRegistry().execute(
+        "network.graphql_request",
+        {
+            "node_id": "graphql-request-invalid",
+            "node_kind": "network.graphql_request",
+            "node_config": {"query": "query Health { health }"},
+        },
+        RuntimeContext(),
+    )
+
+    assert output["status"] == "failed"
+    assert output["error_code"] == "network.graphql_endpoint_required"
+    assert output["network_error"]["request_id"] == output["request_id"]
+    assert output["network_error"]["node_id"] == "graphql-request-invalid"
+    assert output["network_error"]["network_context_id"] is None

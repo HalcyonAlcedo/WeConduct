@@ -41,6 +41,7 @@ from weconduct.network_runtime import (
     WebSocketClientHandle,
     execute_batch,
 )
+from weconduct.network_runtime.errors import build_network_error
 from weconduct.runtime.execution_context import ExecutionSessionContext, ExecutionTokenContext
 from weconduct.runtime.execution_envelope import ExecutionEnvelope, ExecutionEnvelopeError, FieldSchema
 from openpyxl import Workbook, load_workbook
@@ -729,6 +730,46 @@ class RuntimeExecutorRegistry:
         )
         return registry
 
+    def _failed_network_result(
+        self,
+        node: dict,
+        context: RuntimeContext,
+        error_code: str,
+        message: str,
+        *,
+        action: str,
+        snapshot: NetworkContextSnapshot | None = None,
+        url: str | None = None,
+    ) -> dict:
+        """为非 HTTP 网络节点补齐与 NetworkRuntimeService 一致的错误契约。"""
+        session_id = context.execution_session_context.session_id
+        operation = NetworkOperation(
+            operation_id=node["node_id"],
+            session_id=session_id,
+            method="CONNECT",
+            url=url or f"network://{node['node_id']}",
+            node_id=node["node_id"],
+        )
+        error_snapshot = snapshot or NetworkContextSnapshot(
+            context_id=context.execution_token_context.network_context_id,
+        )
+        network_error = build_network_error(
+            message,
+            operation=operation,
+            snapshot=error_snapshot,
+            error_code=error_code,
+            details={"action": action},
+        )
+        output = _failed_result(node, error_code, network_error.message)
+        output.update(
+            {
+                "request_id": operation.request_id,
+                "transport_error": network_error.error_code,
+                "network_error": network_error.to_dict(),
+            }
+        )
+        return output
+
     def _resolve_network_connection_snapshot(
         self,
         context: RuntimeContext,
@@ -1100,10 +1141,12 @@ class RuntimeExecutorRegistry:
             context,
         )
         if not isinstance(connection_id_value, str) or not connection_id_value.strip():
-            return _failed_result(
+            return self._failed_network_result(
                 node,
+                context,
                 "network.graphql_subscription_id_required",
                 "GraphQL subscription connection_id is required",
+                action=action,
             )
         connection_id = connection_id_value.strip()
         connections = self._network_connection_store(context)
@@ -1124,15 +1167,35 @@ class RuntimeExecutorRegistry:
                 context,
             )
             if not isinstance(endpoint, str) or not endpoint.strip():
-                return _failed_result(node, "network.graphql_endpoint_required", "GraphQL endpoint is required")
+                return self._failed_network_result(
+                    node,
+                    context,
+                    "network.graphql_endpoint_required",
+                    "GraphQL endpoint is required",
+                    action=action,
+                )
             if not isinstance(query, str) or not query.strip():
-                return _failed_result(node, "network.graphql_query_required", "GraphQL query is required")
+                return self._failed_network_result(
+                    node,
+                    context,
+                    "network.graphql_query_required",
+                    "GraphQL query is required",
+                    action=action,
+                    url=endpoint,
+                )
             if (
                 not isinstance(variables, dict)
                 or not isinstance(headers, dict)
                 or (proxy_config is not None and not isinstance(proxy_config, dict))
             ):
-                return _failed_result(node, "network.graphql_input_invalid", "GraphQL variables, headers and proxy must be objects")
+                return self._failed_network_result(
+                    node,
+                    context,
+                    "network.graphql_input_invalid",
+                    "GraphQL variables, headers and proxy must be objects",
+                    action=action,
+                    url=endpoint,
+                )
             try:
                 timeout_seconds = float(timeout_value)
                 request = GraphQLProtocolAdapter().build_subscription(
@@ -1180,7 +1243,15 @@ class RuntimeExecutorRegistry:
                     handle.close()  # type: ignore[has-type]
                 except UnboundLocalError:
                     pass
-                return _failed_result(node, "network.graphql_subscription_connect_failed", str(exc))
+                return self._failed_network_result(
+                    node,
+                    context,
+                    "network.graphql_subscription_connect_failed",
+                    str(exc),
+                    action=action,
+                    snapshot=locals().get("snapshot"),
+                    url=endpoint,
+                )
             existing = connections.get(key)
             if existing is not None:
                 try:
@@ -1198,10 +1269,12 @@ class RuntimeExecutorRegistry:
             }
         handle = connections.get(key)
         if not isinstance(handle, WebSocketClientHandle):
-            return _failed_result(
+            return self._failed_network_result(
                 node,
+                context,
                 "network.graphql_subscription_not_found",
                 "GraphQL subscription connection was not found",
+                action=action,
             )
         try:
             if action == "receive":
@@ -1261,16 +1334,34 @@ class RuntimeExecutorRegistry:
                     "action": "close",
                     "connection_id": connection_id,
                 }
-            return _failed_result(node, "network.graphql_subscription_action_invalid", f"unsupported GraphQL subscription action: {action}")
+            return self._failed_network_result(
+                node,
+                context,
+                "network.graphql_subscription_action_invalid",
+                f"unsupported GraphQL subscription action: {action}",
+                action=action,
+            )
         except (GraphQLAdapterError, TimeoutError, RuntimeError, ValueError) as exc:
-            return _failed_result(node, "network.graphql_subscription_operation_failed", str(exc))
+            return self._failed_network_result(
+                node,
+                context,
+                "network.graphql_subscription_operation_failed",
+                str(exc),
+                action=action,
+            )
 
     def _execute_network_sse_connect(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
         action = str(_resolve_value(node_config.get("action", "connect"), context)).strip().lower()
         connection_id = _resolve_value(node_config.get("connection_id", node["node_id"]), context)
         if not isinstance(connection_id, str) or not connection_id.strip():
-            return _failed_result(node, "network.sse_connection_id_required", "SSE connection_id is required")
+            return self._failed_network_result(
+                node,
+                context,
+                "network.sse_connection_id_required",
+                "SSE connection_id is required",
+                action=action,
+            )
         connection_id = connection_id.strip()
         connections = self._network_connection_store(context)
         if action == "connect":
@@ -1281,9 +1372,22 @@ class RuntimeExecutorRegistry:
             timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout", 30)), context)
             max_queue_size = _resolve_value(node_config.get("max_queue_size", 100), context)
             if not isinstance(url, str) or not url.strip():
-                return _failed_result(node, "network.sse_url_required", "SSE url is required")
+                return self._failed_network_result(
+                    node,
+                    context,
+                    "network.sse_url_required",
+                    "SSE url is required",
+                    action=action,
+                )
             if not isinstance(headers, dict) or not isinstance(params, dict) or (proxy_config is not None and not isinstance(proxy_config, dict)):
-                return _failed_result(node, "network.sse_headers_invalid", "SSE headers, params and proxy must be objects")
+                return self._failed_network_result(
+                    node,
+                    context,
+                    "network.sse_headers_invalid",
+                    "SSE headers, params and proxy must be objects",
+                    action=action,
+                    url=url,
+                )
             try:
                 timeout_seconds = float(timeout_value)
                 queue_size = int(max_queue_size)
@@ -1314,7 +1418,15 @@ class RuntimeExecutorRegistry:
                     handle.close()  # type: ignore[has-type]
                 except UnboundLocalError:
                     pass
-                return _failed_result(node, "network.sse_connect_failed", str(exc))
+                return self._failed_network_result(
+                    node,
+                    context,
+                    "network.sse_connect_failed",
+                    str(exc),
+                    action=action,
+                    snapshot=locals().get("snapshot"),
+                    url=url,
+                )
             existing = connections.get(("sse", connection_id))
             if existing is not None:
                 existing.close()
@@ -1328,7 +1440,13 @@ class RuntimeExecutorRegistry:
             }
         handle = connections.get(("sse", connection_id))
         if not isinstance(handle, SSEClientHandle):
-            return _failed_result(node, "network.sse_connection_not_found", "SSE connection was not found")
+            return self._failed_network_result(
+                node,
+                context,
+                "network.sse_connection_not_found",
+                "SSE connection was not found",
+                action=action,
+            )
         try:
             if action == "receive":
                 timeout_value = _resolve_value(node_config.get("timeout_seconds"), context)
@@ -1350,16 +1468,34 @@ class RuntimeExecutorRegistry:
                     "action": "close",
                     "connection_id": connection_id,
                 }
-            return _failed_result(node, "network.sse_action_invalid", f"unsupported SSE action: {action}")
+            return self._failed_network_result(
+                node,
+                context,
+                "network.sse_action_invalid",
+                f"unsupported SSE action: {action}",
+                action=action,
+            )
         except (TimeoutError, RuntimeError, ValueError) as exc:
-            return _failed_result(node, "network.sse_operation_failed", str(exc))
+            return self._failed_network_result(
+                node,
+                context,
+                "network.sse_operation_failed",
+                str(exc),
+                action=action,
+            )
 
     def _execute_network_websocket_connect(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
         action = str(_resolve_value(node_config.get("action", "connect"), context)).strip().lower()
         connection_id = _resolve_value(node_config.get("connection_id", node["node_id"]), context)
         if not isinstance(connection_id, str) or not connection_id.strip():
-            return _failed_result(node, "network.websocket_connection_id_required", "WebSocket connection_id is required")
+            return self._failed_network_result(
+                node,
+                context,
+                "network.websocket_connection_id_required",
+                "WebSocket connection_id is required",
+                action=action,
+            )
         connection_id = connection_id.strip()
         connections = self._network_connection_store(context)
         if action == "connect":
@@ -1369,9 +1505,22 @@ class RuntimeExecutorRegistry:
             timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout", 30)), context)
             subprotocols = _resolve_value(node_config.get("subprotocols", []), context)
             if not isinstance(url, str) or not url.strip():
-                return _failed_result(node, "network.websocket_url_required", "WebSocket url is required")
+                return self._failed_network_result(
+                    node,
+                    context,
+                    "network.websocket_url_required",
+                    "WebSocket url is required",
+                    action=action,
+                )
             if not isinstance(headers, dict) or not isinstance(subprotocols, list) or (proxy_config is not None and not isinstance(proxy_config, dict)):
-                return _failed_result(node, "network.websocket_input_invalid", "WebSocket headers, subprotocols and proxy are invalid")
+                return self._failed_network_result(
+                    node,
+                    context,
+                    "network.websocket_input_invalid",
+                    "WebSocket headers, subprotocols and proxy are invalid",
+                    action=action,
+                    url=url,
+                )
             try:
                 timeout_seconds = float(timeout_value)
                 snapshot = self._resolve_network_connection_snapshot(
@@ -1400,7 +1549,15 @@ class RuntimeExecutorRegistry:
                     handle.close()  # type: ignore[has-type]
                 except UnboundLocalError:
                     pass
-                return _failed_result(node, "network.websocket_connect_failed", str(exc))
+                return self._failed_network_result(
+                    node,
+                    context,
+                    "network.websocket_connect_failed",
+                    str(exc),
+                    action=action,
+                    snapshot=locals().get("snapshot"),
+                    url=url,
+                )
             existing = connections.get(("websocket", connection_id))
             if existing is not None:
                 existing.close()
@@ -1415,7 +1572,13 @@ class RuntimeExecutorRegistry:
             }
         handle = connections.get(("websocket", connection_id))
         if not isinstance(handle, WebSocketClientHandle):
-            return _failed_result(node, "network.websocket_connection_not_found", "WebSocket connection was not found")
+            return self._failed_network_result(
+                node,
+                context,
+                "network.websocket_connection_not_found",
+                "WebSocket connection was not found",
+                action=action,
+            )
         try:
             if action == "send":
                 handle.send(_resolve_value(node_config.get("value", node_config.get("message")), context))
@@ -1441,7 +1604,13 @@ class RuntimeExecutorRegistry:
                 if isinstance(value, str):
                     value = value.encode("utf-8")
                 if value is not None and not isinstance(value, bytes):
-                    return _failed_result(node, "network.websocket_ping_invalid", "WebSocket ping value must be bytes or text")
+                    return self._failed_network_result(
+                        node,
+                        context,
+                        "network.websocket_ping_invalid",
+                        "WebSocket ping value must be bytes or text",
+                        action=action,
+                    )
                 handle.ping(value)
                 return {
                     "status": "succeeded",
@@ -1458,9 +1627,21 @@ class RuntimeExecutorRegistry:
                     "action": "close",
                     "connection_id": connection_id,
                 }
-            return _failed_result(node, "network.websocket_action_invalid", f"unsupported WebSocket action: {action}")
+            return self._failed_network_result(
+                node,
+                context,
+                "network.websocket_action_invalid",
+                f"unsupported WebSocket action: {action}",
+                action=action,
+            )
         except (TimeoutError, RuntimeError, ValueError) as exc:
-            return _failed_result(node, "network.websocket_operation_failed", str(exc))
+            return self._failed_network_result(
+                node,
+                context,
+                "network.websocket_operation_failed",
+                str(exc),
+                action=action,
+            )
 
     def _execute_network_batch_request(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
@@ -1477,11 +1658,16 @@ class RuntimeExecutorRegistry:
 
         def execute_one(index: int, request_config: object) -> dict:
             if not isinstance(request_config, dict):
-                return {
-                    "status": "failed",
-                    "error_code": "network.batch_item_invalid",
-                    "message": "batch request item must be an object",
-                }
+                return self._failed_network_result(
+                    {
+                        "node_id": f"{node['node_id']}:{index}",
+                        "node_kind": "network.http_request",
+                    },
+                    context,
+                    "network.batch_item_invalid",
+                    "batch request item must be an object",
+                    action="batch",
+                )
             item_config = dict(request_config)
             if "context_strategy" not in item_config:
                 item_config["context_strategy"] = "fork" if parent_token.network_context_id else "new"
@@ -4446,12 +4632,35 @@ def _node_config(node: dict) -> dict:
 
 
 def _failed_result(node: dict, error_code: str, message: str) -> dict:
-    return {
+    output = {
         "status": "failed",
         "node_id": node["node_id"],
         "error_code": error_code,
         "message": message,
     }
+    if error_code.startswith("network."):
+        operation = NetworkOperation(
+            operation_id=node["node_id"],
+            session_id="runtime-node-error",
+            method="CONNECT",
+            url=f"network://{node['node_id']}",
+            node_id=node["node_id"],
+        )
+        network_error = build_network_error(
+            message,
+            operation=operation,
+            snapshot=NetworkContextSnapshot(context_id=None),
+            error_code=error_code,
+        )
+        output.update(
+            {
+                "message": network_error.message,
+                "request_id": operation.request_id,
+                "transport_error": network_error.error_code,
+                "network_error": network_error.to_dict(),
+            }
+        )
+    return output
 
 
 def _normalize_expected_status_codes(value: object) -> set[int] | None:

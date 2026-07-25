@@ -100,3 +100,21 @@ def test_network_batch_request_returns_item_failures_without_reordering() -> Non
     assert output["results"][1]["error_code"] == "network.connection_failed"
     assert output["results"][2]["status_code"] == 201
     assert output["failed_count"] == 1
+
+
+def test_network_batch_invalid_item_exposes_structured_network_error() -> None:
+    output = RuntimeExecutorRegistry().execute(
+        "network.batch_request",
+        {
+            "node_id": "batch-invalid-item",
+            "node_kind": "network.batch_request",
+            "node_config": {"requests": ["invalid item"]},
+        },
+        RuntimeContext(),
+    )
+
+    item = output["results"][0]
+    assert output["status"] == "failed"
+    assert item["error_code"] == "network.batch_item_invalid"
+    assert item["network_error"]["request_id"] == item["request_id"]
+    assert item["network_error"]["node_id"] == "batch-invalid-item:0"

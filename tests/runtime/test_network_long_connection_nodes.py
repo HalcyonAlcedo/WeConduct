@@ -142,6 +142,49 @@ def test_network_sse_connect_node_uses_network_runtime_service_snapshot() -> Non
     assert service.snapshots[0].context_id is not None
 
 
+def test_network_sse_connect_failure_exposes_structured_network_error() -> None:
+    output = RuntimeExecutorRegistry().execute(
+        "network.sse_connect",
+        {
+            "node_id": "sse-invalid-url",
+            "node_kind": "network.sse_connect",
+            "node_config": {"connection_id": "stream"},
+        },
+        RuntimeContext(),
+    )
+
+    assert output["status"] == "failed"
+    assert output["error_code"] == "network.sse_url_required"
+    assert output["request_id"]
+    assert output["network_error"] == {
+        "error_code": "network.sse_url_required",
+        "message": "SSE url is required",
+        "details": {"action": "connect"},
+        "request_id": output["request_id"],
+        "node_id": "sse-invalid-url",
+        "network_context_id": None,
+        "retry_attempt": 1,
+    }
+
+
+def test_network_websocket_failure_exposes_structured_network_error() -> None:
+    output = RuntimeExecutorRegistry().execute(
+        "network.websocket_connect",
+        {
+            "node_id": "websocket-invalid-url",
+            "node_kind": "network.websocket_connect",
+            "node_config": {"connection_id": "socket"},
+        },
+        RuntimeContext(),
+    )
+
+    assert output["status"] == "failed"
+    assert output["error_code"] == "network.websocket_url_required"
+    assert output["network_error"]["request_id"] == output["request_id"]
+    assert output["network_error"]["node_id"] == "websocket-invalid-url"
+    assert output["network_error"]["details"] == {"action": "connect"}
+
+
 def test_network_websocket_connect_node_supports_send_receive_ping_and_close() -> None:
     server = _WebSocketServer()
     context = RuntimeContext()
