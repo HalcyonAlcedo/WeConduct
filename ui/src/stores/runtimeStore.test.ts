@@ -562,6 +562,7 @@ describe('runtimeStore', () => {
     const { useRuntimeStore } = await import('./runtimeStore')
     const store = useRuntimeStore()
     store.setActiveRt(runningSession as any)
+    store.pendingParameterUnlockSessionId = 'rt-abort-1'
 
     expect(store.isRuntimeActive).toBe(true)
     expect(store.canAbortRuntime).toBe(true)
@@ -573,6 +574,7 @@ describe('runtimeStore', () => {
     expect(store.runtimeLiveStatus).toBe('aborted')
     expect(store.isRuntimeActive).toBe(false)
     expect(store.canAbortRuntime).toBe(false)
+    expect(store.pendingParameterUnlockSessionId).toBeNull()
   })
 
   it('rejects duplicate start while a runtime session is active', async () => {

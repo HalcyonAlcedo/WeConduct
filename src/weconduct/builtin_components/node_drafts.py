@@ -3058,6 +3058,7 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             "metadata": {},
             "metadata_schema": {},
             "data_fields": [],
+            "allow_sensitive_values": False,
         },
         "parameter_schema": {
             "code": {
@@ -3082,6 +3083,12 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
                 "type": "object",
                 "required": False,
                 "editor_kind": "json",
+                "path_kind": None,
+            },
+            "allow_sensitive_values": {
+                "type": "boolean",
+                "required": False,
+                "editor_kind": "checkbox",
                 "path_kind": None,
             },
         },
@@ -3586,6 +3593,33 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             "context_strategy": "inherit",
             "requests": [],
             "max_concurrency": 1,
+        },
+    },
+    "input.request": {
+        "lowered_kind": "execution",
+        "expansion_role": "input:request",
+        "ports": [
+            {"port_id": "in", "direction": "input", "relation_layer": "control", "semantic_slot": "in.control"},
+            {"port_id": "out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.control"},
+            {"port_id": "timed_out", "direction": "output", "relation_layer": "control", "semantic_slot": "out.timed_out"},
+        ],
+        "node_config": {
+            "fields": [],
+            "timeout_seconds": 0,
+        },
+        "parameter_schema": {
+            "fields": {
+                "type": "array",
+                "required": True,
+                "editor_kind": "input_request_fields",
+                "path_kind": None,
+            },
+            "timeout_seconds": {
+                "type": "number",
+                "required": False,
+                "editor_kind": "number",
+                "path_kind": None,
+            },
         },
     },
 }

@@ -56,6 +56,16 @@ from weconduct.runtime.captcha_ocr import (
 
 BROWSER_OBSERVATION_RECORD_LIMIT = 500
 _RUNTIME_RESPONSE_REFERENCE_MAX_BYTES = 4 * 1024 * 1024
+_STANDARD_SENSITIVE_CONSUMER_NODE_PREFIXES = (
+    "network.",
+    "browser.",
+    "file.",
+    "excel.",
+    "session.",
+    "dialog.",
+)
+_STANDARD_SENSITIVE_CONSUMER_ACTIVE_KEY = "standard_sensitive_consumer_active"
+_STANDARD_SENSITIVE_CONSUMED_VALUES_KEY = "standard_sensitive_consumed_values"
 
 
 class RuntimeCancellationError(Exception):
@@ -347,7 +357,30 @@ class RuntimeExecutorRegistry:
                 "node_id": node["node_id"],
                 "executor": "noop",
             }
-        return self._executors[node_kind](node, context)
+        executor = self._executors[node_kind]
+        if not node_kind.startswith(_STANDARD_SENSITIVE_CONSUMER_NODE_PREFIXES):
+            return executor(node, context)
+        previous_active = context.flow_runtime.get(_STANDARD_SENSITIVE_CONSUMER_ACTIVE_KEY)
+        previous_consumed_values = context.flow_runtime.get(_STANDARD_SENSITIVE_CONSUMED_VALUES_KEY)
+        context.flow_runtime[_STANDARD_SENSITIVE_CONSUMER_ACTIVE_KEY] = True
+        consumed_values: list[tuple[object, object]] = []
+        context.flow_runtime[_STANDARD_SENSITIVE_CONSUMED_VALUES_KEY] = consumed_values
+        try:
+            result = executor(node, context)
+            context.variables = _restore_standard_sensitive_runtime_value(
+                context.variables,
+                consumed_values,
+            )
+            return _restore_standard_sensitive_runtime_value(result, consumed_values)
+        finally:
+            if previous_active is None:
+                context.flow_runtime.pop(_STANDARD_SENSITIVE_CONSUMER_ACTIVE_KEY, None)
+            else:
+                context.flow_runtime[_STANDARD_SENSITIVE_CONSUMER_ACTIVE_KEY] = previous_active
+            if previous_consumed_values is None:
+                context.flow_runtime.pop(_STANDARD_SENSITIVE_CONSUMED_VALUES_KEY, None)
+            else:
+                context.flow_runtime[_STANDARD_SENSITIVE_CONSUMED_VALUES_KEY] = previous_consumed_values
 
     def _execute_flow_start(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
@@ -1799,7 +1832,8 @@ class RuntimeExecutorRegistry:
     def _execute_browser_fill(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
         selector = _resolve_value(node_config.get("selector"), context)
-        value = _resolve_value(node_config.get("value"), context)
+        configured_value = _resolve_value(node_config.get("value"), context)
+        value = _resolve_sensitive_runtime_value(configured_value, context)
         if not isinstance(selector, str) or not selector.strip():
             return _failed_result(node, "browser.selector_required", "selector is required")
         if not isinstance(value, str):
@@ -1810,7 +1844,7 @@ class RuntimeExecutorRegistry:
             "status": "succeeded",
             "node_id": node["node_id"],
             "selector": selector,
-            "value": value,
+            "value": configured_value,
             "page_url": _require_browser_page(context).url,
         }
 
@@ -5903,11 +5937,101 @@ async def _iter_multipart_upload_chunks(
 
 def _resolve_value(value: Any, context: RuntimeContext) -> Any:
     if isinstance(value, str):
-        return _resolve_string(value, context)
+        return _resolve_standard_sensitive_runtime_value(
+            _resolve_string(value, context),
+            context,
+        )
     if isinstance(value, list):
-        return [_resolve_value(item, context) for item in value]
+        return _resolve_standard_sensitive_runtime_value(
+            [_resolve_value(item, context) for item in value],
+            context,
+        )
     if isinstance(value, dict):
-        return {key: _resolve_value(item, context) for key, item in value.items()}
+        return _resolve_standard_sensitive_runtime_value(
+            {key: _resolve_value(item, context) for key, item in value.items()},
+            context,
+        )
+    return _resolve_standard_sensitive_runtime_value(value, context)
+
+
+def _resolve_sensitive_runtime_value(value: Any, context: RuntimeContext) -> Any:
+    """仅在受信任执行器调用外部能力前，将会话内敏感引用解引用为实际值。"""
+    from weconduct.application.sensitive_values.models import SensitiveConsumer, SensitiveRef
+
+    if not isinstance(value, SensitiveRef):
+        return value
+    sensitive_values = context.flow_runtime.get("sensitive_value_service")
+    if sensitive_values is None:
+        raise RuntimeError("runtime.sensitive_values_unavailable")
+    resolved = sensitive_values.resolve(
+        value,
+        consumer=SensitiveConsumer.RUNTIME_EXECUTOR,
+    )
+    consumed_values = context.flow_runtime.get(_STANDARD_SENSITIVE_CONSUMED_VALUES_KEY)
+    if isinstance(consumed_values, list):
+        consumed_values.append((value, resolved))
+    return resolved
+
+
+def _resolve_standard_sensitive_runtime_value(value: Any, context: RuntimeContext) -> Any:
+    """仅在标准内置能力节点的执行期递归解引用会话内敏感值。"""
+    if context.flow_runtime.get(_STANDARD_SENSITIVE_CONSUMER_ACTIVE_KEY) is not True:
+        return value
+    if isinstance(value, list):
+        return [_resolve_standard_sensitive_runtime_value(item, context) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_resolve_standard_sensitive_runtime_value(item, context) for item in value)
+    if isinstance(value, dict):
+        return {
+            key: _resolve_standard_sensitive_runtime_value(item, context)
+            for key, item in value.items()
+        }
+    return _resolve_sensitive_runtime_value(value, context)
+
+
+def _resolve_sensitive_runtime_structure(value: Any, context: RuntimeContext) -> Any:
+    if isinstance(value, list):
+        return [_resolve_sensitive_runtime_structure(item, context) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_resolve_sensitive_runtime_structure(item, context) for item in value)
+    if isinstance(value, dict):
+        return {
+            key: _resolve_sensitive_runtime_structure(item, context)
+            for key, item in value.items()
+        }
+    return _resolve_sensitive_runtime_value(value, context)
+
+
+def _restore_standard_sensitive_runtime_value(
+    value: Any,
+    consumed_values: list[tuple[object, object]],
+) -> Any:
+    from weconduct.application.sensitive_values.models import SensitiveRef
+
+    if isinstance(value, SensitiveRef):
+        return value
+    for ref, resolved in consumed_values:
+        if type(value) is type(resolved) and value == resolved:
+            return ref
+    if isinstance(value, list):
+        return [
+            _restore_standard_sensitive_runtime_value(item, consumed_values)
+            for item in value
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _restore_standard_sensitive_runtime_value(item, consumed_values)
+            for item in value
+        )
+    if isinstance(value, dict):
+        return {
+            key: _restore_standard_sensitive_runtime_value(item, consumed_values)
+            for key, item in value.items()
+        }
+    if isinstance(value, str):
+        for _, resolved in consumed_values:
+            if isinstance(resolved, str) and resolved:
+                value = value.replace(resolved, "<redacted>")
     return value
 
 
@@ -6409,6 +6533,7 @@ def _resolve_browser_launch_config(value: Any, context: RuntimeContext) -> dict[
     resolved = _resolve_value(value, context)
     if not isinstance(resolved, dict):
         return {}
+    resolved = _resolve_sensitive_runtime_structure(resolved, context)
     browser_config: dict[str, Any] = {}
     if "headless" in resolved:
         browser_config["headless"] = bool(resolved.get("headless"))

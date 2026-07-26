@@ -15,6 +15,10 @@ const apiMocks = vi.hoisted(() => ({
   postPythonRuntimeClear: vi.fn(),
   postPythonRuntimeExportBundle: vi.fn(),
   postSecurityEnableRequired: vi.fn(),
+  fetchEncryptedParameters: vi.fn(),
+  postEncryptedParameters: vi.fn(),
+  postRekeyEncryptedParameters: vi.fn(),
+  postDeleteEncryptedParameters: vi.fn(),
 }))
 
 vi.mock('@/services/api', () => ({
@@ -29,6 +33,10 @@ vi.mock('@/services/api', () => ({
   postPythonRuntimeClear: apiMocks.postPythonRuntimeClear,
   postPythonRuntimeExportBundle: apiMocks.postPythonRuntimeExportBundle,
   postSecurityEnableRequired: apiMocks.postSecurityEnableRequired,
+  fetchEncryptedParameters: apiMocks.fetchEncryptedParameters,
+  postEncryptedParameters: apiMocks.postEncryptedParameters,
+  postRekeyEncryptedParameters: apiMocks.postRekeyEncryptedParameters,
+  postDeleteEncryptedParameters: apiMocks.postDeleteEncryptedParameters,
 }))
 
 import ProjectSettingsPanel from './ProjectSettingsPanel.vue'
@@ -168,6 +176,7 @@ describe('ProjectSettingsPanel', () => {
     apiMocks.patchConfigValues.mockImplementation(async ({ scope }: { scope: string }) => (
       scope === 'project' ? buildProjectConfigResponse() : buildGraphConfigResponse()
     ))
+    apiMocks.fetchEncryptedParameters.mockResolvedValue({ configured: false, parameter_set_id: null, parameters: [] })
   })
 
   it('显示调试历史保留上限字段', async () => {
@@ -261,5 +270,18 @@ describe('ProjectSettingsPanel', () => {
     await nextTick()
     const compileCheckbox = wrapper.get('.psp-field input[type="checkbox"]')
     expect(compileCheckbox.attributes('disabled')).toBeDefined()
+  })
+
+  it('显示独立的加密参数设置入口，并且只使用密码控件录入值', async () => {
+    const { wrapper } = mountWithWorkspaceSnapshot()
+
+    await nextTick()
+    await Promise.resolve()
+    await nextTick()
+    await wrapper.get('.psp-nav-item:nth-child(6)').trigger('click')
+    await nextTick()
+
+    expect(wrapper.text()).toContain('加密参数')
+    expect(wrapper.findAll('input[type="password"]').length).toBeGreaterThan(0)
   })
 })

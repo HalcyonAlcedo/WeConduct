@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
+from pathlib import Path
 
 import weconduct.application.graph_upgrades as graph_upgrades
 from weconduct.application import CompilationWorkbenchService
@@ -9,8 +11,9 @@ from weconduct.application.graph_upgrades import (
     requires_current_network_http_contract_repair,
     upgrade_graph_payload,
 )
+from weconduct.application.workspace_state_store import FileWorkspaceStateStore
 from weconduct.builtin_components import get_graph_node_draft_definition
-from weconduct.contracts import GraphModel
+from weconduct.contracts import GraphModel, create_empty_graph_model
 import pytest
 
 
@@ -462,6 +465,129 @@ def test_workbench_rejects_legacy_force_load_bypass() -> None:
 
     with pytest.raises(ValueError, match="upgrade_and_load"):
         service.apply_pending_graph_upgrade(decision="force_load")
+
+
+def test_startup_restored_upgrade_uses_persisted_main_graph_instead_of_empty_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    workspace_state_path = tmp_path / "runtime" / "workspace-state.json"
+    state_store = FileWorkspaceStateStore(workspace_state_path)
+    service = CompilationWorkbenchService(state_store=state_store)
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-http",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-http",
+                    "expansion_role": "action:request",
+                    "node_kind": "http.request",
+                    "ports": [],
+                    "node_config": {"method": "GET", "url": "https://example.test"},
+                }
+            ],
+            "edges": [],
+            "root_metadata": {
+                "graph_compatibility": {
+                    "graph_data_version": "0.6.2",
+                    "built_with_app_version": "0.8.2",
+                    "minimum_loader_app_version": "0.5.2",
+                    "last_upgraded_by_app_version": "0.8.2",
+                    "upgrade_history": [],
+                }
+            },
+        }
+    )
+    project_path = tmp_path / "startup-upgrade.weconduct.json"
+    service.save_project_as(project_path=project_path)
+    sidecar_path = tmp_path / "startup-upgrade.weconduct.data" / "graphs" / "workspace.graph.json"
+    assert len(json.loads(sidecar_path.read_text(encoding="utf-8"))["nodes"]) == 1
+
+    stale_state = state_store.load()
+    assert stale_state is not None
+    stale_state["graph_document"] = create_empty_graph_model(
+        "graph:workspace", None
+    ).model_dump(mode="json")
+    stale_state["pending_graph_upgrade"] = None
+    state_store.save(stale_state)
+
+    reloaded = CompilationWorkbenchService(state_store=state_store)
+    assert reloaded.get_workbench_snapshot()["project"]["pending_graph_upgrade"] is not None
+    assert reloaded.get_graph_document()["graph_model"].nodes == []
+
+    reloaded.apply_pending_graph_upgrade(decision="upgrade_and_load")
+
+    persisted_graph = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert [node["node_kind"] for node in persisted_graph["nodes"]] == [
+        "network.http_request"
+    ]
+
+
+def test_pending_upgrade_rejects_unexpected_empty_result_without_overwriting_sidecar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    workspace_state_path = tmp_path / "runtime" / "workspace-state.json"
+    state_store = FileWorkspaceStateStore(workspace_state_path)
+    service = CompilationWorkbenchService(state_store=state_store)
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-http",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-http",
+                    "expansion_role": "action:request",
+                    "node_kind": "http.request",
+                    "ports": [],
+                    "node_config": {"method": "GET", "url": "https://example.test"},
+                }
+            ],
+            "edges": [],
+            "root_metadata": {
+                "graph_compatibility": {
+                    "graph_data_version": "0.6.2",
+                    "built_with_app_version": "0.8.2",
+                    "minimum_loader_app_version": "0.5.2",
+                    "last_upgraded_by_app_version": "0.8.2",
+                    "upgrade_history": [],
+                }
+            },
+        }
+    )
+    project_path = tmp_path / "guarded-upgrade.weconduct.json"
+    service.save_project_as(project_path=project_path)
+    sidecar_path = tmp_path / "guarded-upgrade.weconduct.data" / "graphs" / "workspace.graph.json"
+    original_sidecar = sidecar_path.read_text(encoding="utf-8")
+
+    stale_state = state_store.load()
+    assert stale_state is not None
+    stale_state["graph_document"] = create_empty_graph_model(
+        "graph:workspace", None
+    ).model_dump(mode="json")
+    stale_state["pending_graph_upgrade"] = None
+    state_store.save(stale_state)
+
+    reloaded = CompilationWorkbenchService(state_store=state_store)
+    monkeypatch.setattr(
+        reloaded,
+        "_resolve_pending_graph_upgrade_document_model",
+        lambda **_: create_empty_graph_model("graph:workspace", None),
+    )
+
+    with pytest.raises(ValueError, match="empty graph"):
+        reloaded.apply_pending_graph_upgrade(decision="upgrade_and_load")
+
+    assert sidecar_path.read_text(encoding="utf-8") == original_sidecar
 
 
 def test_upgrade_legacy_python_run_adds_dynamic_schema_defaults_without_changing_ports() -> None:

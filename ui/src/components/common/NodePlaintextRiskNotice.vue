@@ -1,6 +1,6 @@
 <template>
   <p class="node-plaintext-risk-notice" role="alert">
-    节点配置会随项目保存。请优先使用待输入或加密初始参数；直接保存明文认证信息仅适用于特殊需求。
+    敏感信息建议使用加密参数。
   </p>
 </template>
 

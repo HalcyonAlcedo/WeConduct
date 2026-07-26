@@ -5,6 +5,7 @@ import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useCompilationStore } from '@/stores/compilationStore'
 import { useResourceStore } from '@/stores/resourceStore'
 import NodePlaintextRiskNotice from '@/components/common/NodePlaintextRiskNotice.vue'
+import { isSensitiveNodeConfigurationField } from '@/security/nodeSensitiveConfiguration'
 import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
 import MonacoEditor from '@/components/input/MonacoEditor.vue'
 import { postFileDialog, postGraphNormalize } from '@/services/api'
@@ -48,7 +49,7 @@ const selectedNode = computed(() => selected.value.model?.nodes.find(n => n.node
 
 function kindLabel(k: string) { switch (k) { case 'execution': return t('framework.metadataEditor.kind.execution', '执行'); case 'control': return t('framework.metadataEditor.kind.control', '控制'); case 'observe': return t('framework.metadataEditor.kind.observe', '观察'); case 'bridge': return t('framework.metadataEditor.kind.bridge', '桥接'); default: return k } }
 
-interface ParamField { key: string; type: 'string' | 'number' | 'boolean' | 'json' | 'object-map' | 'typed-value' | 'branch-list' | 'code' | 'component-schema'; options?: string[] }
+interface ParamField { key: string; type: 'string' | 'number' | 'boolean' | 'json' | 'object-map' | 'typed-value' | 'branch-list' | 'code' | 'component-schema' | 'input-request-fields'; label?: string; options?: string[] }
 const PARAM_TEMPLATES: Record<string, ParamField[]> = {
   'data.get_text': [{ key: 'selector', type: 'string' }, { key: 'variable_name', type: 'string' }, { key: 'target_type', type: 'string', options: ['string', 'int', 'float', 'bool', 'json'] }],
   'data.get_attribute': [{ key: 'selector', type: 'string' }, { key: 'attribute', type: 'string' }, { key: 'variable_name', type: 'string' }],
@@ -62,7 +63,13 @@ const PARAM_TEMPLATES: Record<string, ParamField[]> = {
   'data.list_index': [{ key: 'variable_name', type: 'string' }, { key: 'value', type: 'typed-value' }, { key: 'output_variable_name', type: 'string' }],
   'browser.inject_js': [{ key: 'script', type: 'code' }],
   'browser.run_js': [{ key: 'script', type: 'code' }, { key: 'variable_name', type: 'string' }],
-  'python.run': [{ key: 'code', type: 'code' }],
+  'python.run': [
+    { key: 'allow_sensitive_values', type: 'boolean', label: '允许 Python 读取敏感输入' },
+    { key: 'input_schema', type: 'component-schema', label: 'Python 输入字段' },
+    { key: 'output_schema', type: 'component-schema', label: 'Python 输出字段' },
+    { key: 'metadata_schema', type: 'component-schema', label: 'Python 元数据字段' },
+    { key: 'code', type: 'code' },
+  ],
   'browser.extract_web_table': [{ key: 'selector', type: 'string' }, { key: 'variable_name', type: 'string' }],
   'browser.extract_web_table_to_excel': [{ key: 'selector', type: 'string' }, { key: 'path', type: 'string' }, { key: 'sheet_name', type: 'string' }],
   'session.apply_auth_session': [{ key: 'cookies', type: 'json' }, { key: 'local_storage', type: 'object-map' }],
@@ -76,6 +83,7 @@ const PARAM_TEMPLATES: Record<string, ParamField[]> = {
   'control.join': [{ key: 'branches', type: 'branch-list' }],
   'component.input': [{ key: 'inputs', type: 'component-schema' }, { key: 'share_parent_variables', type: 'boolean' }],
   'component.output': [{ key: 'outputs', type: 'component-schema' }],
+  'input.request': [{ key: 'fields', type: 'input-request-fields' }, { key: 'timeout_seconds', type: 'number' }],
 }
 
 const OBJECT_MAP_KEYS = new Set(['initial_variables', 'variables', 'inputs', 'outputs', 'local_storage'])
@@ -110,6 +118,37 @@ const objectMapFields = computed(() => {
 
 const objectMapTemplateKeys = computed(() => new Set(objectMapFields.value.map(f => f.key)))
 
+interface InputRequestField { field_id: string; label: string; type: string; sensitive: boolean; default_value?: string }
+function inputRequestFields(): InputRequestField[] {
+  const fields = selectedNode.value?.node_config?.fields
+  if (!Array.isArray(fields)) return []
+  return fields.filter((field: any) => field && typeof field === 'object').map((field: any) => ({
+    field_id: String(field.field_id || ''), label: String(field.label || ''), type: String(field.type || 'string'), sensitive: field.sensitive === true, default_value: field.default_value == null ? '' : String(field.default_value),
+  }))
+}
+function writeInputRequestFields(fields: InputRequestField[]) {
+  if (!workspace.isGraphEditable || !selectedNode.value) return
+  const normalized = fields.filter(field => field.field_id.trim()).map(field => {
+    const value: Record<string, unknown> = { field_id: field.field_id.trim(), label: field.label.trim() || field.field_id.trim(), type: field.type.trim() || 'string', sensitive: field.sensitive }
+    if (!field.sensitive && field.default_value) value.default_value = field.default_value
+    return value
+  })
+  const cfg = JSON.parse(JSON.stringify(selectedNode.value.node_config || {}))
+  cfg.fields = normalized
+  const existingPorts = selectedNode.value.ports || []
+  const portId = (slot: string, direction: string, fallback: string) => existingPorts.find((port: any) => port.direction === direction && port.semantic_slot === slot)?.port_id || fallback
+  const ports = [
+    { port_id: portId('in.control', 'input', 'in'), direction: 'input', relation_layer: 'control', semantic_slot: 'in.control' },
+    { port_id: portId('out.control', 'output', 'out'), direction: 'output', relation_layer: 'control', semantic_slot: 'out.control' },
+    { port_id: portId('out.timed_out', 'output', 'timed_out'), direction: 'output', relation_layer: 'control', semantic_slot: 'out.timed_out' },
+    ...normalized.map(field => ({ port_id: portId(`out.${field.field_id}`, 'output', `out:${field.field_id}`), direction: 'output', relation_layer: 'data', semantic_slot: `out.${field.field_id}`, display_name: field.label })),
+  ]
+  workspace.updateNode(selectedNode.value.node_id, { node_config: cfg, ports: ports as any })
+}
+function addInputRequestField() { const fields = inputRequestFields(); let index = fields.length + 1; while (fields.some(field => field.field_id === `field_${index}`)) index++; fields.push({ field_id: `field_${index}`, label: `Field ${index}`, type: 'string', sensitive: false, default_value: '' }); writeInputRequestFields(fields) }
+function updateInputRequestField(index: number, patch: Partial<InputRequestField>) { const fields = inputRequestFields(); fields[index] = { ...fields[index], ...patch }; if (fields[index].sensitive) fields[index].default_value = ''; writeInputRequestFields(fields) }
+function deleteInputRequestField(index: number) { const fields = inputRequestFields(); fields.splice(index, 1); writeInputRequestFields(fields) }
+
 const extraConfigSections = computed(() => {
   const cfg = selectedNode.value?.node_config || {}; const templateKeys = new Set(paramFields.value.map(f => f.key)); const sections: { section?: string; rows: { key: string; path: string; type: string; value: unknown }[] }[] = []
   for (const [k, v] of Object.entries(cfg)) { if (templateKeys.has(k) || objectMapTemplateKeys.value.has(k)) continue
@@ -136,6 +175,10 @@ function setCfgVal(key: string, val: unknown) {
   if (key.includes('.')) { const [p, s] = key.split('.'); if (!cfg[p] || typeof cfg[p] !== 'object') cfg[p] = {}; cfg[p][s] = val }
   else cfg[key] = val
   workspace.updateNode(selectedNode.value.node_id, { node_config: cfg })
+}
+
+function isSensitiveConfigurationField(fieldPath: string, value: unknown): boolean {
+  return isSensitiveNodeConfigurationField(selectedNode.value?.node_kind || '', fieldPath, value)
 }
 
 const debuggerCfg = computed(() => {
@@ -230,9 +273,10 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
         <div class="mep-row"><label>{{ t('framework.metadataEditor.grid.expansionRole', '扩展角色') }}</label><span>{{ selectedNode.expansion_role }}</span></div>
       </div>
       <div v-if="selectedNode.node_kind === 'graph.call_subgraph'" class="mep-section"><h5>{{ t('framework.metadataEditor.subgraph.title', '目标子图 Schema') }}</h5><div v-if="!targetSubgraph" class="mep-empty-cfg">{{ t('framework.metadataEditor.subgraph.notFound', '未找到目标子图资源') }}</div><template v-else><div class="mep-schema-block"><h6>{{ t('framework.metadataEditor.subgraph.inputSchema', '输入 Schema') }}</h6><div v-for="f in schemaFields(targetSubgraph.input_schema)" :key="f.key" class="mep-schema-row"><span class="mep-schema-key">{{ f.key }}</span><span class="mep-schema-type">{{ f.type }}</span><span v-if="f.required" class="mep-schema-req">{{ t('framework.metadataEditor.schema.required', '必填') }}</span></div></div><div class="mep-schema-block"><h6>{{ t('framework.metadataEditor.subgraph.outputSchema', '输出 Schema') }}</h6><div v-for="f in schemaFields(targetSubgraph.output_schema)" :key="f.key" class="mep-schema-row"><span class="mep-schema-key">{{ f.key }}</span><span class="mep-schema-type">{{ f.type }}</span></div></div></template></div>
-      <div class="mep-section"><h5>{{ t('framework.metadataEditor.config.title', '节点配置 (node_config)') }}</h5><NodePlaintextRiskNotice /><div class="mep-config">
+      <div class="mep-section"><h5>{{ t('framework.metadataEditor.config.title', '节点配置 (node_config)') }}</h5><div class="mep-config">
         <!-- Generic fields -->
-        <div v-for="f in paramFields.filter(p => p.type !== 'object-map' && p.type !== 'typed-value' && p.type !== 'branch-list' && p.type !== 'code' && p.type !== 'component-schema')" :key="f.key" class="mep-cfg-row"><label :title="f.key">{{ tr('nodegraph.base.field.' + f.key, f.key) }}</label>
+        <div v-if="selectedNode.node_kind === 'input.request'" class="mep-schema-block"><h6>{{ t('framework.metadataEditor.inputRequest.title', '输入字段') }}</h6><div v-for="(field, index) in inputRequestFields()" :key="index" class="mep-schema-row"><input class="mep-cfg-input" :value="field.field_id" :disabled="!workspace.isGraphEditable" @change="updateInputRequestField(index, { field_id: ($event.target as HTMLInputElement).value })" /><input class="mep-cfg-input" :value="field.label" :disabled="!workspace.isGraphEditable" @change="updateInputRequestField(index, { label: ($event.target as HTMLInputElement).value })" /><input class="mep-cfg-input" :value="field.type" :disabled="!workspace.isGraphEditable" @change="updateInputRequestField(index, { type: ($event.target as HTMLInputElement).value })" /><label><input type="checkbox" :checked="field.sensitive" :disabled="!workspace.isGraphEditable" @change="updateInputRequestField(index, { sensitive: ($event.target as HTMLInputElement).checked })" />{{ t('framework.metadataEditor.inputRequest.sensitive', '敏感') }}</label><input v-if="!field.sensitive" class="mep-cfg-input" :value="field.default_value || ''" :disabled="!workspace.isGraphEditable" @change="updateInputRequestField(index, { default_value: ($event.target as HTMLInputElement).value })" /><button class="mep-del-btn" :disabled="!workspace.isGraphEditable" @click="deleteInputRequestField(index)">✕</button></div><button class="mep-add-btn" :disabled="!workspace.isGraphEditable" @click="addInputRequestField">{{ t('framework.metadataEditor.inputRequest.add', '+ 新增字段') }}</button></div>
+        <div v-for="f in paramFields.filter(p => p.type !== 'object-map' && p.type !== 'typed-value' && p.type !== 'branch-list' && p.type !== 'code' && p.type !== 'component-schema' && p.type !== 'input-request-fields')" :key="f.key" class="mep-cfg-row"><label :title="f.key">{{ f.label || tr('nodegraph.base.field.' + f.key, f.key) }}</label>
           <span v-if="isFieldBound(f.key)" class="mep-bound">{{ getCfgVal(f.key) }} <em>⇠ {{ isFieldBound(f.key)!.nodeName }}:{{ isFieldBound(f.key)!.portId }}</em></span>
           <template v-else>
             <select v-if="f.options" class="mep-cfg-input" :value="String(getCfgVal(f.key) ?? f.options[0])" :disabled="!workspace.isGraphEditable" @change="setCfgVal(f.key, ($event.target as HTMLSelectElement).value)"><option v-for="o in f.options" :key="o" :value="o">{{ o }}</option></select>
@@ -241,6 +285,7 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
             <input v-else-if="f.type === 'boolean'" type="checkbox" :checked="!!getCfgVal(f.key)" :disabled="!workspace.isGraphEditable" @change="setCfgVal(f.key, ($event.target as HTMLInputElement).checked)" />
             <textarea v-else class="mep-cfg-textarea" :value="typeof getCfgVal(f.key) === 'object' ? JSON.stringify(getCfgVal(f.key), null, 2) : String(getCfgVal(f.key) ?? '')" :disabled="!workspace.isGraphEditable" @change="setJsonVal(f.key, ($event.target as HTMLTextAreaElement).value)" rows="3" />
           </template>
+          <NodePlaintextRiskNotice v-if="isSensitiveConfigurationField(f.key, getCfgVal(f.key))" />
         </div>
         <!-- Typed-value -->
         <div v-for="f in paramFields.filter(p => p.type === 'typed-value')" :key="f.key" class="mep-cfg-row"><label :title="f.key">{{ tr('nodegraph.base.field.' + f.key, f.key) }}</label>
@@ -257,7 +302,7 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
         <!-- Code -->
         <div v-for="f in paramFields.filter(p => p.type === 'code')" :key="f.key" class="mep-code-row"><label class="mep-code-label">{{ tr('nodegraph.base.field.' + f.key, f.key) }}</label><div class="mep-code-editor"><MonacoEditor :model-value="String(getCfgVal(f.key) ?? '')" :language="selectedNode?.node_kind === 'python.run' ? 'python' : 'javascript'" :read-only="!workspace.isGraphEditable" @update:model-value="setCfgVal(f.key, $event)" /></div></div>
         <!-- Component-schema -->
-        <template v-for="f in paramFields.filter(p => p.type === 'component-schema')" :key="f.key"><div class="mep-cfg-section">{{ tr('nodegraph.base.field.' + f.key, f.key) }}</div>
+        <template v-for="f in paramFields.filter(p => p.type === 'component-schema')" :key="f.key"><div class="mep-cfg-section">{{ f.label || tr('nodegraph.base.field.' + f.key, f.key) }}</div>
           <div v-for="(e, ei) in getSchemaEntries(f.key)" :key="ei" class="mep-cs-row">
             <input :value="e.name" class="mep-br-key" :placeholder="t('framework.metadataEditor.schema.fieldNamePlaceholder', '字段名')" :disabled="!workspace.isGraphEditable" @change="updateSchemaEntry(f.key, ei, { name: ($event.target as HTMLInputElement).value })" />
             <select class="mep-cfg-input" style="width:70px" v-model="e.type" :disabled="!workspace.isGraphEditable" @change="updateSchemaEntry(f.key, ei, { type: ($event.target as HTMLSelectElement).value })"><option value="string">string</option><option value="number">number</option><option value="boolean">boolean</option><option value="array">array</option><option value="object">object</option></select>
@@ -330,6 +375,7 @@ function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any
               <input v-else-if="f.type === 'boolean'" type="checkbox" :checked="!!f.value" :disabled="!workspace.isGraphEditable" @change="setCfgVal(f.path, ($event.target as HTMLInputElement).checked)" />
               <textarea v-else class="mep-cfg-textarea" :value="typeof f.value === 'object' ? JSON.stringify(f.value, null, 2) : String(f.value ?? '')" :disabled="!workspace.isGraphEditable" @change="setJsonVal(f.path, ($event.target as HTMLTextAreaElement).value)" rows="3" />
             </template>
+            <NodePlaintextRiskNotice v-if="isSensitiveConfigurationField(f.path, f.value)" />
           </div>
         </template>
         <div v-if="!paramFields.length && !extraConfigSections.length && !objectMapFields.length" class="mep-empty-cfg">{{ t('framework.metadataEditor.config.noParams', '无配置参数') }}</div>

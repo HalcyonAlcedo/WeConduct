@@ -366,6 +366,11 @@ export async function postPreferences(body: PreferencesUpdateRequest): Promise<P
 export async function postPreferencesPreview(body: { section: string; values: Record<string, unknown> }): Promise<{ section: string; current_values: Record<string, unknown>; proposed_values: Record<string, unknown>; confirmation_required: boolean; high_risk_changes: { field: string; from: unknown; to: unknown; reason: string }[] }> { const result = await request<any>('/workbench/config/preview', { method: 'POST', body: JSON.stringify({ scope: 'program', operations: configurationOperations(body.section, body.values) }) }); return { section: body.section, current_values: legacyPreferences(result.current_values).preferences[body.section] as Record<string, unknown>, proposed_values: legacyPreferences(result.proposed_values).preferences[body.section] as Record<string, unknown>, confirmation_required: result.confirmation_required, high_risk_changes: (result.high_risk_changes || []).map((item: any) => ({ field: String(item.path || '').split('/').pop() || '', from: item.from, to: item.to, reason: 'changes high-risk configuration' })) } }
 export async function postPreferencesReset(): Promise<PreferencesResponse> { const result = await request<ProgramConfigurationValues>('/workbench/config/reset', { method: 'POST', body: JSON.stringify({ scope: 'program' }) }); return legacyPreferences(result.values) }
 
+export type ExternalApiPreferences = { enabled: boolean; token_configured: boolean; project_allowed_roots: string[] }
+export type ExternalApiPreferencesUpdate = { enabled: boolean; token?: string; clear_token: boolean; project_allowed_roots: string[]; confirm_high_risk: boolean }
+export function fetchExternalApiPreferences(): Promise<ExternalApiPreferences> { return request('/workbench/preferences/external-api') }
+export function postExternalApiPreferences(body: ExternalApiPreferencesUpdate): Promise<ExternalApiPreferences> { return request('/workbench/preferences/external-api', { method: 'POST', body: JSON.stringify(body) }) }
+
 export function fetchConfigValues<TValues = Record<string, unknown>>(scope: 'program' | 'project' | 'graph'): Promise<ConfigValuesResponse<TValues>> {
   return request<ConfigValuesResponse<TValues>>(`/workbench/config/values?scope=${encodeURIComponent(scope)}`)
 }
@@ -421,6 +426,13 @@ export function fetchPackageInspect(packagePath: string): Promise<PackageInspect
 export function postPackageLoad(packagePath: string): Promise<PackageLoadResponse> { return request('/workbench/project/package/load', { method: 'POST', body: JSON.stringify({ package_path: packagePath }) }) }
 export function postPackageUnload(): Promise<{ status: string }> { return request('/workbench/project/package/unload', { method: 'POST', body: '{}' }) }
 export function postPackageBindExternal(body: { resource_id: string; value: string }): Promise<{ status: string }> { return request('/workbench/project/package/external-resources/bind', { method: 'POST', body: JSON.stringify(body) }) }
+
+export type EncryptedParameterDefinition = { parameter_id: string; name: string; type: string }
+export type EncryptedParameterSummary = { configured: boolean; parameter_set_id: string | null; parameters: EncryptedParameterDefinition[] }
+export function fetchEncryptedParameters(): Promise<EncryptedParameterSummary> { return request('/workbench/project/encrypted-parameters') }
+export function postEncryptedParameters(body: { parameter_set_id: string; parameters: EncryptedParameterDefinition[]; values: Record<string, unknown>; password: string; confirm_overwrite: boolean }): Promise<EncryptedParameterSummary> { return request('/workbench/project/encrypted-parameters', { method: 'POST', body: JSON.stringify(body) }) }
+export function postRekeyEncryptedParameters(body: { current_password: string; new_password: string }): Promise<EncryptedParameterSummary> { return request('/workbench/project/encrypted-parameters/rekey', { method: 'POST', body: JSON.stringify(body) }) }
+export function postDeleteEncryptedParameters(body: { confirm_delete: boolean }): Promise<EncryptedParameterSummary> { return request('/workbench/project/encrypted-parameters/delete', { method: 'POST', body: JSON.stringify(body) }) }
 
 // ===== 0.7-E: Python Runtime =====
 

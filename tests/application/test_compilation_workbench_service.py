@@ -6,7 +6,11 @@ from time import monotonic, sleep
 
 import weconduct.application.compilation_workbench_service as workbench_service_module
 from weconduct.application import CompilationWorkbenchService
-from weconduct.application.sensitive_values.encryption import encrypt_parameter_values
+from weconduct.application.sensitive_values.encryption import (
+    SensitiveUnlockError,
+    decrypt_parameter_values,
+    encrypt_parameter_values,
+)
 from weconduct.application.sensitive_values.models import SensitiveRef
 from weconduct.application.workspace_state_store import FileWorkspaceStateStore
 from weconduct.application.workspace_state_store import InMemoryWorkspaceStateStore
@@ -1889,6 +1893,99 @@ def test_runtime_session_projects_response_refs_before_file_state_persistence(
     assert "private-cookie" not in workspace_state_path.read_text(encoding="utf-8")
 
 
+def test_debug_session_projects_response_refs_before_file_state_persistence(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "runtime" / "workspace-state.json"
+    state_store = FileWorkspaceStateStore(workspace_state_path)
+    service = CompilationWorkbenchService(state_store=state_store)
+    service.save_graph_document(_build_python_only_workspace_graph())
+    project_path = tmp_path / "debug-response-ref.weconduct.json"
+    service.save_project_as(project_path=str(project_path))
+
+    start_result = service.start_debug_session(graph_document_payload=None)
+    session_id = start_result["debug_session"]["session_id"]
+    session_document = {
+        **start_result,
+        "variable_snapshot": {
+            "response": {
+                "body_ref": ResponseBodyRef(
+                    session_id=session_id,
+                    storage_kind="memory",
+                    size_bytes=7,
+                    content_type="application/json",
+                    _payload=b"private",
+                )
+            }
+        },
+    }
+
+    service._replace_debug_session_document(session_document)  # type: ignore[attr-defined]
+
+    persisted_session = next(
+        item
+        for item in state_store.load()["debug_sessions"]
+        if item["debug_session"]["session_id"] == session_id
+    )
+    assert persisted_session["variable_snapshot"]["response"]["body_ref"] == {
+        "kind": "network_response_body",
+        "storage_kind": "memory",
+        "size_bytes": 7,
+        "content_type": "application/json",
+    }
+
+
+def test_debug_worker_completes_when_runtime_values_contain_response_refs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_state_path = tmp_path / "runtime" / "workspace-state.json"
+    state_store = FileWorkspaceStateStore(workspace_state_path)
+    service = CompilationWorkbenchService(state_store=state_store)
+    service.save_graph_document(_build_python_only_workspace_graph())
+    service.save_project_as(project_path=str(tmp_path / "debug-response-worker.weconduct.json"))
+
+    def execute_with_response_ref(
+        *, executable_node: dict, runtime_context: object, executor_registry: object
+    ) -> dict:
+        output: dict = {
+            "status": "succeeded",
+            "node_id": executable_node["node_id"],
+        }
+        if executable_node["node_id"] == "node-run-python":
+            body_ref = ResponseBodyRef(
+                session_id=runtime_context.execution_session_context.session_id,
+                storage_kind="memory",
+                size_bytes=7,
+                content_type="application/json",
+                _payload=b"private",
+            )
+            output["body_ref"] = body_ref
+            runtime_context.variables["response"] = {"body_ref": body_ref}
+        runtime_context.node_outputs[executable_node["node_id"]] = output
+        return output
+
+    monkeypatch.setattr(service, "_execute_runtime_plan_node", execute_with_response_ref)
+
+    result = service.start_debug_session_async(
+        graph_document_payload=None,
+        settle_timeout_ms=1_000,
+    )
+
+    assert result["debug_session"]["status"] == "completed"
+    assert result["variable_snapshot"]["response"]["body_ref"] == {
+        "kind": "network_response_body",
+        "storage_kind": "memory",
+        "size_bytes": 7,
+        "content_type": "application/json",
+    }
+    assert not any(
+        item.get("category") == "debug.worker_failed"
+        for item in result["diagnostic_links"]
+    )
+    assert "private" not in workspace_state_path.read_text(encoding="utf-8")
+
+
 def test_workspace_state_keeps_recent_full_runtime_sessions_and_longer_history() -> None:
     service = CompilationWorkbenchService()
     session_ids: list[str] = []
@@ -2583,6 +2680,43 @@ def test_project_settings_persist_versioned_encrypted_parameter_set(tmp_path: Pa
     assert stored["envelope"]["parameter_set_id"] == "parameters-1"
     assert "test-secret" not in stored_text
     assert "correct-password" not in stored_text
+
+
+def test_project_encrypted_parameter_management_returns_only_summary_and_can_rekey_and_delete() -> None:
+    service = CompilationWorkbenchService()
+
+    created = service.configure_project_encrypted_parameters(
+        parameter_set_id="parameters-1",
+        parameters=[{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+        values={"api_key": "test-secret"},
+        password="old-password",
+        confirm_overwrite=False,
+    )
+    summary = service.get_project_encrypted_parameter_summary()
+    rekeyed = service.rekey_project_encrypted_parameters(
+        current_password="old-password",
+        new_password="new-password",
+    )
+
+    assert created == {
+        "configured": True,
+        "parameter_set_id": "parameters-1",
+        "parameters": [{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+    }
+    assert summary == created
+    assert rekeyed == created
+    assert "test-secret" not in repr(created)
+    rekeyed_envelope = service.get_project_settings_document()["project_settings"][
+        "encrypted_parameter_set"
+    ]["envelope"]
+    with pytest.raises(SensitiveUnlockError):
+        decrypt_parameter_values(rekeyed_envelope, password="old-password")
+    assert decrypt_parameter_values(rekeyed_envelope, password="new-password") == {
+        "api_key": "test-secret"
+    }
+    deleted = service.clear_project_encrypted_parameters(confirm_delete=True)
+    assert deleted == {"configured": False, "parameter_set_id": None, "parameters": []}
+    assert service.get_project_encrypted_parameter_summary() == deleted
 
 
 def test_runtime_session_unlocks_encrypted_parameter_refs_without_returning_values() -> None:

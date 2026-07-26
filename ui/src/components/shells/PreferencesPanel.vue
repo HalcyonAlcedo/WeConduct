@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, reactive, watch, onMounted } from 'vue'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
-import { postPreferences, postPreferencesReset, fetchPreferences, postPreferencesPreview, postFileDialog, fetchConfigValues, patchConfigValues, resetConfigValues, postOpenPath } from '@/services/api'
+import { postPreferences, postPreferencesReset, fetchPreferences, postPreferencesPreview, postFileDialog, fetchConfigValues, patchConfigValues, resetConfigValues, postOpenPath, fetchExternalApiPreferences, postExternalApiPreferences } from '@/services/api'
 import type { PreferencesUpdateRequest } from '@/types/domains/api'
 import { useToastStore } from '@/stores/toastStore'
 import { useThemeStore } from '@/stores/themeStore'
@@ -60,7 +60,7 @@ async function openDataDir() {
   }
 }
 
-interface FieldDef { key: string; label: string; type: 'text' | 'number' | 'bool' | 'select' | 'object' | 'json' | 'directory_list' | 'string_list' | 'font_scale' | 'language'; options?: string[]; hint?: string }
+interface FieldDef { key: string; label: string; type: 'text' | 'number' | 'bool' | 'select' | 'object' | 'json' | 'directory_list' | 'string_list' | 'font_scale' | 'language' | 'password'; options?: string[]; hint?: string }
 
 // Font scale presets: numeric multiplier (persisted) → percentage label (shown).
 const FONT_SCALE_PRESETS: { value: number; label: string }[] = [
@@ -85,6 +85,11 @@ const FIELD_DEFS = computed<Record<string, FieldDef[]>>(() => ({
   security: [
     { key: 'confirm_high_risk_actions', label: t('framework.preferences.security.confirmHighRiskActions', '确认高风险操作'), type: 'bool' }, { key: 'show_security_warnings_in_runtime', label: t('framework.preferences.security.showSecurityWarningsInRuntime', '运行时显示安全警告'), type: 'bool' },
     { key: 'log_security_events', label: t('framework.preferences.security.logSecurityEvents', '记录安全事件'), type: 'bool' },
+    { key: 'external_api_enabled', label: t('framework.preferences.security.externalApiEnabled', '启用外部 API'), type: 'bool' },
+    { key: 'external_api_token', label: t('framework.preferences.security.externalApiToken', '外部 API Token'), type: 'password', hint: t('framework.preferences.security.externalApiTokenHint', '已配置时不会回填；留空将保留当前 token。') },
+    { key: 'external_api_clear_token', label: t('framework.preferences.security.externalApiClearToken', '清除外部 API Token'), type: 'bool' },
+    { key: 'external_api_project_allowed_roots', label: t('framework.preferences.security.externalApiProjectRoots', '外部 API 项目目录'), type: 'directory_list' },
+    { key: 'encrypted_parameter_unlock_policy', label: t('framework.preferences.security.encryptedParameterUnlockPolicy', '加密参数解锁策略'), type: 'select', options: ['always_prompt'], hint: t('framework.preferences.security.encryptedParameterUnlockPolicyHint', '每次运行均要求输入密码。') },
     { key: 'allow_file_access', label: t('framework.preferences.security.allowFileAccess', '允许文件访问'), type: 'bool' }, { key: 'file_access_scope', label: t('framework.preferences.security.fileAccessScope', '文件访问范围'), type: 'select', options: ['restricted', 'custom_roots', 'allow_all'] },
     { key: 'file_access_require_absolute_path', label: t('framework.preferences.security.fileAccessRequireAbsolutePath', '要求绝对路径'), type: 'bool' },
     { key: 'file_access_allowed_roots', label: t('framework.preferences.security.fileAccessAllowedRoots', '允许访问目录'), type: 'directory_list', hint: t('framework.preferences.security.fileAccessAllowedRootsHint', '仅在 custom_roots 模式下生效') },
@@ -144,7 +149,13 @@ function initForm() {
     const next = Object.fromEntries(
       Object.entries(source).map(([key, value]) => [key, normalizePreferenceValue(value)]),
     )
-    if (section === 'security_settings') { next.file_access_allowed_roots = normalizeRoots(next.file_access_allowed_roots); next.file_access_blocked_roots = normalizeRoots(next.file_access_blocked_roots) }
+    if (section === 'security_settings') {
+      next.file_access_allowed_roots = normalizeRoots(next.file_access_allowed_roots)
+      next.file_access_blocked_roots = normalizeRoots(next.file_access_blocked_roots)
+      next.external_api_token = ''
+      next.external_api_clear_token = false
+      next.external_api_project_allowed_roots = normalizeRoots(next.external_api_project_allowed_roots)
+    }
     form[section] = next; saveState[section] = 'idle'; saveError[section] = ''
   }
   form.graph_settings = {
@@ -169,7 +180,20 @@ async function loadGraphPreferences() {
     }
   } catch {}
 }
-onMounted(async () => { initForm(); await loadGraphPreferences(); language.refreshAvailable().catch(() => {}) })
+async function loadExternalApiPreferences() {
+  try {
+    const externalApi = await fetchExternalApiPreferences()
+    form.security_settings = {
+      ...form.security_settings,
+      external_api_enabled: externalApi.enabled,
+      external_api_token: '',
+      external_api_token_configured: externalApi.token_configured,
+      external_api_clear_token: false,
+      external_api_project_allowed_roots: normalizeRoots(externalApi.project_allowed_roots),
+    }
+  } catch {}
+}
+onMounted(async () => { initForm(); await Promise.all([loadGraphPreferences(), loadExternalApiPreferences()]); language.refreshAvailable().catch(() => {}) })
 watch(() => workspace.snapshot?.preferences, () => initForm(), { deep: true })
 watch(() => (workspace.snapshot as any)?.graph_workspace?.graph_preferences, () => {
   form.graph_settings = {
@@ -207,6 +231,7 @@ async function doSave(section: string) {
     }
     const values = flattenForSave(section, form[section])
     if (section === 'security_settings') {
+      await saveExternalApiPreferences(false)
       try { const preview = await postPreferencesPreview({ section, values }); if (preview.confirmation_required && preview.high_risk_changes.length) { confirmDialog.value = { section, changes: preview.high_risk_changes }; saveState[section] = 'idle'; return } } catch {}
     }
     await postPreferences({ section, values } as PreferencesUpdateRequest)
@@ -249,6 +274,7 @@ async function confirmHighRiskSave() {
   confirmDialog.value = null
   saveState[section] = 'saving'
   try {
+    if (section === 'security_settings') await saveExternalApiPreferences(true)
     await postPreferences({ section, values: flattenForSave(section, form[section]), confirm_high_risk: true } as PreferencesUpdateRequest)
     saveState[section] = 'saved'
     setTimeout(() => { if (saveState[section] === 'saved') saveState[section] = 'idle' }, 2000)
@@ -271,6 +297,7 @@ async function confirmHighRiskSave() {
 function flattenForSave(section: string, vals: Record<string, any>): Record<string, unknown> {
   const r: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(vals)) {
+    if (section === 'security_settings' && ['external_api_enabled', 'external_api_token', 'external_api_token_configured', 'external_api_clear_token', 'external_api_project_allowed_roots'].includes(k)) continue
     if (k === 'default_window_size') { r[k] = { width: (v as any)?.width ?? 800, height: (v as any)?.height ?? 600 }; continue }
     if (section === 'security_settings' && k === 'file_access_allowed_roots') { r[k] = normalizeRoots(v); continue }
     if (section === 'security_settings' && k === 'file_access_blocked_roots') { r[k] = normalizeRoots(v); continue }
@@ -278,6 +305,27 @@ function flattenForSave(section: string, vals: Record<string, any>): Record<stri
     r[k] = v
   }
   return r
+}
+async function saveExternalApiPreferences(confirmHighRisk: boolean) {
+  const settings = form.security_settings
+  const token = typeof settings.external_api_token === 'string' && settings.external_api_token.trim()
+    ? settings.external_api_token.trim()
+    : undefined
+  const result = await postExternalApiPreferences({
+    enabled: !!settings.external_api_enabled,
+    token,
+    clear_token: !!settings.external_api_clear_token,
+    project_allowed_roots: normalizeRoots(settings.external_api_project_allowed_roots),
+    confirm_high_risk: confirmHighRisk,
+  })
+  form.security_settings = {
+    ...form.security_settings,
+    external_api_enabled: result.enabled,
+    external_api_token: '',
+    external_api_token_configured: result.token_configured,
+    external_api_clear_token: false,
+    external_api_project_allowed_roots: normalizeRoots(result.project_allowed_roots),
+  }
 }
 function normalizeGraphPreferences(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
@@ -366,7 +414,7 @@ const currentFields = computed(() => {
   const fields = FIELD_DEFS.value[active.value] || []
   const sectionState = (prefsState.value as any)?.[currentSection.value]
   if (!sectionState || typeof sectionState !== 'object') return fields
-  return fields.filter(field => sectionState[field.key] === 'active')
+  return fields.filter(field => field.key.startsWith('external_api_') || field.key === 'encrypted_parameter_unlock_policy' || sectionState[field.key] === 'active')
 })
 </script>
 <template>
@@ -379,6 +427,7 @@ const currentFields = computed(() => {
       <div v-for="f in currentFields" :key="f.key" class="pref-field" v-show="f.key !== 'file_access_allowed_roots' || isRootsFieldVisible()">
         <label class="pref-field-label">{{ f.label }}</label><div class="pref-field-ctl">
           <template v-if="f.type === 'bool'"><label class="pref-check-label"><input type="checkbox" :checked="!!getField(currentSection, f.key)" @change="toggleBool(currentSection, f.key)" />{{ getField(currentSection, f.key) ? t('framework.preferences.common.yes', '是') : t('framework.preferences.common.no', '否') }}</label></template>
+          <input v-else-if="f.type === 'password'" type="password" class="pref-input" :value="getField(currentSection, f.key) ?? ''" autocomplete="new-password" @input="setField(currentSection, f.key, ($event.target as HTMLInputElement).value)" />
           <input v-else-if="f.type === 'number'" type="number" class="pref-input pref-input-num" :value="getField(currentSection, f.key) ?? ''" @input="setField(currentSection, f.key, ($event.target as HTMLInputElement).valueAsNumber)" />
           <select v-else-if="f.type === 'select'" class="pref-input" :value="getField(currentSection, f.key) || f.options?.[0] || ''" @change="setField(currentSection, f.key, ($event.target as HTMLSelectElement).value)"><option v-for="o in f.options" :key="o" :value="o">{{ o }}</option></select>
           <select v-else-if="f.type === 'language'" class="pref-input" :value="getField(currentSection, f.key) || 'zh-CN'" @change="setField(currentSection, f.key, ($event.target as HTMLSelectElement).value)"><option v-for="o in languageOptionsFor(f.key)" :key="o.value" :value="o.value">{{ o.label }}</option></select>

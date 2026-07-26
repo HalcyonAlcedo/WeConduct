@@ -125,6 +125,30 @@ def test_input_request_is_registered_as_a_builtin_component() -> None:
     assert input_request["implementation_kind"] == "core_atomic"
 
 
+def test_input_request_draft_defines_field_schema_and_dynamic_output_ports() -> None:
+    service = CompilationWorkbenchService()
+
+    draft = service.build_graph_node_draft(resource_key="input.request", node_id="input-node")
+    node = draft["node"]
+    node["node_config"]["fields"] = [
+        {"field_id": "username", "label": "Username", "type": "string"},
+        {"field_id": "password", "label": "Password", "type": "string", "sensitive": True},
+    ]
+    normalized = service.normalize_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [node],
+            "edges": [],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+
+    assert draft["parameter_schema"]["fields"]["editor_kind"] == "input_request_fields"
+    assert {port.port_id for port in normalized["graph_model"].nodes[0].ports} == {"in", "out", "timed_out", "out:username", "out:password"}
+
+
 def _build_input_timeout_graph(
     *,
     default_value: object = None,

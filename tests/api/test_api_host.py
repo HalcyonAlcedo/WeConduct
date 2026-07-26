@@ -673,6 +673,48 @@ def test_api_exposes_runtime_abort_action(tmp_path: Path) -> None:
         server.server_close()
 
 
+def test_api_returns_unlock_required_run_state_as_a_successful_interaction_response(
+    tmp_path: Path,
+) -> None:
+    ui_dist_path = tmp_path / "ui-dist"
+    ui_dist_path.mkdir(parents=True)
+    (ui_dist_path / "index.html").write_text("<!doctype html><html></html>", encoding="utf-8")
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        ui_dist_path=ui_dist_path,
+    )
+    server.workbench_service = CompilationWorkbenchService()
+
+    def start_runtime_session_execution(*, session_id: str) -> dict:
+        return {
+            "status": "unlock_required",
+            "runtime_session": {
+                "session_id": session_id,
+                "status": "running",
+                "execution_supported": True,
+            },
+        }
+
+    server.workbench_service.start_runtime_session_execution = start_runtime_session_execution  # type: ignore[method-assign]
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        payload = _post_json(
+            f"{base_url}/api/workbench/runtime/runtime-session-1/run",
+            {},
+        )
+
+        assert payload["status"] == "unlock_required"
+        assert payload["runtime_session"]["session_id"] == "runtime-session-1"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_api_exposes_runtime_pending_input_and_parameter_unlock_actions(tmp_path: Path) -> None:
     ui_dist_path = tmp_path / "ui-dist"
     ui_dist_path.mkdir(parents=True)
@@ -2374,6 +2416,128 @@ def test_api_exposes_program_configuration_schema_and_patch(tmp_path: Path) -> N
         assert schema["scope"] == "program"
         assert any(domain["key"] == "security" for domain in schema["domains"])
         assert updated["values"]["updates"]["check_updates_on_startup"] is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_api_redacts_external_api_token_from_generic_configuration_and_snapshot(
+    tmp_path: Path,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        secret = "test-external-api-token"
+        updated = _patch_json(
+            f"{base_url}/api/workbench/config/values",
+            {
+                "scope": "program",
+                "confirm_high_risk": True,
+                "operations": [
+                    {
+                        "op": "replace",
+                        "path": "/security/external_api_token",
+                        "value": secret,
+                    }
+                ],
+            },
+        )
+        values = _get_json(f"{base_url}/api/workbench/config/values?scope=program")
+        snapshot = _get_json(f"{base_url}/api/workbench/snapshot")
+
+        for payload in (updated, values, snapshot):
+            serialized = json.dumps(payload)
+            assert secret not in serialized
+        assert updated["values"]["security"]["external_api_token_configured"] is True
+        assert values["values"]["security"]["external_api_token_configured"] is True
+        assert snapshot["preferences"]["security_settings"]["external_api_token_configured"] is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_api_updates_external_api_preferences_without_returning_token(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        secret = "test-external-api-token"
+        updated = _post_json(
+            f"{base_url}/api/workbench/preferences/external-api",
+            {
+                "enabled": True,
+                "token": secret,
+                "project_allowed_roots": [str(tmp_path / "projects")],
+                "confirm_high_risk": True,
+            },
+        )
+        fetched = _get_json(f"{base_url}/api/workbench/preferences/external-api")
+
+        assert updated == fetched
+        assert updated == {
+            "enabled": True,
+            "token_configured": True,
+            "project_allowed_roots": [str((tmp_path / "projects").resolve())],
+        }
+        assert secret not in json.dumps(updated)
+        assert server.external_api_enabled is True
+        assert server.external_api_token == secret
+        assert server.external_api_project_allowed_roots == ((tmp_path / "projects").resolve(),)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_api_manages_project_encrypted_parameters_through_redacted_summary(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        secret = "test-secret"
+        created = _post_json(
+            f"{base_url}/api/workbench/project/encrypted-parameters",
+            {
+                "parameter_set_id": "parameters-1",
+                "parameters": [{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+                "values": {"api_key": secret},
+                "password": "old-password",
+                "confirm_overwrite": False,
+            },
+        )
+        fetched = _get_json(f"{base_url}/api/workbench/project/encrypted-parameters")
+
+        assert created == fetched
+        assert created == {
+            "configured": True,
+            "parameter_set_id": "parameters-1",
+            "parameters": [{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+        }
+        assert secret not in json.dumps(created)
     finally:
         server.shutdown()
         thread.join(timeout=5)

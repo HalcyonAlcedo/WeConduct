@@ -399,16 +399,18 @@ class PinnedDnsAsyncHTTPTransport(httpx.AsyncHTTPTransport):
         target_host = request.url.host
         target_port = request.url.port
         connect_port = target_port or (443 if request.url.scheme == "https" else 80)
-        resolved_target = request.extensions.get("weconduct.resolved_network_target")
-        if (
-            isinstance(resolved_target, ResolvedNetworkTarget)
-            and resolved_target.hostname == target_host.lower()
-            and resolved_target.port == connect_port
-        ):
-            addresses = resolved_target.addresses
-        else:
-            addresses = self._access_policy.resolve_connect_addresses(target_host, connect_port)
         uses_proxy = getattr(self, "_uses_proxy", False)
+        addresses: tuple[str, ...] = ()
+        if not uses_proxy:
+            resolved_target = request.extensions.get("weconduct.resolved_network_target")
+            if (
+                isinstance(resolved_target, ResolvedNetworkTarget)
+                and resolved_target.hostname == target_host.lower()
+                and resolved_target.port == connect_port
+            ):
+                addresses = resolved_target.addresses
+            else:
+                addresses = self._access_policy.resolve_connect_addresses(target_host, connect_port)
         backend = getattr(self, "_validated_network_backend", None)
         if not uses_proxy and isinstance(backend, ValidatedNetworkBackend):
             backend.set_pinned_addresses(
@@ -421,7 +423,7 @@ class PinnedDnsAsyncHTTPTransport(httpx.AsyncHTTPTransport):
             method=request.method,
             url=httpcore.URL(
                 scheme=request.url.raw_scheme,
-                host=addresses[0].encode("ascii") if uses_proxy else request.url.raw_host,
+                host=request.url.raw_host,
                 port=target_port,
                 target=request.url.raw_path,
             ),
@@ -465,16 +467,18 @@ class PinnedDnsHTTPTransport(httpx.HTTPTransport):
         target_host = request.url.host
         target_port = request.url.port
         connect_port = target_port or (443 if request.url.scheme == "https" else 80)
-        resolved_target = request.extensions.get("weconduct.resolved_network_target")
-        if (
-            isinstance(resolved_target, ResolvedNetworkTarget)
-            and resolved_target.hostname == target_host.lower()
-            and resolved_target.port == connect_port
-        ):
-            addresses = resolved_target.addresses
-        else:
-            addresses = self._access_policy.resolve_connect_addresses(target_host, connect_port)
         uses_proxy = getattr(self, "_uses_proxy", False)
+        addresses: tuple[str, ...] = ()
+        if not uses_proxy:
+            resolved_target = request.extensions.get("weconduct.resolved_network_target")
+            if (
+                isinstance(resolved_target, ResolvedNetworkTarget)
+                and resolved_target.hostname == target_host.lower()
+                and resolved_target.port == connect_port
+            ):
+                addresses = resolved_target.addresses
+            else:
+                addresses = self._access_policy.resolve_connect_addresses(target_host, connect_port)
         backend = getattr(self, "_validated_network_backend", None)
         if not uses_proxy and isinstance(backend, ValidatedSyncNetworkBackend):
             backend.set_pinned_addresses(
@@ -486,7 +490,7 @@ class PinnedDnsHTTPTransport(httpx.HTTPTransport):
             method=request.method,
             url=httpcore.URL(
                 scheme=request.url.raw_scheme,
-                host=addresses[0].encode("ascii") if uses_proxy else request.url.raw_host,
+                host=request.url.raw_host,
                 port=target_port,
                 target=request.url.raw_path,
             ),

@@ -139,6 +139,10 @@ network_runtime_submodules: dict[str, set[str]] = {
         "python_socks.async_.asyncio._proxy",
     },
 }
+application_hiddenimports: list[str] = [
+    # application.__init__ uses importlib for the public UpdateService export.
+    "weconduct.application.update_service",
+]
 network_hiddenimports: list[str] = [
     "weconduct.network_runtime.windows_proxy_worker",
 ]
@@ -160,7 +164,12 @@ a = Analysis(
     pathex=[str(root / "src")],
     binaries=network_binaries,
     datas=datas,
-    hiddenimports=["weconduct.cli.main", "webview", *network_hiddenimports],
+    hiddenimports=[
+        "weconduct.cli.main",
+        "webview",
+        *application_hiddenimports,
+        *network_hiddenimports,
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[str(root / "packaging" / "pyinstaller" / "desktop_shell_runtime_hook.py")],

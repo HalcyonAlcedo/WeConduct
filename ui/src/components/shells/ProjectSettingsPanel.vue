@@ -3,6 +3,8 @@ import { ref, reactive, onMounted, computed, watch, toRaw } from 'vue'
 import { fetchConfigValues, patchConfigValues, fetchPythonRuntime, postOpenPath, postFileDialog,
   postPythonRuntimeHealthCheck, postPythonRuntimePrepare, postPythonRuntimeRebuild,
   postPythonRuntimeClear, postPythonRuntimeExportBundle, postSecurityEnableRequired,
+  fetchEncryptedParameters, postEncryptedParameters, postRekeyEncryptedParameters,
+  postDeleteEncryptedParameters,
 } from '@/services/api'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useToastStore } from '@/stores/toastStore'
@@ -21,7 +23,7 @@ import type {
 const workspace = useWorkspaceStore()
 const toast = useToastStore()
 
-const active = ref<'identity' | 'runtime' | 'packaging' | 'compile' | 'pythonRuntime' | 'status'>('identity')
+const active = ref<'identity' | 'runtime' | 'packaging' | 'compile' | 'pythonRuntime' | 'encryptedParameters' | 'status'>('identity')
 const loading = ref(false)
 const saveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 
@@ -64,6 +66,16 @@ const actionLoading = ref<string | null>(null)
 
 const secSummary = ref<SecurityRequirementSummary | null>(null)
 const secEnabling = ref(false)
+
+interface EncryptedParameterEditorRow { parameter_id: string; name: string; type: string; value: string }
+const encryptedParameterSummary = ref({ configured: false, parameter_set_id: null as string | null, parameters: [] as { parameter_id: string; name: string; type: string }[] })
+const encryptedParameterSetId = ref('parameters-1')
+const encryptedParameterRows = reactive<EncryptedParameterEditorRow[]>([])
+const encryptedParameterPassword = ref('')
+const encryptedParameterCurrentPassword = ref('')
+const encryptedParameterNewPassword = ref('')
+const encryptedParameterOverwriteConfirmed = ref(false)
+const encryptedParameterDeleteConfirmed = ref(false)
 
 const settings = reactive<ProjectSettingsEditorModel>({
   project_settings_schema_version: 1,
@@ -184,6 +196,71 @@ function applyPythonRuntimeCapabilities(response: PythonRuntimeGetResponse) {
   }
 }
 
+function applyEncryptedParameterSummary(summary: { configured: boolean; parameter_set_id: string | null; parameters: { parameter_id: string; name: string; type: string }[] }) {
+  encryptedParameterSummary.value = summary
+  encryptedParameterSetId.value = summary.parameter_set_id || 'parameters-1'
+  encryptedParameterRows.splice(0, encryptedParameterRows.length, ...summary.parameters.map(parameter => ({ ...parameter, value: '' })))
+  encryptedParameterPassword.value = ''
+  encryptedParameterCurrentPassword.value = ''
+  encryptedParameterNewPassword.value = ''
+  encryptedParameterOverwriteConfirmed.value = false
+  encryptedParameterDeleteConfirmed.value = false
+}
+
+function addEncryptedParameter() {
+  encryptedParameterRows.push({ parameter_id: '', name: '', type: 'string', value: '' })
+}
+
+function removeEncryptedParameter(index: number) {
+  encryptedParameterRows.splice(index, 1)
+}
+
+async function saveEncryptedParameters() {
+  if (isWcrun.value) return
+  try {
+    const parameters = encryptedParameterRows.map(({ parameter_id, name, type }) => ({ parameter_id, name, type }))
+    const values = Object.fromEntries(encryptedParameterRows.map(row => [row.parameter_id, row.value]))
+    const summary = await postEncryptedParameters({
+      parameter_set_id: encryptedParameterSetId.value,
+      parameters,
+      values,
+      password: encryptedParameterPassword.value,
+      confirm_overwrite: encryptedParameterSummary.value.configured && encryptedParameterOverwriteConfirmed.value,
+    })
+    applyEncryptedParameterSummary(summary)
+    await workspace.refreshSnapshot()
+    toast.success(t('framework.projectSettings.encryptedParameters.saved', '加密参数已保存'))
+  } catch (e: any) {
+    toast.error(t('framework.projectSettings.encryptedParameters.saveFailed', '保存加密参数失败'), e?.message)
+  }
+}
+
+async function rekeyEncryptedParameters() {
+  if (isWcrun.value) return
+  try {
+    const summary = await postRekeyEncryptedParameters({
+      current_password: encryptedParameterCurrentPassword.value,
+      new_password: encryptedParameterNewPassword.value,
+    })
+    applyEncryptedParameterSummary(summary)
+    toast.success(t('framework.projectSettings.encryptedParameters.rekeyed', '加密参数密码已更新'))
+  } catch (e: any) {
+    toast.error(t('framework.projectSettings.encryptedParameters.rekeyFailed', '更新加密参数密码失败'), e?.message)
+  }
+}
+
+async function deleteEncryptedParameters() {
+  if (isWcrun.value || !encryptedParameterDeleteConfirmed.value) return
+  try {
+    const summary = await postDeleteEncryptedParameters({ confirm_delete: true })
+    applyEncryptedParameterSummary(summary)
+    await workspace.refreshSnapshot()
+    toast.success(t('framework.projectSettings.encryptedParameters.deleted', '加密参数已删除'))
+  } catch (e: any) {
+    toast.error(t('framework.projectSettings.encryptedParameters.deleteFailed', '删除加密参数失败'), e?.message)
+  }
+}
+
 function projectOperations(): ConfigPatchOperation[] {
   syncVars()
   const pythonRuntimeProfile = editablePythonProfileValue()
@@ -225,14 +302,16 @@ function graphRuntimeOperations(): ConfigPatchOperation[] {
 async function load() {
   loading.value = true
   try {
-    const [projectResult, graphResult, pythonRuntimeResult] = await Promise.all([
+    const [projectResult, graphResult, pythonRuntimeResult, encryptedParameterResult] = await Promise.all([
       fetchConfigValues<ProjectConfigValues>('project'),
       fetchConfigValues<GraphConfigValues>('graph'),
       fetchPythonRuntime(),
+      fetchEncryptedParameters(),
     ])
     applyProjectConfig(projectResult.values || {})
     applyGraphConfig(graphResult.values || {})
     applyPythonRuntimeCapabilities(pythonRuntimeResult)
+    applyEncryptedParameterSummary(encryptedParameterResult)
     secSummary.value = (workspace.snapshot as any)?.security_requirement_summary || null
     saveState.value = 'idle'
   } catch (e: any) {
@@ -365,7 +444,7 @@ async function enableSecurityRequirements() {
 }
 
 // computed (not const) so nav labels re-localize live on UI language change.
-const NAV = computed<{ key: typeof active.value; label: string }[]>(() => [{ key: 'identity', label: t('framework.projectSettings.nav.identity', '项目信息') }, { key: 'runtime', label: t('framework.projectSettings.nav.runtime', '运行默认值') }, { key: 'packaging', label: t('framework.projectSettings.nav.packaging', '资源与打包') }, { key: 'compile', label: t('framework.projectSettings.nav.compile', '编译规则') }, { key: 'pythonRuntime', label: t('framework.projectSettings.nav.pythonRuntime', 'Python 运行时') }, { key: 'status', label: t('framework.projectSettings.nav.status', '状态与诊断') }])
+const NAV = computed<{ key: typeof active.value; label: string }[]>(() => [{ key: 'identity', label: t('framework.projectSettings.nav.identity', '项目信息') }, { key: 'runtime', label: t('framework.projectSettings.nav.runtime', '运行默认值') }, { key: 'packaging', label: t('framework.projectSettings.nav.packaging', '资源与打包') }, { key: 'compile', label: t('framework.projectSettings.nav.compile', '编译规则') }, { key: 'pythonRuntime', label: t('framework.projectSettings.nav.pythonRuntime', 'Python 运行时') }, { key: 'encryptedParameters', label: t('framework.projectSettings.nav.encryptedParameters', '加密参数') }, { key: 'status', label: t('framework.projectSettings.nav.status', '状态与诊断') }])
 
 onMounted(load)
 watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) load() })
@@ -416,6 +495,7 @@ watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) lo
         <template v-else-if="active === 'packaging'">
           <h5>{{ t('framework.projectSettings.packaging.title', '打包设置') }}</h5>
           <div class="psp-field"><label>{{ t('framework.projectSettings.packaging.defaultOutputName', '默认输出名') }}</label><input v-model="settings.packaging.default_output_name" class="psp-input" placeholder="demo.wcrun" :disabled="sectionReadonly" /></div>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.packaging.includeEmbeddedResources', '包含嵌入资源') }}</label><input type="checkbox" v-model="settings.packaging.include_embedded_resources" :disabled="sectionReadonly" /></div>
           <h5 style="margin-top:14px">{{ t('framework.projectSettings.packaging.externalResources', 'External 资源') }}</h5>
           <div v-if="!settings.external_resources.length && !sectionReadonly" class="psp-empty">{{ t('framework.projectSettings.packaging.noExternal', '暂无 external 资源声明') }}</div>
           <div v-for="(er, i) in settings.external_resources" :key="i" class="psp-var-row"><input :value="(er as any).resource_id || (er as any).bind_key || ''" class="psp-input" placeholder="resource_id" style="width:100px" :disabled="sectionReadonly" @change="(er as any).resource_id = ($event.target as HTMLInputElement).value" /><input :value="(er as any).kind || ''" class="psp-input" placeholder="kind" style="width:70px" :disabled="sectionReadonly" @change="(er as any).kind = ($event.target as HTMLInputElement).value" /><input :value="(er as any).description || ''" class="psp-input" :placeholder="t('framework.projectSettings.packaging.descriptionPlaceholder', '描述')" style="flex:1" :disabled="sectionReadonly" @change="(er as any).description = ($event.target as HTMLInputElement).value" /><button v-if="!sectionReadonly" class="psp-rm" @click="settings.external_resources.splice(i,1)">✕</button></div>
@@ -554,6 +634,29 @@ watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) lo
           <div v-if="isWcrun" class="psp-field-hint">{{ t('framework.projectSettings.pythonRuntime.hintWcrun', '📦 .wcrun 包已加载 — Python 运行时设置与操作均不可用') }}</div>
           <div v-else-if="!pythonProfile.runtime_enabled" class="psp-field-hint">{{ t('framework.projectSettings.pythonRuntime.hintEnableFirst', '启用运行时后，操作按钮可用') }}</div>
           <div v-else-if="pythonProfile.package_embed_mode === 'none'" class="psp-field-hint">{{ t('framework.projectSettings.pythonRuntime.hintExportUnavailable', '包嵌入模式为 "none" 时，导出不可用') }}</div>
+        </template>
+        <template v-else-if="active === 'encryptedParameters'">
+          <h5>{{ t('framework.projectSettings.encryptedParameters.title', '加密参数') }}</h5>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.encryptedParameters.setId', '集合 ID') }}</label><input v-model="encryptedParameterSetId" class="psp-input" :disabled="sectionReadonly" /></div>
+          <div v-for="(parameter, index) in encryptedParameterRows" :key="index" class="psp-var-row">
+            <input v-model="parameter.parameter_id" class="psp-input" :placeholder="t('framework.projectSettings.encryptedParameters.parameterId', '参数 ID')" :disabled="sectionReadonly" />
+            <input v-model="parameter.name" class="psp-input" :placeholder="t('framework.projectSettings.encryptedParameters.name', '名称')" :disabled="sectionReadonly" />
+            <input v-model="parameter.type" class="psp-input" :placeholder="t('framework.projectSettings.encryptedParameters.type', '类型')" :disabled="sectionReadonly" />
+            <input v-model="parameter.value" type="password" class="psp-input" autocomplete="new-password" :placeholder="t('framework.projectSettings.encryptedParameters.value', '值')" :disabled="sectionReadonly" />
+            <button class="psp-rm" type="button" :disabled="sectionReadonly" @click="removeEncryptedParameter(index)">✕</button>
+          </div>
+          <button class="psp-add" type="button" :disabled="sectionReadonly" @click="addEncryptedParameter">{{ t('framework.projectSettings.encryptedParameters.add', '+ 新增参数') }}</button>
+          <div class="psp-field"><label>{{ t('framework.projectSettings.encryptedParameters.password', '加密密码') }}</label><input v-model="encryptedParameterPassword" type="password" class="psp-input" autocomplete="new-password" :disabled="sectionReadonly" /></div>
+          <div v-if="encryptedParameterSummary.configured" class="psp-field"><label>{{ t('framework.projectSettings.encryptedParameters.confirmOverwrite', '确认覆盖') }}</label><input v-model="encryptedParameterOverwriteConfirmed" type="checkbox" :disabled="sectionReadonly" /></div>
+          <button class="psp-runtime-btn" :disabled="sectionReadonly" @click="saveEncryptedParameters">{{ t('framework.projectSettings.encryptedParameters.save', '保存加密参数') }}</button>
+          <template v-if="encryptedParameterSummary.configured">
+            <h5 style="margin-top:14px">{{ t('framework.projectSettings.encryptedParameters.rekeyTitle', '修改密码') }}</h5>
+            <div class="psp-field"><label>{{ t('framework.projectSettings.encryptedParameters.currentPassword', '当前密码') }}</label><input v-model="encryptedParameterCurrentPassword" type="password" class="psp-input" autocomplete="current-password" :disabled="sectionReadonly" /></div>
+            <div class="psp-field"><label>{{ t('framework.projectSettings.encryptedParameters.newPassword', '新密码') }}</label><input v-model="encryptedParameterNewPassword" type="password" class="psp-input" autocomplete="new-password" :disabled="sectionReadonly" /></div>
+            <button class="psp-runtime-btn" :disabled="sectionReadonly" @click="rekeyEncryptedParameters">{{ t('framework.projectSettings.encryptedParameters.rekey', '更新密码') }}</button>
+            <div class="psp-field" style="margin-top:14px"><label>{{ t('framework.projectSettings.encryptedParameters.confirmDelete', '确认删除') }}</label><input v-model="encryptedParameterDeleteConfirmed" type="checkbox" :disabled="sectionReadonly" /></div>
+            <button class="psp-sec-enable-btn" :disabled="sectionReadonly || !encryptedParameterDeleteConfirmed" @click="deleteEncryptedParameters">{{ t('framework.projectSettings.encryptedParameters.delete', '删除加密参数') }}</button>
+          </template>
         </template>
         <template v-else-if="active === 'status'">
           <div class="psp-state-grid">

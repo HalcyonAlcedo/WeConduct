@@ -163,11 +163,12 @@ async function doSaveAs() {
 }
   async function handleGraphUpgrade(decision: 'upgrade_and_load') {
     try {
-      await postGraphUpgradeApply(decision)
-      toast.success(t('framework.commandBar.toast.upgraded', '已升级'))
+       await postGraphUpgradeApply(decision)
+       toast.success(t('framework.commandBar.toast.upgraded', '已升级'))
       showUpgradeDialog.value = false
       await workspace.refreshSnapshot()
-      await graphWs.loadGraph()
+      graphWs.clearAllDrafts()
+      await graphWs.loadGraph(undefined, { forceRefresh: true })
       if (graphWs.graphModel) await graphWs.syncSource()
       await graphWs.refreshGraphDocuments()
       runtime.refreshAll(); resource.refreshAll()

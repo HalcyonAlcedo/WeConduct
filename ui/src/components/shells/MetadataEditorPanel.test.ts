@@ -64,9 +64,97 @@ vi.mock('@/components/input/MonacoEditor.vue', () => ({
 import MetadataEditorPanel from './MetadataEditorPanel.vue'
 
 describe('MetadataEditorPanel', () => {
-  it('在节点配置编辑区域持续显示明文敏感数据风险提示', () => {
+  it('不在普通节点配置编辑区域显示敏感数据提示', () => {
     const wrapper = mount(MetadataEditorPanel)
 
-    expect(wrapper.get('.node-plaintext-risk-notice').text()).toContain('节点配置会随项目保存')
+    expect(wrapper.find('.node-plaintext-risk-notice').exists()).toBe(false)
+  })
+
+  it('仅在网络认证配置旁显示敏感数据提示', () => {
+    graphWorkspaceState.graphModel.nodes[0] = {
+      ...graphWorkspaceState.graphModel.nodes[0],
+      node_kind: 'network.http_request',
+      node_config: {
+        auth: { type: 'bearer', token: 'test-token' },
+      },
+    }
+
+    const wrapper = mount(MetadataEditorPanel)
+
+    expect(wrapper.get('.node-plaintext-risk-notice').text()).toBe('敏感信息建议使用加密参数。')
+  })
+
+  it('将待输入字段标为敏感时清除默认值并保留对应输出端口', async () => {
+    graphWorkspaceState.updateNode.mockClear()
+    graphWorkspaceState.graphModel.nodes[0] = {
+      ...graphWorkspaceState.graphModel.nodes[0],
+      node_kind: 'input.request',
+      node_config: {
+        fields: [{
+          field_id: 'password', label: '密码', type: 'string', sensitive: false,
+          default_value: 'plaintext-default',
+        }],
+        timeout_seconds: 0,
+      },
+      ports: [
+        { port_id: 'in', direction: 'input', relation_layer: 'control', semantic_slot: 'in.control' },
+        { port_id: 'out', direction: 'output', relation_layer: 'control', semantic_slot: 'out.control' },
+        { port_id: 'timed_out', direction: 'output', relation_layer: 'control', semantic_slot: 'out.timed_out' },
+        { port_id: 'out:password', direction: 'output', relation_layer: 'data', semantic_slot: 'out.password' },
+      ],
+    }
+
+    const wrapper = mount(MetadataEditorPanel)
+    const sensitiveCheckbox = wrapper.get('.mep-schema-block input[type="checkbox"]')
+    await sensitiveCheckbox.setValue(true)
+
+    expect(graphWorkspaceState.updateNode).toHaveBeenCalledWith('node-a', expect.objectContaining({
+      node_config: {
+        fields: [{ field_id: 'password', label: '密码', type: 'string', sensitive: true }],
+        timeout_seconds: 0,
+      },
+      ports: expect.arrayContaining([
+        expect.objectContaining({ port_id: 'out:password', semantic_slot: 'out.password' }),
+      ]),
+    }))
+  })
+
+  it('允许为 Python 节点显式启用敏感输入读取', async () => {
+    graphWorkspaceState.updateNode.mockClear()
+    graphWorkspaceState.graphModel.nodes[0] = {
+      ...graphWorkspaceState.graphModel.nodes[0],
+      node_kind: 'python.run',
+      node_config: { code: '', allow_sensitive_values: false },
+    }
+
+    const wrapper = mount(MetadataEditorPanel)
+    expect(wrapper.text()).toContain('允许 Python 读取敏感输入')
+    const sensitiveInputCheckbox = wrapper.get('.mep-cfg-row input[type="checkbox"]')
+    await sensitiveInputCheckbox.setValue(true)
+
+    expect(graphWorkspaceState.updateNode).toHaveBeenCalledWith('node-a', {
+      node_config: { code: '', allow_sensitive_values: true },
+    })
+  })
+
+  it('为 Python 节点提供输入、输出和元数据 Schema 编辑器', () => {
+    graphWorkspaceState.graphModel.nodes[0] = {
+      ...graphWorkspaceState.graphModel.nodes[0],
+      node_kind: 'python.run',
+      node_config: {
+        code: '',
+        allow_sensitive_values: false,
+        input_schema: {},
+        output_schema: {},
+        metadata_schema: {},
+      },
+    }
+
+    const wrapper = mount(MetadataEditorPanel)
+
+    expect(wrapper.text()).toContain('Python 输入字段')
+    expect(wrapper.text()).toContain('Python 输出字段')
+    expect(wrapper.text()).toContain('Python 元数据字段')
+    expect(wrapper.findAll('.mep-om-add')).toHaveLength(3)
   })
 })

@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
+import { useResourceStore } from '@/stores/resourceStore'
+import { useRuntimeStore } from '@/stores/runtimeStore'
+import { useWorkspaceStore } from '@/stores/workspaceStore'
 
 const apiMocks = vi.hoisted(() => ({
   postProjectNew: vi.fn(),
@@ -65,5 +69,31 @@ describe('CommandBar', () => {
     })
 
     expect((wrapper.vm as any).defaultReleaseUrl).toBe('https://github.com/HalcyonAlcedo/WeConduct/releases')
+  })
+
+  it('图升级后清空草稿并强制重新读取主图', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workspace = useWorkspaceStore()
+    const graphWorkspace = useGraphWorkspaceStore()
+    const runtime = useRuntimeStore()
+    const resource = useResourceStore()
+    vi.spyOn(workspace, 'refreshSnapshot').mockResolvedValue(undefined)
+    const clearAllDrafts = vi.spyOn(graphWorkspace, 'clearAllDrafts')
+    const loadGraph = vi.spyOn(graphWorkspace, 'loadGraph').mockResolvedValue(undefined)
+    vi.spyOn(graphWorkspace, 'refreshGraphDocuments').mockResolvedValue(undefined)
+    vi.spyOn(runtime, 'refreshAll').mockResolvedValue(undefined)
+    vi.spyOn(resource, 'refreshAll').mockResolvedValue(undefined)
+    apiMocks.postGraphUpgradeApply.mockResolvedValue({ status: 'upgraded' })
+    const wrapper = mount(CommandBar, {
+      global: {
+        plugins: [pinia],
+      },
+    })
+
+    await (wrapper.vm as any).handleGraphUpgrade('upgrade_and_load')
+
+    expect(clearAllDrafts).toHaveBeenCalledOnce()
+    expect(loadGraph).toHaveBeenCalledWith(undefined, { forceRefresh: true })
   })
 })

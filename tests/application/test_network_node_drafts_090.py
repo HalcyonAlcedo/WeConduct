@@ -43,3 +43,18 @@ def test_network_long_connection_and_batch_drafts_have_pull_actions_and_ordered_
     assert {"in:connection_id", "in:message", "out:message", "out:connection_id"} <= _port_ids(websocket)
     assert {"in:requests", "out:results"} <= _port_ids(batch)
     assert batch["node_config"]["max_concurrency"] == 1
+
+
+def test_python_run_draft_declares_opt_in_sensitive_input_permission() -> None:
+    draft = CompilationWorkbenchService().build_graph_node_draft(
+        resource_key="python.run",
+    )
+    node = draft["node"]
+
+    assert node["node_config"]["allow_sensitive_values"] is False
+    assert draft["parameter_schema"]["allow_sensitive_values"] == {
+        "type": "boolean",
+        "required": False,
+        "editor_kind": "checkbox",
+        "path_kind": None,
+    }

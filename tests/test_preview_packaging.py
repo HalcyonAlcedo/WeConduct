@@ -97,5 +97,6 @@ def test_preview_packaging_uses_filtered_network_submodule_collection() -> None:
     assert "filter=lambda module_name" in spec_text
     assert "network_hiddenimports.extend(collect_submodules(package_name))" not in spec_text
     assert "weconduct.network_runtime.windows_proxy_worker" in spec_text
+    assert "weconduct.application.update_service" in spec_text
     assert '"websockets.legacy"' in spec_text
     assert '"websockets.sync"' in spec_text

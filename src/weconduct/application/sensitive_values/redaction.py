@@ -48,19 +48,20 @@ _SENSITIVE_COMPACT_FIELD_NAMES = frozenset(
 
 
 def redact_sensitive_payload(value: object, *, secret_values: Iterable[object] = ()) -> Any:
-    secrets = tuple(
-        item for item in secret_values if isinstance(item, str) and item
-    )
+    secrets = tuple(item for item in secret_values if item is not None)
     return _redact(value, secrets, parent_key=None)
 
 
-def _redact(value: object, secrets: tuple[str, ...], *, parent_key: str | None) -> Any:
+def _redact(value: object, secrets: tuple[object, ...], *, parent_key: str | None) -> Any:
     if isinstance(value, SensitiveRef):
         return "<sensitive-ref>"
+    if any(type(value) is type(secret) and value == secret for secret in secrets):
+        return "<redacted>"
     if isinstance(value, str):
         redacted = value
         for secret in secrets:
-            redacted = redacted.replace(secret, "<redacted>")
+            if isinstance(secret, str) and secret:
+                redacted = redacted.replace(secret, "<redacted>")
         return _redact_sensitive_url_query(redacted, parent_key=parent_key)
     if isinstance(value, Mapping):
         redacted: dict[str, Any] = {}

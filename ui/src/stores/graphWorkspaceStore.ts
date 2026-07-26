@@ -319,13 +319,22 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     markChanged()
   }
 
-  function updateNode(nodeId: string, patch: Partial<{ display_name: string; node_config: Record<string, unknown> }>) {
+  function updateNode(nodeId: string, patch: Partial<{ display_name: string; node_config: Record<string, unknown>; ports: GraphModel['nodes'][number]['ports'] }>) {
     if (!isGraphEditable.value) return
     pushUndo()
     const gm = graphModel.value; if (!gm) return
     const node = gm.nodes.find(n => n.node_id === nodeId); if (!node) return
     if (patch.display_name !== undefined) node.display_name = patch.display_name
     if (patch.node_config !== undefined) node.node_config = patch.node_config
+    if (patch.ports !== undefined) {
+      node.ports = patch.ports
+      const validPortIds = new Set(node.ports.map(port => port.port_id))
+      gm.edges = gm.edges.filter(edge => {
+        if (edge.from_node_id === nodeId && (typeof edge.from_port_id !== 'string' || !validPortIds.has(edge.from_port_id))) return false
+        if (edge.to_node_id === nodeId && (typeof edge.to_port_id !== 'string' || !validPortIds.has(edge.to_port_id))) return false
+        return true
+      })
+    }
     markChanged()
   }
   function updateNodePosition(nodeId: string, pos: { x: number; y: number }) {

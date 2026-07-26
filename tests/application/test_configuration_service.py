@@ -130,6 +130,17 @@ def test_builtin_external_api_configuration_requires_high_risk_confirmation() ->
     ]
 
 
+def test_builtin_sensitive_parameter_unlock_policy_defaults_to_always_prompt() -> None:
+    service = ConfigurationService(
+        registry=build_builtin_configuration_registry(),
+        repositories={"program": InMemoryConfigurationRepository()},
+    )
+
+    values = service.get_values(scope="program")["values"]
+
+    assert values["security"]["encrypted_parameter_unlock_policy"] == "always_prompt"
+
+
 def test_apply_collection_add_and_remove_persists_only_registered_field() -> None:
     service = build_service()
 
@@ -350,10 +361,11 @@ def test_program_configuration_migration_converts_legacy_file_once(tmp_path: Pat
                 "file_access_blocked_roots": [],
                 "file_access_allowed_extensions": [],
                 "file_access_blocked_extensions": [],
-                "external_api_enabled": False,
-                "external_api_token": None,
-                "external_api_project_allowed_roots": [],
-            },
+                    "external_api_enabled": False,
+                    "external_api_token": None,
+                    "external_api_project_allowed_roots": [],
+                    "encrypted_parameter_unlock_policy": "always_prompt",
+                },
         "python_defaults": {
             "python_executable_path": None,
             "timeout_seconds": 60,

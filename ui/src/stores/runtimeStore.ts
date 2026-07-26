@@ -580,6 +580,9 @@ export const useRuntimeStore = defineStore('runtime', () => {
       setActiveRt(result)
       if (result.runtime_session.status === 'aborted') {
         clearPendingInputForSession(sessionId)
+        if (pendingParameterUnlockSessionId.value === sessionId) {
+          pendingParameterUnlockSessionId.value = null
+        }
         runtimeLiveStatus.value = 'aborted'
         unsubscribeRuntimeSession()
         resolvePendingRun({ success: false, message: '运行已终止' })

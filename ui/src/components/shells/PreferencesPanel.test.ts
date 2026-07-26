@@ -18,6 +18,8 @@ const apiMocks = vi.hoisted(() => {
     fetchConfigValues: vi.fn(),
     patchConfigValues: vi.fn(),
     resetConfigValues: vi.fn(),
+    fetchExternalApiPreferences: vi.fn(),
+    postExternalApiPreferences: vi.fn(),
     fetchLanguages: vi.fn(),
     fetchLanguagePack: vi.fn(),
     ApiError: MockApiError,
@@ -33,6 +35,8 @@ vi.mock('@/services/api', () => ({
   fetchConfigValues: apiMocks.fetchConfigValues,
   patchConfigValues: apiMocks.patchConfigValues,
   resetConfigValues: apiMocks.resetConfigValues,
+  fetchExternalApiPreferences: apiMocks.fetchExternalApiPreferences,
+  postExternalApiPreferences: apiMocks.postExternalApiPreferences,
   fetchLanguages: apiMocks.fetchLanguages,
   fetchLanguagePack: apiMocks.fetchLanguagePack,
   ApiError: apiMocks.ApiError,
@@ -90,6 +94,7 @@ describe('PreferencesPanel', () => {
     })
     apiMocks.fetchLanguages.mockResolvedValue({ languages: [] })
     apiMocks.fetchLanguagePack.mockResolvedValue({ locale: 'zh-CN', messages: {} })
+    apiMocks.fetchExternalApiPreferences.mockResolvedValue({ enabled: false, token_configured: false, project_allowed_roots: [] })
     try { localStorage.clear() } catch { /* jsdom */ }
   })
 
@@ -197,6 +202,37 @@ describe('PreferencesPanel', () => {
     expect(select).toBeTruthy()
     expect(select?.findAll('option').map((option) => option.text())).toEqual(['staged', 'immediate'])
     expect(wrapper.text()).not.toContain('manual_apply')
+  })
+
+  it('安全设置显示外部 API 与固定的加密参数解锁策略，且不回填 token', async () => {
+    const workspace = useWorkspaceStore()
+    workspace.snapshot = {
+      preferences: {
+        program_settings: { preferences_auto_save: false },
+        compile_settings: {},
+        security_settings: {
+          external_api_enabled: true,
+          external_api_token_configured: true,
+          external_api_project_allowed_roots: ['C:\\projects'],
+          encrypted_parameter_unlock_policy: 'always_prompt',
+        },
+        python_runtime_settings: {},
+        graph_settings: {},
+        other_settings: {},
+      },
+      graph_workspace: { preferences_state: {} },
+    } as any
+
+    const wrapper = mount(PreferencesPanel, { global: { plugins: [createPinia()] } })
+    await flushPromises()
+    await wrapper.get('.pref-nav-item:nth-child(2)').trigger('click')
+    await nextTick()
+
+    expect(wrapper.text()).toContain('外部 API')
+    expect(wrapper.text()).toContain('加密参数解锁策略')
+    const token = wrapper.find('input[type="password"]')
+    expect(token.exists()).toBe(true)
+    expect((token.element as HTMLInputElement).value).toBe('')
   })
 
   it('自动保存后不会用缺失字段覆盖尚未裁决的表单值', async () => {

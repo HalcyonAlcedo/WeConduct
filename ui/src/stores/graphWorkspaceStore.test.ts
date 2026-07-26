@@ -162,4 +162,46 @@ describe('graphWorkspaceStore', () => {
     expect(callArgs.x).toBeLessThan(500)
     expect(callArgs.y).toBeLessThan(400)
   })
+
+  it('更新动态端口时仅移除引用已删除端口的边', async () => {
+    const { useGraphWorkspaceStore } = await import('./graphWorkspaceStore')
+    const store = useGraphWorkspaceStore()
+    store.view = editableView()
+    store.graphModel = {
+      ...emptyModel(),
+      nodes: [
+        {
+          node_id: 'input', node_kind: 'input.request', display_name: '请求输入',
+          lowered_kind: 'execution', source_anchor_ref: 'input', expansion_role: 'input:request',
+          node_config: {},
+          ports: [
+            { port_id: 'in', direction: 'input', relation_layer: 'control', semantic_slot: 'in.control' },
+            { port_id: 'out', direction: 'output', relation_layer: 'control', semantic_slot: 'out.control' },
+            { port_id: 'out:kept', direction: 'output', relation_layer: 'data', semantic_slot: 'out.kept' },
+            { port_id: 'out:removed', direction: 'output', relation_layer: 'data', semantic_slot: 'out.removed' },
+          ],
+        },
+        {
+          node_id: 'sink', node_kind: 'data.set_variable', display_name: '接收',
+          lowered_kind: 'execution', source_anchor_ref: 'sink', expansion_role: 'data:set_variable',
+          node_config: {}, ports: [],
+        },
+      ] as any,
+      edges: [
+        { edge_id: 'keep', relation_layer: 'data', from_node_id: 'input', from_port_id: 'out:kept', to_node_id: 'sink', to_port_id: 'value' },
+        { edge_id: 'remove', relation_layer: 'data', from_node_id: 'input', from_port_id: 'out:removed', to_node_id: 'sink', to_port_id: 'value' },
+        { edge_id: 'unrelated', relation_layer: 'data', from_node_id: 'sink', from_port_id: 'out', to_node_id: 'other', to_port_id: 'in' },
+      ],
+    }
+
+    store.updateNode('input', {
+      ports: [
+        { port_id: 'in', direction: 'input', relation_layer: 'control', semantic_slot: 'in.control' },
+        { port_id: 'out', direction: 'output', relation_layer: 'control', semantic_slot: 'out.control' },
+        { port_id: 'out:kept', direction: 'output', relation_layer: 'data', semantic_slot: 'out.kept' },
+      ] as any,
+    })
+
+    expect(store.graphModel?.edges.map(edge => edge.edge_id)).toEqual(['keep', 'unrelated'])
+  })
 })

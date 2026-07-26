@@ -67,6 +67,14 @@ class SensitiveValueService:
         for ref_id in self._refs_by_scope_id.pop(scope_id, set()):
             self._values_by_ref_id.pop(ref_id, None)
 
+    def values_for_scope(self, scope_id: str) -> tuple[object, ...]:
+        """返回仅供运行时公开投影遮罩使用的会话内原始值。"""
+        return tuple(
+            self._values_by_ref_id[ref_id]
+            for ref_id in self._refs_by_scope_id.get(scope_id, set())
+            if ref_id in self._values_by_ref_id
+        )
+
     def unlock_encrypted_parameters(
         self,
         envelope: Mapping[str, object],

@@ -144,6 +144,21 @@ def _load_external_api_program_configuration(preferences_path: Path) -> dict[str
     }
 
 
+def _public_program_configuration_response(result: dict) -> dict:
+    """Remove external API secrets from generic program-configuration responses."""
+    public_result = deepcopy(result)
+    for key in ("values", "current_values", "proposed_values"):
+        values = public_result.get(key)
+        if not isinstance(values, dict):
+            continue
+        security = values.get("security")
+        if not isinstance(security, dict):
+            continue
+        external_api_token = security.pop("external_api_token", None)
+        security["external_api_token_configured"] = bool(external_api_token)
+    return public_result
+
+
 def migrate_configuration_storage(preferences_path: str | Path) -> dict:
     path = Path(preferences_path)
     registry = build_builtin_configuration_registry()
@@ -731,7 +746,16 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
                 return
-            self._write_json(HTTPStatus.OK, result)
+            self._write_json(
+                HTTPStatus.OK,
+                _public_program_configuration_response(result)
+                if scope == "program"
+                else result,
+            )
+            return
+
+        if request_path == "/api/workbench/preferences/external-api":
+            self._write_json(HTTPStatus.OK, self._get_external_api_preferences_summary())
             return
 
         if self.path == "/api/workbench/snapshot":
@@ -793,14 +817,22 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
 
         if self.path == "/api/workbench/project":
             result = service.get_project_document()
+            project_settings = deepcopy(result.get("project_settings"))
+            if isinstance(project_settings, dict):
+                project_settings.pop("encrypted_parameter_set", None)
             self._write_json(
                 HTTPStatus.OK,
                 {
                     "project": result["project"],
-                    "project_settings": result.get("project_settings"),
+                    "project_settings": project_settings,
+                    "encrypted_parameter_summary": service.get_project_encrypted_parameter_summary(),
                     "graph_workspace": result["graph_workspace"],
                 },
             )
+            return
+
+        if self.path == "/api/workbench/project/encrypted-parameters":
+            self._write_json(HTTPStatus.OK, service.get_project_encrypted_parameter_summary())
             return
 
         if self.path == "/api/workbench/project/python-runtime":
@@ -1131,7 +1163,12 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._write_invalid_request_error(exc)
             return
-        self._write_json(HTTPStatus.OK, result)
+        self._write_json(
+            HTTPStatus.OK,
+            _public_program_configuration_response(result)
+            if scope == "program"
+            else result,
+        )
 
     def do_POST(self) -> None:  # noqa: N802
         if self._handle_external_api(method="POST"):
@@ -1303,7 +1340,11 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
                 return
-            status_code = HTTPStatus.OK if result["status"] in {"accepted", "completed", "failed"} else HTTPStatus.BAD_REQUEST
+            status_code = (
+                HTTPStatus.OK
+                if result["status"] in {"accepted", "completed", "failed", "unlock_required"}
+                else HTTPStatus.BAD_REQUEST
+            )
             response_payload = dict(result)
             if result["status"] == "failed":
                 response_payload.update(
@@ -1368,7 +1409,12 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
                 return
-            self._write_json(HTTPStatus.OK, result)
+            self._write_json(
+                HTTPStatus.OK,
+                _public_program_configuration_response(result)
+                if scope == "program"
+                else result,
+            )
             return
 
         if self.path == "/api/workbench/config/reset":
@@ -1378,6 +1424,24 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 if not isinstance(scope, str) or not scope.strip():
                     raise ValueError("field must be a non-empty string: scope")
                 result = self._get_configuration_service().reset(scope=scope)
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(
+                HTTPStatus.OK,
+                _public_program_configuration_response(result)
+                if scope == "program"
+                else result,
+            )
+            return
+
+        if self.path == "/api/workbench/preferences/external-api":
+            try:
+                payload = self._read_json_request_body()
+                result = self._update_external_api_preferences(payload)
+            except HighRiskConfigurationChangeRequiredError as exc:
+                self._write_high_risk_configuration_confirmation_required_error(exc)
+                return
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
                 return
@@ -1665,6 +1729,47 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     "graph_document": result["graph_document"].model_dump(),
                 },
             )
+            return
+
+        if self.path == "/api/workbench/project/encrypted-parameters":
+            try:
+                payload = self._read_json_request_body()
+                result = service.configure_project_encrypted_parameters(
+                    parameter_set_id=payload.get("parameter_set_id"),
+                    parameters=payload.get("parameters"),
+                    values=payload.get("values"),
+                    password=payload.get("password"),
+                    confirm_overwrite=payload.get("confirm_overwrite", False),
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
+        if self.path == "/api/workbench/project/encrypted-parameters/rekey":
+            try:
+                payload = self._read_json_request_body()
+                result = service.rekey_project_encrypted_parameters(
+                    current_password=payload.get("current_password"),
+                    new_password=payload.get("new_password"),
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
+        if self.path == "/api/workbench/project/encrypted-parameters/delete":
+            try:
+                payload = self._read_json_request_body()
+                result = service.clear_project_encrypted_parameters(
+                    confirm_delete=payload.get("confirm_delete", False),
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
             return
 
         if self.path == "/api/workbench/project/python-runtime/health-check":
@@ -3182,6 +3287,88 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     },
                 )
             return self.server.configuration_service
+
+    def _get_external_api_preferences_summary(self) -> dict:
+        values = self._get_configuration_service().get_values(scope="program")["values"]
+        security = values.get("security")
+        if not isinstance(security, dict):
+            raise ValueError("program security configuration is invalid")
+        roots = security.get("external_api_project_allowed_roots", [])
+        if not isinstance(roots, list):
+            raise ValueError("external API project allowed roots configuration is invalid")
+        return {
+            "enabled": bool(security.get("external_api_enabled", False)),
+            "token_configured": bool(security.get("external_api_token")),
+            "project_allowed_roots": list(roots),
+        }
+
+    def _update_external_api_preferences(self, payload: dict) -> dict:
+        enabled = payload.get("enabled")
+        token = payload.get("token")
+        clear_token = payload.get("clear_token", False)
+        project_allowed_roots = payload.get("project_allowed_roots")
+        confirm_high_risk = payload.get("confirm_high_risk", False)
+        if not isinstance(enabled, bool):
+            raise ValueError("field must be a boolean: enabled")
+        if token is not None and (not isinstance(token, str) or not token.strip()):
+            raise ValueError("field must be a non-empty string when provided: token")
+        if not isinstance(clear_token, bool):
+            raise ValueError("field must be a boolean: clear_token")
+        if token is not None and clear_token:
+            raise ValueError("token and clear_token cannot be provided together")
+        if not isinstance(project_allowed_roots, list) or any(
+            not isinstance(root, str) or not root.strip() for root in project_allowed_roots
+        ):
+            raise ValueError("field must be a string list: project_allowed_roots")
+        if not isinstance(confirm_high_risk, bool):
+            raise ValueError("field must be a boolean: confirm_high_risk")
+
+        normalized_roots = list(
+            dict.fromkeys(
+                str(Path(root).expanduser().resolve()) for root in project_allowed_roots
+            )
+        )
+        configuration_service = self._get_configuration_service()
+        values = configuration_service.get_values(scope="program")["values"]
+        security = values.get("security")
+        if not isinstance(security, dict):
+            raise ValueError("program security configuration is invalid")
+        current_token = security.get("external_api_token")
+        effective_token = (
+            token.strip()
+            if isinstance(token, str)
+            else None
+            if clear_token
+            else current_token
+        )
+        if enabled and not isinstance(effective_token, str):
+            raise ValueError("a token is required when enabling the external API")
+
+        requested_values = {
+            "external_api_enabled": enabled,
+            "external_api_token": effective_token,
+            "external_api_project_allowed_roots": normalized_roots,
+        }
+        operations = [
+            {"op": "replace", "path": f"/security/{key}", "value": value}
+            for key, value in requested_values.items()
+            if security.get(key) != value
+        ]
+        configuration_service.apply(
+            scope="program",
+            operations=operations,
+            confirm_high_risk=confirm_high_risk,
+        )
+        self.server.external_api_enabled = enabled
+        self.server.external_api_token = effective_token if isinstance(effective_token, str) else None
+        self.server.external_api_project_allowed_roots = tuple(
+            Path(root) for root in normalized_roots
+        )
+        return {
+            "enabled": enabled,
+            "token_configured": bool(effective_token),
+            "project_allowed_roots": normalized_roots,
+        }
 
     def _get_update_service(self) -> UpdateService:
         if not hasattr(self.server, "update_service"):

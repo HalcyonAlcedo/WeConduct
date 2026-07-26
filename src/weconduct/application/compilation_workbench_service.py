@@ -96,6 +96,10 @@ from weconduct.application.pending_input import (
     PendingInputStatus,
 )
 from weconduct.application.sensitive_values.models import SensitiveRef
+from weconduct.application.sensitive_values.encryption import (
+    decrypt_parameter_values,
+    encrypt_parameter_values,
+)
 from weconduct.application.sensitive_values.service import SensitiveValueService
 from weconduct.application.workspace_state_store import (
     FileWorkspaceStateStore,
@@ -379,6 +383,11 @@ class CompilationWorkbenchService:
         return deepcopy(domain_values) if isinstance(domain_values, dict) else {}
 
     def _build_preferences_snapshot(self) -> dict:
+        security_settings = self._get_configuration_domain(
+            scope="program", domain="security"
+        )
+        external_api_token = security_settings.pop("external_api_token", None)
+        security_settings["external_api_token_configured"] = bool(external_api_token)
         return {
             "preferences_file_version": 3,
             "program_settings": {
@@ -387,9 +396,7 @@ class CompilationWorkbenchService:
                 **self._get_configuration_domain(scope="program", domain="updates"),
             },
             "compile_settings": {},
-            "security_settings": self._get_configuration_domain(
-                scope="program", domain="security"
-            ),
+            "security_settings": security_settings,
             "python_runtime_settings": self._get_configuration_domain(
                 scope="program", domain="python_defaults"
             ),
@@ -493,6 +500,99 @@ class CompilationWorkbenchService:
                 "main_graph_compatibility": deepcopy(graph_compatibility),
             },
         }
+
+    def get_project_encrypted_parameter_summary(self) -> dict:
+        self._refresh_state_from_store()
+        encrypted_parameter_set = self._extract_project_settings(self._state).get(
+            "encrypted_parameter_set"
+        )
+        if not isinstance(encrypted_parameter_set, dict):
+            return {"configured": False, "parameter_set_id": None, "parameters": []}
+        parameters = encrypted_parameter_set.get("parameters")
+        if not isinstance(parameters, list):
+            return {"configured": False, "parameter_set_id": None, "parameters": []}
+        return {
+            "configured": True,
+            "parameter_set_id": encrypted_parameter_set.get("parameter_set_id"),
+            "parameters": deepcopy(parameters),
+        }
+
+    def configure_project_encrypted_parameters(
+        self,
+        *,
+        parameter_set_id: str,
+        parameters: list[dict],
+        values: dict[str, object],
+        password: str,
+        confirm_overwrite: bool,
+    ) -> dict:
+        if not isinstance(parameter_set_id, str) or not parameter_set_id.strip():
+            raise ValueError("parameter_set_id must be a non-empty string")
+        if not isinstance(password, str) or not password:
+            raise ValueError("password must be a non-empty string")
+        if not isinstance(confirm_overwrite, bool):
+            raise ValueError("confirm_overwrite must be a boolean")
+        normalized_parameters = self._normalize_encrypted_parameter_definitions(parameters)
+        if not isinstance(values, dict):
+            raise ValueError("values must be a JSON object")
+        parameter_ids = {parameter["parameter_id"] for parameter in normalized_parameters}
+        if set(values) != parameter_ids:
+            raise ValueError("values must define exactly the configured parameter IDs")
+        current = self.get_project_encrypted_parameter_summary()
+        if current["configured"] and not confirm_overwrite:
+            raise ValueError("encrypted parameter overwrite confirmation is required")
+
+        normalized_parameter_set_id = parameter_set_id.strip()
+        envelope = encrypt_parameter_values(
+            values,
+            password=password,
+            parameter_set_id=normalized_parameter_set_id,
+        )
+        project_settings = self.get_project_settings_document()["project_settings"]
+        project_settings["encrypted_parameter_set"] = {
+            "parameter_set_id": normalized_parameter_set_id,
+            "parameters": normalized_parameters,
+            "envelope": envelope,
+        }
+        self.update_project_settings(project_settings=project_settings)
+        return self.get_project_encrypted_parameter_summary()
+
+    def rekey_project_encrypted_parameters(
+        self,
+        *,
+        current_password: str,
+        new_password: str,
+    ) -> dict:
+        if not isinstance(current_password, str) or not current_password:
+            raise ValueError("current_password must be a non-empty string")
+        if not isinstance(new_password, str) or not new_password:
+            raise ValueError("new_password must be a non-empty string")
+        project_settings = self.get_project_settings_document()["project_settings"]
+        encrypted_parameter_set = project_settings.get("encrypted_parameter_set")
+        if not isinstance(encrypted_parameter_set, dict):
+            raise ValueError("project does not define encrypted parameters")
+        envelope = encrypted_parameter_set.get("envelope")
+        parameter_set_id = encrypted_parameter_set.get("parameter_set_id")
+        if not isinstance(envelope, dict) or not isinstance(parameter_set_id, str):
+            raise ValueError("encrypted parameter envelope is unavailable")
+        values = decrypt_parameter_values(envelope, password=current_password)
+        encrypted_parameter_set["envelope"] = encrypt_parameter_values(
+            values,
+            password=new_password,
+            parameter_set_id=parameter_set_id,
+        )
+        self.update_project_settings(project_settings=project_settings)
+        return self.get_project_encrypted_parameter_summary()
+
+    def clear_project_encrypted_parameters(self, *, confirm_delete: bool) -> dict:
+        if not isinstance(confirm_delete, bool):
+            raise ValueError("confirm_delete must be a boolean")
+        if not confirm_delete:
+            raise ValueError("encrypted parameter deletion confirmation is required")
+        project_settings = self.get_project_settings_document()["project_settings"]
+        project_settings["encrypted_parameter_set"] = None
+        self.update_project_settings(project_settings=project_settings)
+        return self.get_project_encrypted_parameter_summary()
 
     def update_project_settings(self, *, project_settings: dict) -> dict:
         if not isinstance(project_settings, dict):
@@ -3049,6 +3149,19 @@ class CompilationWorkbenchService:
                 ),
             )
         )
+        expected_node_count = (
+            main_graph_item.get("node_count") if isinstance(main_graph_item, dict) else None
+        )
+        expected_edge_count = (
+            main_graph_item.get("edge_count") if isinstance(main_graph_item, dict) else None
+        )
+        source_was_non_empty = (
+            isinstance(expected_node_count, int) and expected_node_count > 0
+        ) or (
+            isinstance(expected_edge_count, int) and expected_edge_count > 0
+        )
+        if source_was_non_empty and not upgraded_main_graph.nodes and not upgraded_main_graph.edges:
+            raise ValueError("pending graph upgrade produced an unexpected empty graph")
         self._persist_graph_document(upgraded_main_graph)
         current_main_graph_document_id = upgraded_main_graph.graph_model_id
         for item in pending_documents:
@@ -4304,26 +4417,45 @@ class CompilationWorkbenchService:
                         "completed_node_count": len(completed_node_ids),
                         "failed_node_count": len(failed_node_ids),
                     }
-                    self._runtime_stream_broker.publish_event(session_id, event_name, dict(payload))
+                    secret_values = self._get_runtime_sensitive_value_service(session_id).values_for_scope(
+                        session_id
+                    )
+                    public_payload = project_runtime_value_for_publication(
+                        payload,
+                        secret_values=secret_values,
+                    )
+                    public_node_states = project_runtime_value_for_publication(
+                        node_states,
+                        secret_values=secret_values,
+                    )
+                    public_event_log = project_runtime_value_for_publication(
+                        event_log,
+                        secret_values=secret_values,
+                    )
+                    self._runtime_stream_broker.publish_event(session_id, event_name, public_payload)
                     self._runtime_stream_broker.publish_event(
                         session_id,
                         "runtime.summary",
                         self._build_runtime_stream_summary_payload(
                             session_id=session_id,
                             runtime_session=runtime_session,
-                            node_states=node_states,
-                            event_log=event_log,
+                            node_states=public_node_states,
+                            event_log=public_event_log,
                         ),
+                    )
+                    snapshot_payload = self._build_runtime_stream_snapshot_payload(
+                        session_id=session_id,
+                        session=session,
+                        runtime_session=runtime_session,
+                        node_states=public_node_states,
+                        event_log=public_event_log,
+                        result=None,
                     )
                     self._runtime_stream_broker.publish_snapshot(
                         session_id,
-                        self._build_runtime_stream_snapshot_payload(
-                            session_id=session_id,
-                            session=session,
-                            runtime_session=runtime_session,
-                            node_states=node_states,
-                            event_log=event_log,
-                            result=None,
+                        project_runtime_value_for_publication(
+                            snapshot_payload,
+                            secret_values=secret_values,
                         ),
                     )
 
@@ -5070,9 +5202,19 @@ class CompilationWorkbenchService:
                         "unreachable_node_ids": unreachable_node_ids,
                     }
                 )
-            persisted_node_states = project_runtime_value_for_publication(node_states)
-            persisted_event_log = project_runtime_value_for_publication(event_log)
-            persisted_result = project_runtime_value_for_publication(result)
+            secret_values = self._get_runtime_sensitive_value_service(session_id).values_for_scope(session_id)
+            persisted_node_states = project_runtime_value_for_publication(
+                node_states,
+                secret_values=secret_values,
+            )
+            persisted_event_log = project_runtime_value_for_publication(
+                event_log,
+                secret_values=secret_values,
+            )
+            persisted_result = project_runtime_value_for_publication(
+                result,
+                secret_values=secret_values,
+            )
             sessions[target_index] = {
                 **session,
                 "runtime_session": runtime_session,
@@ -5326,9 +5468,19 @@ class CompilationWorkbenchService:
                     "failure_reason": failure_reason,
                 },
             ]
-            persisted_node_states = project_runtime_value_for_publication(node_states)
-            persisted_event_log = project_runtime_value_for_publication(event_log)
-            persisted_result = project_runtime_value_for_publication(result)
+            secret_values = self._get_runtime_sensitive_value_service(session_id).values_for_scope(session_id)
+            persisted_node_states = project_runtime_value_for_publication(
+                node_states,
+                secret_values=secret_values,
+            )
+            persisted_event_log = project_runtime_value_for_publication(
+                event_log,
+                secret_values=secret_values,
+            )
+            persisted_result = project_runtime_value_for_publication(
+                result,
+                secret_values=secret_values,
+            )
             sessions[target_index] = {
                 **session,
                 "runtime_session": runtime_session,
@@ -10970,6 +11122,14 @@ class CompilationWorkbenchService:
             if python_ports_changed:
                 changed = True
 
+            input_request_ports, input_request_ports_changed = self._normalize_input_request_ports(
+                node_kind=normalized_node.get("node_kind"),
+                node_config=normalized_node_config,
+                existing_ports=normalized_node.get("ports", []),
+            )
+            if input_request_ports_changed:
+                changed = True
+
             normalized_node, custom_instance_changed = self._normalize_custom_node_graph_instance_node(
                 normalized_node=normalized_node,
                 normalized_node_config=normalized_node_config,
@@ -10985,6 +11145,8 @@ class CompilationWorkbenchService:
                 normalized_node["ports"] = boundary_ports
             elif normalized_node.get("node_kind") == "python.run":
                 normalized_node["ports"] = python_ports
+            elif normalized_node.get("node_kind") == "input.request":
+                normalized_node["ports"] = input_request_ports
             elif not isinstance(normalized_node.get("ports"), list):
                 normalized_node["ports"] = normalized_ports
             normalized_nodes.append(normalized_node)
@@ -11413,6 +11575,94 @@ class CompilationWorkbenchService:
                     )
                 return normalized_ports, self._ports_changed(existing_ports, normalized_ports)
 
+        return normalized_ports, self._ports_changed(existing_ports, normalized_ports)
+
+    def _normalize_input_request_ports(
+        self,
+        *,
+        node_kind: object,
+        node_config: dict,
+        existing_ports: list | None,
+    ) -> tuple[list[dict], bool]:
+        if node_kind != "input.request":
+            return (deepcopy(existing_ports), False) if isinstance(existing_ports, list) else ([], False)
+
+        raw_fields = node_config.get("fields")
+        normalized_fields: list[dict] = []
+        seen_ids: set[str] = set()
+        if isinstance(raw_fields, list):
+            for raw_field in raw_fields:
+                if not isinstance(raw_field, dict):
+                    continue
+                raw_field_id = raw_field.get("field_id")
+                if not isinstance(raw_field_id, str) or not raw_field_id.strip():
+                    continue
+                field_id = raw_field_id.strip()
+                if field_id in seen_ids:
+                    continue
+                seen_ids.add(field_id)
+                normalized_field = deepcopy(raw_field)
+                normalized_field["field_id"] = field_id
+                if not isinstance(normalized_field.get("label"), str) or not normalized_field["label"].strip():
+                    normalized_field["label"] = field_id
+                if not isinstance(normalized_field.get("type"), str) or not normalized_field["type"].strip():
+                    normalized_field["type"] = "string"
+                if normalized_field.get("sensitive") is True:
+                    normalized_field.pop("default_value", None)
+                normalized_fields.append(normalized_field)
+        if node_config.get("fields") != normalized_fields:
+            node_config["fields"] = normalized_fields
+        timeout_seconds = node_config.get("timeout_seconds", 0)
+        if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool):
+            node_config["timeout_seconds"] = 0
+
+        legacy_slot_aliases = {
+            "in.control": {"in.control", "control.previous", "control.in"},
+            "out.control": {"out.control", "control.next", "control.out"},
+            "out.timed_out": {"out.timed_out", "control.timeout", "out.timeout"},
+        }
+
+        def existing_port_id(slot: str, direction: str, fallback: str) -> str:
+            accepted_slots = legacy_slot_aliases.get(slot, {slot})
+            if isinstance(existing_ports, list):
+                for port in existing_ports:
+                    if not isinstance(port, dict) or port.get("direction") != direction:
+                        continue
+                    if port.get("semantic_slot") not in accepted_slots:
+                        continue
+                    port_id = port.get("port_id")
+                    if isinstance(port_id, str) and port_id.strip():
+                        return port_id.strip()
+            return fallback
+
+        def existing_semantic_slot(slot: str, direction: str) -> str:
+            accepted_slots = legacy_slot_aliases.get(slot, {slot})
+            if isinstance(existing_ports, list):
+                for port in existing_ports:
+                    if not isinstance(port, dict) or port.get("direction") != direction:
+                        continue
+                    semantic_slot = port.get("semantic_slot")
+                    if isinstance(semantic_slot, str) and semantic_slot in accepted_slots:
+                        return semantic_slot
+            return slot
+
+        normalized_ports = [
+            {"port_id": existing_port_id("in.control", "input", "in"), "direction": "input", "relation_layer": "control", "semantic_slot": existing_semantic_slot("in.control", "input"), "display_name": None, "max_connections": None},
+            {"port_id": existing_port_id("out.control", "output", "out"), "direction": "output", "relation_layer": "control", "semantic_slot": existing_semantic_slot("out.control", "output"), "display_name": None, "max_connections": None},
+            {"port_id": existing_port_id("out.timed_out", "output", "timed_out"), "direction": "output", "relation_layer": "control", "semantic_slot": existing_semantic_slot("out.timed_out", "output"), "display_name": None, "max_connections": None},
+        ]
+        for field in normalized_fields:
+            field_id = field["field_id"]
+            normalized_ports.append(
+                {
+                    "port_id": existing_port_id(f"out.{field_id}", "output", f"out:{field_id}"),
+                    "direction": "output",
+                    "relation_layer": "data",
+                    "semantic_slot": f"out.{field_id}",
+                    "display_name": field["label"],
+                    "max_connections": None,
+                }
+            )
         return normalized_ports, self._ports_changed(existing_ports, normalized_ports)
 
     def _normalize_python_dynamic_ports(
@@ -14420,6 +14670,38 @@ class CompilationWorkbenchService:
             "envelope": deepcopy(envelope),
         }
 
+    def _normalize_encrypted_parameter_definitions(self, parameters: object) -> list[dict[str, str]]:
+        if not isinstance(parameters, list) or not parameters:
+            raise ValueError("parameters must be a non-empty JSON array")
+        normalized_parameters: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
+        for parameter in parameters:
+            if not isinstance(parameter, dict):
+                raise ValueError("parameter definitions must be JSON objects")
+            parameter_id = parameter.get("parameter_id")
+            name = parameter.get("name")
+            value_type = parameter.get("type")
+            if (
+                not isinstance(parameter_id, str)
+                or not parameter_id.strip()
+                or parameter_id.strip() in seen_ids
+                or not isinstance(name, str)
+                or not name.strip()
+                or not isinstance(value_type, str)
+                or not value_type.strip()
+            ):
+                raise ValueError("encrypted parameter definitions are invalid")
+            normalized_parameter_id = parameter_id.strip()
+            seen_ids.add(normalized_parameter_id)
+            normalized_parameters.append(
+                {
+                    "parameter_id": normalized_parameter_id,
+                    "name": name.strip(),
+                    "type": value_type.strip(),
+                }
+            )
+        return normalized_parameters
+
     def _extract_project_settings(self, state: dict | None) -> dict:
         raw_settings = state.get("project_settings") if isinstance(state, dict) else None
         project = state.get("project") if isinstance(state, dict) and isinstance(state.get("project"), dict) else {}
@@ -14522,6 +14804,16 @@ class CompilationWorkbenchService:
                         item.get("display_name").strip()
                         if isinstance(item.get("display_name"), str) and item.get("display_name").strip()
                         else document_id.strip()
+                    ),
+                    "node_count": (
+                        item.get("node_count")
+                        if isinstance(item.get("node_count"), int) and item.get("node_count") >= 0
+                        else None
+                    ),
+                    "edge_count": (
+                        item.get("edge_count")
+                        if isinstance(item.get("edge_count"), int) and item.get("edge_count") >= 0
+                        else None
                     ),
                     "compatibility": deepcopy(compatibility),
                 }
@@ -15847,13 +16139,6 @@ class CompilationWorkbenchService:
         document_id: str | None,
         document_role: str | None,
     ) -> GraphModel:
-        current_graph_model = self._get_graph_document_model()
-        if (
-            document_id is None
-            or document_id == "graph:workspace"
-            or document_id == current_graph_model.graph_model_id
-        ):
-            return current_graph_model
         if document_role == "main_graph":
             pending_recovery = self._extract_pending_recovery(self._state)
             if pending_recovery is not None:
@@ -15878,6 +16163,13 @@ class CompilationWorkbenchService:
                         project_graph_model = GraphModel.model_validate(project_graph_payload)
                         if project_graph_model.graph_model_id == document_id:
                             return project_graph_model
+        current_graph_model = self._get_graph_document_model()
+        if (
+            document_id is None
+            or document_id == "graph:workspace"
+            or document_id == current_graph_model.graph_model_id
+        ):
+            return current_graph_model
         return self._resolve_graph_document_by_document_id(document_id)
 
     def _normalize_graph_compatibility_metadata(self, graph_model: GraphModel) -> dict:
@@ -15940,6 +16232,8 @@ class CompilationWorkbenchService:
             "document_id": document_id,
             "document_role": document_role,
             "display_name": display_name,
+            "node_count": len(graph_model.nodes),
+            "edge_count": len(graph_model.edges),
             "compatibility": {
                 "status": status,
                 "graph_data_version": graph_data_version,
@@ -19433,7 +19727,10 @@ class CompilationWorkbenchService:
         *,
         persist_history: bool = True,
     ) -> None:
-        session_id = session_document["debug_session"]["session_id"]
+        persisted_session_document = project_runtime_value_for_publication(session_document)
+        if not isinstance(persisted_session_document, dict):
+            raise ValueError("debug session document must project to an object")
+        session_id = persisted_session_document["debug_session"]["session_id"]
 
         def mutation(state: dict | None) -> dict:
             current_state, _ = self._normalize_workspace_state(state)
@@ -19447,7 +19744,7 @@ class CompilationWorkbenchService:
                     and debug_session.get("session_id") == session_id
                 ):
                     found = True
-                    updated_sessions.append(deepcopy(session_document))
+                    updated_sessions.append(deepcopy(persisted_session_document))
                     continue
                 updated_sessions.append(item)
             if not found:
@@ -19460,10 +19757,10 @@ class CompilationWorkbenchService:
                     updated_history.append(
                         {
                             **entry,
-                            "status": session_document["debug_session"].get("status"),
-                            "started_at": session_document["debug_session"].get("started_at"),
-                            "paused_reason": session_document["debug_session"].get("paused_reason"),
-                            "last_control_action": session_document["debug_session"].get(
+                            "status": persisted_session_document["debug_session"].get("status"),
+                            "started_at": persisted_session_document["debug_session"].get("started_at"),
+                            "paused_reason": persisted_session_document["debug_session"].get("paused_reason"),
+                            "last_control_action": persisted_session_document["debug_session"].get(
                                 "last_control_action"
                             ),
                         }
@@ -19476,7 +19773,7 @@ class CompilationWorkbenchService:
 
         self._state = self._state_store.mutate(mutation)
         if persist_history:
-            self._persist_debug_history_session_document(session_document)
+            self._persist_debug_history_session_document(persisted_session_document)
 
     def _normalize_debug_event(
         self,
