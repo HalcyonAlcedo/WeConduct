@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ _LEGACY_HTTP_SEMANTIC_SLOT_ALIASES = {
     "out.result": "out.response",
     "out.body": "out.body_ref",
 }
+_GRAPH_VARIABLE_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,7 @@ def _upgrade_062_to_090(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw_nodes, list):
         raise ValueError("graph nodes must be a list before 0.9.0 upgrade")
 
+    legacy_http_node_ids = _collect_http_node_ids(raw_nodes, node_kinds={"http.request"})
     port_rewrites: dict[tuple[str, str], str] = {}
     for raw_node in raw_nodes:
         if not isinstance(raw_node, dict):
@@ -127,11 +130,15 @@ def _upgrade_062_to_090(payload: dict[str, Any]) -> dict[str, Any]:
         raw_edges=upgraded_payload.get("edges"),
         port_rewrites=port_rewrites,
     )
+    _rewrite_legacy_http_body_references_in_nodes(
+        raw_nodes,
+        http_node_ids=legacy_http_node_ids,
+    )
     return upgraded_payload
 
 
 def requires_current_network_http_contract_repair(payload: dict[str, Any]) -> bool:
-    """Return whether a current-version graph still contains old HTTP ports."""
+    """Return whether a current graph still contains old HTTP ports or body references."""
     raw_nodes = payload.get("nodes")
     if not isinstance(raw_nodes, list):
         return False
@@ -174,6 +181,12 @@ def requires_current_network_http_contract_repair(payload: dict[str, Any]) -> bo
             return True
         if [_http_port_contract(port) for port in raw_ports] != formal_port_contract:
             return True
+
+    if _contains_legacy_http_body_references(
+        raw_nodes,
+        http_node_ids=http_node_ids,
+    ):
+        return True
 
     raw_edges = payload.get("edges")
     if raw_edges is None:
@@ -227,7 +240,134 @@ def _repair_current_network_http_contract(payload: dict[str, Any]) -> dict[str, 
         raw_edges=upgraded_payload.get("edges"),
         port_rewrites=port_rewrites,
     )
+    _rewrite_legacy_http_body_references_in_nodes(
+        raw_nodes,
+        http_node_ids=_collect_http_node_ids(
+            raw_nodes,
+            node_kinds={"network.http_request"},
+        ),
+    )
     return upgraded_payload
+
+
+def _collect_http_node_ids(
+    raw_nodes: list[object],
+    *,
+    node_kinds: set[str],
+) -> set[str]:
+    return {
+        node_id
+        for raw_node in raw_nodes
+        if isinstance(raw_node, Mapping) and raw_node.get("node_kind") in node_kinds
+        if isinstance(node_id := raw_node.get("node_id"), str) and node_id.strip()
+    }
+
+
+def _contains_legacy_http_body_references(
+    raw_nodes: list[object],
+    *,
+    http_node_ids: set[str],
+) -> bool:
+    if not http_node_ids:
+        return False
+    for raw_node in raw_nodes:
+        if not isinstance(raw_node, Mapping):
+            continue
+        node_config = raw_node.get("node_config")
+        _, changed = _rewrite_legacy_http_body_references(
+            node_config,
+            http_node_ids=http_node_ids,
+        )
+        if changed:
+            return True
+    return False
+
+
+def _rewrite_legacy_http_body_references_in_nodes(
+    raw_nodes: list[object],
+    *,
+    http_node_ids: set[str],
+) -> None:
+    if not http_node_ids:
+        return
+    for raw_node in raw_nodes:
+        if not isinstance(raw_node, dict) or "node_config" not in raw_node:
+            continue
+        rewritten, changed = _rewrite_legacy_http_body_references(
+            raw_node["node_config"],
+            http_node_ids=http_node_ids,
+        )
+        if changed:
+            raw_node["node_config"] = rewritten
+
+
+def _rewrite_legacy_http_body_references(
+    value: object,
+    *,
+    http_node_ids: set[str],
+) -> tuple[object, bool]:
+    if isinstance(value, str):
+        changed = False
+
+        def replace_match(match: re.Match[str]) -> str:
+            nonlocal changed
+            expression = match.group(1)
+            reference, separator, target_type = expression.rpartition("|")
+            if not separator:
+                reference = expression
+            stripped_reference = reference.strip()
+            rewritten_reference = _rewrite_legacy_http_body_reference(
+                stripped_reference,
+                http_node_ids=http_node_ids,
+            )
+            if rewritten_reference == stripped_reference:
+                return match.group(0)
+            changed = True
+            suffix = f"|{target_type}" if separator else ""
+            return "${" + rewritten_reference + suffix + "}"
+
+        rewritten = _GRAPH_VARIABLE_PATTERN.sub(replace_match, value)
+        return rewritten, changed
+    if isinstance(value, list):
+        changed = False
+        rewritten_items: list[object] = []
+        for item in value:
+            rewritten_item, item_changed = _rewrite_legacy_http_body_references(
+                item,
+                http_node_ids=http_node_ids,
+            )
+            rewritten_items.append(rewritten_item)
+            changed = changed or item_changed
+        return rewritten_items, changed
+    if isinstance(value, dict):
+        changed = False
+        rewritten_mapping: dict[object, object] = {}
+        for key, item in value.items():
+            rewritten_item, item_changed = _rewrite_legacy_http_body_references(
+                item,
+                http_node_ids=http_node_ids,
+            )
+            rewritten_mapping[key] = rewritten_item
+            changed = changed or item_changed
+        return rewritten_mapping, changed
+    return value, False
+
+
+def _rewrite_legacy_http_body_reference(
+    reference: str,
+    *,
+    http_node_ids: set[str],
+) -> str:
+    for node_id in sorted(http_node_ids, key=len, reverse=True):
+        prefix = f"node.{node_id}."
+        if reference == f"{prefix}body_text":
+            return f"{prefix}body_ref.read_text"
+        if reference == f"{prefix}body":
+            return f"{prefix}body_ref.read_auto"
+        body_path_prefix = f"{prefix}body."
+        if reference.startswith(body_path_prefix):
+            return f"{prefix}body_ref.read_json.{reference[len(body_path_prefix):]}"
+    return reference
 
 
 def _normalize_network_http_request_node(raw_node: dict[str, Any]) -> dict[str, str]:

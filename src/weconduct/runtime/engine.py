@@ -55,6 +55,7 @@ from weconduct.runtime.captcha_ocr import (
 )
 
 BROWSER_OBSERVATION_RECORD_LIMIT = 500
+_RUNTIME_RESPONSE_REFERENCE_MAX_BYTES = 4 * 1024 * 1024
 
 
 class RuntimeCancellationError(Exception):
@@ -5959,6 +5960,28 @@ def _lookup_runtime_reference(reference: str, context: RuntimeContext) -> Any:
                 try:
                     current = current[int(part)]
                 except (ValueError, IndexError):
+                    return None
+            elif isinstance(current, ResponseBodyRef):
+                if part == "read_json":
+                    current = current.read_json(
+                        max_bytes=_RUNTIME_RESPONSE_REFERENCE_MAX_BYTES,
+                    )
+                elif part == "read_text":
+                    current = current.read_text(
+                        max_bytes=_RUNTIME_RESPONSE_REFERENCE_MAX_BYTES,
+                    )
+                elif part == "read_auto":
+                    body_text = current.read_text(
+                        max_bytes=_RUNTIME_RESPONSE_REFERENCE_MAX_BYTES,
+                    )
+                    if "application/json" in str(current.content_type or "").lower():
+                        try:
+                            current = json.loads(body_text)
+                        except json.JSONDecodeError:
+                            current = body_text
+                    else:
+                        current = body_text
+                else:
                     return None
             else:
                 return None

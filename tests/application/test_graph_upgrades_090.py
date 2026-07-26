@@ -4,7 +4,11 @@ from copy import deepcopy
 
 import weconduct.application.graph_upgrades as graph_upgrades
 from weconduct.application import CompilationWorkbenchService
-from weconduct.application.graph_upgrades import GraphDataUpgrader, upgrade_graph_payload
+from weconduct.application.graph_upgrades import (
+    GraphDataUpgrader,
+    requires_current_network_http_contract_repair,
+    upgrade_graph_payload,
+)
 from weconduct.builtin_components import get_graph_node_draft_definition
 from weconduct.contracts import GraphModel
 import pytest
@@ -169,6 +173,87 @@ def test_upgrade_090_payload_does_not_repair_formal_http_ports_with_model_defaul
     upgraded = upgrade_graph_payload(payload, from_version="0.9.0", target_version="0.9.0")
 
     assert upgraded == payload
+
+
+def test_upgrade_062_rewrites_legacy_http_body_references_in_nested_node_config() -> None:
+    payload = {
+        "nodes": [
+            {
+                "node_id": "node-http",
+                "node_kind": "http.request",
+                "ports": [],
+                "node_config": {},
+            },
+            {
+                "node_id": "node-consumer",
+                "node_kind": "browser.run_js",
+                "ports": [],
+                "node_config": {
+                    "script": "const files = ${node.node-http.body.files};",
+                    "source": "${node.node-http.body}",
+                    "nested": {
+                        "items": [
+                            "${node.node-http.body_text}",
+                            "unchanged",
+                        ]
+                    },
+                },
+            },
+        ],
+        "edges": [],
+    }
+
+    upgraded = upgrade_graph_payload(payload, from_version="0.6.2", target_version="0.9.0")
+
+    consumer_config = upgraded["nodes"][1]["node_config"]
+    assert consumer_config["script"] == (
+        "const files = ${node.node-http.body_ref.read_json.files};"
+    )
+    assert consumer_config["source"] == "${node.node-http.body_ref.read_auto}"
+    assert consumer_config["nested"]["items"] == [
+        "${node.node-http.body_ref.read_text}",
+        "unchanged",
+    ]
+    assert payload["nodes"][1]["node_config"]["script"] == (
+        "const files = ${node.node-http.body.files};"
+    )
+
+
+def test_upgrade_090_rewrites_legacy_http_body_references_after_port_contract_was_repaired() -> None:
+    draft = get_graph_node_draft_definition("network.http_request")
+    assert isinstance(draft, dict)
+    payload = {
+        "nodes": [
+            {
+                "node_id": "node-http",
+                "node_kind": "network.http_request",
+                "lowered_kind": draft["lowered_kind"],
+                "expansion_role": draft["expansion_role"],
+                "ports": deepcopy(draft["ports"]),
+                "node_config": deepcopy(draft["node_config"]),
+            },
+            {
+                "node_id": "node-consumer",
+                "node_kind": "file.write_text_file",
+                "ports": [],
+                "node_config": {"content": "${node.node-http.body_text}"},
+            },
+        ],
+        "edges": [],
+    }
+
+    assert requires_current_network_http_contract_repair(payload) is True
+
+    upgraded = upgrade_graph_payload(payload, from_version="0.9.0", target_version="0.9.0")
+
+    assert upgraded["nodes"][1]["node_config"]["content"] == (
+        "${node.node-http.body_ref.read_text}"
+    )
+    assert requires_current_network_http_contract_repair(upgraded) is False
+    assert (
+        upgrade_graph_payload(upgraded, from_version="0.9.0", target_version="0.9.0")
+        == upgraded
+    )
 
 
 def test_upgrade_062_http_request_rewrites_legacy_input_edge_port() -> None:
