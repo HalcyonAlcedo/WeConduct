@@ -146,6 +146,53 @@ def test_httpx_adapter_revalidates_redirect_destinations(tmp_path) -> None:
     assert "network.access_denied" in result.transport_error
 
 
+def test_httpx_adapter_drops_credentials_cookies_and_source_query_on_cross_origin_redirect(tmp_path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.host == "source.example.test":
+            return httpx.Response(
+                302,
+                headers={"location": "https://target.example.test/next?target=kept"},
+                request=request,
+            )
+        return httpx.Response(200, request=request)
+
+    adapter = HttpxAdapter(
+        transport=httpx.MockTransport(handler),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(
+            allowed_hostnames={"source.example.test", "target.example.test"}
+        ),
+    )
+    operation = NetworkOperation(
+        operation_id="request-cross-origin-redirect",
+        session_id="session-1",
+        method="GET",
+        url="https://source.example.test/start?source=url",
+        headers={"Authorization": "Bearer operation-token"},
+        query={"source": "operation"},
+    )
+
+    result = adapter.execute(
+        operation,
+        NetworkContextSnapshot(
+            context_id="context-1",
+            query={"source": "context"},
+            cookies={"session": "context-cookie"},
+        ),
+    )
+
+    assert result.status == "succeeded"
+    assert len(requests) == 2
+    assert requests[0].headers["authorization"] == "Bearer operation-token"
+    assert requests[0].headers["cookie"] == "session=context-cookie"
+    assert str(requests[1].url) == "https://target.example.test/next?target=kept"
+    assert "authorization" not in requests[1].headers
+    assert "cookie" not in requests[1].headers
+
+
 def test_httpx_adapter_returns_structured_error_context_for_policy_rejection(tmp_path) -> None:
     from weconduct.network_runtime.errors import NetworkExecutionError
 

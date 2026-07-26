@@ -63,6 +63,59 @@ def test_input_request_node_publishes_atomic_runtime_outputs_with_sensitive_refs
     assert "test-secret" not in repr(output_holder[0])
 
 
+def test_input_request_node_uses_a_distinct_request_id_for_each_execution_instance() -> None:
+    service = CompilationWorkbenchService()
+    session_id = "runtime-session-input-retry"
+    runtime_context = RuntimeContext(
+        execution_session_context=ExecutionSessionContext(session_id=session_id),
+    )
+    node = {
+        "node_id": "input-node-retry",
+        "node_kind": "input.request",
+        "node_config": {
+            "fields": [{"field_id": "answer", "label": "Answer"}],
+            "timeout_seconds": 0,
+        },
+    }
+
+    request_ids: list[str] = []
+    for answer in ("first", "second"):
+        output_holder: list[dict] = []
+        worker = Thread(
+            target=lambda: output_holder.append(
+                service._execute_runtime_plan_node(
+                    executable_node=node,
+                    runtime_context=runtime_context,
+                    executor_registry=RuntimeExecutorRegistry(),
+                )
+            ),
+            daemon=True,
+        )
+        worker.start()
+        deadline = monotonic() + 1
+        while service.get_pending_input_snapshot(execution_id=session_id) is None and monotonic() < deadline:
+            sleep(0.01)
+
+        pending = service.get_pending_input_snapshot(execution_id=session_id)
+        assert pending is not None
+        request_ids.append(pending.request_id)
+        service.submit_pending_input(
+            execution_id=session_id,
+            request_id=pending.request_id,
+            values={"answer": answer},
+        )
+        worker.join(timeout=1)
+
+        assert worker.is_alive() is False
+        assert output_holder[0]["status"] == "succeeded"
+        assert output_holder[0]["answer"] == answer
+
+    assert request_ids == [
+        "runtime-session-input-retry:input-node-retry:1",
+        "runtime-session-input-retry:input-node-retry:2",
+    ]
+
+
 def test_input_request_is_registered_as_a_builtin_component() -> None:
     registry = build_builtin_resource_registry()
 

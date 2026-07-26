@@ -63,6 +63,19 @@ class PendingInputService:
         with self._condition:
             return self._snapshot(request_id)
 
+    def activate(self, request_id: str) -> PendingInputSnapshot:
+        """将已创建请求置为可提交状态，再向外部发布输入提示。"""
+        with self._condition:
+            record = self._require_record(request_id)
+            if record.status == PendingInputStatus.CREATED:
+                record.status = PendingInputStatus.WAITING
+                record.deadline_monotonic = (
+                    monotonic() + record.request.timeout_seconds
+                    if record.request.timeout_seconds > 0
+                    else None
+                )
+            return self._snapshot(request_id)
+
     def get_snapshot_for_execution(self, execution_id: str) -> PendingInputSnapshot | None:
         with self._condition:
             matches = [
@@ -90,23 +103,21 @@ class PendingInputService:
             with self._condition:
                 record = self._require_record(request_id)
                 if record.status == PendingInputStatus.CREATED:
-                    record.status = PendingInputStatus.WAITING
-                    record.deadline_monotonic = (
-                        monotonic() + record.request.timeout_seconds
-                        if record.request.timeout_seconds > 0
-                        else None
-                    )
+                    self.activate(request_id)
+                    record = self._require_record(request_id)
                 while record.status == PendingInputStatus.WAITING:
                     wait_seconds = self._remaining_timeout(record)
                     if wait_seconds is not None and wait_seconds <= 0:
                         record.status = PendingInputStatus.TIMED_OUT
                         break
                     self._condition.wait(timeout=wait_seconds)
-                return PendingInputResult(
+                result = PendingInputResult(
                     request_id=request_id,
                     status=record.status,
                     values=dict(record.values),
                 )
+                record.values.clear()
+                return result
         finally:
             unregister()
 
@@ -132,12 +143,17 @@ class PendingInputService:
 
     def cancel_session(self, execution_id: str) -> None:
         with self._condition:
-            for record in self._records.values():
-                if (
-                    record.request.execution_id == execution_id
-                    and record.status in {PendingInputStatus.CREATED, PendingInputStatus.WAITING}
-                ):
+            matching_request_ids = [
+                request_id
+                for request_id, record in self._records.items()
+                if record.request.execution_id == execution_id
+            ]
+            for request_id in matching_request_ids:
+                record = self._records[request_id]
+                if record.status in {PendingInputStatus.CREATED, PendingInputStatus.WAITING}:
                     record.status = PendingInputStatus.CANCELLED
+                record.values.clear()
+                self._records.pop(request_id, None)
             self._condition.notify_all()
 
     def _cancel_request(self, request_id: str) -> None:

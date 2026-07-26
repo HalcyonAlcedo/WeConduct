@@ -76,6 +76,8 @@ async function startAndRun() {
       toast.error(t('framework.taskExecution.toast.securityInsufficient', '安全设置不足'), result.message)
       // Auto-open project settings for user to enable security requirements
       dock.restorePanel('projectSettings')
+    } else if ((result as any).userActionRequired) {
+      // 全局运行输入窗口已展示；这不是执行失败。
     } else {
       toast.error(t('framework.taskExecution.toast.runFailed', '运行失败'), result.message)
     }

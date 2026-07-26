@@ -17,6 +17,7 @@ import CommandBar from '@/components/commandbar/CommandBar.vue'
 import StatusBar from '@/components/common/StatusBar.vue'
 import ToastContainer from '@/components/common/ToastContainer.vue'
 import StartupErrorScreen from '@/components/common/StartupErrorScreen.vue'
+import RuntimeInputDialog from '@/components/runtime/RuntimeInputDialog.vue'
 
 const workspace = useWorkspaceStore()
 const theme = useThemeStore()
@@ -154,6 +155,7 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload) })
     </main>
     <StatusBar />
     <ToastContainer />
+    <RuntimeInputDialog />
   </div>
 </template>
 

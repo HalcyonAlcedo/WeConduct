@@ -82,7 +82,19 @@ class HostOperationService:
                     return OperationInvocationResult(replay, replayed=True)
                 reserved_idempotency_key = normalized_key
             result = self._dispatch(operation_id, request)
-        except OperationRegistryError:
+            normalized = _normalize_value(result)
+            if not isinstance(normalized, dict):
+                normalized = {"result": normalized}
+            public_result = redact_sensitive_payload(self._filter_output(descriptor, normalized))
+            validated_result = self._registry.validate_output(descriptor, public_result)
+            if reserved_idempotency_key is not None:
+                self._idempotency_store.complete(
+                    caller_id=caller.caller_id,
+                    operation_id=operation_id,
+                    idempotency_key=reserved_idempotency_key,
+                    result=validated_result,
+                )
+        except OperationRegistryError as exc:
             self._release_idempotency_reservation(
                 caller=caller,
                 operation_id=operation_id,
@@ -91,7 +103,7 @@ class HostOperationService:
             self._record_audit(
                 operation_id=operation_id,
                 caller=caller,
-                outcome="rejected",
+                outcome="failed" if exc.error_code == "operation.output_invalid" else "rejected",
                 payload=request,
             )
             raise
@@ -122,18 +134,6 @@ class HostOperationService:
                 payload=request,
             )
             raise OperationRegistryError("operation.execution_failed", str(exc), operation_id=operation_id) from exc
-        normalized = _normalize_value(result)
-        if not isinstance(normalized, dict):
-            normalized = {"result": normalized}
-        public_result = redact_sensitive_payload(self._filter_output(descriptor, normalized))
-        validated_result = self._registry.validate_output(descriptor, public_result)
-        if reserved_idempotency_key is not None:
-            self._idempotency_store.complete(
-                caller_id=caller.caller_id,
-                operation_id=operation_id,
-                idempotency_key=reserved_idempotency_key,
-                result=validated_result,
-            )
         self._record_audit(
             operation_id=operation_id,
             caller=caller,
@@ -260,6 +260,18 @@ class HostOperationService:
             return service.get_runtime_session(session_id=payload["execution_id"])
         if operation_id == "execution.cancel":
             return service.abort_runtime_session(session_id=payload["execution_id"], reason=payload.get("reason", "external api cancellation"))
+        if operation_id == "execution.parameters.unlock":
+            unlocked = service.unlock_runtime_session_parameters(
+                session_id=payload["execution_id"],
+                password=payload["password"],
+            )
+            resumed = service.start_runtime_session_execution(
+                session_id=payload["execution_id"]
+            )
+            return {
+                "status": resumed.get("status", unlocked.get("status")),
+                "parameter_ids": unlocked.get("parameter_ids", []),
+            }
         if operation_id == "execution.events.subscribe":
             return {"execution_id": payload["execution_id"], "stream": "sse"}
         if operation_id == "pending_input.get":

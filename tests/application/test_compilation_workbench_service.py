@@ -17,7 +17,9 @@ from weconduct.application.configuration import (
 from weconduct.application.configuration.builtin_registry import (
     build_builtin_configuration_registry,
 )
+from weconduct.application.runtime_projection import project_runtime_value_for_publication
 from weconduct.contracts import CompilationOutcome, Diagnostic, DiagnosticCatalog, create_initial_summary
+from weconduct.network_runtime.resources import ResponseBodyRef
 import pytest
 
 
@@ -105,6 +107,22 @@ def _build_minimal_workspace_graph(*, initial_variables: dict | None = None) -> 
         "edges": [],
         "graph_effective_diagnostic_anchor_refs": [],
     }
+
+
+def test_default_graph_workspace_template_uses_http_request_draft_ports() -> None:
+    service = CompilationWorkbenchService()
+
+    template = service._build_source_templates()["graph_workspace"]
+    graph = json.loads(template["source_text"])
+    http_request = graph["nodes"][0]
+
+    assert http_request["node_kind"] == "network.http_request"
+    assert {port["port_id"] for port in http_request["ports"]} >= {
+        "in:url",
+        "out:response",
+        "out:network_context",
+    }
+    assert graph["edges"][0]["from_port_id"] == "out:response"
 
 
 def _build_runtime_sensitive_workspace_graph() -> dict:
@@ -1836,6 +1854,41 @@ def test_runtime_abort_forces_terminal_state_when_active_node_ignores_cancellati
     assert service.get_runtime_session(session_id=session_id)["runtime_session"]["status"] == "aborted"
 
 
+def test_runtime_session_projects_response_refs_before_file_state_persistence(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "runtime" / "workspace-state.json"
+    state_store = FileWorkspaceStateStore(workspace_state_path)
+    CompilationWorkbenchService(state_store=state_store)
+    projected = project_runtime_value_for_publication(
+        {
+            "outputs": {
+                "node-response": {
+                    "headers": {"Set-Cookie": "session=private-cookie"},
+                    "body_ref": ResponseBodyRef(
+                        session_id="session-1",
+                        storage_kind="memory",
+                        size_bytes=4,
+                        content_type="application/octet-stream",
+                        _payload=b"body",
+                    ),
+                }
+            }
+        }
+    )
+    state_store.mutate(lambda current: {**current, "runtime_output": projected})
+
+    output = state_store.load()["runtime_output"]["outputs"]["node-response"]
+    assert output["body_ref"] == {
+        "kind": "network_response_body",
+        "storage_kind": "memory",
+        "size_bytes": 4,
+        "content_type": "application/octet-stream",
+    }
+    assert output["headers"]["Set-Cookie"] == "<redacted>"
+    assert "private-cookie" not in workspace_state_path.read_text(encoding="utf-8")
+
+
 def test_workspace_state_keeps_recent_full_runtime_sessions_and_longer_history() -> None:
     service = CompilationWorkbenchService()
     session_ids: list[str] = []
@@ -2557,6 +2610,50 @@ def test_runtime_session_unlocks_encrypted_parameter_refs_without_returning_valu
     assert "test-secret" not in repr(result)
 
 
+def test_runtime_session_requires_unlock_before_starting_encrypted_parameters() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    project_settings = service.get_project_settings_document()["project_settings"]
+    project_settings["encrypted_parameter_set"] = {
+        "parameter_set_id": "parameters-1",
+        "parameters": [{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+        "envelope": encrypt_parameter_values(
+            {"api_key": "test-secret"},
+            password="correct-password",
+            parameter_set_id="parameters-1",
+        ),
+    }
+    service.update_project_settings(project_settings=project_settings)
+    session_id = service.start_runtime_session(graph_document_payload=None)["runtime_session"]["session_id"]
+
+    result = service.start_runtime_session_execution(session_id=session_id)
+
+    assert result["status"] == "unlock_required"
+    assert session_id not in service._runtime_execution_threads  # type: ignore[attr-defined]
+
+
+def test_runtime_session_direct_run_requires_unlock_before_execution() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    project_settings = service.get_project_settings_document()["project_settings"]
+    project_settings["encrypted_parameter_set"] = {
+        "parameter_set_id": "parameters-1",
+        "parameters": [{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+        "envelope": encrypt_parameter_values(
+            {"api_key": "test-secret"},
+            password="correct-password",
+            parameter_set_id="parameters-1",
+        ),
+    }
+    service.update_project_settings(project_settings=project_settings)
+    session_id = service.start_runtime_session(graph_document_payload=None)["runtime_session"]["session_id"]
+
+    result = service.run_runtime_session(session_id=session_id)
+
+    assert result["status"] == "unlock_required"
+    assert result["runtime_session"]["status"] == "running"
+
+
 def test_runtime_session_injects_unlocked_parameter_as_sensitive_reference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2612,7 +2709,7 @@ def test_runtime_session_redacts_unlocked_parameter_from_persisted_result() -> N
 
     result = service.run_runtime_session(session_id=session_id)
 
-    assert result["result"]["variables"]["api_key"] == "<sensitive-ref>"
+    assert result["result"]["variables"]["api_key"] == "<redacted>"
     assert "test-secret" not in repr(result)
 
 

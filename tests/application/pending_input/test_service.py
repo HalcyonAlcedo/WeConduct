@@ -120,6 +120,59 @@ def test_pending_input_submits_multiple_fields_atomically() -> None:
         service.submit(request.request_id, {"username": "other", "password": "other"})
 
 
+def test_pending_input_accepts_submission_immediately_after_activation() -> None:
+    service = PendingInputService()
+    request = PendingInputRequest(
+        request_id="request-immediate",
+        execution_id="execution-1",
+        node_id="node-1",
+        fields=(PendingInputField(field_id="answer", label="Answer"),),
+    )
+    service.create(request)
+
+    activated = service.activate(request.request_id)
+    submitted = service.submit(request.request_id, {"answer": "ready"})
+    result = service.wait(request.request_id, CancellationContext())
+
+    assert activated.status == "waiting"
+    assert submitted.status == "submitted"
+    assert result.values == {"answer": "ready"}
+
+
+def test_pending_input_clears_submitted_values_and_removes_records_at_session_end() -> None:
+    service = PendingInputService()
+    request = PendingInputRequest(
+        request_id="request-sensitive",
+        execution_id="execution-1",
+        node_id="node-1",
+        fields=(PendingInputField(field_id="password", label="Password", sensitive=True),),
+    )
+    service.create(request)
+    cancellation = CancellationContext()
+    result_holder: list[object] = []
+    worker = Thread(
+        target=lambda: result_holder.append(
+            service.wait(request_id=request.request_id, cancellation=cancellation)
+        ),
+        daemon=True,
+    )
+    worker.start()
+    deadline = monotonic() + 1
+    while service.get_snapshot(request.request_id).status != "waiting" and monotonic() < deadline:
+        sleep(0.01)
+
+    service.submit(request.request_id, {"password": "private-password"})
+    worker.join(timeout=1)
+
+    assert result_holder[0].values == {"password": "private-password"}
+    assert service._records[request.request_id].values == {}  # type: ignore[attr-defined]
+
+    service.cancel_session(request.execution_id)
+
+    with pytest.raises(ValueError, match="pending input request was not found"):
+        service.get_snapshot(request.request_id)
+
+
 def test_pending_input_times_out_when_positive_timeout_expires() -> None:
     service = PendingInputService()
     request = PendingInputRequest(

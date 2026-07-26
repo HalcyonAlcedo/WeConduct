@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import weconduct.application.graph_upgrades as graph_upgrades
 from weconduct.application import CompilationWorkbenchService
 from weconduct.application.graph_upgrades import GraphDataUpgrader, upgrade_graph_payload
+from weconduct.builtin_components import get_graph_node_draft_definition
 from weconduct.contracts import GraphModel
 import pytest
 
 
-def test_upgrade_062_http_request_to_090_network_node_without_rewriting_ids() -> None:
+def test_upgrade_062_http_request_to_090_network_node_uses_formal_ports_and_rewrites_edges() -> None:
     payload = {
         "graph_model_id": "graph:workspace",
         "compilation_id": None,
@@ -57,15 +60,16 @@ def test_upgrade_062_http_request_to_090_network_node_without_rewriting_ids() ->
     assert node["node_id"] == "node-http"
     assert node["node_kind"] == "network.http_request"
     assert node["node_config"]["context_strategy"] == "inherit"
-    assert node["node_config"]["response_memory_threshold_bytes"] == 4 * 1024 * 1024
+    assert "response_memory_threshold_bytes" not in node["node_config"]
     assert {port["port_id"] for port in node["ports"]} >= {
-        "out-main",
-        "node-http::network::in-url",
-        "node-http::network::in-network-context",
-        "node-http::network::out-response",
+        "in",
+        "out",
+        "in:url",
+        "out:response",
+        "out:network_context_id",
     }
     assert upgraded["edges"][0]["edge_id"] == "edge-http-result"
-    assert upgraded["edges"][0]["from_port_id"] == "out-main"
+    assert upgraded["edges"][0]["from_port_id"] == "out:response"
 
 
 def test_upgrade_090_payload_is_idempotent() -> None:
@@ -79,6 +83,153 @@ def test_upgrade_090_payload_is_idempotent() -> None:
     }
 
     assert upgrade_graph_payload(payload, from_version="0.9.0", target_version="0.9.0") == payload
+
+
+def test_upgrade_090_payload_repairs_legacy_http_contract_when_version_was_already_marked_current() -> None:
+    payload = {
+        "nodes": [
+            {
+                "node_id": "node-http",
+                "node_kind": "network.http_request",
+                "ports": [
+                    {
+                        "port_id": "in-url",
+                        "direction": "input",
+                        "relation_layer": "data",
+                        "semantic_slot": "network.url",
+                    },
+                    {
+                        "port_id": "out-main",
+                        "direction": "output",
+                        "relation_layer": "data",
+                        "semantic_slot": "out.result",
+                    },
+                    {
+                        "port_id": "out:body",
+                        "direction": "output",
+                        "relation_layer": "data",
+                        "semantic_slot": "out.body",
+                    },
+                ],
+                "node_config": {},
+            }
+        ],
+        "edges": [
+            {
+                "edge_id": "edge-url-input",
+                "relation_layer": "data",
+                "from_node_id": "node-source",
+                "to_node_id": "node-http",
+                "from_port_id": "out-value",
+                "to_port_id": "in-url",
+            },
+            {
+                "edge_id": "edge-response-output",
+                "relation_layer": "data",
+                "from_node_id": "node-http",
+                "to_node_id": "node-target",
+                "from_port_id": "out-main",
+                "to_port_id": "in-value",
+            },
+        ],
+    }
+
+    upgraded = upgrade_graph_payload(payload, from_version="0.9.0", target_version="0.9.0")
+
+    assert {port["port_id"] for port in upgraded["nodes"][0]["ports"]} >= {
+        "in:url",
+        "out:response",
+        "out:body_ref",
+    }
+    assert upgraded["edges"][0]["to_port_id"] == "in:url"
+    assert upgraded["edges"][1]["from_port_id"] == "out:response"
+
+
+def test_upgrade_090_payload_does_not_repair_formal_http_ports_with_model_default_null_fields() -> None:
+    draft = get_graph_node_draft_definition("network.http_request")
+    assert isinstance(draft, dict)
+    formal_ports = deepcopy(draft["ports"])
+    for port in formal_ports:
+        port.setdefault("display_name", None)
+        port.setdefault("max_connections", None)
+    payload = {
+        "nodes": [
+            {
+                "node_id": "node-http",
+                "node_kind": "network.http_request",
+                "lowered_kind": draft["lowered_kind"],
+                "expansion_role": draft["expansion_role"],
+                "ports": formal_ports,
+                "node_config": deepcopy(draft["node_config"]),
+            }
+        ],
+        "edges": [],
+    }
+
+    upgraded = upgrade_graph_payload(payload, from_version="0.9.0", target_version="0.9.0")
+
+    assert upgraded == payload
+
+
+def test_upgrade_062_http_request_rewrites_legacy_input_edge_port() -> None:
+    payload = {
+        "nodes": [
+            {
+                "node_id": "node-http",
+                "node_kind": "http.request",
+                "ports": [
+                    {
+                        "port_id": "in-url",
+                        "direction": "input",
+                        "relation_layer": "data",
+                        "semantic_slot": "network.url",
+                    }
+                ],
+                "node_config": {},
+            }
+        ],
+        "edges": [
+            {
+                "edge_id": "edge-url-input",
+                "relation_layer": "data",
+                "from_node_id": "node-source",
+                "to_node_id": "node-http",
+                "from_port_id": "out-value",
+                "to_port_id": "in-url",
+            }
+        ],
+    }
+
+    upgraded = upgrade_graph_payload(payload, from_version="0.6.2", target_version="0.9.0")
+
+    assert upgraded["edges"][0]["to_port_id"] == "in:url"
+
+
+def test_upgrade_062_http_request_rewrites_known_edge_alias_when_legacy_port_list_is_empty() -> None:
+    payload = {
+        "nodes": [
+            {
+                "node_id": "node-http",
+                "node_kind": "http.request",
+                "ports": [],
+                "node_config": {},
+            }
+        ],
+        "edges": [
+            {
+                "edge_id": "edge-url-input",
+                "relation_layer": "data",
+                "from_node_id": "node-source",
+                "to_node_id": "node-http",
+                "from_port_id": "out-value",
+                "to_port_id": "in-url",
+            }
+        ],
+    }
+
+    upgraded = upgrade_graph_payload(payload, from_version="0.6.2", target_version="0.9.0")
+
+    assert upgraded["edges"][0]["to_port_id"] == "in:url"
 
 
 def test_upgrade_graph_payload_validates_every_migration_stage(monkeypatch) -> None:
@@ -122,6 +273,61 @@ def test_workbench_exposes_062_to_090_upgrade_path() -> None:
             "from_version": "0.6.2",
             "to_version": "0.9.0",
             "upgrader_id": "p090-network-and-python-run-schema",
+        }
+    ]
+
+
+def test_workbench_marks_current_version_graph_with_legacy_http_contract_for_corrective_upgrade() -> None:
+    service = CompilationWorkbenchService()
+    graph = GraphModel.model_validate(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-http",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-http",
+                    "expansion_role": "action:request",
+                    "node_kind": "network.http_request",
+                    "ports": [
+                        {
+                            "port_id": "in-url",
+                            "direction": "input",
+                            "relation_layer": "data",
+                            "semantic_slot": "network.url",
+                        }
+                    ],
+                    "node_config": {},
+                }
+            ],
+            "edges": [],
+            "root_metadata": {
+                "graph_compatibility": {
+                    "graph_data_version": "0.9.0",
+                    "built_with_app_version": "0.9.0",
+                    "minimum_loader_app_version": "0.5.2",
+                    "last_upgraded_by_app_version": "0.9.0",
+                    "upgrade_history": [],
+                }
+            },
+        }
+    )
+
+    compatibility = service._evaluate_graph_document_compatibility(
+        graph_model=graph,
+        document_id="graph:workspace",
+        document_role="main_graph",
+        display_name="Current-version legacy graph",
+    )
+
+    assert compatibility["compatibility"]["status"] == "upgrade_available"
+    assert compatibility["compatibility"]["available_upgrade_path"] == [
+        {
+            "from_version": "0.9.0",
+            "to_version": "0.9.0",
+            "upgrader_id": "p090-corrective-http-contract",
         }
     ]
 

@@ -72,12 +72,18 @@ from weconduct.application.network_context_validation import (
     collect_network_context_join_ambiguities,
 )
 from weconduct.application.graph_upgrades import (
+    CORRECTIVE_HTTP_CONTRACT_UPGRADER_ID,
     CURRENT_GRAPH_DATA_VERSION,
     GRAPH_DATA_UPGRADERS,
+    requires_current_network_http_contract_repair,
     upgrade_graph_payload,
 )
 from weconduct.application.runtime_capabilities import build_runtime_capabilities
 from weconduct.application.graph_runtime_projection import GraphRuntimeProjectionBuilder
+from weconduct.application.runtime_projection import (
+    project_runtime_plan_for_publication,
+    project_runtime_value_for_publication,
+)
 from weconduct.contracts.debugger import DEBUG_SESSION_ACTIVE_STATUSES
 from weconduct.contracts.debugger import DEBUG_SESSION_TERMINAL_STATUSES
 from weconduct.packaging.msgpack_codec import packb
@@ -90,7 +96,6 @@ from weconduct.application.pending_input import (
     PendingInputStatus,
 )
 from weconduct.application.sensitive_values.models import SensitiveRef
-from weconduct.application.sensitive_values.redaction import redact_sensitive_payload
 from weconduct.application.sensitive_values.service import SensitiveValueService
 from weconduct.application.workspace_state_store import (
     FileWorkspaceStateStore,
@@ -146,27 +151,68 @@ MAX_RUNTIME_EXECUTION_STEPS = 1000
 MAX_COMPONENT_CALL_DEPTH = 8
 GRAPH_COMPATIBILITY_BASELINE_VERSION = "0.5.2"
 GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION = CURRENT_GRAPH_DATA_VERSION
+
+
+def _build_graph_workspace_source_template_text() -> str:
+    http_request_draft = get_graph_node_draft_definition("network.http_request")
+    if not isinstance(http_request_draft, dict):
+        raise RuntimeError("network.http_request node draft is unavailable")
+    document = {
+        "graph_model_id": "graph:workspace",
+        "compilation_id": None,
+        "graph_schema_version": "graph-v1",
+        "nodes": [
+            {
+                "node_id": "node-1",
+                "lowered_kind": http_request_draft["lowered_kind"],
+                "source_anchor_ref": "n1",
+                "expansion_role": http_request_draft["expansion_role"],
+                "display_name": "HTTP Request",
+                "node_kind": "network.http_request",
+                "position": {"x": 120, "y": 80},
+                "ports": http_request_draft["ports"],
+                "node_config": http_request_draft["node_config"],
+            },
+            {
+                "node_id": "node-2",
+                "lowered_kind": "execution",
+                "source_anchor_ref": "n2",
+                "expansion_role": "transform:map",
+                "display_name": "Map Result",
+                "node_kind": "data.map",
+                "position": {"x": 360, "y": 80},
+                "ports": [
+                    {
+                        "port_id": "in-main",
+                        "direction": "input",
+                        "relation_layer": "data",
+                        "semantic_slot": "in.default",
+                    }
+                ],
+                "node_config": {"mode": "map"},
+            },
+        ],
+        "edges": [
+            {
+                "edge_id": "edge-1",
+                "relation_layer": "data",
+                "from_node_id": "node-1",
+                "to_node_id": "node-2",
+                "from_port_id": "out:response",
+                "to_port_id": "in-main",
+                "edge_state": "draft",
+            }
+        ],
+        "viewport": {"x": 0, "y": 0, "zoom": 1.1},
+        "graph_effective_diagnostic_anchor_refs": [],
+    }
+    return json.dumps(document, ensure_ascii=False, separators=(",", ":"))
+
+
 SOURCE_TEMPLATES = {
     "graph_workspace": {
         "entry_document": "graph:workspace",
-        "source_text": (
-            '{"graph_model_id":"graph:workspace","compilation_id":null,'
-            '"graph_schema_version":"graph-v1","nodes":['
-            '{"node_id":"node-1","lowered_kind":"execution","source_anchor_ref":"n1",'
-            '"expansion_role":"action:request","display_name":"HTTP Request",'
-            '"node_kind":"network.http_request","position":{"x":120,"y":80},"ports":['
-            '{"port_id":"out-main","direction":"output","relation_layer":"data",'
-            '"semantic_slot":"out.result"}],"node_config":{"method":"GET"}},'
-            '{"node_id":"node-2","lowered_kind":"execution","source_anchor_ref":"n2",'
-            '"expansion_role":"transform:map","display_name":"Map Result",'
-            '"node_kind":"data.map","position":{"x":360,"y":80},"ports":['
-            '{"port_id":"in-main","direction":"input","relation_layer":"data",'
-            '"semantic_slot":"in.default"}],"node_config":{"mode":"map"}}],'
-            '"edges":[{"edge_id":"edge-1","relation_layer":"data","from_node_id":"node-1",'
-            '"to_node_id":"node-2","from_port_id":"out-main","to_port_id":"in-main",'
-            '"edge_state":"draft"}],"viewport":{"x":0,"y":0,"zoom":1.1},'
-            '"graph_effective_diagnostic_anchor_refs":[]}'
-        ),
+        "source_text": _build_graph_workspace_source_template_text(),
     },
     "native_flow": {
         "entry_document": "examples/native-flow.json",
@@ -275,8 +321,10 @@ class CompilationWorkbenchService:
         self._runtime_execution_lock = Lock()
         self._runtime_execution_threads: dict[str, Thread] = {}
         self._runtime_cancellation_contexts: dict[str, CancellationContext] = {}
+        self._runtime_execution_plans: dict[str, dict] = {}
         self._runtime_sensitive_values: dict[str, SensitiveValueService] = {}
         self._runtime_sensitive_parameter_refs: dict[str, dict[str, SensitiveRef]] = {}
+        self._runtime_pending_input_execution_sequences: dict[str, int] = {}
         self._debug_execution_lock = Lock()
         self._debug_execution_threads: dict[str, Thread] = {}
         self._debug_execution_resume_events: dict[str, Event] = {}
@@ -1334,9 +1382,14 @@ class CompilationWorkbenchService:
             session_id=session_id,
             session=self._find_runtime_session(session_id),
         )
-        response = dict(session)
+        response = project_runtime_value_for_publication(session)
+        response["runtime_plan"] = project_runtime_plan_for_publication(
+            session.get("runtime_plan", {})
+            if isinstance(session.get("runtime_plan"), dict)
+            else {}
+        )
         response["node_states"] = self._decorate_runtime_node_states_for_display(
-            session.get("node_states", [])
+            response.get("node_states", [])
         )
         return response
 
@@ -3795,7 +3848,8 @@ class CompilationWorkbenchService:
         preparation = self._prepare_runtime_execution(graph_document_payload)
         if preparation.status != "ready" or preparation.runtime_plan is None:
             return self._build_runtime_start_failure_response(preparation)
-        runtime_plan = preparation.runtime_plan
+        execution_plan = deepcopy(preparation.runtime_plan)
+        runtime_plan = project_runtime_plan_for_publication(execution_plan)
         session_id = f"runtime-session-{uuid.uuid4().hex[:12]}"
         started_at = datetime.now(timezone.utc).isoformat()
         session_document = {
@@ -3851,7 +3905,14 @@ class CompilationWorkbenchService:
             },
             "result": None,
         }
-        self._remember_runtime_session(session_document)
+        with self._runtime_execution_lock:
+            self._runtime_execution_plans[session_id] = execution_plan
+        try:
+            self._remember_runtime_session(session_document)
+        except Exception:
+            with self._runtime_execution_lock:
+                self._runtime_execution_plans.pop(session_id, None)
+            raise
         self._runtime_stream_broker.publish_snapshot(
             session_id,
             self._build_runtime_stream_snapshot_payload(
@@ -3875,6 +3936,11 @@ class CompilationWorkbenchService:
         }
 
     def run_runtime_session(self, *, session_id: str) -> dict:
+        if self.requires_runtime_session_parameter_unlock(session_id=session_id):
+            return {
+                "status": "unlock_required",
+                **self.get_runtime_session(session_id=session_id),
+            }
         return self._run_runtime_session_sync(session_id=session_id)
 
     def get_pending_input_snapshot(self, *, execution_id: str):
@@ -3928,12 +3994,30 @@ class CompilationWorkbenchService:
             self._runtime_sensitive_parameter_refs[session_id] = dict(unlocked)
         return {"status": "unlocked", "parameter_ids": sorted(unlocked)}
 
+    def requires_runtime_session_parameter_unlock(self, *, session_id: str) -> bool:
+        self._refresh_state_from_store()
+        session = self._find_runtime_session(session_id)
+        if session["runtime_session"].get("status") in {"completed", "failed", "aborted"}:
+            return False
+        encrypted_parameter_set = self._extract_project_settings(self._state).get(
+            "encrypted_parameter_set"
+        )
+        if not isinstance(encrypted_parameter_set, dict):
+            return False
+        with self._runtime_execution_lock:
+            return not isinstance(self._runtime_sensitive_parameter_refs.get(session_id), dict)
+
     def start_runtime_session_execution(self, *, session_id: str) -> dict:
         self._refresh_state_from_store()
         existing_session = self._find_runtime_session(session_id)
         if existing_session["runtime_session"]["status"] in {"completed", "failed", "aborted"}:
             return {
                 "status": existing_session["runtime_session"]["status"],
+                **existing_session,
+            }
+        if self.requires_runtime_session_parameter_unlock(session_id=session_id):
+            return {
+                "status": "unlock_required",
                 **existing_session,
             }
         with self._runtime_execution_lock:
@@ -4122,6 +4206,8 @@ class CompilationWorkbenchService:
         self._runtime_stream_broker.publish_snapshot(session_id, terminal_payload)
         self._runtime_stream_broker.publish_event(session_id, "runtime.aborted", terminal_payload)
         self._runtime_stream_broker.close_session(session_id)
+        with self._runtime_execution_lock:
+            self._runtime_execution_plans.pop(session_id, None)
         return {"status": "aborted", **session_document}
 
     def _run_runtime_session_sync(self, *, session_id: str) -> dict:
@@ -4169,7 +4255,7 @@ class CompilationWorkbenchService:
             )
             runtime_context.variables.update(sensitive_parameter_refs)
             runtime_context.flow_runtime["graph_root_metadata"] = deepcopy(
-                session["runtime_plan"].get("root_metadata", {})
+                execution_plan.get("root_metadata", {})
             )
             runtime_context.flow_runtime["sensitive_value_service"] = self._get_runtime_sensitive_value_service(
                 session_id
@@ -4182,29 +4268,29 @@ class CompilationWorkbenchService:
             runtime_execution_order_counter = 0
 
             try:
-                executable_nodes = [dict(item) for item in session["runtime_plan"]["executable_nodes"]]
+                executable_nodes = [dict(item) for item in execution_plan["executable_nodes"]]
                 node_index_by_id = {
                     item["node_id"]: index for index, item in enumerate(executable_nodes)
                 }
                 data_edges_by_target = self._build_runtime_data_edges_by_target(
-                    session["runtime_plan"].get("relation_edges", [])
+                    execution_plan.get("relation_edges", [])
                 )
                 control_edges_by_source: dict[str, list[dict]] = {}
-                for edge in session["runtime_plan"].get("relation_edges", []):
+                for edge in execution_plan.get("relation_edges", []):
                     if edge.get("relation_layer") != "control":
                         continue
                     source_id = edge.get("from_node_id")
                     if isinstance(source_id, str):
                         control_edges_by_source.setdefault(source_id, []).append(dict(edge))
 
-                scheduler_mode = session["runtime_plan"].get("scheduler_mode")
+                scheduler_mode = execution_plan.get("scheduler_mode")
                 join_state_by_node_id: dict[str, dict[str, object]] = {}
                 retry_state_by_node_id: dict[str, dict[str, object]] = {}
                 pending_node_entries: list[dict[str, object]] = []
                 queued_node_ids: set[str] = set()
                 executed_node_ids: set[str] = set()
                 control_edges_by_target = self._build_runtime_relation_edges_by_target(
-                    relation_edges=session["runtime_plan"].get("relation_edges", []),
+                    relation_edges=execution_plan.get("relation_edges", []),
                     relation_layer="control",
                 )
                 node_kind_by_id = {
@@ -4300,7 +4386,7 @@ class CompilationWorkbenchService:
                     )
 
                 if scheduler_mode == "flow_graph":
-                    for entry_node_id in session["runtime_plan"].get("entry_node_ids", []):
+                    for entry_node_id in execution_plan.get("entry_node_ids", []):
                         entry_index = node_index_by_id.get(entry_node_id)
                         if entry_index is not None:
                             self._enqueue_runtime_flow_graph_node(
@@ -4984,9 +5070,9 @@ class CompilationWorkbenchService:
                         "unreachable_node_ids": unreachable_node_ids,
                     }
                 )
-            persisted_node_states = redact_sensitive_payload(node_states)
-            persisted_event_log = redact_sensitive_payload(event_log)
-            persisted_result = redact_sensitive_payload(result)
+            persisted_node_states = project_runtime_value_for_publication(node_states)
+            persisted_event_log = project_runtime_value_for_publication(event_log)
+            persisted_result = project_runtime_value_for_publication(result)
             sessions[target_index] = {
                 **session,
                 "runtime_session": runtime_session,
@@ -5047,6 +5133,7 @@ class CompilationWorkbenchService:
             return current_state
 
         try:
+            execution_plan = self._get_runtime_execution_plan(session_id=session_id)
             execution_state = mutation(self._state_store.load())
 
             def merge_runtime_execution(current: dict | None) -> dict:
@@ -5133,16 +5220,156 @@ class CompilationWorkbenchService:
                 "status": session_document["runtime_session"]["status"],
                 **session_document,
             }
+        except Exception:
+            session_document = self._finalize_runtime_session_after_unhandled_exception(
+                session_id=session_id,
+            )
+            terminal_status = session_document["runtime_session"]["status"]
+            terminal_payload = self._build_runtime_stream_terminal_payload(
+                session_id=session_id,
+                session_document=session_document,
+            )
+            self._runtime_stream_broker.publish_snapshot(session_id, terminal_payload)
+            self._runtime_stream_broker.publish_event(
+                session_id,
+                f"runtime.{terminal_status}",
+                terminal_payload,
+            )
+            return {"status": terminal_status, **session_document}
         finally:
             self._pending_input_service.cancel_session(session_id)
             with self._runtime_execution_lock:
                 self._runtime_execution_threads.pop(session_id, None)
                 self._runtime_cancellation_contexts.pop(session_id, None)
+                self._runtime_execution_plans.pop(session_id, None)
                 sensitive_values = self._runtime_sensitive_values.pop(session_id, None)
                 self._runtime_sensitive_parameter_refs.pop(session_id, None)
+                self._runtime_pending_input_execution_sequences.pop(session_id, None)
             if sensitive_values is not None:
                 sensitive_values.revoke_scope(session_id)
             self._runtime_stream_broker.close_session(session_id)
+
+    def _get_runtime_execution_plan(self, *, session_id: str) -> dict:
+        with self._runtime_execution_lock:
+            runtime_plan = self._runtime_execution_plans.get(session_id)
+        if not isinstance(runtime_plan, dict):
+            raise RuntimeError("runtime.execution_plan_unavailable")
+        return deepcopy(runtime_plan)
+
+    def _finalize_runtime_session_after_unhandled_exception(self, *, session_id: str) -> dict:
+        completed_at = datetime.now(timezone.utc).isoformat()
+        failure_reason = "runtime.unhandled_exception"
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            sessions = self._extract_runtime_sessions(current_state)
+            target_index = next(
+                (
+                    index
+                    for index, item in enumerate(sessions)
+                    if item.get("runtime_session", {}).get("session_id") == session_id
+                ),
+                None,
+            )
+            if target_index is None:
+                raise ValueError(f"runtime session not found: {session_id}")
+            session = dict(sessions[target_index])
+            existing_status = session.get("runtime_session", {}).get("status")
+            if existing_status in {"completed", "failed", "aborted"}:
+                return current_state
+            runtime_session = {
+                **session["runtime_session"],
+                "status": "failed",
+                "completed_at": completed_at,
+            }
+            node_states: list[dict] = []
+            for item in session.get("node_states", []):
+                node_state = dict(item)
+                if node_state.get("node_status") == "running":
+                    node_state.update(
+                        {
+                            "node_status": "failed",
+                            "completed_at": completed_at,
+                            "error": {
+                                "error_code": failure_reason,
+                                "message": "runtime session ended because of an internal execution error",
+                            },
+                        }
+                    )
+                node_states.append(node_state)
+            failed_node_ids = [
+                item["node_id"]
+                for item in node_states
+                if item.get("node_status") == "failed" and isinstance(item.get("node_id"), str)
+            ]
+            result = {
+                "status": "failed",
+                "completed_node_ids": [],
+                "failed_node_ids": failed_node_ids,
+                "skipped_node_ids": [
+                    item["node_id"]
+                    for item in node_states
+                    if item.get("node_status") == "pending" and isinstance(item.get("node_id"), str)
+                ],
+                "unreachable_node_ids": [],
+                "finished_at": completed_at,
+                "outputs": {},
+                "variables": {},
+                "failure_reason": failure_reason,
+            }
+            event_log = [
+                *session.get("event_log", []),
+                {
+                    "event_kind": "session.failed",
+                    "recorded_at": completed_at,
+                    "session_id": session_id,
+                    "failure_reason": failure_reason,
+                },
+            ]
+            persisted_node_states = project_runtime_value_for_publication(node_states)
+            persisted_event_log = project_runtime_value_for_publication(event_log)
+            persisted_result = project_runtime_value_for_publication(result)
+            sessions[target_index] = {
+                **session,
+                "runtime_session": runtime_session,
+                "node_states": persisted_node_states,
+                "event_log": persisted_event_log,
+                "diagnostic_events": [],
+                "execution_summary": self._build_runtime_execution_summary(
+                    runtime_session=runtime_session,
+                    node_states=persisted_node_states,
+                    event_log=persisted_event_log,
+                    diagnostic_events=[],
+                    result=persisted_result,
+                ),
+                "result": persisted_result,
+            }
+            current_state["runtime_sessions"] = sessions
+            execution_history = self._extract_execution_history(current_state)
+            execution_history["runtime_runs"] = [
+                item
+                for item in execution_history["runtime_runs"]
+                if item.get("session_id") != session_id
+            ]
+            execution_history["runtime_runs"].insert(
+                0,
+                {
+                    "session_id": session_id,
+                    "status": "failed",
+                    "graph_model_id": session.get("runtime_plan", {}).get("graph_model_id"),
+                    "started_at": runtime_session.get("started_at"),
+                    "completed_at": completed_at,
+                    "completed_node_count": 0,
+                    "failed_node_count": len(failed_node_ids),
+                    "failure_reason": failure_reason,
+                },
+            )
+            execution_history["runtime_runs"] = execution_history["runtime_runs"][:MAX_RUNTIME_SESSION_HISTORY]
+            current_state["execution_history"] = execution_history
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        return self.get_runtime_session(session_id=session_id)
 
     def _execute_runtime_plan_node(
         self,
@@ -6954,13 +7181,17 @@ class CompilationWorkbenchService:
                 raise ValueError("input.request fields must be objects")
             session_id = runtime_context.execution_session_context.session_id
             request = PendingInputRequest(
-                request_id=f"{session_id}:{executable_node['node_id']}",
+                request_id=self._next_runtime_pending_input_request_id(
+                    session_id=session_id,
+                    node_id=executable_node["node_id"],
+                ),
                 execution_id=session_id,
                 node_id=executable_node["node_id"],
                 fields=fields,
                 timeout_seconds=node_config.get("timeout_seconds", 0),
             )
             snapshot = self._pending_input_service.create(request)
+            snapshot = self._pending_input_service.activate(snapshot.request_id)
         except (KeyError, TypeError, ValueError) as exc:
             return self._record_runtime_node_output(
                 runtime_context=runtime_context,
@@ -6977,9 +7208,11 @@ class CompilationWorkbenchService:
             "runtime.pending_input",
             {
                 "session_id": session_id,
+                "execution_id": snapshot.execution_id,
                 "request_id": snapshot.request_id,
                 "node_id": snapshot.node_id,
                 "status": snapshot.status,
+                "timeout_seconds": snapshot.timeout_seconds,
                 "fields": [
                     {
                         "field_id": field.field_id,
@@ -7059,6 +7292,13 @@ class CompilationWorkbenchService:
     def _get_runtime_sensitive_value_service(self, session_id: str) -> SensitiveValueService:
         with self._runtime_execution_lock:
             return self._runtime_sensitive_values.setdefault(session_id, SensitiveValueService())
+
+    def _next_runtime_pending_input_request_id(self, *, session_id: str, node_id: str) -> str:
+        """为一次节点执行生成会话内唯一、可追踪的待输入请求标识。"""
+        with self._runtime_execution_lock:
+            sequence = self._runtime_pending_input_execution_sequences.get(session_id, 0) + 1
+            self._runtime_pending_input_execution_sequences[session_id] = sequence
+        return f"{session_id}:{node_id}:{sequence}"
 
     def _get_component_call_stack(self, runtime_context: RuntimeContext) -> list[str]:
         call_stack = runtime_context.flow_runtime.get("component_call_stack", [])
@@ -15684,9 +15924,15 @@ class CompilationWorkbenchService:
         current_graph_data_version = GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION
         graph_data_version = compatibility["graph_data_version"]
         minimum_loader_app_version = compatibility["minimum_loader_app_version"]
+        requires_corrective_upgrade = (
+            self._compare_version_strings(current_graph_data_version, graph_data_version) == 0
+            and requires_current_network_http_contract_repair(graph_model.model_dump(mode="python"))
+        )
         if self._compare_version_strings(current_app_version, minimum_loader_app_version) < 0:
             status = "loader_older_than_graph"
         elif self._compare_version_strings(current_graph_data_version, graph_data_version) > 0:
+            status = "upgrade_available"
+        elif requires_corrective_upgrade:
             status = "upgrade_available"
         else:
             status = "ok"
@@ -15703,9 +15949,18 @@ class CompilationWorkbenchService:
                 "last_upgraded_by_app_version": compatibility["last_upgraded_by_app_version"],
                 "upgrade_history": compatibility["upgrade_history"],
                 "is_legacy_unversioned": compatibility["is_legacy_unversioned"],
+                "requires_corrective_upgrade": requires_corrective_upgrade,
                 "available_upgrade_path": (
                     self._build_graph_upgrade_path(graph_data_version)
-                    if status == "upgrade_available"
+                    if self._compare_version_strings(current_graph_data_version, graph_data_version) > 0
+                    else [
+                        {
+                            "from_version": graph_data_version,
+                            "to_version": current_graph_data_version,
+                            "upgrader_id": CORRECTIVE_HTTP_CONTRACT_UPGRADER_ID,
+                        }
+                    ]
+                    if requires_corrective_upgrade
                     else []
                 ),
             },
@@ -15774,6 +16029,13 @@ class CompilationWorkbenchService:
         compatibility = self._normalize_graph_compatibility_metadata(graph_model)
         upgrade_history = list(compatibility.get("upgrade_history", []))
         previous_version = compatibility["graph_data_version"]
+        requires_corrective_upgrade = (
+            self._compare_version_strings(
+                previous_version,
+                GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION,
+            ) == 0
+            and requires_current_network_http_contract_repair(payload)
+        )
         upgrade_path = self._build_graph_upgrade_path(previous_version)
         payload = upgrade_graph_payload(
             payload,
@@ -15787,6 +16049,16 @@ class CompilationWorkbenchService:
                     "from_version": upgrade_path[0]["from_version"],
                     "to_version": upgrade_path[-1]["to_version"],
                     "upgrader_id": upgrade_path[-1]["upgrader_id"],
+                    "applied_by_app_version": CURRENT_API_VERSION,
+                    "applied_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        elif requires_corrective_upgrade:
+            upgrade_history.append(
+                {
+                    "from_version": previous_version,
+                    "to_version": GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION,
+                    "upgrader_id": CORRECTIVE_HTTP_CONTRACT_UPGRADER_ID,
                     "applied_by_app_version": CURRENT_API_VERSION,
                     "applied_at": datetime.now(timezone.utc).isoformat(),
                 }
@@ -21429,7 +21701,11 @@ class CompilationWorkbenchService:
             "session_id": session_id,
             "status": runtime_session.get("status"),
             "runtime_session": dict(runtime_session),
-            "runtime_plan": dict(session.get("runtime_plan", {})),
+            "runtime_plan": project_runtime_plan_for_publication(
+                session.get("runtime_plan", {})
+                if isinstance(session.get("runtime_plan"), dict)
+                else {}
+            ),
             "node_states": self._decorate_runtime_node_states_for_display(node_states),
             "event_log": [dict(item) for item in event_log],
             "execution_summary": self._build_runtime_execution_summary(
@@ -21445,7 +21721,7 @@ class CompilationWorkbenchService:
             ),
             "result": dict(result) if isinstance(result, dict) else result,
         }
-        return payload
+        return project_runtime_value_for_publication(payload)
 
     def _build_runtime_stream_summary_payload(
         self,

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import Field
 
 from weconduct.application.operations import (
     HostOperationService,
     OperationCaller,
     OperationRegistry,
     OperationRegistryError,
+)
+from weconduct.application.operations.models import (
+    EmptyOperationInput,
+    IdempotencyCapability,
+    OperationDescriptor,
+    PublicOperationOutput,
 )
 
 
@@ -67,10 +74,41 @@ class _FakeService:
     def submit_pending_input(self, *, execution_id: str, request_id: str, values: dict) -> dict:
         return {"execution_id": execution_id, "request_id": request_id, "values": values}
 
+    def unlock_runtime_session_parameters(self, *, session_id: str, password: str) -> dict:
+        return {"status": "unlocked", "parameter_ids": ["api_key"]}
+
+    def start_runtime_session_execution(self, *, session_id: str) -> dict:
+        return {"status": "accepted", "runtime_session": {"session_id": session_id}}
+
 
 class _PendingInputErrorService(_FakeService):
     def submit_pending_input(self, *, execution_id: str, request_id: str, values: dict) -> dict:
         raise ValueError("pending input request is not waiting")
+
+
+class _StrictOutput(PublicOperationOutput):
+    value: int = Field(strict=True)
+
+
+class _OutputInvalidHostOperationService(HostOperationService):
+    def __init__(self) -> None:
+        registry = OperationRegistry(
+            {
+                "test.output_invalid": OperationDescriptor(
+                    operation_id="test.output_invalid",
+                    input_model=EmptyOperationInput,
+                    output_model=_StrictOutput,
+                    output_fields=frozenset({"value"}),
+                    idempotency_capability=IdempotencyCapability.SUPPORTED,
+                )
+            }
+        )
+        super().__init__(service=_FakeService(), registry=registry)
+        self.dispatch_count = 0
+
+    def _dispatch(self, operation_id: str, payload: dict[str, object]) -> object:
+        self.dispatch_count += 1
+        return {"value": "not-an-integer"}
 
 
 def test_operation_service_executes_through_explicit_registry() -> None:
@@ -162,6 +200,22 @@ def test_operation_service_rejects_unknown_operation_and_missing_fields() -> Non
     assert unsupported_graph_document.value.error_code == "operation.input_invalid"
 
 
+def test_output_validation_failure_releases_idempotency_reservation() -> None:
+    service = _OutputInvalidHostOperationService()
+
+    for _ in range(2):
+        with pytest.raises(OperationRegistryError) as error:
+            service.invoke(
+                "test.output_invalid",
+                {},
+                caller=_TEST_CALLER,
+                idempotency_key="retry-after-output-validation-failure",
+            )
+        assert error.value.error_code == "operation.output_invalid"
+
+    assert service.dispatch_count == 2
+
+
 def test_operation_service_redacts_descriptor_output_to_contract_fields() -> None:
     service = HostOperationService(service=_FakeService())
 
@@ -198,3 +252,19 @@ def test_operation_service_normalizes_pending_input_state_conflicts() -> None:
         )
 
     assert error.value.error_code == "operation.state_conflict"
+
+
+def test_execution_parameter_unlock_uses_stable_operation_and_redacts_password_audit() -> None:
+    service = HostOperationService(service=_FakeService())
+
+    result = service.invoke(
+        "execution.parameters.unlock",
+        {"execution_id": "e-1", "password": "unlock-secret"},
+        caller=_TEST_CALLER,
+    )
+
+    assert result == {"status": "accepted", "parameter_ids": ["api_key"]}
+    assert service.audit_trail.records[-1].input_summary == {
+        "execution_id": "e-1",
+        "password": "<redacted>",
+    }

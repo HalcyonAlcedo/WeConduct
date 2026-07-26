@@ -21,23 +21,39 @@ class RuntimeSessionStreamSubscriber:
 
 
 class RuntimeSessionStreamBroker:
-    def __init__(self, *, history_limit: int = 256) -> None:
+    def __init__(
+        self,
+        *,
+        history_limit: int = 256,
+        closed_session_history_limit: int = 64,
+    ) -> None:
         if not isinstance(history_limit, int) or isinstance(history_limit, bool) or history_limit <= 0:
             raise ValueError("history_limit must be a positive integer")
+        if (
+            not isinstance(closed_session_history_limit, int)
+            or isinstance(closed_session_history_limit, bool)
+            or closed_session_history_limit <= 0
+        ):
+            raise ValueError("closed_session_history_limit must be a positive integer")
         self._lock = Lock()
         self._history_limit = history_limit
+        self._closed_session_history_limit = closed_session_history_limit
         self._subscribers_by_session_id: dict[str, dict[str, RuntimeSessionStreamSubscriber]] = defaultdict(dict)
         self._latest_snapshot_by_session_id: dict[str, dict[str, Any]] = {}
         self._event_history_by_session_id: dict[str, deque[dict[str, Any]]] = defaultdict(
             lambda: deque(maxlen=self._history_limit)
         )
         self._next_event_id_by_session_id: dict[str, int] = defaultdict(int)
+        self._closed_session_ids: deque[str] = deque()
+        self._closed_session_id_set: set[str] = set()
 
     def publish_snapshot(self, session_id: str, snapshot: dict[str, Any]) -> None:
         snapshot_payload = redact_sensitive_payload(snapshot)
         if not isinstance(snapshot_payload, dict):
             raise TypeError("runtime snapshot must be a mapping")
         with self._lock:
+            if session_id in self._closed_session_id_set:
+                return
             self._latest_snapshot_by_session_id[session_id] = snapshot_payload
             self._record_event_locked(session_id, "runtime.snapshot", snapshot_payload)
             subscribers = list(self._subscribers_by_session_id.get(session_id, {}).values())
@@ -59,10 +75,13 @@ class RuntimeSessionStreamBroker:
         subscriber_id = uuid.uuid4().hex
         subscriber = RuntimeSessionStreamSubscriber(subscriber_id=subscriber_id)
         with self._lock:
-            self._subscribers_by_session_id[session_id][subscriber_id] = subscriber
-        snapshot = self.get_latest_snapshot(session_id)
-        if snapshot is not None:
-            subscriber.queue.put(("runtime.snapshot", snapshot))
+            snapshot = self._latest_snapshot_by_session_id.get(session_id)
+            if isinstance(snapshot, dict):
+                subscriber.queue.put(("runtime.snapshot", dict(snapshot)))
+            if session_id in self._closed_session_id_set:
+                subscriber.queue.put(_STOP_EVENT)
+            else:
+                self._subscribers_by_session_id[session_id][subscriber_id] = subscriber
         return subscriber_id, subscriber.queue
 
     def unsubscribe(self, session_id: str, subscriber_id: str) -> None:
@@ -81,7 +100,7 @@ class RuntimeSessionStreamBroker:
             subscribers = self._subscribers_by_session_id.pop(session_id, {})
             for subscriber in subscribers.values():
                 subscriber.queue.put(_STOP_EVENT)
-            self._latest_snapshot_by_session_id.pop(session_id, None)
+            self._remember_closed_session_locked(session_id)
 
     def get_events_since(
         self,
@@ -124,6 +143,8 @@ class RuntimeSessionStreamBroker:
 
     def _publish(self, session_id: str, event_name: str, payload: dict[str, Any]) -> None:
         with self._lock:
+            if session_id in self._closed_session_id_set:
+                return
             self._record_event_locked(session_id, event_name, payload)
             subscribers = list(self._subscribers_by_session_id.get(session_id, {}).values())
             for subscriber in subscribers:
@@ -139,6 +160,18 @@ class RuntimeSessionStreamBroker:
                 "payload": dict(payload),
             }
         )
+
+    def _remember_closed_session_locked(self, session_id: str) -> None:
+        if session_id in self._closed_session_id_set:
+            return
+        self._closed_session_ids.append(session_id)
+        self._closed_session_id_set.add(session_id)
+        while len(self._closed_session_ids) > self._closed_session_history_limit:
+            expired_session_id = self._closed_session_ids.popleft()
+            self._closed_session_id_set.discard(expired_session_id)
+            self._latest_snapshot_by_session_id.pop(expired_session_id, None)
+            self._event_history_by_session_id.pop(expired_session_id, None)
+            self._next_event_id_by_session_id.pop(expired_session_id, None)
 
     def iter_events(self, queue: Queue) -> Iterator[tuple[str, dict[str, Any]]]:
         while True:

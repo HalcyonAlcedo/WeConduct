@@ -673,6 +673,65 @@ def test_api_exposes_runtime_abort_action(tmp_path: Path) -> None:
         server.server_close()
 
 
+def test_api_exposes_runtime_pending_input_and_parameter_unlock_actions(tmp_path: Path) -> None:
+    ui_dist_path = tmp_path / "ui-dist"
+    ui_dist_path.mkdir(parents=True)
+    (ui_dist_path / "index.html").write_text("<!doctype html><html></html>", encoding="utf-8")
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        ui_dist_path=ui_dist_path,
+    )
+    server.workbench_service = CompilationWorkbenchService()
+    submitted: list[dict] = []
+    unlocked: list[dict] = []
+
+    def get_pending_input_snapshot(*, execution_id: str) -> dict:
+        return {
+            "execution_id": execution_id,
+            "request_id": "input-1",
+            "status": "waiting",
+            "fields": [{"field_id": "password", "label": "Password", "sensitive": True}],
+            "timeout_seconds": 0,
+        }
+
+    def submit_pending_input(*, execution_id: str, request_id: str, values: dict) -> dict:
+        submitted.append({"execution_id": execution_id, "request_id": request_id, "values": values})
+        return {"execution_id": execution_id, "request_id": request_id, "status": "submitted"}
+
+    def unlock_runtime_session_parameters(*, session_id: str, password: str) -> dict:
+        unlocked.append({"session_id": session_id, "password": password})
+        return {"status": "unlocked", "parameter_ids": ["api_key"]}
+
+    server.workbench_service.get_pending_input_snapshot = get_pending_input_snapshot  # type: ignore[method-assign]
+    server.workbench_service.submit_pending_input = submit_pending_input  # type: ignore[method-assign]
+    server.workbench_service.unlock_runtime_session_parameters = unlock_runtime_session_parameters  # type: ignore[method-assign]
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        pending = _get_json(f"{base_url}/api/workbench/runtime/runtime-session-1/pending-input")
+        submitted_snapshot = _post_json(
+            f"{base_url}/api/workbench/runtime/runtime-session-1/pending-input",
+            {"request_id": "input-1", "values": {"password": "private-value"}},
+        )
+        unlock_result = _post_json(
+            f"{base_url}/api/workbench/runtime/runtime-session-1/unlock",
+            {"password": "unlock-value"},
+        )
+
+        assert pending["status"] == "waiting"
+        assert submitted_snapshot["status"] == "submitted"
+        assert unlock_result == {"status": "unlocked", "parameter_ids": ["api_key"]}
+        assert submitted == [{"execution_id": "runtime-session-1", "request_id": "input-1", "values": {"password": "private-value"}}]
+        assert unlocked == [{"session_id": "runtime-session-1", "password": "unlock-value"}]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_api_runtime_start_failure_retains_runtime_payload(tmp_path: Path) -> None:
     workspace_state_path = tmp_path / "runtime" / "workspace-state.json"
     preferences_path = tmp_path / "runtime" / "preferences.json"

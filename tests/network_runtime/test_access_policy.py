@@ -11,6 +11,8 @@ from weconduct.network_runtime.access_policy import NetworkAccessPolicy
 from weconduct.network_runtime.transport import (
     PinnedDnsAsyncHTTPTransport,
     ValidatedNetworkBackend,
+    _PinnedDnsAsyncTunnelHTTPConnection,
+    _resolve_tunnel_sni_hostname,
 )
 
 
@@ -74,7 +76,41 @@ def test_validated_network_backend_connects_to_validated_address_not_hostname(
     assert inner.calls == [("93.184.216.34", 443)]
 
 
-def test_pinned_dns_transport_keeps_host_and_sni_while_connecting_to_validated_ip(
+def test_validated_network_backend_uses_request_pinned_address_without_dns_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RecordingBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+
+        async def connect_tcp(self, host: str, port: int, **_: object) -> object:
+            self.calls.append((host, port))
+            return object()
+
+        async def connect_unix_socket(self, path: str, **_: object) -> object:
+            raise AssertionError(f"unexpected unix socket connection: {path}")
+
+        async def sleep(self, _: float) -> None:
+            return None
+
+    def unexpected_dns(*_: object, **__: object) -> object:
+        raise AssertionError("pinned connection must not resolve DNS again")
+
+    monkeypatch.setattr(socket, "getaddrinfo", unexpected_dns)
+    inner = RecordingBackend()
+    backend = ValidatedNetworkBackend(NetworkAccessPolicy(), backend=inner)
+    backend.set_pinned_addresses(
+        hostname="rebind.example.test",
+        port=443,
+        addresses=("93.184.216.34",),
+    )
+
+    asyncio.run(backend.connect_tcp("rebind.example.test", 443, timeout=1.0))
+
+    assert inner.calls == [("93.184.216.34", 443)]
+
+
+def test_pinned_dns_transport_keeps_hostname_origin_and_sni_while_using_pinned_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class RecordingPool:
@@ -117,6 +153,35 @@ def test_pinned_dns_transport_keeps_host_and_sni_while_connecting_to_validated_i
     asyncio.run(exercise())
 
     assert pool.request is not None
-    assert pool.request.url.host == b"93.184.216.34"
+    assert pool.request.url.host == b"rebind.example.test"
     assert dict(pool.request.headers)[b"Host"] == b"rebind.example.test"
     assert pool.request.extensions["sni_hostname"] == "rebind.example.test"
+
+
+def test_proxy_tunnel_uses_original_hostname_for_tls_sni_after_connecting_to_pinned_ip() -> None:
+    request = httpcore.Request(
+        method="GET",
+        url="https://93.184.216.34/resource",
+        extensions={"sni_hostname": "rebind.example.test"},
+    )
+
+    server_hostname = _resolve_tunnel_sni_hostname(
+        request,
+        remote_host=b"93.184.216.34",
+    )
+
+    assert server_hostname == b"rebind.example.test"
+
+
+def test_pinned_proxy_transport_replaces_https_tunnel_connection_factory() -> None:
+    transport = PinnedDnsAsyncHTTPTransport(
+        access_policy=NetworkAccessPolicy(allow_loopback=True),
+        proxy="http://127.0.0.1:8080",
+    )
+
+    connection = transport._pool.create_connection(
+        httpcore.Origin(scheme=b"https", host=b"93.184.216.34", port=443)
+    )
+
+    assert isinstance(connection, _PinnedDnsAsyncTunnelHTTPConnection)
+    assert connection._remote_origin.host == b"93.184.216.34"

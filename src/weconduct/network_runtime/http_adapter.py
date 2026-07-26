@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterable
 from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 import ssl
 from time import perf_counter
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -50,38 +51,44 @@ class HttpxAdapter:
     ) -> NetworkResult:
         started_at = perf_counter()
         try:
-            headers = apply_static_auth(
+            request_headers = apply_static_auth(
                 {**snapshot.headers, **operation.headers},
                 snapshot.auth,
             )
-            query = {
+            request_query = {
                 **dict(httpx.URL(operation.url).params),
                 **snapshot.query,
                 **operation.query,
             }
-            content = operation.content
+            request_content = operation.content
             if operation.upload_stream is not None:
-                content = operation.upload_stream
+                request_content = operation.upload_stream
             elif operation.upload_file_path is not None:
-                content = _iter_upload_file_chunks(operation.upload_file_path)
+                request_content = _iter_upload_file_chunks(operation.upload_file_path)
+            request_cookies = dict(snapshot.cookies)
+            request_method = operation.method
             request_url = operation.url
             tls_config = snapshot.tls if isinstance(snapshot.tls, dict) else {}
             resolved_tls = TlsResolver().resolve(tls_config)
-            client = self._client_for_snapshot(snapshot, request_url, resolved_tls=resolved_tls)
             for _ in range(10):
                 resolved_target = self._access_policy.validate_url(request_url)
+                client = self._client_for_snapshot(
+                    snapshot,
+                    request_url,
+                    resolved_tls=resolved_tls,
+                )
                 request_extensions = (
                     {"weconduct.resolved_network_target": resolved_target}
                     if resolved_target is not None
                     else None
                 )
                 async with client.stream(
-                    operation.method,
+                    request_method,
                     request_url,
-                    headers=headers,
-                    params=query,
-                    cookies=snapshot.cookies,
-                    content=content,
+                    headers=request_headers,
+                    params=request_query,
+                    cookies=request_cookies,
+                    content=request_content,
                     timeout=operation.timeout_seconds,
                     extensions=request_extensions,
                 ) as response:
@@ -101,7 +108,19 @@ class HttpxAdapter:
                             force_file=operation.response_storage == "file",
                         )
                         break
-                    request_url = urljoin(request_url, redirect_target)
+                    next_url = urljoin(request_url, redirect_target)
+                    if _is_cross_origin_redirect(request_url, next_url):
+                        request_headers = _drop_cross_origin_credentials(request_headers)
+                        # params=None 保留 Location 自带 query，但不会携带来源请求的附加 query。
+                        request_query = None
+                        request_cookies = {}
+                    request_method, request_content, request_headers = _apply_redirect_method_semantics(
+                        status_code=response.status_code,
+                        method=request_method,
+                        content=request_content,
+                        headers=request_headers,
+                    )
+                    request_url = next_url
             else:
                 error = build_network_error(
                     "network.too_many_redirects",
@@ -267,3 +286,59 @@ def _parse_set_cookie_headers(headers: httpx.Headers) -> dict[str, str | None]:
             max_age = morsel["max-age"].strip().lower()
             changes[name] = None if max_age == "0" else morsel.value
     return changes
+
+
+def _is_cross_origin_redirect(source_url: str, target_url: str) -> bool:
+    return _origin(source_url) != _origin(target_url)
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urlsplit(url)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+    port = parsed.port
+    if port is None:
+        port = 443 if scheme == "https" else 80 if scheme == "http" else None
+    return scheme, hostname, port
+
+
+def _drop_cross_origin_credentials(headers: dict[str, object]) -> dict[str, object]:
+    credential_header_names = {
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "x-access-token",
+        "x-api-key",
+        "x-auth-token",
+    }
+    return {
+        name: value
+        for name, value in headers.items()
+        if name.lower() not in credential_header_names
+    }
+
+
+def _apply_redirect_method_semantics(
+    *,
+    status_code: int,
+    method: str,
+    content: object,
+    headers: dict[str, object],
+) -> tuple[str, object | None, dict[str, object]]:
+    normalized_method = method.upper()
+    switches_to_get = status_code == 303 or (
+        status_code in {301, 302} and normalized_method == "POST"
+    )
+    if switches_to_get and normalized_method != "HEAD":
+        return "GET", None, _drop_request_body_headers(headers)
+    if not switches_to_get and isinstance(content, AsyncIterable):
+        raise ValueError("network.redirect_body_replay_unsupported")
+    return method, content, headers
+
+
+def _drop_request_body_headers(headers: dict[str, object]) -> dict[str, object]:
+    return {
+        name: value
+        for name, value in headers.items()
+        if name.lower() not in {"content-length", "content-type", "transfer-encoding"}
+    }

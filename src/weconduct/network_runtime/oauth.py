@@ -14,6 +14,7 @@ from .access_policy import NetworkAccessPolicy
 from .models import NetworkContextSnapshot
 from .proxy import ProxyResolver
 from .tls import TlsResolver, build_ssl_context, verify_response_certificate_pins
+from .transport import PinnedDnsHTTPTransport
 
 if TYPE_CHECKING:
     from weconduct.application.sensitive_values.models import SensitiveRef
@@ -199,20 +200,36 @@ class OAuthService:
         snapshot: NetworkContextSnapshot | None,
     ) -> Mapping[str, object]:
         try:
-            self._access_policy.validate_url(token_url)
+            resolved_target = self._access_policy.validate_url(token_url)
             tls_config = snapshot.tls if isinstance(getattr(snapshot, "tls", None), dict) else {}
             resolved_tls = TlsResolver().resolve(tls_config)
             verify: ssl.SSLContext | bool = build_ssl_context(resolved_tls)
             proxy_config = snapshot.proxy if isinstance(getattr(snapshot, "proxy", None), dict) else {"mode": "direct"}
             resolved_proxy = ProxyResolver().resolve(proxy_config, token_url)
-            with httpx.Client(
-                transport=self._transport,
-                timeout=self._timeout_seconds,
+            transport = self._transport or PinnedDnsHTTPTransport(
+                access_policy=self._access_policy,
                 verify=verify,
                 proxy=resolved_proxy.url,
                 trust_env=False,
+                http2=True,
+            )
+            with httpx.Client(
+                transport=transport,
+                timeout=self._timeout_seconds,
+                verify=verify,
+                proxy=resolved_proxy.url if self._transport is not None else None,
+                trust_env=False,
             ) as client:
-                response = client.post(token_url, data=dict(data), auth=auth)
+                response = client.post(
+                    token_url,
+                    data=dict(data),
+                    auth=auth,
+                    extensions=(
+                        {"weconduct.resolved_network_target": resolved_target}
+                        if resolved_target is not None
+                        else None
+                    ),
+                )
             verify_response_certificate_pins(response, resolved_tls.certificate_pins)
         except (httpx.HTTPError, ValueError) as exc:
             raise OAuthConfigurationError("oauth.token_exchange_failed") from exc

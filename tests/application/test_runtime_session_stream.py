@@ -62,7 +62,7 @@ def test_close_session_cannot_overtake_terminal_event_delivery() -> None:
     assert probe_queue.get_nowait() is _STOP_EVENT
 
 
-def test_close_session_stops_subscribers_and_clears_only_closed_session_snapshot() -> None:
+def test_close_session_stops_subscribers_and_retains_terminal_snapshot_for_reconnect() -> None:
     broker = RuntimeSessionStreamBroker()
     broker.publish_snapshot("session-to-close", {"status": "running"})
     broker.publish_snapshot("session-to-keep", {"status": "idle"})
@@ -76,7 +76,7 @@ def test_close_session_stops_subscribers_and_clears_only_closed_session_snapshot
     broker.close_session("session-to-close")
 
     assert closed_queue.get_nowait() is _STOP_EVENT
-    assert broker.get_latest_snapshot("session-to-close") is None
+    assert broker.get_latest_snapshot("session-to-close") == {"status": "running"}
     assert broker.get_latest_snapshot("session-to-keep") == {"status": "idle"}
 
     broker.publish_event("session-to-keep", "runtime.progress", {"step": 2})
@@ -112,7 +112,33 @@ def test_close_session_waits_for_in_flight_snapshot_before_clearing_it() -> None
         {"status": "completed"},
     )
     assert blocking_queue.get_nowait() is _STOP_EVENT
-    assert broker.get_latest_snapshot("session-to-close") is None
+    assert broker.get_latest_snapshot("session-to-close") == {"status": "completed"}
+
+
+def test_late_subscriber_observes_closed_session_snapshot_before_stop() -> None:
+    broker = RuntimeSessionStreamBroker()
+    broker.publish_snapshot("session-terminal", {"status": "completed"})
+    broker.publish_event("session-terminal", "runtime.completed", {"status": "completed"})
+    broker.close_session("session-terminal")
+
+    _, queue = broker.subscribe("session-terminal")
+
+    assert queue.get_nowait() == ("runtime.snapshot", {"status": "completed"})
+    assert queue.get_nowait() is _STOP_EVENT
+    history = broker.get_events_since("session-terminal")
+    assert history["events"][-1]["event_name"] == "runtime.completed"
+
+
+def test_closed_session_retention_prunes_oldest_history_and_snapshot() -> None:
+    broker = RuntimeSessionStreamBroker(closed_session_history_limit=1)
+    for session_id in ("session-first", "session-second"):
+        broker.publish_snapshot(session_id, {"status": "completed"})
+        broker.publish_event(session_id, "runtime.completed", {"status": "completed"})
+        broker.close_session(session_id)
+
+    assert broker.get_latest_snapshot("session-first") is None
+    assert broker.get_events_since("session-first")["events"] == []
+    assert broker.get_latest_snapshot("session-second") == {"status": "completed"}
 
 
 def test_runtime_stream_redacts_sensitive_refs_at_event_boundary() -> None:
@@ -128,7 +154,7 @@ def test_runtime_stream_redacts_sensitive_refs_at_event_boundary() -> None:
 
     assert queue.get_nowait() == (
         "runtime.node",
-        {"credential": "<sensitive-ref>"},
+        {"credential": "<redacted>"},
     )
 
 

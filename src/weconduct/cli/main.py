@@ -9,6 +9,13 @@ from weconduct.application import (
     CompilationWorkbenchService,
     OperationRegistryError,
 )
+from weconduct.application.configuration import ConfigurationService
+from weconduct.application.configuration.builtin_registry import (
+    build_builtin_configuration_registry,
+)
+from weconduct.application.configuration.program_repository import (
+    FileProgramConfigurationRepository,
+)
 from weconduct.application.operations import HostOperationService
 from weconduct.application.pending_input.models import PendingInputSnapshot
 from weconduct.application.preview_smoke import run_preview_smoke
@@ -30,6 +37,7 @@ def main() -> int:
     compile_parser.add_argument("source_file")
     run_project_parser = subparsers.add_parser("run-project")
     run_project_parser.add_argument("project_file")
+    run_project_parser.add_argument("--preferences-path", default=None)
     regression_run_parser = subparsers.add_parser("regression-run")
     regression_run_parser.add_argument("project_files", nargs="*")
     regression_run_parser.add_argument("--project-dir", action="append", default=[])
@@ -89,7 +97,12 @@ def main() -> int:
 
     if args.command == "run-project":
         project_file = Path(args.project_file).resolve()
-        service = CompilationWorkbenchService()
+        preferences_path = _resolve_cli_preferences_path(args.preferences_path)
+        service = CompilationWorkbenchService(
+            configuration_service=_build_cli_program_configuration_service(
+                preferences_path=preferences_path
+            )
+        )
         opened = service.open_project(project_path=project_file)
         started = service.start_runtime_session(None)
         if started["status"] != "started":
@@ -102,6 +115,7 @@ def main() -> int:
             _print_json(payload)
             return 1
         session_id = started["runtime_session"]["session_id"]
+        _unlock_runtime_session_parameters_for_cli(service, session_id=session_id)
         run_result = _run_runtime_session_with_cli_input(service, session_id=session_id)
         payload = {
             "status": run_result["status"],
@@ -414,6 +428,22 @@ def main() -> int:
     return 1
 
 
+def _resolve_cli_preferences_path(raw_path: str | None) -> Path:
+    if raw_path is not None:
+        return Path(raw_path).resolve()
+    return resolve_default_preferences_path()
+
+
+def _build_cli_program_configuration_service(
+    *,
+    preferences_path: Path,
+) -> ConfigurationService:
+    return ConfigurationService(
+        registry=build_builtin_configuration_registry(),
+        repositories={"program": FileProgramConfigurationRepository(preferences_path)},
+    )
+
+
 def _json_default(value):
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
@@ -472,6 +502,17 @@ def _parse_pending_input_cli_value(raw_value: str, *, value_type: str) -> object
         except json.JSONDecodeError as exc:
             raise ValueError("需要输入有效 JSON") from exc
     return raw_value
+
+
+def _unlock_runtime_session_parameters_for_cli(
+    service: CompilationWorkbenchService,
+    *,
+    session_id: str,
+) -> None:
+    if not service.requires_runtime_session_parameter_unlock(session_id=session_id):
+        return
+    password = getpass.getpass("项目加密参数密码: ")
+    service.unlock_runtime_session_parameters(session_id=session_id, password=password)
 
 
 def _run_runtime_session_with_cli_input(service, *, session_id: str) -> dict:

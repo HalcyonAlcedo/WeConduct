@@ -9,6 +9,7 @@ const apiMocks = vi.hoisted(() => ({
   postRuntimeStart: vi.fn(),
   postRuntimeRun: vi.fn(),
   postRuntimeAbort: vi.fn(),
+  fetchRuntimePendingInput: vi.fn(),
   getRuntimeStreamUrl: vi.fn((sessionId: string) => `/api/workbench/runtime/${sessionId}/stream`),
   buildRuntimeProgressFromSession: vi.fn((detail: any) => {
     const nodeStates = Array.isArray(detail?.node_states) ? detail.node_states : []
@@ -38,6 +39,7 @@ vi.mock('@/services/api', () => ({
   postRuntimeStart: apiMocks.postRuntimeStart,
   postRuntimeRun: apiMocks.postRuntimeRun,
   postRuntimeAbort: apiMocks.postRuntimeAbort,
+  fetchRuntimePendingInput: apiMocks.fetchRuntimePendingInput,
   getRuntimeStreamUrl: apiMocks.getRuntimeStreamUrl,
   buildRuntimeProgressFromSession: apiMocks.buildRuntimeProgressFromSession,
 }))
@@ -90,6 +92,64 @@ describe('runtimeStore', () => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
     apiMocks.fetchRuntimeSessions.mockResolvedValue({ sessions: [] })
     apiMocks.fetchDebugSessions.mockResolvedValue({ sessions: [] })
+    apiMocks.fetchRuntimePendingInput.mockResolvedValue({
+      execution_id: null,
+      request_id: null,
+      status: 'none',
+      fields: [],
+      timeout_seconds: null,
+    })
+    apiMocks.fetchRuntimePendingInput.mockResolvedValue({
+      execution_id: null,
+      request_id: null,
+      status: 'none',
+      fields: [],
+      timeout_seconds: null,
+    })
+  })
+
+  it('hydrates a waiting input request when subscribing after the request event', async () => {
+    apiMocks.fetchRuntimePendingInput.mockResolvedValue({
+      execution_id: 'rt-pending-input',
+      request_id: 'rt-pending-input:node-input:1',
+      status: 'waiting',
+      fields: [{ field_id: 'token', label: 'Token', value_type: 'string', sensitive: true, required: true }],
+      timeout_seconds: 0,
+    })
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    store.subscribeRuntimeSession('rt-pending-input')
+
+    await vi.waitFor(() => {
+      expect(store.pendingRuntimeInput).toMatchObject({
+        execution_id: 'rt-pending-input',
+        request_id: 'rt-pending-input:node-input:1',
+        status: 'waiting',
+      })
+    })
+  })
+
+  it('hydrates a waiting input request when subscribing after the request event', async () => {
+    apiMocks.fetchRuntimePendingInput.mockResolvedValue({
+      execution_id: 'rt-pending-input',
+      request_id: 'rt-pending-input:node-input:1',
+      status: 'waiting',
+      fields: [{ field_id: 'token', label: 'Token', value_type: 'string', sensitive: true, required: true }],
+      timeout_seconds: 0,
+    })
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    store.subscribeRuntimeSession('rt-pending-input')
+
+    await vi.waitFor(() => {
+      expect(store.pendingRuntimeInput).toMatchObject({
+        execution_id: 'rt-pending-input',
+        request_id: 'rt-pending-input:node-input:1',
+        status: 'waiting',
+      })
+    })
   })
 
   it('subscribes to runtime SSE after accepted run and resolves on completed event', async () => {

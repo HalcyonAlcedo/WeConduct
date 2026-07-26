@@ -44,6 +44,7 @@ from weconduct.network_runtime import (
 from weconduct.network_runtime.errors import build_network_error
 from weconduct.runtime.execution_context import ExecutionSessionContext, ExecutionTokenContext
 from weconduct.runtime.execution_envelope import ExecutionEnvelope, ExecutionEnvelopeError, FieldSchema
+from weconduct.runtime.python_sensitive_broker import PythonSensitiveValueBroker
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from playwright.sync_api import Browser, Frame, Page, Playwright, sync_playwright
@@ -3793,29 +3794,6 @@ class RuntimeExecutorRegistry:
                 "stdout": "",
                 "stderr": "",
             }
-        payload = {
-            "code": code,
-            "variables": _make_python_run_json_safe(context.variables),
-            "result_variable": default_variable_name,
-            "envelope": {
-                "inputs": _make_python_run_json_safe(envelope.inputs),
-                "metadata": _make_python_run_json_safe(envelope.metadata),
-                "input_schema": _serialize_python_schema(envelope.input_schema),
-                "output_schema": _serialize_python_schema(envelope.output_schema),
-                "metadata_schema": _serialize_python_schema(envelope.metadata_schema),
-                "data": _make_python_run_json_safe(envelope.data_values),
-                "allowed_data_fields": sorted(envelope.allowed_data_fields),
-                "session_info": _make_python_run_json_safe(envelope.session_info),
-                "sensitive_input_fields": sorted(envelope.sensitive_input_fields),
-                "sensitive_data_fields": sorted(envelope.sensitive_data_fields),
-                "network": _make_python_run_json_safe(
-                    context.flow_runtime.get("network_context_snapshot", {})
-                ),
-            },
-            "blocked_imports": sorted(
-                _resolve_python_blocked_import_modules(self._runtime_settings)
-            ),
-        }
         command_timeout = _resolve_int(self._runtime_settings.get("python_timeout_seconds"), default=60)
         if command_timeout <= 0:
             command_timeout = 60
@@ -3826,12 +3804,49 @@ class RuntimeExecutorRegistry:
         env.pop("PYTHONPATH", None)
         child_stdout = ""
         child_stderr = ""
+        sensitive_broker: PythonSensitiveValueBroker | None = None
         try:
             _validate_python_run_code(
                 code,
                 blocked_imports=_resolve_python_blocked_import_modules(self._runtime_settings),
             )
             _check_cancellation(context)
+            sensitive_broker = PythonSensitiveValueBroker(
+                sensitive_service=context.flow_runtime.get("sensitive_value_service"),
+                session_id=context.execution_session_context.session_id,
+                node_id=str(node["node_id"]),
+            )
+            sensitive_broker.start()
+            payload = {
+                "code": code,
+                "variables": _make_python_run_json_safe(context.variables),
+                "result_variable": default_variable_name,
+                "envelope": {
+                    "inputs": _make_python_run_json_safe(
+                        sensitive_broker.encode_for_child(envelope.inputs)
+                    ),
+                    "metadata": _make_python_run_json_safe(
+                        sensitive_broker.encode_for_child(envelope.metadata)
+                    ),
+                    "input_schema": _serialize_python_schema(envelope.input_schema),
+                    "output_schema": _serialize_python_schema(envelope.output_schema),
+                    "metadata_schema": _serialize_python_schema(envelope.metadata_schema),
+                    "data": _make_python_run_json_safe(
+                        sensitive_broker.encode_for_child(envelope.data_values)
+                    ),
+                    "allowed_data_fields": sorted(envelope.allowed_data_fields),
+                    "session_info": _make_python_run_json_safe(envelope.session_info),
+                    "sensitive_input_fields": sorted(envelope.sensitive_input_fields),
+                    "sensitive_data_fields": sorted(envelope.sensitive_data_fields),
+                    "sensitive_broker": sensitive_broker.child_connection_config(),
+                    "network": _make_python_run_json_safe(
+                        context.flow_runtime.get("network_context_snapshot", {})
+                    ),
+                },
+                "blocked_imports": sorted(
+                    _resolve_python_blocked_import_modules(self._runtime_settings)
+                ),
+            }
             child_result = None
             process = None
             active_env = dict(env)
@@ -3919,6 +3934,9 @@ class RuntimeExecutorRegistry:
                 "stdout": "",
                 "stderr": "",
             }
+        finally:
+            if sensitive_broker is not None:
+                sensitive_broker.close()
         if process is None or child_result is None:
             return {
                 "status": "failed",
@@ -4044,7 +4062,7 @@ class RuntimeExecutorRegistry:
             + _collect_python_sensitive_refs(data_values)
             + _collect_python_sensitive_refs(metadata)
         )
-        inputs = _resolve_python_sensitive_inputs(
+        _validate_python_sensitive_inputs(
             inputs,
             context=context,
             allow_sensitive_values=node_config.get("allow_sensitive_values") is True,
@@ -4054,12 +4072,12 @@ class RuntimeExecutorRegistry:
             for name, value in data_values.items()
             if _contains_python_sensitive_ref(value)
         )
-        data_values = _resolve_python_sensitive_inputs(
+        _validate_python_sensitive_inputs(
             data_values,
             context=context,
             allow_sensitive_values=node_config.get("allow_sensitive_values") is True,
         )
-        metadata = _resolve_python_sensitive_inputs(
+        _validate_python_sensitive_inputs(
             metadata,
             context=context,
             allow_sensitive_values=node_config.get("allow_sensitive_values") is True,
@@ -5219,11 +5237,13 @@ from __future__ import annotations
 
 import io
 import json
+import socket
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 _PYTHON_BLOCKED_IMPORTS = set()
+_SENSITIVE_CAPABILITY_KEY = "__weconduct_sensitive_capability__"
 
 
 def _python_safe_import(name, globals_dict=None, locals_dict=None, fromlist=(), level=0):
@@ -5281,16 +5301,46 @@ def _json_safe(value):
     return repr(value)
 
 
+class _SensitiveValueResolver:
+    def __init__(self, config):
+        self._config = config if isinstance(config, dict) else None
+
+    def resolve(self, value):
+        if isinstance(value, dict):
+            if set(value) == {_SENSITIVE_CAPABILITY_KEY}:
+                return self._resolve_capability(value[_SENSITIVE_CAPABILITY_KEY])
+            return {key: self.resolve(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self.resolve(item) for item in value]
+        return value
+
+    def _resolve_capability(self, capability):
+        if self._config is None or not isinstance(capability, str):
+            raise PermissionError("python.sensitive_access_denied")
+        host = self._config.get("host")
+        port = self._config.get("port")
+        if not isinstance(host, str) or not isinstance(port, int):
+            raise PermissionError("python.sensitive_access_denied")
+        with socket.create_connection((host, port), timeout=1) as connection:
+            connection.sendall(json.dumps({"capability": capability}).encode("utf-8"))
+            connection.shutdown(socket.SHUT_WR)
+            response = json.loads(connection.makefile("rb").read().decode("utf-8"))
+        if not isinstance(response, dict) or response.get("ok") is not True:
+            raise PermissionError("python.sensitive_access_denied")
+        return response.get("value")
+
+
 class _FieldReader:
-    def __init__(self, values, sensitive_fields=()):
+    def __init__(self, values, sensitive_fields=(), resolver=None):
         self._values = values if isinstance(values, dict) else {}
         self._sensitive_fields = set(sensitive_fields or ())
+        self._resolver = resolver or _SensitiveValueResolver(None)
         self.sensitive_read = False
 
     def get(self, field_id, default=None):
         if field_id in self._sensitive_fields:
             self.sensitive_read = True
-        return self._values.get(field_id, default)
+        return self._resolver.resolve(self._values.get(field_id, default))
 
 
 class _FieldWriter:
@@ -5315,19 +5365,20 @@ class _FieldWriter:
 
 
 class _DomainData:
-    def __init__(self, values, allowed_fields, sensitive_fields, is_sensitive, sensitive_output_fields):
+    def __init__(self, values, allowed_fields, sensitive_fields, is_sensitive, sensitive_output_fields, resolver):
         self._values = values if isinstance(values, dict) else {}
         self._allowed_fields = set(allowed_fields or ())
         self._sensitive_fields = set(sensitive_fields or ())
         self._is_sensitive = is_sensitive
         self._sensitive_output_fields = sensitive_output_fields
+        self._resolver = resolver
         self.sensitive_read = False
 
     def get(self, name, default=None):
         self._ensure(name)
         if name in self._sensitive_fields:
             self.sensitive_read = True
-        return self._values.get(name, default)
+        return self._resolver.resolve(self._values.get(name, default))
 
     def set(self, name, value):
         self._ensure(name)
@@ -5364,9 +5415,11 @@ class _Cancel:
 class _Context:
     def __init__(self, envelope):
         self.sensitive_output_fields = set()
+        resolver = _SensitiveValueResolver(envelope.get("sensitive_broker"))
         self.inputs = _FieldReader(
             envelope.get("inputs", {}),
             envelope.get("sensitive_input_fields", ()),
+            resolver,
         )
         self.data = _DomainData(
             envelope.setdefault("data", {}),
@@ -5374,6 +5427,7 @@ class _Context:
             envelope.get("sensitive_data_fields", ()),
             self._is_sensitive_read,
             self.sensitive_output_fields,
+            resolver,
         )
         self.outputs = _FieldWriter(
             envelope.setdefault("outputs", {}),
@@ -5540,12 +5594,12 @@ def _redact_python_text(value: object, secrets: tuple[str, ...]) -> str:
     return text
 
 
-def _resolve_python_sensitive_inputs(
+def _validate_python_sensitive_inputs(
     value: Any,
     *,
     context: RuntimeContext,
     allow_sensitive_values: bool,
-) -> Any:
+) -> None:
     from weconduct.application.sensitive_values.models import SensitiveConsumer, SensitiveRef
 
     if isinstance(value, SensitiveRef):
@@ -5562,40 +5616,34 @@ def _resolve_python_sensitive_inputs(
                 "sensitive value resolver is unavailable",
             )
         try:
-            return resolver(value, consumer=SensitiveConsumer.RUNTIME_EXECUTOR)
+            resolver(value, consumer=SensitiveConsumer.RUNTIME_EXECUTOR)
+            return
         except (KeyError, PermissionError, TypeError, ValueError) as exc:
             raise ExecutionEnvelopeError(
                 "python.sensitive_access_denied",
                 "sensitive value reference is unavailable",
             ) from exc
     if isinstance(value, dict):
-        return {
-            key: _resolve_python_sensitive_inputs(
+        for item in value.values():
+            _validate_python_sensitive_inputs(
                 item,
                 context=context,
                 allow_sensitive_values=allow_sensitive_values,
             )
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [
-            _resolve_python_sensitive_inputs(
+    elif isinstance(value, list):
+        for item in value:
+            _validate_python_sensitive_inputs(
                 item,
                 context=context,
                 allow_sensitive_values=allow_sensitive_values,
             )
-            for item in value
-        ]
-    if isinstance(value, tuple):
-        return tuple(
-            _resolve_python_sensitive_inputs(
+    elif isinstance(value, tuple):
+        for item in value:
+            _validate_python_sensitive_inputs(
                 item,
                 context=context,
                 allow_sensitive_values=allow_sensitive_values,
             )
-            for item in value
-        )
-    return value
 
 
 def _normalize_python_schema_config(raw: object) -> dict[str, FieldSchema]:

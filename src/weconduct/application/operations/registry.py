@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from .models import (
     EmptyOperationInput,
     ExecutionCancelInput,
+    ExecutionParameterUnlockInput,
     ExecutionReferenceInput,
     ExecutionStartInput,
     GraphDocumentInput,
@@ -74,6 +75,7 @@ class OperationRegistry:
             "execution.start": descriptor("execution.start", "status", "request", "runtime_session", "runtime_plan", "node_states", "debug_snapshot", "diagnostic_events", "execution_summary", "result", "diagnostics", "diagnostic_links", "object_index", "message", "details", "runtime_preview", "runtime_preview_summary", input_model=ExecutionStartInput, side_effect_level=SideEffectLevel.EXECUTE, execution_mode="async", idempotency_capability=IdempotencyCapability.SUPPORTED),
             "execution.get": descriptor("execution.get", "request", "runtime_session", "runtime_plan", "node_states", "debug_snapshot", "diagnostic_events", "execution_summary", "result", input_model=ExecutionReferenceInput),
             "execution.cancel": descriptor("execution.cancel", "status", "request", "runtime_session", "runtime_plan", "node_states", "debug_snapshot", "diagnostic_events", "execution_summary", "result", input_model=ExecutionCancelInput, side_effect_level=SideEffectLevel.EXECUTE, idempotency_capability=IdempotencyCapability.SUPPORTED),
+            "execution.parameters.unlock": descriptor("execution.parameters.unlock", "status", "parameter_ids", input_model=ExecutionParameterUnlockInput, side_effect_level=SideEffectLevel.EXECUTE),
             "execution.events.subscribe": descriptor("execution.events.subscribe", "execution_id", "stream", input_model=ExecutionReferenceInput, execution_mode="async"),
             "pending_input.get": descriptor("pending_input.get", "execution_id", "request_id", "status", "fields", "timeout_seconds", "created_at", "deadline", input_model=ExecutionReferenceInput),
             "pending_input.submit": descriptor("pending_input.submit", "execution_id", "request_id", "status", "fields", "timeout_seconds", "created_at", "deadline", input_model=PendingInputSubmitInput, side_effect_level=SideEffectLevel.EXECUTE),

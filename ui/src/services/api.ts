@@ -230,6 +230,11 @@ export function fetchRuntimeSession(id: string): Promise<RuntimeSessionDetailRes
 export function postRuntimeStart(body?: Record<string, unknown>): Promise<RuntimeSessionDetailResponse> { return request('/workbench/runtime/start', { method: 'POST', body: body ? JSON.stringify(body) : undefined }) }
 export function postRuntimeRun(sessionId: string): Promise<RuntimeSessionDetailResponse> { return request(`/workbench/runtime/${sessionId}/run`, { method: 'POST', body: '{}' }) }
 export function postRuntimeAbort(sessionId: string, reason = 'user_abort'): Promise<RuntimeSessionDetailResponse> { return request(`/workbench/runtime/${sessionId}/abort`, { method: 'POST', body: JSON.stringify({ reason }) }) }
+export interface RuntimePendingInputField { field_id: string; label: string; value_type: string; sensitive: boolean; required: boolean }
+export interface RuntimePendingInputSnapshot { execution_id: string | null; request_id: string | null; status: string; fields: RuntimePendingInputField[]; timeout_seconds: number | null }
+export function fetchRuntimePendingInput(sessionId: string): Promise<RuntimePendingInputSnapshot> { return request(`/workbench/runtime/${sessionId}/pending-input`) }
+export function postRuntimePendingInput(sessionId: string, requestId: string, values: Record<string, unknown>): Promise<RuntimePendingInputSnapshot> { return request(`/workbench/runtime/${sessionId}/pending-input`, { method: 'POST', body: JSON.stringify({ request_id: requestId, values }) }) }
+export function postRuntimeParameterUnlock(sessionId: string, password: string): Promise<{ status: string; parameter_ids: string[] }> { return request(`/workbench/runtime/${sessionId}/unlock`, { method: 'POST', body: JSON.stringify({ password }) }) }
 export function getRuntimeStreamUrl(sessionId: string): string { return `${API_BASE}/workbench/runtime/${sessionId}/stream` }
 export function buildRuntimeProgressFromSession(detail: RuntimeSessionDetailResponse): RuntimeProgress {
   const nodeStates = Array.isArray(detail.node_states) ? detail.node_states : []

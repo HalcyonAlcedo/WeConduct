@@ -868,7 +868,7 @@ export interface RuntimeProgress {
   event_count: number
 }
 export interface RuntimeSessionDetailResponse {
-  status?: RuntimeSessionStatus | 'started' | 'accepted' | 'diagnostic_blocked'; request: Record<string, unknown>
+  status?: RuntimeSessionStatus | 'started' | 'accepted' | 'unlock_required' | 'diagnostic_blocked'; request: Record<string, unknown>
   runtime_session: { session_id: string | null; status: RuntimeSessionStatus; execution_supported: boolean; abort_reason?: string | null; aborted_at?: string | null }
   runtime_plan: RuntimePlan | null
   node_states: Record<string, unknown>[]

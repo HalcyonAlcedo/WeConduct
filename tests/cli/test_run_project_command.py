@@ -3,6 +3,9 @@ import sys
 from pathlib import Path
 
 from weconduct.application import CompilationWorkbenchService
+from weconduct.application.configuration.program_repository import (
+    FileProgramConfigurationRepository,
+)
 from weconduct.cli import main as cli_main
 
 
@@ -90,6 +93,71 @@ def _build_project_file(project_path: Path) -> None:
     service.save_project_as(project_path=project_path)
 
 
+def _build_browser_navigation_project_file(project_path: Path) -> None:
+    service = CompilationWorkbenchService()
+    service.create_project(project_name="CLI Browser Preferences")
+    service.save_graph_document(
+        {
+            "graph_model_id": "graph:workspace",
+            "compilation_id": None,
+            "graph_schema_version": "graph-v1",
+            "nodes": [
+                {
+                    "node_id": "node-start",
+                    "lowered_kind": "control",
+                    "source_anchor_ref": "n-start",
+                    "expansion_role": "flow:start",
+                    "display_name": "Flow Start",
+                    "node_kind": "flow.start",
+                    "position": {"x": 0, "y": 80},
+                    "ports": [
+                        {
+                            "port_id": "out",
+                            "direction": "output",
+                            "relation_layer": "control",
+                            "semantic_slot": "out.control",
+                        }
+                    ],
+                    "node_config": {
+                        "initial_variables": {},
+                        "browser_config": {"headless": True, "slow_mo_ms": 0},
+                    },
+                },
+                {
+                    "node_id": "node-navigate",
+                    "lowered_kind": "execution",
+                    "source_anchor_ref": "n-navigate",
+                    "expansion_role": "action:browser_navigate",
+                    "display_name": "Navigate",
+                    "node_kind": "browser.navigate",
+                    "node_config": {"url": "http://example.test/"},
+                    "position": {"x": 120, "y": 80},
+                    "ports": [
+                        {
+                            "port_id": "in",
+                            "direction": "input",
+                            "relation_layer": "control",
+                            "semantic_slot": "in.control",
+                        }
+                    ],
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "edge-control-1",
+                    "relation_layer": "control",
+                    "from_node_id": "node-start",
+                    "to_node_id": "node-navigate",
+                    "from_port_id": "out",
+                    "to_port_id": "in",
+                }
+            ],
+            "graph_effective_diagnostic_anchor_refs": [],
+        }
+    )
+    service.save_project_as(project_path=project_path)
+
+
 def test_cli_run_project_opens_project_file_and_executes_runtime(
     tmp_path: Path,
     monkeypatch,
@@ -123,3 +191,46 @@ def test_cli_run_project_opens_project_file_and_executes_runtime(
     assert payload["execution_summary"]["status"] == "succeeded"
     assert payload["execution_summary"]["node_status_counts"]["completed"] == 2
     assert payload["runtime_preview_summary"]["scheduler_mode"] == "flow_graph"
+
+
+def test_cli_run_project_uses_provided_program_preferences_for_browser_runtime(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_path = tmp_path / "cli-browser-preferences.weconduct.json"
+    preferences_path = tmp_path / "preferences.json"
+    _build_browser_navigation_project_file(project_path)
+    FileProgramConfigurationRepository(preferences_path).save(
+        {"security": {"allow_browser_executor": True}}
+    )
+
+    class FakePage:
+        url = "about:blank"
+
+        def goto(self, url: str, *, wait_until: str) -> None:
+            assert wait_until == "domcontentloaded"
+            self.url = url
+
+        def title(self) -> str:
+            return "CLI Browser Preferences"
+
+    monkeypatch.setattr("weconduct.runtime.engine._require_browser_page", lambda context: FakePage())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "weconduct",
+            "run-project",
+            str(project_path),
+            "--preferences-path",
+            str(preferences_path),
+        ],
+    )
+
+    exit_code = cli_main.main()
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["runtime_session"]["status"] == "completed"
+    assert payload["result"]["status"] == "succeeded"

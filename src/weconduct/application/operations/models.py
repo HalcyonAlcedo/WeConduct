@@ -105,6 +105,10 @@ class ExecutionCancelInput(ExecutionReferenceInput):
     reason: str = "external api cancellation"
 
 
+class ExecutionParameterUnlockInput(ExecutionReferenceInput):
+    password: str = Field(min_length=1)
+
+
 class PendingInputSubmitInput(ExecutionReferenceInput):
     request_id: str = Field(min_length=1)
     values: dict[str, Any]

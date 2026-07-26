@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import sys
+from pathlib import Path
 
 from weconduct.application.sensitive_values.models import SensitiveConsumer, SensitiveRef
 from weconduct.application.sensitive_values.service import SensitiveValueService
 from weconduct.runtime.engine import RuntimeContext, RuntimeExecutorRegistry
+from weconduct.runtime.python_sensitive_broker import PythonSensitiveValueBroker
 
 
 def _registry(tmp_path):
@@ -145,6 +148,67 @@ def test_python_run_denies_sensitive_reference_without_explicit_consumer_permiss
 
     assert output["error_code"] == "python.sensitive_access_denied"
     assert "python-secret" not in repr(output)
+
+
+def test_python_sensitive_broker_replaces_plaintext_with_short_lived_capability() -> None:
+    sensitive = SensitiveValueService()
+    secret_ref = sensitive.create(
+        "python-secret",
+        scope_id="session-sensitive-python",
+        source="runtime_input",
+    )
+
+    with PythonSensitiveValueBroker(
+        sensitive_service=sensitive,
+        session_id="session-sensitive-python",
+        node_id="python-sensitive-broker",
+    ) as broker:
+        encoded = broker.encode_for_child({"api_key": secret_ref})
+        serialized = json.dumps(encoded)
+
+        assert "python-secret" not in serialized
+        assert encoded["api_key"] != secret_ref
+        assert broker.resolve_capability_for_test(encoded["api_key"]) == "python-secret"
+
+
+def test_python_run_does_not_write_sensitive_plaintext_to_child_input(tmp_path, monkeypatch) -> None:
+    sensitive = SensitiveValueService()
+    secret_ref = sensitive.create(
+        "python-secret",
+        scope_id="session-sensitive-python",
+        source="runtime_input",
+    )
+    captured_input_payloads: list[str] = []
+    original_write_text = Path.write_text
+
+    def capture_input_payload(path: Path, data: str, *args, **kwargs):
+        if path.name == "input.json":
+            captured_input_payloads.append(data)
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", capture_input_payload)
+    output = _registry(tmp_path).execute(
+        "python.run",
+        {
+            "node_id": "python-sensitive-input-file",
+            "node_kind": "python.run",
+            "node_config": {
+                "allow_sensitive_values": True,
+                "code": "ctx.outputs.set('value', ctx.inputs.get('api_key'))",
+                "input_schema": {"api_key": {"type": "string", "required": True}},
+                "output_schema": {"value": {"type": "string", "required": True}},
+            },
+        },
+        RuntimeContext(
+            variables={"api_key": secret_ref},
+            flow_runtime={"sensitive_value_service": sensitive},
+        ),
+    )
+
+    assert output["status"] == "succeeded"
+    assert len(captured_input_payloads) == 1
+    assert "python-secret" not in captured_input_payloads[0]
+    assert "__weconduct_sensitive_capability__" in captured_input_payloads[0]
 
 
 def test_python_run_resolves_sensitive_reference_for_explicit_runtime_executor(tmp_path) -> None:

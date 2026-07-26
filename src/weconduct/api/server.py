@@ -55,6 +55,53 @@ EXTERNAL_IDEMPOTENCY_CACHE_LIMIT = 256
 DebugActionResult = TypeVar("DebugActionResult")
 
 
+def _public_pending_input_snapshot(snapshot: object) -> dict[str, object]:
+    if snapshot is None:
+        return {"status": "none"}
+    if isinstance(snapshot, dict):
+        source = snapshot
+    else:
+        source = {
+            "execution_id": getattr(snapshot, "execution_id", None),
+            "request_id": getattr(snapshot, "request_id", None),
+            "status": getattr(snapshot, "status", None),
+            "fields": getattr(snapshot, "fields", ()),
+            "timeout_seconds": getattr(snapshot, "timeout_seconds", None),
+        }
+    fields: list[dict[str, object]] = []
+    for field in source.get("fields", ()):
+        if isinstance(field, dict):
+            field_id = field.get("field_id")
+            label = field.get("label")
+            value_type = field.get("value_type", field.get("type", "string"))
+            sensitive = field.get("sensitive", False)
+            required = field.get("required", True)
+        else:
+            field_id = getattr(field, "field_id", None)
+            label = getattr(field, "label", None)
+            value_type = getattr(field, "value_type", "string")
+            sensitive = getattr(field, "sensitive", False)
+            required = getattr(field, "required", True)
+        if isinstance(field_id, str) and isinstance(label, str):
+            fields.append(
+                {
+                    "field_id": field_id,
+                    "label": label,
+                    "value_type": value_type,
+                    "sensitive": bool(sensitive),
+                    "required": bool(required),
+                }
+            )
+    status = source.get("status")
+    return {
+        "execution_id": source.get("execution_id"),
+        "request_id": source.get("request_id"),
+        "status": getattr(status, "value", status),
+        "fields": fields,
+        "timeout_seconds": source.get("timeout_seconds"),
+    }
+
+
 def _validate_external_api_bind_host(
     host: str,
     *,
@@ -1007,6 +1054,18 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     except ValueError as exc:
                         self._write_invalid_request_error(exc)
                     return
+            if session_id.endswith("/pending-input"):
+                runtime_session_id = session_id.removesuffix("/pending-input")
+                if runtime_session_id and "/" not in runtime_session_id:
+                    try:
+                        snapshot = service.get_pending_input_snapshot(
+                            execution_id=runtime_session_id
+                        )
+                    except ValueError as exc:
+                        self._write_invalid_request_error(exc)
+                        return
+                    self._write_json(HTTPStatus.OK, _public_pending_input_snapshot(snapshot))
+                    return
             if session_id and "/" not in session_id:
                 try:
                     result = service.get_runtime_session(session_id=session_id)
@@ -1254,6 +1313,46 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     )
                 )
             self._write_json(status_code, response_payload)
+            return
+        if self.path.startswith("/api/workbench/runtime/") and self.path.endswith("/pending-input"):
+            try:
+                session_id = self.path.removeprefix("/api/workbench/runtime/").removesuffix("/pending-input")
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid runtime session path")
+                payload = self._read_json_request_body()
+                request_id = payload.get("request_id")
+                values = payload.get("values")
+                if not isinstance(request_id, str) or not request_id.strip():
+                    raise ValueError("field must be a non-empty string: request_id")
+                if not isinstance(values, dict):
+                    raise ValueError("field must be an object: values")
+                snapshot = service.submit_pending_input(
+                    execution_id=session_id,
+                    request_id=request_id,
+                    values=values,
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, _public_pending_input_snapshot(snapshot))
+            return
+        if self.path.startswith("/api/workbench/runtime/") and self.path.endswith("/unlock"):
+            try:
+                session_id = self.path.removeprefix("/api/workbench/runtime/").removesuffix("/unlock")
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid runtime session path")
+                payload = self._read_json_request_body()
+                password = payload.get("password")
+                if not isinstance(password, str) or not password:
+                    raise ValueError("field must be a non-empty string: password")
+                result = service.unlock_runtime_session_parameters(
+                    session_id=session_id,
+                    password=password,
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
             return
         if self.path == "/api/workbench/config/preview":
             try:

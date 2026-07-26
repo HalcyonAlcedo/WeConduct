@@ -113,6 +113,34 @@ def test_cli_pending_input_uses_getpass_for_sensitive_fields(monkeypatch) -> Non
     assert secret_prompts == ["Secret: "]
 
 
+def test_cli_unlocks_runtime_parameters_before_direct_execution(monkeypatch) -> None:
+    from weconduct.cli.main import _unlock_runtime_session_parameters_for_cli
+
+    class _Service:
+        def __init__(self) -> None:
+            self.unlocked: tuple[str, str] | None = None
+
+        def requires_runtime_session_parameter_unlock(self, *, session_id: str) -> bool:
+            assert session_id == "execution-cli"
+            return True
+
+        def unlock_runtime_session_parameters(self, *, session_id: str, password: str) -> dict:
+            self.unlocked = (session_id, password)
+            return {"status": "unlocked", "parameter_ids": ["api_key"]}
+
+    service = _Service()
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        "weconduct.cli.main.getpass.getpass",
+        lambda prompt: prompts.append(prompt) or "unlock-secret",
+    )
+
+    _unlock_runtime_session_parameters_for_cli(service, session_id="execution-cli")
+
+    assert prompts == ["项目加密参数密码: "]
+    assert service.unlocked == ("execution-cli", "unlock-secret")
+
+
 def test_cli_runtime_worker_submits_pending_input_without_blocking_runtime_thread(monkeypatch) -> None:
     request = PendingInputRequest(
         request_id="request-runtime-cli",

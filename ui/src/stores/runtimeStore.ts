@@ -10,8 +10,12 @@ import {
   postRuntimeStart,
   postRuntimeRun,
   postRuntimeAbort,
+  fetchRuntimePendingInput,
+  postRuntimePendingInput,
+  postRuntimeParameterUnlock,
   getRuntimeStreamUrl,
   buildRuntimeProgressFromSession,
+  type RuntimePendingInputSnapshot,
 } from '@/services/api'
 import type {
   RuntimeSessionSummary,
@@ -73,6 +77,8 @@ export const useRuntimeStore = defineStore('runtime', () => {
   const runtimeLiveStatus = ref<RuntimeLiveStatus>('idle')
   const isRunStarting = ref(false)
   const isAbortGuarded = ref(false)
+  const pendingRuntimeInput = ref<RuntimePendingInputSnapshot | null>(null)
+  const pendingParameterUnlockSessionId = ref<string | null>(null)
   let abortGuardTimer: ReturnType<typeof setTimeout> | null = null
   let cancelRuntimeReconciliation: (() => void) | null = null
   const activeRuntimeStatus = computed(() => activeRt.value?.runtime_session?.status ?? null)
@@ -241,6 +247,12 @@ export const useRuntimeStore = defineStore('runtime', () => {
     }
   }
 
+  function clearPendingInputForSession(sessionId: string) {
+    if (pendingRuntimeInput.value?.execution_id === sessionId) {
+      pendingRuntimeInput.value = null
+    }
+  }
+
   function applyRuntimeSummary(summary: RuntimeProgress) {
     runtimeProgress.value = summary
     runtimeLiveConnected.value = true
@@ -327,6 +339,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
           setActiveRt(latest)
           const latestStatus = getRuntimeSessionStatus(latest)
           if (isTerminalRuntimeStatus(latestStatus)) {
+            clearPendingInputForSession(sessionId)
             runtimeLiveStatus.value = latestStatus as RuntimeLiveStatus
             const terminalResult = buildTerminalRunResult(latest, latestStatus)
             unsubscribeRuntimeSession()
@@ -358,6 +371,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
       const payload = JSON.parse(event.data) as RuntimeStreamSnapshot
       const runtimeStatus = getRuntimeSessionStatus(payload)
       if (isTerminalRuntimeStatus(runtimeStatus)) {
+        clearPendingInputForSession(sessionId)
         requestTerminalReconciliation()
         return
       }
@@ -379,15 +393,23 @@ export const useRuntimeStore = defineStore('runtime', () => {
       applyRuntimeNode(payload)
     }) as EventListener)
 
+    eventSource.addEventListener('runtime.pending_input', ((event: MessageEvent) => {
+      if (!isCurrentStream()) return
+      const payload = JSON.parse(event.data) as RuntimePendingInputSnapshot
+      if (payload.request_id && payload.execution_id === sessionId) pendingRuntimeInput.value = payload
+    }) as EventListener)
+
     eventSource.addEventListener('runtime.completed', ((event: MessageEvent) => {
       if (!isCurrentStream()) return
       JSON.parse(event.data)
+      clearPendingInputForSession(sessionId)
       requestTerminalReconciliation()
     }) as EventListener)
 
     eventSource.addEventListener('runtime.failed', ((event: MessageEvent) => {
       if (!isCurrentStream()) return
       JSON.parse(event.data)
+      clearPendingInputForSession(sessionId)
       requestTerminalReconciliation()
     }) as EventListener)
 
@@ -410,8 +432,22 @@ export const useRuntimeStore = defineStore('runtime', () => {
     eventSource.addEventListener('runtime.aborted', ((event: MessageEvent) => {
       if (!isCurrentStream()) return
       JSON.parse(event.data)
+      clearPendingInputForSession(sessionId)
       requestTerminalReconciliation()
     }) as EventListener)
+
+    void fetchRuntimePendingInput(sessionId)
+      .then((snapshot) => {
+        if (!isCurrentStream()) return
+        if (
+          snapshot.execution_id === sessionId
+          && snapshot.request_id
+          && (snapshot.status === 'created' || snapshot.status === 'waiting')
+        ) {
+          pendingRuntimeInput.value = snapshot
+        }
+      })
+      .catch(() => {})
 
     eventSource.onerror = async () => {
       if (!isCurrentStream()) return
@@ -428,7 +464,12 @@ export const useRuntimeStore = defineStore('runtime', () => {
   async function startAndRun(
     graphDocument?: Record<string, unknown>,
     isDirty?: boolean,
-  ): Promise<{ success: boolean; message: string; securityBlocked?: boolean }> {
+  ): Promise<{
+    success: boolean
+    message: string
+    securityBlocked?: boolean
+    userActionRequired?: boolean
+  }> {
     if (isRunStarting.value) {
       return { success: false, message: '运行正在启动，请稍候' }
     }
@@ -437,6 +478,8 @@ export const useRuntimeStore = defineStore('runtime', () => {
     }
     isRunStarting.value = true
     clearAbortGuard()
+    pendingRuntimeInput.value = null
+    pendingParameterUnlockSessionId.value = null
     settledRunResult = null
     // Trigger output panel + diagnostics tab
     requestRuntimeTab()
@@ -466,6 +509,15 @@ export const useRuntimeStore = defineStore('runtime', () => {
       const runAccepted = await postRuntimeRun(r.runtime_session.session_id)
       setActiveRt(runAccepted)
       isRunStarting.value = false
+      if (runAccepted.status === 'unlock_required') {
+        pendingParameterUnlockSessionId.value = r.runtime_session.session_id
+        clearAbortGuard()
+        return {
+          success: false,
+          message: '需要输入项目参数密码后才能运行',
+          userActionRequired: true,
+        }
+      }
       armAbortGuard()
       const acceptedStatus = getRuntimeSessionStatus(runAccepted)
       const terminalResult = buildTerminalRunResult(runAccepted, acceptedStatus)
@@ -527,6 +579,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
       const result = await postRuntimeAbort(sessionId, reason)
       setActiveRt(result)
       if (result.runtime_session.status === 'aborted') {
+        clearPendingInputForSession(sessionId)
         runtimeLiveStatus.value = 'aborted'
         unsubscribeRuntimeSession()
         resolvePendingRun({ success: false, message: '运行已终止' })
@@ -543,6 +596,28 @@ export const useRuntimeStore = defineStore('runtime', () => {
     }
   }
 
+  async function submitPendingRuntimeInput(values: Record<string, unknown>): Promise<void> {
+    const pending = pendingRuntimeInput.value
+    if (!pending?.execution_id || !pending.request_id) throw new Error('当前没有待提交的输入请求')
+    const result = await postRuntimePendingInput(pending.execution_id, pending.request_id, values)
+    if (result.status !== 'waiting') pendingRuntimeInput.value = null
+  }
+
+  async function unlockAndResumeRuntime(password: string): Promise<void> {
+    const sessionId = pendingParameterUnlockSessionId.value
+    if (!sessionId) throw new Error('当前没有待解锁的运行会话')
+    await postRuntimeParameterUnlock(sessionId, password)
+    pendingParameterUnlockSessionId.value = null
+    subscribeRuntimeSession(sessionId)
+    const result = await postRuntimeRun(sessionId)
+    setActiveRt(result)
+    if (result.status === 'unlock_required') {
+      pendingParameterUnlockSessionId.value = sessionId
+      throw new Error('参数解锁未完成')
+    }
+    armAbortGuard()
+  }
+
   return {
     rtSessions,
     activeRt,
@@ -550,6 +625,8 @@ export const useRuntimeStore = defineStore('runtime', () => {
     runtimeLiveConnected,
     runtimeLiveStatus,
     isRunStarting,
+    pendingRuntimeInput,
+    pendingParameterUnlockSessionId,
     isRuntimeActive,
     canAbortRuntime,
     refreshAll,
@@ -559,6 +636,8 @@ export const useRuntimeStore = defineStore('runtime', () => {
     unsubscribeRuntimeSession,
     startAndRun,
     abortActiveRun,
+    submitPendingRuntimeInput,
+    unlockAndResumeRuntime,
     runtimeTabRequest,
     requestRuntimeTab,
     runtimeDiagnosticGroups,
