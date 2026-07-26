@@ -67,7 +67,7 @@ describe('MetadataEditorPanel', () => {
   it('不在普通节点配置编辑区域显示敏感数据提示', () => {
     const wrapper = mount(MetadataEditorPanel)
 
-    expect(wrapper.find('.node-plaintext-risk-notice').exists()).toBe(false)
+    expect(wrapper.find('.npr-notice').exists()).toBe(false)
   })
 
   it('仅在网络认证配置旁显示敏感数据提示', () => {
@@ -81,7 +81,7 @@ describe('MetadataEditorPanel', () => {
 
     const wrapper = mount(MetadataEditorPanel)
 
-    expect(wrapper.get('.node-plaintext-risk-notice').text()).toBe('敏感信息建议使用加密参数。')
+    expect(wrapper.get('.npr-notice').text()).toBe('敏感信息建议使用加密参数。')
   })
 
   it('将待输入字段标为敏感时清除默认值并保留对应输出端口', async () => {

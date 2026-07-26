@@ -1,16 +1,20 @@
+<script setup lang="ts">
+import { t } from '@/i18n'
+</script>
+
 <template>
-  <p class="node-plaintext-risk-notice" role="alert">
-    敏感信息建议使用加密参数。
+  <p class="npr-notice" role="alert">
+    {{ t('framework.common.sensitivePlaintextWarning', '敏感信息建议使用加密参数。') }}
   </p>
 </template>
 
 <style scoped>
-.node-plaintext-risk-notice {
+.npr-notice {
   margin: 0 0 var(--space-xs);
   padding: var(--space-xs) var(--space-sm);
   border: 1px solid var(--state-warning);
   border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--state-warning) 10%, transparent);
+  background: rgba(232,152,104,0.10);
   color: var(--text-secondary);
   font-size: var(--text-caption);
   line-height: 1.45;

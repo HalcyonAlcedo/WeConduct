@@ -564,7 +564,8 @@ function openDialog(id: string) { activeDialog.value = id; dialogInput.value = '
 .tb-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .tb-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .tb-btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
-.tb-btn.danger { min-width: 72px; background: var(--state-error); color: #fff; border-color: var(--state-error); }
+.tb-btn.danger { background: var(--state-error); color: #fff; border-color: var(--state-error); }
+.tb-btn.danger:hover:not(:disabled) { background: #C06050; }
 
 .tb-icon { font-size: 10px; }
 .tb-divider { width: 1px; height: 20px; background: var(--border-default); }

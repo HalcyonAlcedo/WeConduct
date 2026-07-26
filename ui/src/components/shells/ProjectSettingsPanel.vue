@@ -650,11 +650,11 @@ watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) lo
           <div v-if="encryptedParameterSummary.configured" class="psp-field"><label>{{ t('framework.projectSettings.encryptedParameters.confirmOverwrite', '确认覆盖') }}</label><input v-model="encryptedParameterOverwriteConfirmed" type="checkbox" :disabled="sectionReadonly" /></div>
           <button class="psp-runtime-btn" :disabled="sectionReadonly" @click="saveEncryptedParameters">{{ t('framework.projectSettings.encryptedParameters.save', '保存加密参数') }}</button>
           <template v-if="encryptedParameterSummary.configured">
-            <h5 style="margin-top:14px">{{ t('framework.projectSettings.encryptedParameters.rekeyTitle', '修改密码') }}</h5>
+            <h5 class="psp-section-spacer">{{ t('framework.projectSettings.encryptedParameters.rekeyTitle', '修改密码') }}</h5>
             <div class="psp-field"><label>{{ t('framework.projectSettings.encryptedParameters.currentPassword', '当前密码') }}</label><input v-model="encryptedParameterCurrentPassword" type="password" class="psp-input" autocomplete="current-password" :disabled="sectionReadonly" /></div>
             <div class="psp-field"><label>{{ t('framework.projectSettings.encryptedParameters.newPassword', '新密码') }}</label><input v-model="encryptedParameterNewPassword" type="password" class="psp-input" autocomplete="new-password" :disabled="sectionReadonly" /></div>
             <button class="psp-runtime-btn" :disabled="sectionReadonly" @click="rekeyEncryptedParameters">{{ t('framework.projectSettings.encryptedParameters.rekey', '更新密码') }}</button>
-            <div class="psp-field" style="margin-top:14px"><label>{{ t('framework.projectSettings.encryptedParameters.confirmDelete', '确认删除') }}</label><input v-model="encryptedParameterDeleteConfirmed" type="checkbox" :disabled="sectionReadonly" /></div>
+            <div class="psp-field psp-section-spacer"><label>{{ t('framework.projectSettings.encryptedParameters.confirmDelete', '确认删除') }}</label><input v-model="encryptedParameterDeleteConfirmed" type="checkbox" :disabled="sectionReadonly" /></div>
             <button class="psp-sec-enable-btn" :disabled="sectionReadonly || !encryptedParameterDeleteConfirmed" @click="deleteEncryptedParameters">{{ t('framework.projectSettings.encryptedParameters.delete', '删除加密参数') }}</button>
           </template>
         </template>
@@ -695,6 +695,7 @@ watch(() => workspace.projectId, (next, prev) => { if (next && next !== prev) lo
 .psp-nav-item.active { background: var(--bg-selected); color: var(--accent); font-weight: 600; }
 .psp-content { flex: 1; padding: var(--space-md); overflow-y: auto; }
 .psp-content h5 { font-size: var(--text-small); font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; }
+.psp-section-spacer { margin-top: var(--space-md); }
 .psp-field { display: flex; align-items: center; gap: var(--space-sm); padding: 3px 0; font-size: var(--text-small); }
 .psp-field label { width: 70px; flex-shrink: 0; color: var(--text-disabled); }
 .psp-input { flex: 1; padding: 2px 6px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text-primary); font-size: var(--text-small); }
