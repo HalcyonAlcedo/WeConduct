@@ -1,16 +1,21 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { useRuntimeStore } from '@/stores/runtimeStore'
+import { useDebugStore } from '@/stores/debugStore'
 import { t } from '@/i18n'
 
 const runtime = useRuntimeStore()
+const debug = useDebugStore()
 const formValues = reactive<Record<string, unknown>>({})
 const password = ref('')
 const errorMessage = ref('')
 const submitting = ref(false)
 
 const pendingInput = computed(() => runtime.pendingRuntimeInput)
-const unlockSessionId = computed(() => runtime.pendingParameterUnlockSessionId)
+const runtimeUnlockSessionId = computed(() => runtime.pendingParameterUnlockSessionId)
+const debugUnlockSessionId = computed(() => debug.pendingParameterUnlockSessionId)
+const unlockSessionId = computed(() => runtimeUnlockSessionId.value || debugUnlockSessionId.value)
+const isDebugUnlock = computed(() => !runtimeUnlockSessionId.value && Boolean(debugUnlockSessionId.value))
 
 watch(() => pendingInput.value?.request_id, () => {
   for (const key of Object.keys(formValues)) delete formValues[key]
@@ -55,7 +60,8 @@ async function unlock() {
   submitting.value = true
   errorMessage.value = ''
   try {
-    await runtime.unlockAndResumeRuntime(submittedPassword)
+    if (isDebugUnlock.value) await debug.unlockAndResumeDebug(submittedPassword)
+    else await runtime.unlockAndResumeRuntime(submittedPassword)
   } catch (error: any) {
     errorMessage.value = error?.body?.message || error?.message || t('framework.runtimeInput.unlockFailed', '参数解锁失败')
   } finally {
@@ -65,15 +71,17 @@ async function unlock() {
 }
 
 async function abort() {
-  await runtime.abortActiveRun('input_cancelled')
+  if (pendingInput.value) await runtime.abortActiveRun('input_cancelled')
+  else if (isDebugUnlock.value) await debug.abortPendingParameterUnlock()
+  else await runtime.abortActiveRun('input_cancelled')
   errorMessage.value = ''
 }
 </script>
 
 <template>
   <div v-if="pendingInput || unlockSessionId" class="rid-backdrop" role="presentation">
-    <section class="rid-box" role="dialog" aria-modal="true" :aria-label="pendingInput ? t('framework.runtimeInput.title', '运行输入') : t('framework.runtimeInput.unlockTitle', '参数解锁')">
-      <div class="rid-hd">{{ pendingInput ? t('framework.runtimeInput.title', '运行输入') : t('framework.runtimeInput.unlockTitle', '参数解锁') }}</div>
+    <section class="rid-box" role="dialog" aria-modal="true" :aria-label="pendingInput ? t('framework.runtimeInput.title', '运行输入') : isDebugUnlock ? t('framework.runtimeInput.debugUnlockTitle', 'Debug 参数解锁') : t('framework.runtimeInput.unlockTitle', '参数解锁')">
+      <div class="rid-hd">{{ pendingInput ? t('framework.runtimeInput.title', '运行输入') : isDebugUnlock ? t('framework.runtimeInput.debugUnlockTitle', 'Debug 参数解锁') : t('framework.runtimeInput.unlockTitle', '参数解锁') }}</div>
       <div class="rid-body">
         <template v-if="pendingInput">
           <form @submit.prevent="submitInput">
@@ -112,7 +120,7 @@ async function abort() {
             <p v-if="errorMessage" class="rid-error">{{ errorMessage }}</p>
             <div class="rid-actions">
               <button type="button" class="rid-btn" :disabled="submitting" @click="abort">{{ t('framework.runtimeInput.abort', '终止运行') }}</button>
-              <button type="submit" class="rid-btn rid-btn-primary" :disabled="submitting">{{ submitting ? t('framework.runtimeInput.unlocking', '解锁中') : t('framework.runtimeInput.unlockAndRun', '解锁并运行') }}</button>
+              <button type="submit" class="rid-btn rid-btn-primary" :disabled="submitting">{{ submitting ? t('framework.runtimeInput.unlocking', '解锁中') : isDebugUnlock ? t('framework.runtimeInput.unlockAndDebug', '解锁并启动 Debug') : t('framework.runtimeInput.unlockAndRun', '解锁并运行') }}</button>
             </div>
           </form>
         </template>

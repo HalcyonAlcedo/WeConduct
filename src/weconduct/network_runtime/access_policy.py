@@ -21,6 +21,7 @@ class NetworkAccessPolicy:
     """Validates destination addresses before a network connection is opened."""
 
     allow_loopback: bool = False
+    allow_local_network_access: bool = False
     allowed_hostnames: frozenset[str] = field(default_factory=frozenset)
 
     def validate_url(
@@ -80,7 +81,13 @@ class NetworkAccessPolicy:
             raise ValueError("network.access_denied: invalid resolved address") from exc
         if str(parsed_address) in _METADATA_ADDRESSES:
             raise ValueError("network.access_denied: metadata addresses are blocked")
-        if parsed_address.is_loopback and self.allow_loopback:
+        if parsed_address.is_loopback and (
+            self.allow_loopback or self.allow_local_network_access
+        ):
+            return
+        if self.allow_local_network_access and (
+            parsed_address.is_private or parsed_address.is_link_local
+        ):
             return
         if (
             parsed_address.is_loopback

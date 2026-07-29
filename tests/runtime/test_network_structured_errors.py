@@ -88,3 +88,14 @@ def test_runtime_executor_passes_network_audit_sink_to_owned_network_runtime() -
         assert audit_events == []
     finally:
         context.close()
+
+
+def test_runtime_executor_passes_local_network_authorization_to_owned_network_runtime() -> None:
+    context = RuntimeContext()
+    registry = RuntimeExecutorRegistry(runtime_settings={"allow_local_network_access": True})
+
+    service = registry._resolve_network_runtime_service(context)  # type: ignore[attr-defined]
+    try:
+        assert service._access_policy.allow_local_network_access is True  # type: ignore[attr-defined]
+    finally:
+        context.close()

@@ -11,6 +11,7 @@ import MonacoEditor from '@/components/input/MonacoEditor.vue'
 import { postFileDialog, postGraphNormalize } from '@/services/api'
 import { useToastStore } from '@/stores/toastStore'
 import { t, tr } from '@/i18n'
+import { locateGraphNode } from '@/services/graphNodeNavigation'
 
 const graphStore = useGraphStore()
 const workspace = useGraphWorkspaceStore()
@@ -252,7 +253,7 @@ function writeSchemaObj(fieldKey: string, entries: SchemaEntry[]) { const obj: R
 function getParamSchema(fieldKey: string) { const nk = selectedNode.value?.node_kind; if (!nk) return undefined; return workspace.parameterSchemas[nk]?.[fieldKey] }
 async function pickPathForField(fieldKey: string) { const schema = getParamSchema(fieldKey); if (!schema) return; const mode = schema.path_kind === 'save_file' ? 'save_file' : schema.path_kind === 'open_directory' ? 'open_folder' : 'open_file'; try { const r = await postFileDialog({ mode, title: schema.label || t('framework.metadataEditor.pathPicker.selectField', `选择 ${fieldKey}`, { field: fieldKey }) }); if (r.status === 'selected' && r.paths.length) setCfgVal(fieldKey, r.paths[0]) } catch (e: any) { if (e?.status === 503) toast.info('', t('framework.metadataEditor.pathPicker.notSupported', '当前运行环境不支持系统文件选择器')) } }
 
-function locateSelectedNode() { if (selectedNodeId.value) { try { (window as any).__panToNode?.(selectedNodeId.value) } catch {} } }
+function locateSelectedNode() { if (selectedNodeId.value) void locateGraphNode(selectedNodeId.value) }
 </script>
 <template>
   <div class="mep" :class="{ 'mep-ro': !workspace.isGraphEditable }">

@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useDebugStore } from '@/stores/debugStore'
 import DebugValueTree from './DebugValueTree.vue'
 import { t } from '@/i18n'
+import { locateGraphNode } from '@/services/graphNodeNavigation'
 
 type DetailTab = 'overview' | 'variables' | 'io' | 'runtime' | 'trace'
 
@@ -50,7 +51,7 @@ async function selectSnapshot(snapshot: any) {
   if (sessionId && typeof snapshot.event_index === 'number') {
     await debugStore.loadProjection(sessionId, 'history', snapshot.event_index)
   }
-  if (snapshot.node_id) try { (window as any).__panToNode?.(snapshot.node_id) } catch {}
+  if (snapshot.node_id) void locateGraphNode(snapshot.node_id)
 }
 
 function snapshotLabel(snapshot: any) {

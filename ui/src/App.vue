@@ -18,6 +18,7 @@ import StatusBar from '@/components/common/StatusBar.vue'
 import ToastContainer from '@/components/common/ToastContainer.vue'
 import StartupErrorScreen from '@/components/common/StartupErrorScreen.vue'
 import RuntimeInputDialog from '@/components/runtime/RuntimeInputDialog.vue'
+import DebugSensitiveValueDialog from '@/components/output/debug/DebugSensitiveValueDialog.vue'
 
 const workspace = useWorkspaceStore()
 const theme = useThemeStore()
@@ -156,6 +157,7 @@ onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload) })
     <StatusBar />
     <ToastContainer />
     <RuntimeInputDialog />
+    <DebugSensitiveValueDialog />
   </div>
 </template>
 

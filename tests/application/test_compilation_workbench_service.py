@@ -2719,6 +2719,128 @@ def test_project_encrypted_parameter_management_returns_only_summary_and_can_rek
     assert service.get_project_encrypted_parameter_summary() == deleted
 
 
+def test_configuring_encrypted_parameters_rejects_initial_variable_name_conflict() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph(initial_variables={"token": "plain"}))
+
+    with pytest.raises(ValueError, match="sensitive_parameter.initial_variable_name_conflict: token"):
+        service.configure_project_encrypted_parameters(
+            parameter_set_id="parameters-1",
+            parameters=[{"parameter_id": "token", "name": "Token", "type": "string"}],
+            values={"token": "test-secret"},
+            password="correct-password",
+            confirm_overwrite=False,
+        )
+
+
+def test_updating_initial_variables_rejects_existing_encrypted_parameter_name_conflict() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    service.configure_project_encrypted_parameters(
+        parameter_set_id="parameters-1",
+        parameters=[{"parameter_id": "token", "name": "Token", "type": "string"}],
+        values={"token": "test-secret"},
+        password="correct-password",
+        confirm_overwrite=False,
+    )
+
+    with pytest.raises(ValueError, match="sensitive_parameter.initial_variable_name_conflict: token"):
+        service.update_graph_entrypoint_runtime_defaults(
+            runtime_defaults={
+                "initial_variables": {"token": "plain"},
+                "browser_config": {"headless": True},
+                "execution_defaults": {"default_timeout_ms": 30000, "default_retry_count": 0},
+            }
+        )
+
+
+def test_saving_flow_start_initial_variables_rejects_existing_encrypted_parameter_name_conflict() -> None:
+    service = CompilationWorkbenchService()
+    service.configure_project_encrypted_parameters(
+        parameter_set_id="parameters-1",
+        parameters=[{"parameter_id": "token", "name": "Token", "type": "string"}],
+        values={"token": "test-secret"},
+        password="correct-password",
+        confirm_overwrite=False,
+    )
+
+    with pytest.raises(ValueError, match="sensitive_parameter.initial_variable_name_conflict: token"):
+        service.save_graph_document(_build_minimal_workspace_graph(initial_variables={"token": "plain"}))
+
+
+def test_project_settings_save_rejects_sensitive_initial_variable_name_conflict() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph(initial_variables={"token": "plain"}))
+    project_settings = service.get_project_settings_document()["project_settings"]
+    project_settings["encrypted_parameter_set"] = {
+        "parameter_set_id": "parameters-1",
+        "parameters": [{"parameter_id": "token", "name": "Token", "type": "string"}],
+        "envelope": encrypt_parameter_values(
+            {"token": "test-secret"},
+            password="correct-password",
+            parameter_set_id="parameters-1",
+        ),
+    }
+    with pytest.raises(ValueError, match="sensitive_parameter.initial_variable_name_conflict: token"):
+        service.update_project_settings(project_settings=project_settings)
+
+
+def test_runtime_prepare_rejects_persisted_sensitive_initial_variable_name_conflict(
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "sensitive-name-conflict.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    service.configure_project_encrypted_parameters(
+        parameter_set_id="parameters-1",
+        parameters=[{"parameter_id": "token", "name": "Token", "type": "string"}],
+        values={"token": "test-secret"},
+        password="correct-password",
+        confirm_overwrite=False,
+    )
+    service.save_project_as(project_path=project_path)
+    graph_path = service._resolve_project_storage_root(project_path) / "graphs" / "workspace.graph.json"
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["nodes"][0]["node_config"]["initial_variables"] = {"token": "plain"}
+    graph_path.write_text(json.dumps(graph_payload), encoding="utf-8")
+
+    loaded_service = CompilationWorkbenchService()
+    loaded_service.open_project(project_path=project_path)
+    result = loaded_service.prepare_runtime_session(None)
+
+    assert result["status"] == "failed"
+    assert result["diagnostics"]["entries"][0]["category"] == "runtime.sensitive_variable_name_conflict"
+    assert result["diagnostics"]["entries"][0]["setting_field"] == "entrypoint_runtime.initial_variables.token"
+
+
+def test_debug_prepare_rejects_persisted_sensitive_initial_variable_name_conflict(
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "sensitive-debug-name-conflict.weconduct.json"
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    service.configure_project_encrypted_parameters(
+        parameter_set_id="parameters-1",
+        parameters=[{"parameter_id": "token", "name": "Token", "type": "string"}],
+        values={"token": "test-secret"},
+        password="correct-password",
+        confirm_overwrite=False,
+    )
+    service.save_project_as(project_path=project_path)
+    graph_path = service._resolve_project_storage_root(project_path) / "graphs" / "workspace.graph.json"
+    graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_payload["nodes"][0]["node_config"]["initial_variables"] = {"token": "plain"}
+    graph_path.write_text(json.dumps(graph_payload), encoding="utf-8")
+
+    loaded_service = CompilationWorkbenchService()
+    loaded_service.open_project(project_path=project_path)
+    result = loaded_service.prepare_debug_session(None)
+
+    assert result["status"] == "failed"
+    assert result["diagnostic_links"][0]["category"] == "runtime.sensitive_variable_name_conflict"
+    assert result["diagnostic_links"][0]["stage"] == "debug.prepare"
+
+
 def test_runtime_session_unlocks_encrypted_parameter_refs_without_returning_values() -> None:
     service = CompilationWorkbenchService()
     service.save_graph_document(_build_minimal_workspace_graph())
@@ -2822,6 +2944,268 @@ def test_runtime_session_injects_unlocked_parameter_as_sensitive_reference(
     assert isinstance(injected_value, SensitiveRef)
     assert repr(injected_value) == "SensitiveRef(<redacted>)"
     assert "test-secret" not in repr(captured_variables)
+
+
+def test_debug_session_unlocks_in_memory_parameters_and_reveals_only_while_paused() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(
+        _build_debug_execution_workspace_graph(start_breakpoint_before=True)
+    )
+    service.configure_project_encrypted_parameters(
+        parameter_set_id="parameters-1",
+        parameters=[{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+        values={"api_key": "debug-secret"},
+        password="correct-password",
+        confirm_overwrite=False,
+    )
+
+    started = service.start_debug_session_async(graph_document_payload=None)
+
+    assert started["status"] == "unlock_required"
+    session_id = started["debug_session"]["session_id"]
+    assert session_id not in service._debug_execution_threads  # type: ignore[attr-defined]
+    assert "debug-secret" not in json.dumps(started)
+
+    service.unlock_debug_session_parameters(
+        session_id=session_id,
+        password="correct-password",
+    )
+    deadline = monotonic() + 2.0
+    detail = service.get_debug_session(session_id=session_id)
+    while detail["debug_session"]["status"] != "paused" and monotonic() < deadline:
+        sleep(0.01)
+        detail = service.get_debug_session(session_id=session_id)
+
+    assert detail["debug_session"]["status"] == "paused"
+    assert detail["variable_snapshot"]["api_key"] in {"<sensitive-ref>", "<redacted>"}
+    assert detail["variable_descriptors"]["api_key"]["sensitive"] is True
+    assert "debug-secret" not in json.dumps(detail)
+    with pytest.raises(SensitiveUnlockError):
+        service.reveal_debug_session_sensitive_variables(
+            session_id=session_id,
+            variable_names=["api_key"],
+            password="wrong-password",
+        )
+    revealed = service.reveal_debug_session_sensitive_variables(
+        session_id=session_id,
+        variable_names=["api_key"],
+        password="correct-password",
+    )
+    assert revealed["values"] == {"api_key": "debug-secret"}
+    history = service.open_debug_history_session(session_id=session_id)
+    assert "debug-secret" not in json.dumps(history)
+    service.abort_debug_session(
+        session_id=session_id,
+        reason="test_cleanup",
+        settle_timeout_ms=1_000,
+    )
+
+
+def test_debug_execution_keeps_static_configuration_and_variables_out_of_redacted_session_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CompilationWorkbenchService()
+    graph = _build_debug_execution_workspace_graph(start_breakpoint_before=True)
+    graph["nodes"][0]["node_config"]["initial_variables"]["marker"] = "data-test"
+    graph["nodes"][1]["node_config"]["value"] = "data-test"
+    service.save_graph_document(graph)
+    service.configure_project_encrypted_parameters(
+        parameter_set_id="parameters-1",
+        parameters=[{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+        values={"api_key": "test"},
+        password="correct-password",
+        confirm_overwrite=False,
+    )
+
+    captured: list[dict[str, object]] = []
+
+    def capture_execution_inputs(
+        *,
+        executable_node: dict,
+        runtime_context: object,
+        executor_registry: object,
+    ) -> dict:
+        captured.append(
+            {
+                "node_id": executable_node["node_id"],
+                "node_value": executable_node.get("node_config", {}).get("value"),
+                "marker": runtime_context.variables.get("marker"),
+            }
+        )
+        return {"status": "succeeded", "node_id": executable_node["node_id"]}
+
+    monkeypatch.setattr(service, "_execute_runtime_plan_node", capture_execution_inputs)
+    started = service.start_debug_session_async(graph_document_payload=None)
+    session_id = started["debug_session"]["session_id"]
+    assert started["status"] == "unlock_required"
+
+    service.unlock_debug_session_parameters(
+        session_id=session_id,
+        password="correct-password",
+    )
+    deadline = monotonic() + 2.0
+    while service.get_debug_session(session_id=session_id)["debug_session"]["status"] != "paused" and monotonic() < deadline:
+        sleep(0.01)
+
+    paused = service.get_debug_session(session_id=session_id)
+    assert paused["debug_session"]["status"] == "paused"
+    assert "data-test" not in json.dumps(paused)
+
+    service.continue_debug_session_async(session_id=session_id, settle_timeout_ms=1_000)
+    deadline = monotonic() + 2.0
+    while service.get_debug_session(session_id=session_id)["debug_session"]["status"] != "completed" and monotonic() < deadline:
+        sleep(0.01)
+
+    assert service.get_debug_session(session_id=session_id)["debug_session"]["status"] == "completed"
+    assert captured == [
+        {"node_id": "node-start", "node_value": None, "marker": "data-test"},
+        {"node_id": "node-set-variable", "node_value": "data-test", "marker": "data-test"},
+    ]
+
+
+def test_debug_variable_updates_keep_execution_value_in_memory_and_persist_a_redacted_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CompilationWorkbenchService()
+    graph = _build_debug_execution_workspace_graph(start_breakpoint_before=True)
+    graph["nodes"][0]["node_config"]["initial_variables"]["marker"] = "before"
+    service.save_graph_document(graph)
+    service.configure_project_encrypted_parameters(
+        parameter_set_id="parameters-1",
+        parameters=[{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+        values={"api_key": "test"},
+        password="correct-password",
+        confirm_overwrite=False,
+    )
+    captured_markers: list[object] = []
+
+    def capture_execution_inputs(
+        *,
+        executable_node: dict,
+        runtime_context: object,
+        executor_registry: object,
+    ) -> dict:
+        captured_markers.append(runtime_context.variables.get("marker"))
+        return {"status": "succeeded", "node_id": executable_node["node_id"]}
+
+    monkeypatch.setattr(service, "_execute_runtime_plan_node", capture_execution_inputs)
+    session_id = service.start_debug_session_async(graph_document_payload=None)["debug_session"]["session_id"]
+    service.unlock_debug_session_parameters(session_id=session_id, password="correct-password")
+    deadline = monotonic() + 2.0
+    while service.get_debug_session(session_id=session_id)["debug_session"]["status"] != "paused" and monotonic() < deadline:
+        sleep(0.01)
+
+    updated = service.apply_debug_session_variables(
+        session_id=session_id,
+        updates={"marker": "data-test"},
+        apply_mode="immediate",
+    )
+
+    assert "data-test" not in json.dumps(updated)
+    assert "data-test" not in json.dumps(service.get_debug_session(session_id=session_id))
+
+    service.continue_debug_session_async(session_id=session_id, settle_timeout_ms=1_000)
+    deadline = monotonic() + 2.0
+    while service.get_debug_session(session_id=session_id)["debug_session"]["status"] != "completed" and monotonic() < deadline:
+        sleep(0.01)
+
+    assert captured_markers == ["data-test", "data-test"]
+
+
+def test_debug_event_append_redacts_resolved_sensitive_values() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(
+        _build_debug_execution_workspace_graph(start_breakpoint_before=True)
+    )
+    service.configure_project_encrypted_parameters(
+        parameter_set_id="parameters-1",
+        parameters=[{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+        values={"api_key": "debug-secret"},
+        password="correct-password",
+        confirm_overwrite=False,
+    )
+    session_id = service.start_debug_session_async(graph_document_payload=None)["debug_session"]["session_id"]
+    service.unlock_debug_session_parameters(session_id=session_id, password="correct-password")
+    deadline = monotonic() + 2.0
+    while service.get_debug_session(session_id=session_id)["debug_session"]["status"] != "paused" and monotonic() < deadline:
+        sleep(0.01)
+
+    service._append_debug_session_event(  # type: ignore[attr-defined]
+        session_id=session_id,
+        event={"event_kind": "debug.test", "payload": {"value": "debug-secret"}},
+    )
+
+    detail = service.get_debug_session(session_id=session_id)
+    history = service.open_debug_history_session(session_id=session_id)
+    assert "debug-secret" not in json.dumps(detail)
+    assert "debug-secret" not in json.dumps(history)
+    service.abort_debug_session(
+        session_id=session_id,
+        reason="test_cleanup",
+        settle_timeout_ms=1_000,
+    )
+
+
+def test_runtime_sensitive_parameter_rewrite_stays_redacted_and_records_warn_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    service.configure_project_encrypted_parameters(
+        parameter_set_id="parameters-1",
+        parameters=[{"parameter_id": "token", "name": "Token", "type": "string"}],
+        values={"token": "initial-secret"},
+        password="correct-password",
+        confirm_overwrite=False,
+    )
+    session_id = service.start_runtime_session(graph_document_payload=None)["runtime_session"]["session_id"]
+    service.unlock_runtime_session_parameters(session_id=session_id, password="correct-password")
+
+    def rewrite_sensitive_variable(*, runtime_context, executable_node, **_kwargs) -> dict:
+        runtime_context.variables["token"] = "rotated-secret"
+        return {"status": "succeeded", "node_id": executable_node["node_id"]}
+
+    monkeypatch.setattr(service, "_execute_runtime_plan_node", rewrite_sensitive_variable)
+    result = service.run_runtime_session(session_id=session_id)
+
+    audit_events = [
+        event
+        for event in result["event_log"]
+        if event.get("category") == "runtime.sensitive_variable_modified"
+    ]
+    assert result["status"] == "completed"
+    assert result["result"]["variables"]["token"] == "<redacted>"
+    assert [
+        {
+            key: event.get(key)
+            for key in (
+                "event_kind",
+                "category",
+                "severity",
+                "session_id",
+                "node_id",
+                "node_kind",
+                "variable_name",
+                "old_value_type",
+                "new_value_type",
+            )
+        }
+        for event in audit_events
+    ] == [
+        {
+            "event_kind": "runtime.sensitive_variable_modified",
+            "category": "runtime.sensitive_variable_modified",
+            "severity": "warn",
+            "session_id": session_id,
+            "node_id": "node-start",
+            "node_kind": "flow.start",
+            "variable_name": "token",
+            "old_value_type": "sensitive_ref",
+            "new_value_type": "sensitive_ref",
+        }
+    ]
+    assert "initial-secret" not in repr(result)
+    assert "rotated-secret" not in repr(result)
 
 
 def test_runtime_session_redacts_unlocked_parameter_from_persisted_result() -> None:

@@ -9,6 +9,8 @@ const debugStoreMock = vi.hoisted(() => ({
   projectionVariableSnapshot: null as any,
   applyVariables: vi.fn(),
   loadActiveSession: vi.fn(),
+  getRevealedSensitiveValue: vi.fn(),
+  requestSensitiveValueReveal: vi.fn(),
 }))
 vi.mock('@/stores/debugStore', () => ({ useDebugStore: () => debugStoreMock }))
 vi.mock('@/stores/toastStore', () => ({ useToastStore: () => ({ success: vi.fn(), error: vi.fn() }) }))
@@ -52,5 +54,17 @@ describe('DebugVariablesPanel', () => {
     await nextTick()
     expect(wrapper.text()).toContain('历史快照只读')
     expect(wrapper.get('input').attributes('disabled')).toBe('')
+  })
+
+  it('requires explicit reveal before showing a sensitive variable', async () => {
+    debugStoreMock.activeSession.variable_snapshot = { api_key: '<sensitive-ref>' }
+    debugStoreMock.activeSession.variable_descriptors = {
+      api_key: { value_type: 'string', scope: 'global', sensitive: true },
+    }
+    debugStoreMock.getRevealedSensitiveValue.mockReturnValue(undefined)
+    const wrapper = mount(DebugVariablesPanel)
+    await wrapper.get('button').trigger('click')
+    expect(debugStoreMock.requestSensitiveValueReveal).toHaveBeenCalledWith('api_key')
+    expect(wrapper.text()).not.toContain('debug-secret')
   })
 })

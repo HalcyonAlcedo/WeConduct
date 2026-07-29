@@ -45,6 +45,13 @@ _SENSITIVE_COMPACT_FIELD_NAMES = frozenset(
         "xapikey",
     }
 )
+_NON_SENSITIVE_STRUCTURE_FIELD_NAMES = frozenset(
+    {
+        "arrived_tokens",
+        "token_context",
+        "token_queue",
+    }
+)
 
 
 def redact_sensitive_payload(value: object, *, secret_values: Iterable[object] = ()) -> Any:
@@ -67,7 +74,10 @@ def _redact(value: object, secrets: tuple[object, ...], *, parent_key: str | Non
         redacted: dict[str, Any] = {}
         for key, item in value.items():
             key_name = str(key)
-            if _is_sensitive_field(key_name) or _is_sensitive_mapping_value(
+            if (
+                _is_sensitive_field(key_name)
+                and not _is_debug_variable_descriptor_name(parent_key)
+            ) or _is_sensitive_mapping_value(
                 parent_key=parent_key,
                 key_name=key_name,
             ):
@@ -82,8 +92,14 @@ def _redact(value: object, secrets: tuple[object, ...], *, parent_key: str | Non
     return value
 
 
+def _is_debug_variable_descriptor_name(parent_key: str | None) -> bool:
+    return parent_key == "variable_descriptors"
+
+
 def _is_sensitive_field(field_name: str) -> bool:
     normalized = field_name.strip().lower().replace("-", "_")
+    if normalized in _NON_SENSITIVE_STRUCTURE_FIELD_NAMES:
+        return False
     if normalized in _SENSITIVE_FIELD_NAMES:
         return True
     compact = normalized.replace("_", "")

@@ -29,6 +29,25 @@ def test_network_access_policy_allows_explicit_loopback_test_fixture() -> None:
     policy.validate_url("http://127.0.0.1:8080/status")
 
 
+def test_network_access_policy_allows_private_benchmark_address_when_local_access_is_enabled() -> None:
+    policy = NetworkAccessPolicy(allow_local_network_access=True)
+
+    policy.validate_url("http://198.18.1.94:3456/api/files")
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://169.254.169.254/latest/meta-data", "http://224.0.0.1/status"],
+)
+def test_network_access_policy_keeps_metadata_and_multicast_blocked_with_local_access(
+    url: str,
+) -> None:
+    policy = NetworkAccessPolicy(allow_local_network_access=True)
+
+    with pytest.raises(ValueError, match="network.access_denied"):
+        policy.validate_url(url)
+
+
 @pytest.mark.parametrize("url", ["http://169.254.169.254/latest/meta-data", "http://10.0.0.1/"])
 def test_network_access_policy_blocks_metadata_and_private_addresses(url: str) -> None:
     policy = NetworkAccessPolicy()

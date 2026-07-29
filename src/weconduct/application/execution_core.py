@@ -101,39 +101,54 @@ class ExecutionCore:
         data_edges_by_target: dict[str, list[dict]],
         executor_registry: object,
     ) -> dict:
+        flow_runtime = getattr(runtime_context, "flow_runtime", None)
+        previous_active_node = None
+        if isinstance(flow_runtime, dict):
+            previous_active_node = flow_runtime.get("active_runtime_node")
+            flow_runtime["active_runtime_node"] = {
+                "node_id": executable_node.get("node_id"),
+                "node_kind": executable_node.get("node_kind"),
+            }
         try:
-            cancelled_result = _build_cancelled_result(
-                executable_node=executable_node,
-                runtime_context=runtime_context,
-            )
-            if cancelled_result is not None:
-                return cancelled_result
-            owner._inject_runtime_data_edge_inputs(  # type: ignore[attr-defined]
-                executable_node=executable_node,
-                runtime_context=runtime_context,
-                data_edges_by_target=data_edges_by_target,
-            )
-            cancelled_result = _build_cancelled_result(
-                executable_node=executable_node,
-                runtime_context=runtime_context,
-            )
-            if cancelled_result is not None:
-                return cancelled_result
-            return owner._execute_runtime_plan_node(  # type: ignore[attr-defined]
-                executable_node=executable_node,
-                runtime_context=runtime_context,
-                executor_registry=executor_registry,
-            )
-        except Exception as exc:
-            if _is_cancellation_exception(exc):
-                return _build_cancellation_exception_result(
+            try:
+                cancelled_result = _build_cancelled_result(
+                    executable_node=executable_node,
+                    runtime_context=runtime_context,
+                )
+                if cancelled_result is not None:
+                    return cancelled_result
+                owner._inject_runtime_data_edge_inputs(  # type: ignore[attr-defined]
+                    executable_node=executable_node,
+                    runtime_context=runtime_context,
+                    data_edges_by_target=data_edges_by_target,
+                )
+                cancelled_result = _build_cancelled_result(
+                    executable_node=executable_node,
+                    runtime_context=runtime_context,
+                )
+                if cancelled_result is not None:
+                    return cancelled_result
+                return owner._execute_runtime_plan_node(  # type: ignore[attr-defined]
+                    executable_node=executable_node,
+                    runtime_context=runtime_context,
+                    executor_registry=executor_registry,
+                )
+            except Exception as exc:
+                if _is_cancellation_exception(exc):
+                    return _build_cancellation_exception_result(
+                        executable_node=executable_node,
+                        exc=exc,
+                    )
+                return owner._build_runtime_executor_exception_output(  # type: ignore[attr-defined]
                     executable_node=executable_node,
                     exc=exc,
                 )
-            return owner._build_runtime_executor_exception_output(  # type: ignore[attr-defined]
-                executable_node=executable_node,
-                exc=exc,
-            )
+        finally:
+            if isinstance(flow_runtime, dict):
+                if previous_active_node is None:
+                    flow_runtime.pop("active_runtime_node", None)
+                else:
+                    flow_runtime["active_runtime_node"] = previous_active_node
 
     @staticmethod
     def build_scheduler_snapshot(

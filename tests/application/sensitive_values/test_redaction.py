@@ -57,6 +57,21 @@ def test_redaction_hides_camel_case_keys_and_credential_fields() -> None:
     }
 
 
+def test_redaction_keeps_debug_variable_descriptor_structure() -> None:
+    redacted = redact_sensitive_payload(
+        {
+            "variable_descriptors": {
+                "api_key": {"name": "api_key", "sensitive": True, "value_type": "string"},
+            },
+            "variable_snapshot": {"api_key": "private-value"},
+        },
+        secret_values=["private-value"],
+    )
+
+    assert redacted["variable_descriptors"]["api_key"]["sensitive"] is True
+    assert redacted["variable_snapshot"]["api_key"] == "<redacted>"
+
+
 def test_redaction_hides_sensitive_query_values_in_runtime_urls() -> None:
     redacted = redact_sensitive_payload(
         {

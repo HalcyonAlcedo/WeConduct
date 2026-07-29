@@ -261,6 +261,12 @@ export function buildRuntimeProgressFromSession(detail: RuntimeSessionDetailResp
 export function fetchDebugSessions(): Promise<DebugSessionsResponse> { return request('/workbench/debug/sessions') }
 export function fetchDebugSession(id: string): Promise<DebugSessionDetailResponse> { return request(`/workbench/debug/${id}`) }
 export function postDebugStart(body?: Record<string, unknown>): Promise<DebugSessionDetailResponse> { return request('/workbench/debug/start', { method: 'POST', body: body ? JSON.stringify(body) : undefined }) }
+export function postDebugParameterUnlock(sessionId: string, password: string): Promise<DebugSessionDetailResponse> {
+  return request(`/workbench/debug/${sessionId}/unlock`, { method: 'POST', body: JSON.stringify({ password }) })
+}
+export function postDebugSensitiveValuesReveal(sessionId: string, variableNames: string[], password: string): Promise<{ session_id: string; values: Record<string, unknown> }> {
+  return request(`/workbench/debug/${sessionId}/sensitive-values/reveal`, { method: 'POST', body: JSON.stringify({ variable_names: variableNames, password }) })
+}
 export function fetchDebugHistorySessions(): Promise<DebugHistorySummaryResponse> { return request('/workbench/debug/history') }
 export function fetchDebugHistorySession(id: string): Promise<DebugHistorySessionResponse> { return request(`/workbench/debug/history/${id}`) }
 

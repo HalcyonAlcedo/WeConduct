@@ -42,6 +42,8 @@ vi.mock('@/services/api', () => ({
 import DebugTab from './DebugTab.vue'
 import { useDebugStore } from '@/stores/debugStore'
 import { useToastStore } from '@/stores/toastStore'
+import { useDockStore } from '@/stores/dockStore'
+import { useGraphStore } from '@/stores/graphStore'
 
 function makeDetail(sessionId: string, status: string, canStepOut = false) {
   return {
@@ -193,6 +195,24 @@ describe('DebugTab', () => {
 
     expect(wrapper.get('[data-event-id="evt-stable-1"]').attributes('data-event-id')).toBe('evt-stable-1')
     expect(wrapper.find('input[placeholder="变量名"]').exists()).toBe(false)
+  })
+
+  it('定位当前节点时选中节点并恢复节点图面板', async () => {
+    apiMocks.fetchDebugSessions.mockResolvedValue({
+      sessions: [{ session_id: 'dbg-active-1', status: 'paused', graph_model_id: 'graph:workspace' }],
+    })
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const dock = useDockStore()
+    const graph = useGraphStore()
+    dock.register({ id: 'graph', title: '节点图编辑器' })
+
+    const wrapper = mountDebugTab(pinia)
+    await flushMount()
+    await wrapper.get('button[title="定位到当前运行节点"]').trigger('click')
+
+    expect(graph.selectedNode).toBe('node-start')
+    expect(dock.isPanelVisible('graph')).toBe(true)
   })
 
   it('按钮矩阵收口到 paused/running/stepping/preparing 规则', async () => {

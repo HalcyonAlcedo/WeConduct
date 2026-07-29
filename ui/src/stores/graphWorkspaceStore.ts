@@ -8,6 +8,7 @@ import { ref, computed, watch } from 'vue'
 import { fetchGraphDocument, putGraphDocument, postSourceProjection, fetchNodeDraft } from '@/services/api'
 import { useToastStore } from './toastStore'
 import { useDebugStore } from './debugStore'
+import { describeSensitiveVariableNameConflict } from '@/security/sensitiveVariableNameConflict'
 import type { GraphDocumentResponse, GraphDocumentView, ParameterFieldSchema } from '@/types/domains/api'
 import type { GraphModel } from '@/types/domains/graph'
 
@@ -165,7 +166,7 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
         toast.error('图稿版本冲突', '请刷新图稿后重新保存')
       } else {
         saveState.value = 'error'
-        saveError.value = err instanceof Error ? err.message : '保存失败'
+        saveError.value = describeSensitiveVariableNameConflict(err) || (err instanceof Error ? err.message : '保存失败')
         toast.error('保存失败', saveError.value ?? undefined)
       }
     }

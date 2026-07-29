@@ -95,7 +95,7 @@ from weconduct.application.pending_input import (
     PendingInputService,
     PendingInputStatus,
 )
-from weconduct.application.sensitive_values.models import SensitiveRef
+from weconduct.application.sensitive_values.models import SensitiveConsumer, SensitiveRef
 from weconduct.application.sensitive_values.encryption import (
     decrypt_parameter_values,
     encrypt_parameter_values,
@@ -335,6 +335,12 @@ class CompilationWorkbenchService:
         self._debug_runtime_contexts: dict[str, RuntimeContext] = {}
         self._debug_runtime_context_owner_thread_ids: dict[str, int] = {}
         self._debug_control_flags: dict[str, dict] = {}
+        # Debug execution state is intentionally memory-only. Persisted debug sessions
+        # are publication documents and must never become a future execution input.
+        self._debug_execution_states: dict[str, dict[str, object]] = {}
+        # Debug encrypted parameters must never enter the persisted session document.
+        self._debug_sensitive_values: dict[str, SensitiveValueService] = {}
+        self._debug_sensitive_variable_refs: dict[str, dict[str, SensitiveRef]] = {}
         self._suppress_dirty_workspace_recovery = False
         self._allow_dirty_workspace_recovery_conversion = True
         loaded_state = self._state_store.load()
@@ -538,6 +544,12 @@ class CompilationWorkbenchService:
         parameter_ids = {parameter["parameter_id"] for parameter in normalized_parameters}
         if set(values) != parameter_ids:
             raise ValueError("values must define exactly the configured parameter IDs")
+        self._assert_no_sensitive_parameter_initial_variable_name_conflicts(
+            initial_variables=self._extract_runtime_defaults_from_workspace_graph()[
+                "initial_variables"
+            ],
+            encrypted_parameter_set={"parameters": normalized_parameters},
+        )
         current = self.get_project_encrypted_parameter_summary()
         if current["configured"] and not confirm_overwrite:
             raise ValueError("encrypted parameter overwrite confirmation is required")
@@ -599,6 +611,12 @@ class CompilationWorkbenchService:
             raise ValueError("field must be a JSON object: project_settings")
         self._assert_project_package_allows_mutation("update_project_settings")
         normalized_settings = self._normalize_project_settings_document(project_settings)
+        self._assert_no_sensitive_parameter_initial_variable_name_conflicts(
+            initial_variables=self._extract_runtime_defaults_from_workspace_graph()[
+                "initial_variables"
+            ],
+            encrypted_parameter_set=normalized_settings.get("encrypted_parameter_set"),
+        )
 
         def mutation(state: dict | None) -> dict:
             current_state, _ = self._normalize_workspace_state(state)
@@ -615,7 +633,14 @@ class CompilationWorkbenchService:
         return self.get_project_settings_document()
 
     def update_graph_entrypoint_runtime_defaults(self, *, runtime_defaults: dict) -> dict:
+        self._refresh_state_from_store()
         normalized_runtime_defaults = self._normalize_runtime_defaults_payload(runtime_defaults)
+        self._assert_no_sensitive_parameter_initial_variable_name_conflicts(
+            initial_variables=normalized_runtime_defaults["initial_variables"],
+            encrypted_parameter_set=self._extract_project_settings(self._state).get(
+                "encrypted_parameter_set"
+            ),
+        )
 
         def mutation(state: dict | None) -> dict:
             current_state, _ = self._normalize_workspace_state(state)
@@ -1821,6 +1846,134 @@ class CompilationWorkbenchService:
             self._debug_runtime_contexts.pop(session_id, None)
             self._debug_runtime_context_owner_thread_ids.pop(session_id, None)
             self._clear_debug_control_flags(session_id)
+            with self._debug_execution_lock:
+                self._debug_execution_states.pop(session_id, None)
+                sensitive_values = self._debug_sensitive_values.pop(session_id, None)
+                self._debug_sensitive_variable_refs.pop(session_id, None)
+            if sensitive_values is not None:
+                sensitive_values.revoke_scope(session_id)
+
+    def _get_debug_sensitive_value_service(self, session_id: str) -> SensitiveValueService | None:
+        with self._debug_execution_lock:
+            return self._debug_sensitive_values.get(session_id)
+
+    def _inject_debug_sensitive_variables(self, *, session_id: str, runtime_context: RuntimeContext) -> None:
+        with self._debug_execution_lock:
+            sensitive_values = self._debug_sensitive_values.get(session_id)
+            refs = dict(self._debug_sensitive_variable_refs.get(session_id, {}))
+        if sensitive_values is not None:
+            runtime_context.flow_runtime["sensitive_value_service"] = sensitive_values
+        if refs:
+            runtime_context.variables.update(refs)
+
+    def _synchronize_debug_sensitive_variable_refs(
+        self,
+        *,
+        session_id: str,
+        variables: dict,
+    ) -> None:
+        refs = {
+            name: value
+            for name, value in variables.items()
+            if isinstance(name, str)
+            and isinstance(value, SensitiveRef)
+            and value.scope_id == session_id
+        }
+        with self._debug_execution_lock:
+            if session_id in self._debug_sensitive_values:
+                self._debug_sensitive_variable_refs[session_id] = refs
+
+    def _project_debug_session_document(self, session_document: dict) -> dict:
+        debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        session_id = debug_session.get("session_id")
+        secret_values: tuple[object, ...] = ()
+        if isinstance(session_id, str):
+            sensitive_values = self._get_debug_sensitive_value_service(session_id)
+            if sensitive_values is not None:
+                secret_values = sensitive_values.values_for_scope(session_id)
+        projected = project_runtime_value_for_publication(
+            session_document,
+            secret_values=secret_values,
+        )
+        if not isinstance(projected, dict):
+            raise ValueError("debug session document must project to an object")
+        runtime_plan = session_document.get("runtime_plan")
+        if isinstance(runtime_plan, dict):
+            projected["runtime_plan"] = project_runtime_plan_for_publication(runtime_plan)
+        return projected
+
+    def _remember_debug_execution_state(self, session_document: dict) -> None:
+        debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        session_id = debug_session.get("session_id")
+        runtime_plan = session_document.get("runtime_plan")
+        if not isinstance(session_id, str) or not session_id.strip() or not isinstance(runtime_plan, dict):
+            raise ValueError("debug session execution state requires a session ID and runtime plan")
+        variable_snapshot = session_document.get("variable_snapshot")
+        flow_runtime_snapshot = debug_session.get("flow_runtime_snapshot")
+        with self._debug_execution_lock:
+            self._debug_execution_states[session_id] = {
+                "runtime_plan": deepcopy(runtime_plan),
+                "variable_snapshot": deepcopy(variable_snapshot)
+                if isinstance(variable_snapshot, dict)
+                else {},
+                "flow_runtime_snapshot": deepcopy(flow_runtime_snapshot)
+                if isinstance(flow_runtime_snapshot, dict)
+                else {},
+            }
+
+    def _get_debug_execution_state(self, *, session_id: str) -> dict[str, object]:
+        with self._debug_execution_lock:
+            state = self._debug_execution_states.get(session_id)
+        if not isinstance(state, dict):
+            raise RuntimeError(
+                "debug.execution_state_unavailable: start a new debug session after restart"
+            )
+        return deepcopy(state)
+
+    def _update_debug_execution_state(
+        self,
+        *,
+        session_id: str,
+        runtime_plan: dict | None = None,
+        variable_snapshot: dict | None = None,
+        flow_runtime_snapshot: dict | None = None,
+    ) -> None:
+        with self._debug_execution_lock:
+            state = self._debug_execution_states.get(session_id)
+            if not isinstance(state, dict):
+                raise RuntimeError(
+                    "debug.execution_state_unavailable: start a new debug session after restart"
+                )
+            if runtime_plan is not None:
+                state["runtime_plan"] = deepcopy(runtime_plan)
+            if variable_snapshot is not None:
+                state["variable_snapshot"] = deepcopy(variable_snapshot)
+            if flow_runtime_snapshot is not None:
+                state["flow_runtime_snapshot"] = deepcopy(flow_runtime_snapshot)
+
+    @staticmethod
+    def _build_debug_sensitive_placeholder(value_type: object) -> object:
+        if value_type == "null":
+            return None
+        if value_type == "boolean":
+            return False
+        if value_type == "integer":
+            return 0
+        if value_type == "number":
+            return 0.0
+        if value_type == "array":
+            return []
+        if value_type == "object":
+            return {}
+        return "<sensitive-ref>"
 
     def list_debug_history_sessions(self) -> dict:
         self._refresh_state_from_store()
@@ -2203,14 +2356,89 @@ class CompilationWorkbenchService:
         apply_mode: str = "staged",
     ) -> dict:
         self._refresh_state_from_store()
-        session_document = self._find_debug_session(session_id)
+        session_document = deepcopy(self._find_debug_session(session_id))
+        execution_state = self._get_debug_execution_state(session_id=session_id)
+        execution_variable_snapshot = execution_state.get("variable_snapshot")
+        if not isinstance(execution_variable_snapshot, dict):
+            execution_variable_snapshot = {}
+        session_document["variable_snapshot"] = deepcopy(execution_variable_snapshot)
+        descriptors = (
+            session_document.get("variable_descriptors")
+            if isinstance(session_document.get("variable_descriptors"), dict)
+            else {}
+        )
+        with self._debug_execution_lock:
+            sensitive_refs = dict(self._debug_sensitive_variable_refs.get(session_id, {}))
+        sensitive_variable_names = {
+            variable_name
+            for variable_name in updates
+            if isinstance(variable_name, str)
+            and (
+                isinstance(descriptors.get(variable_name), dict)
+                and bool(descriptors[variable_name].get("sensitive"))
+                or variable_name in sensitive_refs
+            )
+        }
+        controller_updates = dict(updates)
+        for variable_name in sensitive_variable_names:
+            descriptor = descriptors.get(variable_name)
+            value_type = descriptor.get("value_type") if isinstance(descriptor, dict) else None
+            controller_updates[variable_name] = self._build_debug_sensitive_placeholder(value_type)
         controller = DebugController(session_snapshot=session_document)
         variable_decision = controller.apply_variable_updates(
             session=session_document,
-            updates=updates,
+            updates=controller_updates,
             apply_mode=apply_mode,
         )
         normalized_apply_mode = variable_decision["session_patch"]["variable_apply_mode"]
+        self._update_debug_execution_state(
+            session_id=session_id,
+            variable_snapshot=variable_decision["variable_snapshot"],
+        )
+
+        if sensitive_variable_names:
+            sensitive_values = self._get_debug_sensitive_value_service(session_id)
+            if sensitive_values is None:
+                raise ValueError("debug sensitive values are unavailable")
+            replacement_refs = {
+                variable_name: sensitive_values.create(
+                    updates[variable_name],
+                    scope_id=session_id,
+                    source="plaintext_literal",
+                )
+                for variable_name in sensitive_variable_names
+            }
+            with self._debug_execution_lock:
+                refs = self._debug_sensitive_variable_refs.setdefault(session_id, {})
+                refs.update(replacement_refs)
+            runtime_context = self._debug_runtime_contexts.get(session_id)
+            if isinstance(runtime_context, RuntimeContext):
+                runtime_context.variables.update(replacement_refs)
+
+        sensitive_values = self._get_debug_sensitive_value_service(session_id)
+        secret_values = (
+            sensitive_values.values_for_scope(session_id)
+            if sensitive_values is not None
+            else ()
+        )
+        persisted_variable_snapshot = project_runtime_value_for_publication(
+            variable_decision["variable_snapshot"],
+            secret_values=secret_values,
+        )
+        persisted_variable_changes = project_runtime_value_for_publication(
+            variable_decision["variable_changes"],
+            secret_values=secret_values,
+        )
+        persisted_session_patch = project_runtime_value_for_publication(
+            variable_decision["session_patch"],
+            secret_values=secret_values,
+        )
+        if not isinstance(persisted_variable_snapshot, dict):
+            raise ValueError("debug variable snapshot must project to an object")
+        if not isinstance(persisted_variable_changes, dict):
+            raise ValueError("debug variable changes must project to an object")
+        if not isinstance(persisted_session_patch, dict):
+            raise ValueError("debug session patch must project to an object")
 
         def mutation(state: dict | None) -> dict:
             current_state, _ = self._normalize_workspace_state(state)
@@ -2226,14 +2454,11 @@ class CompilationWorkbenchService:
                 ):
                     found = True
                     updated_item = deepcopy(item)
-                    next_snapshot = deepcopy(variable_decision["variable_snapshot"])
-                    updated_item["variable_snapshot"] = next_snapshot
-                    updated_item["variable_changes"] = deepcopy(
-                        variable_decision["variable_changes"]
-                    )
+                    updated_item["variable_snapshot"] = deepcopy(persisted_variable_snapshot)
+                    updated_item["variable_changes"] = deepcopy(persisted_variable_changes)
                     updated_item["debug_session"] = {
                         **updated_item["debug_session"],
-                        **deepcopy(variable_decision["session_patch"]),
+                        **deepcopy(persisted_session_patch),
                     }
                     pending_overrides = updated_item["debug_session"].get(
                         "pending_variable_overrides"
@@ -2272,7 +2497,7 @@ class CompilationWorkbenchService:
             event_kind="debug.variables_applied",
             extra_fields={
                 "apply_mode": normalized_apply_mode,
-                "updates": deepcopy(updates),
+                "updates": deepcopy(controller_updates),
             },
         )
         session_document = self._append_debug_session_event(
@@ -2343,14 +2568,17 @@ class CompilationWorkbenchService:
 
         self._refresh_state_from_store()
         session_document = deepcopy(self._find_debug_session(session_id))
+        execution_state = self._get_debug_execution_state(session_id=session_id)
+        runtime_plan = execution_state.get("runtime_plan")
+        if not isinstance(runtime_plan, dict):
+            raise RuntimeError(f"debug session runtime plan missing: {session_id}")
+        session_document["runtime_plan"] = runtime_plan
         debug_session = session_document.get("debug_session", {})
         if not isinstance(debug_session, dict) or debug_session.get("status") != "paused":
             raise ValueError("debug node debugger updates require a paused debug session")
-        runtime_plan = session_document.get("runtime_plan")
         executable_nodes = (
             runtime_plan.get("executable_nodes")
-            if isinstance(runtime_plan, dict)
-            else None
+            if isinstance(runtime_plan, dict) else None
         )
         if not isinstance(executable_nodes, list):
             raise ValueError(f"debug session runtime plan missing: {session_id}")
@@ -2376,6 +2604,10 @@ class CompilationWorkbenchService:
             **debug_session,
             "last_control_action": "node_debugger_updated",
         }
+        self._update_debug_execution_state(
+            session_id=session_id,
+            runtime_plan=runtime_plan,
+        )
         self._replace_debug_session_document(session_document)
         update_event = self._build_debug_session_context_event(
             session_id=session_id,
@@ -4120,6 +4352,128 @@ class CompilationWorkbenchService:
         with self._runtime_execution_lock:
             return not isinstance(self._runtime_sensitive_parameter_refs.get(session_id), dict)
 
+    def requires_debug_session_parameter_unlock(self, *, session_id: str) -> bool:
+        self._refresh_state_from_store()
+        session = self._find_debug_session(session_id)
+        debug_session = (
+            session.get("debug_session")
+            if isinstance(session.get("debug_session"), dict)
+            else {}
+        )
+        if debug_session.get("status") in DEBUG_SESSION_TERMINAL_STATUSES:
+            return False
+        encrypted_parameter_set = self._extract_project_settings(self._state).get(
+            "encrypted_parameter_set"
+        )
+        if not isinstance(encrypted_parameter_set, dict):
+            return False
+        with self._debug_execution_lock:
+            return not isinstance(self._debug_sensitive_variable_refs.get(session_id), dict)
+
+    def unlock_debug_session_parameters(self, *, session_id: str, password: str) -> dict:
+        self._refresh_state_from_store()
+        session = self._find_debug_session(session_id)
+        debug_session = (
+            session.get("debug_session")
+            if isinstance(session.get("debug_session"), dict)
+            else {}
+        )
+        if debug_session.get("status") in DEBUG_SESSION_TERMINAL_STATUSES:
+            raise ValueError("debug session is already terminal")
+        with self._debug_execution_lock:
+            execution_thread = self._debug_execution_threads.get(session_id)
+            if execution_thread is not None and execution_thread.is_alive():
+                raise ValueError("debug session execution has already started")
+        encrypted_parameter_set = self._extract_project_settings(self._state).get(
+            "encrypted_parameter_set"
+        )
+        if not isinstance(encrypted_parameter_set, dict):
+            raise ValueError("project does not define encrypted parameters")
+        envelope = encrypted_parameter_set.get("envelope")
+        if not isinstance(envelope, dict):
+            raise ValueError("encrypted parameter envelope is unavailable")
+        sensitive_values = SensitiveValueService()
+        unlocked = sensitive_values.unlock_encrypted_parameters(
+            envelope,
+            password=password,
+            scope_id=session_id,
+        )
+        with self._debug_execution_lock:
+            previous = self._debug_sensitive_values.pop(session_id, None)
+            if previous is not None:
+                previous.revoke_scope(session_id)
+            self._debug_sensitive_values[session_id] = sensitive_values
+            self._debug_sensitive_variable_refs[session_id] = dict(unlocked)
+        updated_session = deepcopy(session)
+        updated_session["debug_session"] = {
+            **debug_session,
+            "parameter_unlock_required": False,
+            "parameter_unlock_completed": True,
+        }
+        self._replace_debug_session_document(updated_session)
+        if not self._launch_debug_execution_thread(session_id=session_id):
+            failed_session = deepcopy(updated_session)
+            failed_session["debug_session"] = {
+                **failed_session["debug_session"],
+                "status": "failed",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "paused_reason": "debug_worker_start_failed",
+                "last_control_action": "start_failed",
+            }
+            self._replace_debug_session_document(failed_session)
+            self._release_debug_runtime_context(session_id)
+            raise ValueError("debug session execution could not be started")
+        return {
+            "status": "started",
+            **self.get_debug_session(session_id=session_id),
+        }
+
+    def reveal_debug_session_sensitive_variables(
+        self,
+        *,
+        session_id: str,
+        variable_names: list[str],
+        password: str,
+    ) -> dict:
+        self._refresh_state_from_store()
+        session = self._find_debug_session(session_id)
+        debug_session = (
+            session.get("debug_session")
+            if isinstance(session.get("debug_session"), dict)
+            else {}
+        )
+        if debug_session.get("status") != "paused":
+            raise ValueError("sensitive debug variables can only be viewed while paused")
+        if not variable_names or any(not isinstance(name, str) or not name.strip() for name in variable_names):
+            raise ValueError("variable_names must contain non-empty strings")
+        encrypted_parameter_set = self._extract_project_settings(self._state).get(
+            "encrypted_parameter_set"
+        )
+        envelope = (
+            encrypted_parameter_set.get("envelope")
+            if isinstance(encrypted_parameter_set, dict)
+            else None
+        )
+        if not isinstance(envelope, dict):
+            raise ValueError("encrypted parameter envelope is unavailable")
+        # Re-decrypt only to validate the explicit, per-view confirmation password.
+        decrypt_parameter_values(envelope, password=password)
+        with self._debug_execution_lock:
+            sensitive_values = self._debug_sensitive_values.get(session_id)
+            refs = dict(self._debug_sensitive_variable_refs.get(session_id, {}))
+        if sensitive_values is None:
+            raise ValueError("debug sensitive values are unavailable")
+        values: dict[str, object] = {}
+        for variable_name in dict.fromkeys(name.strip() for name in variable_names):
+            ref = refs.get(variable_name)
+            if ref is None:
+                raise ValueError(f"debug variable is not sensitive: {variable_name}")
+            values[variable_name] = sensitive_values.resolve(
+                ref,
+                consumer=SensitiveConsumer.DEBUG_INSPECTOR,
+            )
+        return {"session_id": session_id, "values": values}
+
     def start_runtime_session_execution(self, *, session_id: str) -> dict:
         self._refresh_state_from_store()
         existing_session = self._find_runtime_session(session_id)
@@ -4473,6 +4827,31 @@ class CompilationWorkbenchService:
                     publish_live_update("runtime.security", audit_event)
 
                 runtime_context.flow_runtime["network_audit_event_sink"] = publish_network_audit_event
+
+                def publish_sensitive_variable_modified(payload: dict[str, object]) -> None:
+                    audit_event = {
+                        "event_kind": "runtime.sensitive_variable_modified",
+                        "category": "runtime.sensitive_variable_modified",
+                        "severity": "warn",
+                        "recorded_at": datetime.now(timezone.utc).isoformat(),
+                        "session_id": session_id,
+                    }
+                    for field_name in (
+                        "variable_name",
+                        "node_id",
+                        "node_kind",
+                        "old_value_type",
+                        "new_value_type",
+                    ):
+                        value = payload.get(field_name)
+                        if isinstance(value, str) and value:
+                            audit_event[field_name] = value
+                    event_log.append(audit_event)
+                    publish_live_update("runtime.warning", audit_event)
+
+                runtime_context.flow_runtime[
+                    "sensitive_variable_modification_sink"
+                ] = publish_sensitive_variable_modified
 
                 if runtime_execution_settings.get("show_security_warnings_in_runtime", True):
                     for security_event in self._build_runtime_security_events(
@@ -9367,6 +9746,14 @@ class CompilationWorkbenchService:
         except ValidationError as exc:
             raise ValueError(f"graph document payload is invalid: {exc.errors()[0]['loc']}") from exc
         graph_model, _ = self._normalize_graph_model(graph_model)
+        self._assert_no_sensitive_parameter_initial_variable_name_conflicts(
+            initial_variables=self._extract_runtime_defaults_from_graph_model(graph_model)[
+                "initial_variables"
+            ],
+            encrypted_parameter_set=self._extract_project_settings(self._state).get(
+                "encrypted_parameter_set"
+            ),
+        )
         target_document_id = (
             payload_document_id.strip()
             if isinstance(payload_document_id, str) and payload_document_id.strip()
@@ -9568,6 +9955,80 @@ class CompilationWorkbenchService:
             )
 
         graph_model, request_meta = self._resolve_graph_document_request(graph_document_payload)
+        conflict_names = self._find_sensitive_parameter_initial_variable_name_conflicts(
+            initial_variables=self._extract_runtime_defaults_from_graph_model(graph_model)[
+                "initial_variables"
+            ],
+            encrypted_parameter_set=self._extract_project_settings(self._state).get(
+                "encrypted_parameter_set"
+            ),
+        )
+        if conflict_names:
+            diagnostics = self._build_sensitive_variable_name_conflict_diagnostics(
+                kind=kind,
+                graph_model=graph_model,
+                conflict_names=conflict_names,
+            )
+            primary_diagnostic = diagnostics[0]
+            return PreparationResult(
+                kind=kind,
+                status="failed",
+                request={
+                    "compilation_id": None,
+                    "request_origin": request_meta["request_origin"],
+                    "requested_graph_model_id": request_meta["requested_graph_model_id"],
+                    "requested_graph_save_revision": request_meta[
+                        "requested_graph_save_revision"
+                    ],
+                    "requested_graph_saved_at": request_meta["requested_graph_saved_at"],
+                    "compile_status": "failed",
+                },
+                graph_model=graph_model,
+                prepared_graph_model=None,
+                compile_result=None,
+                runtime_plan=None,
+                object_index=(
+                    self._build_debug_object_index(graph_model) if kind == "debug" else None
+                ),
+                diagnostics={
+                    "entries": diagnostics,
+                    "total_count": len(diagnostics),
+                    "highest_severity": "error",
+                    "severity_counts": {"error": len(diagnostics)},
+                },
+                primary_diagnostic={
+                    key: primary_diagnostic[key]
+                    for key in ("stage", "category", "severity", "message")
+                },
+                security_requirement_summary=self._build_project_security_requirement_summary(),
+                stage_timeline=[],
+                runtime_preview=(
+                    self._build_runtime_debug_snapshot(
+                        scheduler_mode=None,
+                        pending_node_entries=[],
+                        queued_node_ids=set(),
+                        executed_node_ids_in_order=[],
+                        join_state_by_node_id={},
+                        retry_state_by_node_id={},
+                        executable_nodes=[],
+                        current_program_counter=None,
+                        current_repeat_mode=False,
+                    )
+                    if kind == "debug"
+                    else None
+                ),
+                runtime_preview_summary=(
+                    self._build_runtime_preview_summary(None) if kind == "debug" else None
+                ),
+                message=primary_diagnostic["message"],
+                details={
+                    "primary_diagnostic": {
+                        key: primary_diagnostic[key]
+                        for key in ("stage", "category", "severity", "message")
+                    },
+                    "conflicting_parameter_ids": conflict_names,
+                },
+            )
         compile_result = self._compile_graph_document_transient(
             graph_model,
             compilation_id_prefix=kind,
@@ -9792,6 +10253,8 @@ class CompilationWorkbenchService:
                 "pending_variable_overrides": {},
                 "last_breakpoint_frame_identity": None,
                 "last_record_frame_identity": None,
+                "parameter_unlock_required": False,
+                "parameter_unlock_completed": False,
             },
             "stage_timeline": preparation.stage_timeline or [],
             "object_index": preparation.object_index,
@@ -9846,11 +10309,20 @@ class CompilationWorkbenchService:
         }
         self._remember_debug_session(session_document)
         self._persist_debug_history_session_document(session_document)
+        if self.requires_debug_session_parameter_unlock(
+            session_id=session_document["debug_session"]["session_id"]
+        ):
+            session_document["debug_session"] = {
+                **session_document["debug_session"],
+                "parameter_unlock_required": True,
+            }
+            self._replace_debug_session_document(session_document)
+            return {"status": "unlock_required", **session_document}
         run_result = self._run_debug_session_sync(
             session_id=session_document["debug_session"]["session_id"]
         )
         return {
-            **run_result,
+            **self._project_debug_session_document(run_result),
             "status": "started",
         }
 
@@ -9871,6 +10343,13 @@ class CompilationWorkbenchService:
         self._remember_debug_session(session_document)
         self._persist_debug_history_session_document(session_document)
         session_id = session_document["debug_session"]["session_id"]
+        if self.requires_debug_session_parameter_unlock(session_id=session_id):
+            session_document["debug_session"] = {
+                **session_document["debug_session"],
+                "parameter_unlock_required": True,
+            }
+            self._replace_debug_session_document(session_document)
+            return {"status": "unlock_required", **session_document}
         if not self._launch_debug_execution_thread(session_id=session_id):
             completed_at = datetime.now(timezone.utc).isoformat()
             session_document["debug_session"] = {
@@ -14701,6 +15180,75 @@ class CompilationWorkbenchService:
                 }
             )
         return normalized_parameters
+
+    def _find_sensitive_parameter_initial_variable_name_conflicts(
+        self,
+        *,
+        initial_variables: object,
+        encrypted_parameter_set: object,
+    ) -> list[str]:
+        if not isinstance(initial_variables, dict) or not isinstance(encrypted_parameter_set, dict):
+            return []
+        parameters = encrypted_parameter_set.get("parameters")
+        if not isinstance(parameters, list):
+            return []
+        parameter_ids = {
+            parameter_id.strip()
+            for parameter in parameters
+            if isinstance(parameter, dict)
+            and isinstance(parameter_id := parameter.get("parameter_id"), str)
+            and parameter_id.strip()
+        }
+        return sorted(
+            parameter_id
+            for parameter_id in parameter_ids
+            if parameter_id in initial_variables
+        )
+
+    def _assert_no_sensitive_parameter_initial_variable_name_conflicts(
+        self,
+        *,
+        initial_variables: object,
+        encrypted_parameter_set: object,
+    ) -> None:
+        conflict_names = self._find_sensitive_parameter_initial_variable_name_conflicts(
+            initial_variables=initial_variables,
+            encrypted_parameter_set=encrypted_parameter_set,
+        )
+        if conflict_names:
+            raise ValueError(
+                "sensitive_parameter.initial_variable_name_conflict: "
+                + ", ".join(conflict_names)
+            )
+
+    def _build_sensitive_variable_name_conflict_diagnostics(
+        self,
+        *,
+        kind: str,
+        graph_model: GraphModel,
+        conflict_names: list[str],
+    ) -> list[dict]:
+        stage = f"{kind}.prepare"
+        return [
+            {
+                "diagnostic_id": f"sensitive-variable-name-conflict-{uuid.uuid4().hex[:12]}",
+                "stage": stage,
+                "severity": "error",
+                "category": "runtime.sensitive_variable_name_conflict",
+                "message": (
+                    "encrypted parameter name conflicts with flow.start initial variable: "
+                    f"{parameter_id}"
+                ),
+                "object_ref": parameter_id,
+                "setting_field": f"entrypoint_runtime.initial_variables.{parameter_id}",
+                "trace_ref": None,
+                "stage_extension": {
+                    "graph_ref": {"graph_model_id": graph_model.graph_model_id},
+                    "encrypted_parameter_id": parameter_id,
+                },
+            }
+            for parameter_id in conflict_names
+        ]
 
     def _extract_project_settings(self, state: dict | None) -> dict:
         raw_settings = state.get("project_settings") if isinstance(state, dict) else None
@@ -19698,19 +20246,23 @@ class CompilationWorkbenchService:
         self._state = self._state_store.mutate(mutation)
 
     def _remember_debug_session(self, session_document: dict) -> None:
+        if isinstance(session_document.get("runtime_plan"), dict):
+            self._remember_debug_execution_state(session_document)
+        persisted_session_document = self._project_debug_session_document(session_document)
+
         def mutation(state: dict | None) -> dict:
             current_state, _ = self._normalize_workspace_state(state)
             sessions = self._extract_debug_sessions(current_state)
-            sessions.insert(0, session_document)
+            sessions.insert(0, persisted_session_document)
             current_state["debug_sessions"] = sessions[:MAX_DEBUG_LIVE_SESSION_DOCUMENTS]
             execution_history = self._extract_execution_history(current_state)
             execution_history["debug_sessions"].insert(
                 0,
                 {
-                    "session_id": session_document["debug_session"]["session_id"],
-                    "status": session_document["debug_session"]["status"],
-                    "graph_model_id": session_document["object_index"]["graph_model_id"],
-                    "started_at": session_document["debug_session"]["started_at"],
+                    "session_id": persisted_session_document["debug_session"]["session_id"],
+                    "status": persisted_session_document["debug_session"]["status"],
+                    "graph_model_id": persisted_session_document["object_index"]["graph_model_id"],
+                    "started_at": persisted_session_document["debug_session"]["started_at"],
                 },
             )
             execution_history["debug_sessions"] = execution_history["debug_sessions"][
@@ -19727,9 +20279,7 @@ class CompilationWorkbenchService:
         *,
         persist_history: bool = True,
     ) -> None:
-        persisted_session_document = project_runtime_value_for_publication(session_document)
-        if not isinstance(persisted_session_document, dict):
-            raise ValueError("debug session document must project to an object")
+        persisted_session_document = self._project_debug_session_document(session_document)
         session_id = persisted_session_document["debug_session"]["session_id"]
 
         def mutation(state: dict | None) -> dict:
@@ -19863,9 +20413,19 @@ class CompilationWorkbenchService:
                         event=event,
                         event_index=len(debug_events),
                     )
+                    projected_event = project_runtime_value_for_publication(
+                        normalized_event,
+                        secret_values=(
+                            self._get_debug_sensitive_value_service(session_id).values_for_scope(session_id)
+                            if self._get_debug_sensitive_value_service(session_id) is not None
+                            else ()
+                        ),
+                    )
+                    if not isinstance(projected_event, dict):
+                        raise ValueError("debug event must project to an object")
                     event.clear()
-                    event.update(deepcopy(normalized_event))
-                    debug_events.append(normalized_event)
+                    event.update(deepcopy(projected_event))
+                    debug_events.append(projected_event)
                     updated_item["debug_events"] = debug_events
                     controller = DebugController(session_snapshot=updated_item)
                     event_patch = controller.apply_event(
@@ -19928,7 +20488,9 @@ class CompilationWorkbenchService:
             history_store = self._get_debug_history_store()
         except ValueError:
             return
-        history_store.persist_session_document(session_document)
+        history_store.persist_session_document(
+            self._project_debug_session_document(session_document)
+        )
 
     def _build_debug_keyframe(
         self,
@@ -20046,16 +20608,26 @@ class CompilationWorkbenchService:
                         if isinstance(updated_item.get("debug_keyframes"), list)
                         else []
                     )
-                    keyframes.append(deepcopy(keyframe))
+                    projected_keyframe = project_runtime_value_for_publication(
+                        keyframe,
+                        secret_values=(
+                            self._get_debug_sensitive_value_service(session_id).values_for_scope(session_id)
+                            if self._get_debug_sensitive_value_service(session_id) is not None
+                            else ()
+                        ),
+                    )
+                    if not isinstance(projected_keyframe, dict):
+                        raise ValueError("debug keyframe must project to an object")
+                    keyframes.append(deepcopy(projected_keyframe))
                     updated_item["debug_keyframes"] = keyframes
-                    snapshot_id = keyframe.get("snapshot_id")
+                    snapshot_id = projected_keyframe.get("snapshot_id")
                     if isinstance(snapshot_id, str):
                         snapshots = (
                             list(updated_item.get("debug_snapshots", []))
                             if isinstance(updated_item.get("debug_snapshots"), list)
                             else []
                         )
-                        snapshots.append(deepcopy(keyframe))
+                        snapshots.append(deepcopy(projected_keyframe))
                         updated_item["debug_snapshots"] = snapshots
                     updated_session_holder["value"] = deepcopy(updated_item)
                     updated_sessions.append(updated_item)
@@ -20143,13 +20715,10 @@ class CompilationWorkbenchService:
                 "status": debug_session.get("status"),
                 **session_document,
             }
-        runtime_plan = (
-            session_document.get("runtime_plan")
-            if isinstance(session_document.get("runtime_plan"), dict)
-            else None
-        )
-        if runtime_plan is None:
-            raise ValueError(f"debug session runtime plan missing: {session_id}")
+        execution_state = self._get_debug_execution_state(session_id=session_id)
+        runtime_plan = execution_state.get("runtime_plan")
+        if not isinstance(runtime_plan, dict):
+            raise RuntimeError(f"debug session runtime plan missing: {session_id}")
 
         runtime_execution_settings = self._build_runtime_execution_settings()
         runtime_context = self._debug_runtime_contexts.get(session_id)
@@ -20167,17 +20736,17 @@ class CompilationWorkbenchService:
         runtime_context.flow_runtime["graph_root_metadata"] = deepcopy(
             runtime_plan.get("root_metadata", {})
         )
-        variable_snapshot = (
-            session_document.get("variable_snapshot")
-            if isinstance(session_document.get("variable_snapshot"), dict)
-            else {}
-        )
+        variable_snapshot = execution_state.get("variable_snapshot")
+        if not isinstance(variable_snapshot, dict):
+            variable_snapshot = {}
         runtime_context.variables.update(deepcopy(variable_snapshot))
-        persisted_flow_runtime = (
-            debug_session.get("flow_runtime_snapshot")
-            if isinstance(debug_session.get("flow_runtime_snapshot"), dict)
-            else {}
+        self._inject_debug_sensitive_variables(
+            session_id=session_id,
+            runtime_context=runtime_context,
         )
+        persisted_flow_runtime = execution_state.get("flow_runtime_snapshot")
+        if not isinstance(persisted_flow_runtime, dict):
+            persisted_flow_runtime = {}
         if isinstance(persisted_flow_runtime.get("loop_iteration_by_node_id"), dict):
             runtime_context.flow_runtime["loop_iteration_by_node_id"] = deepcopy(
                 persisted_flow_runtime["loop_iteration_by_node_id"]
@@ -20396,27 +20965,51 @@ class CompilationWorkbenchService:
             session_document["runtime_preview_summary"] = self._build_runtime_preview_summary(
                 session_document["runtime_preview"]
             )
+            self._synchronize_debug_sensitive_variable_refs(
+                session_id=session_id,
+                variables=runtime_context.variables,
+            )
             session_document["variable_snapshot"] = deepcopy(runtime_context.variables)
             descriptors = (
                 deepcopy(session_document.get("variable_descriptors"))
                 if isinstance(session_document.get("variable_descriptors"), dict)
                 else {}
             )
+            sensitive_values = self._get_debug_sensitive_value_service(session_id)
             for variable_name, value in runtime_context.variables.items():
-                if not isinstance(variable_name, str) or variable_name in descriptors:
+                if not isinstance(variable_name, str):
                     continue
-                descriptors[variable_name] = {
-                    "name": variable_name,
-                    "value_type": self._describe_debug_variable_value_type(value),
-                    "scope": "dynamic",
-                    "editable": True,
-                    "origin": "runtime.dynamic",
-                    "nullable": value is None,
-                }
+                descriptor = descriptors.get(variable_name)
+                if not isinstance(descriptor, dict):
+                    descriptor = {
+                        "name": variable_name,
+                        "scope": "dynamic",
+                        "editable": True,
+                        "origin": "runtime.dynamic",
+                    }
+                if isinstance(value, SensitiveRef):
+                    descriptor["sensitive"] = True
+                else:
+                    descriptor.pop("sensitive", None)
+                described_value = value
+                if isinstance(value, SensitiveRef) and sensitive_values is not None:
+                    described_value = sensitive_values.resolve(
+                        value,
+                        consumer=SensitiveConsumer.DEBUG_INSPECTOR,
+                    )
+                descriptor["value_type"] = self._describe_debug_variable_value_type(described_value)
+                descriptor["nullable"] = described_value is None
+                descriptors[variable_name] = descriptor
             session_document["variable_descriptors"] = descriptors
+            flow_runtime_snapshot = self._extract_debug_flow_runtime_snapshot(runtime_context)
+            self._update_debug_execution_state(
+                session_id=session_id,
+                variable_snapshot=runtime_context.variables,
+                flow_runtime_snapshot=flow_runtime_snapshot,
+            )
             session_document["debug_session"] = {
                 **session_document["debug_session"],
-                "flow_runtime_snapshot": self._extract_debug_flow_runtime_snapshot(runtime_context),
+                "flow_runtime_snapshot": flow_runtime_snapshot,
             }
 
         def build_current_node_snapshot(

@@ -11,6 +11,7 @@ class SensitiveConsumer(StrEnum):
     NETWORK_RUNTIME = "network_runtime"
     RUNTIME_EXECUTOR = "runtime_executor"
     OPERATION_BROKER = "operation_broker"
+    DEBUG_INSPECTOR = "debug_inspector"
 
 
 @dataclass(frozen=True, repr=False)

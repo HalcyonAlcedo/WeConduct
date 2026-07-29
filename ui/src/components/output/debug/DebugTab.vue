@@ -7,6 +7,7 @@ import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
 import { t } from '@/i18n'
+import { locateGraphNode } from '@/services/graphNodeNavigation'
 
 const toast = useToastStore()
 const debugStore = useDebugStore()
@@ -39,6 +40,8 @@ async function doStart() {
   } else if (r.phase === 'started_with_sync_warning') {
     toast.success(t('framework.debug.tab.debugStarted', 'Debug 已启动'), r.sessionId ?? '')
     toast.error(t('framework.debug.tab.panelSyncFailed', '面板同步失败'), r.syncError ?? '')
+  } else if (r.phase === 'unlock_required') {
+    toast.success(t('framework.debug.tab.unlockRequired', '等待参数解锁'), r.sessionId ?? '')
   } else {
     error.value = r.startError ?? ''
     toast.error(t('framework.debug.tab.debugStartFailed', 'Debug 启动失败'), error.value ?? '')
@@ -110,7 +113,7 @@ const currentNodeId = computed(() => (debugStore.activeSession?.runtime_preview 
 
 function panToCurrentNode() {
   const nid = currentNodeId.value
-  if (nid) try { (window as any).__panToNode?.(nid) } catch {}
+  if (nid) void locateGraphNode(nid)
 }
 
 // Auto-pan to current executing node (covers running, paused, stepping)
@@ -122,7 +125,7 @@ watch(() => ({
   if (nodeId && ['running', 'paused', 'stepping'].includes(status || '') && nodeId !== lastPanNodeId) {
     const nid = nodeId
     lastPanNodeId = nid
-    try { (window as any).__panToNode?.(nid) } catch {}
+    void locateGraphNode(nid)
   }
 })
 </script>

@@ -19,6 +19,7 @@ import type {
   PythonRuntimeStatus,
   SecurityRequirementSummary,
 } from '@/types/domains/api'
+import { describeSensitiveVariableNameConflict } from '@/security/sensitiveVariableNameConflict'
 
 const workspace = useWorkspaceStore()
 const toast = useToastStore()
@@ -231,7 +232,10 @@ async function saveEncryptedParameters() {
     await workspace.refreshSnapshot()
     toast.success(t('framework.projectSettings.encryptedParameters.saved', '加密参数已保存'))
   } catch (e: any) {
-    toast.error(t('framework.projectSettings.encryptedParameters.saveFailed', '保存加密参数失败'), e?.message)
+    toast.error(
+      t('framework.projectSettings.encryptedParameters.saveFailed', '保存加密参数失败'),
+      describeSensitiveVariableNameConflict(e) || e?.message,
+    )
   }
 }
 
@@ -347,7 +351,10 @@ async function save() {
     markSaved()
   } catch (e: any) {
     saveState.value = 'error'
-    toast.error(t('framework.projectSettings.toast.saveFailed', '保存失败'), e?.message)
+    toast.error(
+      t('framework.projectSettings.toast.saveFailed', '保存失败'),
+      describeSensitiveVariableNameConflict(e) || e?.message,
+    )
   }
 }
 
@@ -438,7 +445,10 @@ async function enableSecurityRequirements() {
     if (e?.body?.error === 'high_risk_confirmation_required') {
       toast.info(t('framework.projectSettings.toast.confirmRequired', '需要确认'), t('framework.projectSettings.toast.confirmHighRiskHint', '请在首选项安全设置中手动确认高风险变更'))
     } else {
-      toast.error(t('framework.projectSettings.toast.enableFailed', '开启失败'), e?.message)
+      toast.error(
+        t('framework.projectSettings.toast.enableFailed', '开启失败'),
+        describeSensitiveVariableNameConflict(e) || e?.message,
+      )
     }
   } finally { secEnabling.value = false }
 }

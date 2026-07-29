@@ -68,6 +68,121 @@ _STANDARD_SENSITIVE_CONSUMER_ACTIVE_KEY = "standard_sensitive_consumer_active"
 _STANDARD_SENSITIVE_CONSUMED_VALUES_KEY = "standard_sensitive_consumed_values"
 
 
+class _RuntimeVariableStore(dict):
+    """集中保护运行期敏感变量，避免任意节点写回时丢失 SensitiveRef。"""
+
+    def __init__(self, context: RuntimeContext, initial_values: object = None) -> None:
+        super().__init__()
+        self._context = context
+        if isinstance(initial_values, Mapping):
+            dict.update(self, initial_values)
+
+    def __setitem__(self, key: object, value: object) -> None:
+        old_value = self.get(key, _MISSING_RUNTIME_VARIABLE_VALUE)
+        protected_value = self._preserve_sensitive_reference(
+            key=key,
+            old_value=old_value,
+            new_value=value,
+        )
+        dict.__setitem__(self, key, protected_value)
+        if old_value is not _MISSING_RUNTIME_VARIABLE_VALUE and self._is_sensitive_ref(old_value):
+            self._emit_sensitive_variable_modified(
+                key=key,
+                old_value=old_value,
+                new_value=protected_value,
+            )
+
+    def update(self, *args: object, **kwargs: object) -> None:
+        updates: dict[object, object] = {}
+        if len(args) > 1:
+            raise TypeError(f"update expected at most 1 argument, got {len(args)}")
+        if args:
+            source = args[0]
+            if isinstance(source, Mapping):
+                updates.update(source)
+            else:
+                for key, value in source:  # type: ignore[union-attr]
+                    updates[key] = value
+        updates.update(kwargs)
+        for key, value in updates.items():
+            self[key] = value
+
+    def clear(self) -> None:
+        protected_values = {
+            key: value for key, value in self.items() if self._is_sensitive_ref(value)
+        }
+        dict.clear(self)
+        dict.update(self, protected_values)
+
+    def replace(self, values: object) -> None:
+        replacement = dict(values) if isinstance(values, Mapping) else {}
+        protected_keys = {
+            key for key, value in self.items() if self._is_sensitive_ref(value)
+        }
+        for key in tuple(self):
+            if key not in protected_keys and key not in replacement:
+                dict.__delitem__(self, key)
+        for key, value in replacement.items():
+            self[key] = value
+
+    def __deepcopy__(self, memo: dict[int, object]) -> dict:
+        return {key: value for key, value in self.items()}
+
+    @staticmethod
+    def _is_sensitive_ref(value: object) -> bool:
+        from weconduct.application.sensitive_values.models import SensitiveRef
+
+        return isinstance(value, SensitiveRef)
+
+    def _preserve_sensitive_reference(
+        self,
+        *,
+        key: object,
+        old_value: object,
+        new_value: object,
+    ) -> object:
+        if not self._is_sensitive_ref(old_value) or self._is_sensitive_ref(new_value):
+            return new_value
+        sensitive_values = self._context.flow_runtime.get("sensitive_value_service")
+        derive = getattr(sensitive_values, "derive", None)
+        if not callable(derive):
+            raise RuntimeError("runtime.sensitive_values_unavailable")
+        return derive(new_value, parents=(old_value,))
+
+    def _emit_sensitive_variable_modified(
+        self,
+        *,
+        key: object,
+        old_value: object,
+        new_value: object,
+    ) -> None:
+        if not isinstance(key, str):
+            return
+        sink = self._context.flow_runtime.get("sensitive_variable_modification_sink")
+        if not callable(sink):
+            return
+        active_node = self._context.flow_runtime.get("active_runtime_node")
+        active_node = active_node if isinstance(active_node, dict) else {}
+        sink(
+            {
+                "category": "runtime.sensitive_variable_modified",
+                "severity": "warn",
+                "variable_name": key,
+                "node_id": active_node.get("node_id"),
+                "node_kind": active_node.get("node_kind"),
+                "old_value_type": self._describe_value_type(old_value),
+                "new_value_type": self._describe_value_type(new_value),
+            }
+        )
+
+    @classmethod
+    def _describe_value_type(cls, value: object) -> str:
+        return "sensitive_ref" if cls._is_sensitive_ref(value) else type(value).__name__
+
+
+_MISSING_RUNTIME_VARIABLE_VALUE = object()
+
+
 class RuntimeCancellationError(Exception):
     weconduct_cancelled = True
 
@@ -172,6 +287,13 @@ class RuntimeContext:
             self.execution_session_context.cancellation_context = self.cancellation_context
 
     def __setattr__(self, name: str, value: object) -> None:
+        if name == "variables":
+            existing_variables = self.__dict__.get("variables")
+            if isinstance(existing_variables, _RuntimeVariableStore):
+                if value is not existing_variables:
+                    existing_variables.replace(value)
+                return
+            value = _RuntimeVariableStore(self, value)
         object.__setattr__(self, name, value)
         session_context = self.__dict__.get("execution_session_context")
         if not isinstance(session_context, ExecutionSessionContext):
@@ -1801,6 +1923,7 @@ class RuntimeExecutorRegistry:
             response_root_directory=Path(tempfile.gettempdir()),
             access_policy=NetworkAccessPolicy(
                 allow_loopback=self._is_local_network_access_allowed(),
+                allow_local_network_access=self._is_local_network_access_allowed(),
             ),
             sensitive_values=context.flow_runtime.get("sensitive_value_service"),
             audit_event_sink=audit_event_sink if callable(audit_event_sink) else None,

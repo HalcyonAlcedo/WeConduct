@@ -9,6 +9,8 @@ import {
   fetchDebugEvents,
   postDebugPrepare,
   postDebugStart,
+  postDebugParameterUnlock,
+  postDebugSensitiveValuesReveal,
   postDebugContinue,
   postDebugStepOver,
   postDebugStepInto,
@@ -52,6 +54,18 @@ export const useDebugStore = defineStore('debug', () => {
   const eventsTotal = ref(0)
   const eventsSessionId = ref<string | null>(null)
   const controlLoading = ref(false)
+  const pendingParameterUnlockSessionId = ref<string | null>(null)
+  const pendingSensitiveValueReveal = ref<{ sessionId: string; variableName: string } | null>(null)
+  const revealedSensitiveValues = ref<Record<string, unknown>>({})
+
+  function sensitiveValueKey(sessionId: string, variableName: string) {
+    return `${sessionId}:${variableName}`
+  }
+
+  function clearRevealedSensitiveValues() {
+    revealedSensitiveValues.value = {}
+    pendingSensitiveValueReveal.value = null
+  }
 
   function normalizeDebugStatus(status: unknown): string {
     return typeof status === 'string' ? status : ''
@@ -115,6 +129,16 @@ export const useDebugStore = defineStore('debug', () => {
     const previousSessionId = activeSession.value?.debug_session?.session_id
     const nextSessionId = normalized?.debug_session?.session_id
     const nextStatus = normalized?.debug_session?.status || normalized?.status
+    const previousFrame = (activeSession.value?.debug_session as any)?.last_breakpoint_frame_identity
+    const nextFrame = (normalized?.debug_session as any)?.last_breakpoint_frame_identity
+    if (
+      previousSessionId !== nextSessionId
+      || nextStatus !== 'paused'
+      || previousFrame !== nextFrame
+    ) clearRevealedSensitiveValues()
+    if ((normalized?.debug_session as any)?.parameter_unlock_required === false) {
+      pendingParameterUnlockSessionId.value = null
+    }
     const runtimeDebuggerConfigs = extractSessionDebuggerConfigs(normalized)
     if (isTerminalDebugStatus(nextStatus)) {
       sessionDebuggerConfigs.value = {}
@@ -264,6 +288,8 @@ export const useDebugStore = defineStore('debug', () => {
     events.value = []
     eventsTotal.value = 0
     eventsSessionId.value = null
+    pendingParameterUnlockSessionId.value = null
+    clearRevealedSensitiveValues()
   }
 
   function updateActiveSessionSummary(sessionId: string) {
@@ -369,6 +395,7 @@ export const useDebugStore = defineStore('debug', () => {
   }
 
   async function doContinue(sessionId: string): Promise<DebugSessionDocument | null> {
+    clearRevealedSensitiveValues()
     controlLoading.value = true
     try {
       const r: DebugControlResponse = await postDebugContinue(sessionId)
@@ -377,6 +404,7 @@ export const useDebugStore = defineStore('debug', () => {
   }
 
   async function doStepOver(sessionId: string): Promise<DebugSessionDocument | null> {
+    clearRevealedSensitiveValues()
     controlLoading.value = true
     try {
       const r: DebugControlResponse = await postDebugStepOver(sessionId)
@@ -385,6 +413,7 @@ export const useDebugStore = defineStore('debug', () => {
   }
 
   async function doStepInto(sessionId: string): Promise<DebugSessionDocument | null> {
+    clearRevealedSensitiveValues()
     controlLoading.value = true
     try {
       const r: DebugControlResponse = await postDebugStepInto(sessionId)
@@ -393,6 +422,7 @@ export const useDebugStore = defineStore('debug', () => {
   }
 
   async function doStepOut(sessionId: string): Promise<DebugSessionDocument | null> {
+    clearRevealedSensitiveValues()
     controlLoading.value = true
     try {
       const r: DebugControlResponse = await postDebugStepOut(sessionId)
@@ -401,6 +431,7 @@ export const useDebugStore = defineStore('debug', () => {
   }
 
   async function doPause(sessionId: string): Promise<DebugSessionDocument | null> {
+    clearRevealedSensitiveValues()
     controlLoading.value = true
     try {
       const r: DebugControlResponse = await postDebugPause(sessionId, { reason: 'manual_pause' })
@@ -409,6 +440,7 @@ export const useDebugStore = defineStore('debug', () => {
   }
 
   async function doAbort(sessionId: string): Promise<DebugSessionDocument | null> {
+    clearRevealedSensitiveValues()
     controlLoading.value = true
     try {
       const r: DebugControlResponse = await postDebugAbort(sessionId, { reason: 'user_abort' })
@@ -440,7 +472,7 @@ export const useDebugStore = defineStore('debug', () => {
 
   // --- Unified entry points (Scheme A) ---
 
-  type DebugStartResult = { phase: 'started' | 'started_with_sync_warning' | 'failed'; sessionId?: string; startError?: string; syncError?: string }
+  type DebugStartResult = { phase: 'started' | 'started_with_sync_warning' | 'unlock_required' | 'failed'; sessionId?: string; startError?: string; syncError?: string }
 
   async function prepareDebugSession(graphBody?: Record<string, unknown>): Promise<{ phase: 'ready' | 'failed'; error?: string }> {
     try {
@@ -460,6 +492,12 @@ export const useDebugStore = defineStore('debug', () => {
       const r = await postDebugStart(graphBody)
       if (!r.debug_session?.session_id) return { phase: 'failed', startError: '无会话 ID' }
       const sid = r.debug_session.session_id
+      if (r.status === 'unlock_required') {
+        setActiveSessionDetail(r)
+        pendingParameterUnlockSessionId.value = sid
+        await refreshSessions(sid)
+        return { phase: 'unlock_required', sessionId: sid }
+      }
       try {
         await refreshSessions(sid)
         return { phase: 'started', sessionId: sid }
@@ -470,6 +508,52 @@ export const useDebugStore = defineStore('debug', () => {
       useProjectDiagnosticsStore().ingestApiError(e, { source: 'debug', operation: 'debug.start' })
       return { phase: 'failed', startError: extractDebugError(e, '启动失败') }
     }
+  }
+
+  async function unlockAndResumeDebug(password: string): Promise<void> {
+    const sessionId = pendingParameterUnlockSessionId.value
+    if (!sessionId) throw new Error('当前没有待解锁的 Debug 会话')
+    const result = await postDebugParameterUnlock(sessionId, password)
+    pendingParameterUnlockSessionId.value = null
+    setActiveSessionDetail(result)
+    await refreshSessions(sessionId)
+    startPolling(sessionId)
+  }
+
+  async function abortPendingParameterUnlock(): Promise<void> {
+    const sessionId = pendingParameterUnlockSessionId.value
+    if (!sessionId) return
+    await doAbort(sessionId)
+    pendingParameterUnlockSessionId.value = null
+    await refreshSessions(sessionId)
+  }
+
+  function requestSensitiveValueReveal(variableName: string) {
+    const sessionId = activeSession.value?.debug_session?.session_id
+    if (!sessionId || getActiveDebugStatus() !== 'paused') {
+      throw new Error('仅可在暂停中的 Debug 会话查看敏感变量')
+    }
+    pendingSensitiveValueReveal.value = { sessionId, variableName }
+  }
+
+  async function revealPendingSensitiveValue(password: string): Promise<void> {
+    const pending = pendingSensitiveValueReveal.value
+    if (!pending) throw new Error('当前没有待查看的敏感变量')
+    const result = await postDebugSensitiveValuesReveal(
+      pending.sessionId,
+      [pending.variableName],
+      password,
+    )
+    revealedSensitiveValues.value = {
+      ...revealedSensitiveValues.value,
+      [sensitiveValueKey(pending.sessionId, pending.variableName)]: result.values[pending.variableName],
+    }
+    pendingSensitiveValueReveal.value = null
+  }
+
+  function getRevealedSensitiveValue(sessionId: string | null | undefined, variableName: string): unknown {
+    if (!sessionId) return undefined
+    return revealedSensitiveValues.value[sensitiveValueKey(sessionId, variableName)]
   }
 
   // --- Polling ---
@@ -575,6 +659,14 @@ export const useDebugStore = defineStore('debug', () => {
     eventsTotal,
     eventsSessionId,
     controlLoading,
+    pendingParameterUnlockSessionId,
+    pendingSensitiveValueReveal,
+    unlockAndResumeDebug,
+    abortPendingParameterUnlock,
+    requestSensitiveValueReveal,
+    revealPendingSensitiveValue,
+    getRevealedSensitiveValue,
+    clearRevealedSensitiveValues,
     isDebugActive,
     getDebuggerConfig,
     getEffectiveDebuggerConfig,

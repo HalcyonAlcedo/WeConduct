@@ -24,12 +24,20 @@ const changes = computed<Record<string, any>>(() => isHistory.value
   : ((activeDoc.value as any)?.variable_changes || {}))
 const editMode = computed<'immediate' | 'staged'>(() =>
   activeDoc.value?.debug_session?.variable_apply_mode === 'staged' ? 'staged' : 'immediate')
-const rows = computed(() => Object.keys(values.value).map(name => ({
-  name,
-  value: stagedValues[name] ?? values.value[name],
-  descriptor: descriptors.value[name] || { value_type: inferType(values.value[name]), scope: 'dynamic', editable: true },
-  change: changes.value[name],
-})))
+const activeSessionId = computed(() => activeDoc.value?.debug_session?.session_id)
+const rows = computed(() => Object.keys(values.value).map(name => {
+  const descriptor = descriptors.value[name] || { value_type: inferType(values.value[name]), scope: 'dynamic', editable: true }
+  const sensitive = Boolean(descriptor.sensitive)
+  const revealedValue = sensitive ? debugStore.getRevealedSensitiveValue(activeSessionId.value, name) : undefined
+  return {
+    name,
+    value: revealedValue !== undefined ? revealedValue : (stagedValues[name] ?? values.value[name]),
+    descriptor,
+    sensitive,
+    revealed: revealedValue !== undefined,
+    change: changes.value[name],
+  }
+}))
 
 function inferType(value: unknown) {
   if (value === null) return 'null'
@@ -69,6 +77,13 @@ async function applyAll() {
     toast.success(t('framework.debug.variables.applied', '变量已应用'))
   } catch (error: any) { toast.error(t('framework.debug.variables.applyFailed', '应用失败'), error?.message) }
 }
+function requestSensitiveReveal(name: string) {
+  try {
+    debugStore.requestSensitiveValueReveal(name)
+  } catch (error: any) {
+    rowErrors[name] = error?.message || t('framework.debug.sensitiveReveal.failed', '敏感变量查看失败')
+  }
+}
 function discardAll() {
   for (const key of Object.keys(stagedValues)) delete stagedValues[key]
   for (const key of Object.keys(drafts)) delete drafts[key]
@@ -95,7 +110,11 @@ watch(values, current => {
           <span class="dvp-name">{{ row.name }}</span>
           <span class="dvp-type">{{ row.descriptor.value_type }}</span>
           <span class="dvp-editor">
-            <select v-if="row.descriptor.value_type === 'boolean'" v-model="drafts[row.name]" :disabled="isHistory" @change="commit(row.name)"><option value="true">true</option><option value="false">false</option></select>
+            <template v-if="row.sensitive && !isHistory">
+              <code v-if="row.revealed" class="dvp-sensitive-value">{{ encode(row.value) }}</code>
+              <button v-else type="button" @click="requestSensitiveReveal(row.name)">{{ t('framework.debug.variables.revealSensitive', '查看敏感值') }}</button>
+            </template>
+            <select v-else-if="row.descriptor.value_type === 'boolean'" v-model="drafts[row.name]" :disabled="isHistory" @change="commit(row.name)"><option value="true">true</option><option value="false">false</option></select>
             <textarea v-else-if="['object','array'].includes(row.descriptor.value_type)" v-model="drafts[row.name]" :disabled="isHistory" rows="2" @keydown.ctrl.enter.prevent="commit(row.name)" @blur="commit(row.name)" />
             <input v-else v-model="drafts[row.name]" :disabled="isHistory || row.descriptor.value_type === 'null'" @keydown.enter.prevent="commit(row.name)" @blur="commit(row.name)" />
             <small v-if="rowErrors[row.name]">{{ rowErrors[row.name] }}</small>
@@ -121,6 +140,8 @@ button { padding: 2px 8px; cursor: pointer; } button:disabled { opacity: 0.5; }
 .dvp-name { font-family: var(--font-mono); color: var(--text-primary); }
 .dvp-type { color: var(--state-info); }
 .dvp-editor input, .dvp-editor select, .dvp-editor textarea { width: 100%; padding: 3px 5px; resize: vertical; }
+.dvp-editor button { padding: 3px 7px; }
+.dvp-sensitive-value { display: block; overflow-wrap: anywhere; color: var(--state-warning); }
 .dvp-editor small { display: block; color: var(--state-error); margin-top: 2px; }
 .dvp-empty { color: var(--text-disabled); padding: var(--space-md); }
 </style>

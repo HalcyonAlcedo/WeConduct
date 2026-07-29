@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useProjectDiagnosticsStore } from '@/stores/projectDiagnosticsStore'
-import { useGraphStore } from '@/stores/graphStore'
 import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
 import type { DiagnosticSeverity, Diagnostic } from '@/types/domains/diagnostics'
 import { t } from '@/i18n'
+import { locateGraphNode } from '@/services/graphNodeNavigation'
 
 const projectDiagnostics = useProjectDiagnosticsStore()
-const graphStore = useGraphStore()
 
 const severityFilter = ref<DiagnosticSeverity | 'all'>('all')
 const stageFilter = ref<string>('all')
@@ -187,9 +186,8 @@ function locateNodeFromDiagnostic(entry?: Diagnostic) {
   if (!entry) return
   const nodeId = extractNodeId(entry)
   if (!nodeId) return
-  graphStore.selectNode(nodeId)
   closeCtxMenu()
-  try { (window as any).__panToNode?.(nodeId) } catch {}
+  void locateGraphNode(nodeId)
 }
 function formatDiagnosticForCopy(g: { stage: string; category: string; severity: string; message: string; count: number }): string {
   return `[${severityLabel(g.severity)}] ${g.stage}/${g.category}: ${g.message} (${t('framework.diagnostics.copy.count', `${g.count} 条`, { n: g.count })})`

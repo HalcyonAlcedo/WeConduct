@@ -1503,10 +1503,62 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 return
             status_code = (
                 HTTPStatus.OK
-                if result["status"] in {"started", "running", "paused", "completed", "failed", "aborted", "incomplete"}
+                if result["status"] in {"started", "running", "paused", "completed", "failed", "aborted", "incomplete", "unlock_required"}
                 else HTTPStatus.BAD_REQUEST
             )
             self._write_json(status_code, result)
+            return
+
+        if self.path.startswith("/api/workbench/debug/") and self.path.endswith("/unlock"):
+            try:
+                session_id = self.path.removeprefix("/api/workbench/debug/").removesuffix("/unlock")
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid debug session path")
+                payload = self._read_json_request_body()
+                password = payload.get("password")
+                if not isinstance(password, str) or not password:
+                    raise ValueError("field must be a non-empty string: password")
+                result = service.unlock_debug_session_parameters(
+                    session_id=session_id,
+                    password=password,
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
+        if (
+            self.path.startswith("/api/workbench/debug/")
+            and self.path.endswith("/sensitive-values/reveal")
+        ):
+            try:
+                session_id = (
+                    self.path.removeprefix("/api/workbench/debug/")
+                    .removesuffix("/sensitive-values/reveal")
+                )
+                if not session_id or "/" in session_id:
+                    raise ValueError("invalid debug session path")
+                payload = self._read_json_request_body()
+                password = payload.get("password")
+                variable_names = payload.get("variable_names")
+                if not isinstance(password, str) or not password:
+                    raise ValueError("field must be a non-empty string: password")
+                if not isinstance(variable_names, list):
+                    raise ValueError("field must be an array: variable_names")
+                result = service.reveal_debug_session_sensitive_variables(
+                    session_id=session_id,
+                    variable_names=variable_names,
+                    password=password,
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(
+                HTTPStatus.OK,
+                result,
+                extra_headers={"Cache-Control": "no-store"},
+            )
             return
 
         if self.path.startswith("/api/workbench/debug/") and self.path.endswith("/continue"):
@@ -2579,11 +2631,19 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         return
 
-    def _write_json(self, status: HTTPStatus, payload: dict) -> None:
+    def _write_json(
+        self,
+        status: HTTPStatus,
+        payload: dict,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status.value)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
