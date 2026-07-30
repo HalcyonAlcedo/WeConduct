@@ -61,13 +61,9 @@ export function t(
   named?: Record<string, unknown>,
 ): string {
   const g = i18n.global
-  // On the source locale we never look up — the literal IS the text.
-  if (g.locale.value === SOURCE_LOCALE) return fallbackZh
-  // Targets the current UI locale, which is vue-i18n's default — no locale
-  // option needed. (`t(key, object)` would treat the object as named-interp
-  // values, not options, so the third-arg form is required when overriding.)
-  if (!g.te(key, g.locale.value)) return fallbackZh
-  return named ? g.t(key, named) : g.t(key)
+  // Let vue-i18n compile the fallback too, so source-locale and partial-pack
+  // messages receive the same named interpolation as installed translations.
+  return g.t(key, named ?? {}, { default: fallbackZh })
 }
 
 /**
@@ -85,11 +81,7 @@ export function tr(
 ): string {
   const g = i18n.global
   const locale = resourceLocale.value
-  if (locale === SOURCE_LOCALE) return fallbackZh
-  if (!g.te(key, locale)) return fallbackZh
-  // Locale override must go in the 3rd (options) arg; the 2nd positional object
-  // is named-interpolation values in the vue-i18n composition API.
-  return named ? g.t(key, named, { locale }) : g.t(key, {}, { locale })
+  return g.t(key, named ?? {}, { locale, default: fallbackZh })
 }
 
 /** Vue plugin: exposes `$t2` (UI) and `$tr` (resource) in templates. */
