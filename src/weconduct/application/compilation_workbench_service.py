@@ -341,10 +341,11 @@ class CompilationWorkbenchService:
         # Debug encrypted parameters must never enter the persisted session document.
         self._debug_sensitive_values: dict[str, SensitiveValueService] = {}
         self._debug_sensitive_variable_refs: dict[str, dict[str, SensitiveRef]] = {}
-        self._suppress_dirty_workspace_recovery = False
-        self._allow_dirty_workspace_recovery_conversion = True
         loaded_state = self._state_store.load()
         state, changed = self._normalize_workspace_state(loaded_state)
+        state, restored_pending_recovery = self._restore_startup_pending_recovery(state)
+        if restored_pending_recovery:
+            changed = True
         state, recovered_execution_changed = self._invalidate_recovered_execution_sessions(state)
         if recovered_execution_changed:
             changed = True
@@ -355,12 +356,13 @@ class CompilationWorkbenchService:
             state = self._state_store.mutate(
                 lambda current: self._restore_startup_pending_graph_upgrade(
                     self._invalidate_recovered_execution_sessions(
-                        self._normalize_workspace_state(current)[0]
+                        self._restore_startup_pending_recovery(
+                            self._normalize_workspace_state(current)[0]
+                        )[0]
                     )[0]
                 )[0]
             )
         self._state = state
-        self._allow_dirty_workspace_recovery_conversion = False
 
     def _build_default_configuration_service(self) -> ConfigurationService:
         editor_repository = InMemoryConfigurationRepository()
@@ -3317,7 +3319,6 @@ class CompilationWorkbenchService:
             return normalized_state
 
         self._state = self._state_store.mutate(mutation)
-        self._suppress_dirty_workspace_recovery = True
         graph_model = self._get_graph_document_model()
         return {
             "status": "restored",
@@ -14508,18 +14509,20 @@ class CompilationWorkbenchService:
         if normalized_pending_graph_upgrade != state.get("pending_graph_upgrade"):
             state["pending_graph_upgrade"] = normalized_pending_graph_upgrade
             changed = True
-        if (
-            isinstance(self._state_store, FileWorkspaceStateStore)
-            and self._allow_dirty_workspace_recovery_conversion
-            and not self._suppress_dirty_workspace_recovery
-            and state.get("pending_recovery") is None
-            and self._extract_project_runtime(state).get("is_dirty") is True
-        ):
-            state = self._convert_dirty_workspace_state_to_pending_recovery(state)
-            changed = True
         if self._normalize_compile_records_in_state(state):
             changed = True
         return state, changed
+
+    def _restore_startup_pending_recovery(self, state: dict) -> tuple[dict, bool]:
+        pending_recovery = self._extract_pending_recovery(state)
+        if pending_recovery is None:
+            return state, False
+        restored_state = deepcopy(pending_recovery["workspace_state"])
+        restored_state["pending_recovery"] = None
+        normalized_state, _ = self._normalize_workspace_state_without_recovery_conversion(
+            restored_state
+        )
+        return normalized_state, True
 
     def _invalidate_recovered_execution_sessions(self, state: dict) -> tuple[dict, bool]:
         if not isinstance(self._state_store, FileWorkspaceStateStore):
@@ -15392,34 +15395,6 @@ class CompilationWorkbenchService:
             "document_id": normalized_documents[0]["document_id"],
             "documents": normalized_documents,
         }
-
-    def _convert_dirty_workspace_state_to_pending_recovery(self, state: dict) -> dict:
-        current_state, _ = self._normalize_workspace_state_without_recovery_conversion(
-            deepcopy(state)
-        )
-        project_runtime = self._extract_project_runtime(current_state)
-        project_file_path = project_runtime.get("project_file_path")
-        raw_project = current_state.get("project")
-        if not isinstance(raw_project, dict) or project_file_path is None:
-            return current_state
-
-        recovery_workspace_state = deepcopy(current_state)
-        recovery_workspace_state["pending_recovery"] = None
-        next_state = self._build_initial_workspace_state(
-            project_name=raw_project.get("project_name", "Recovered Project"),
-            project_id=raw_project.get("project_id"),
-            project_file_path=project_file_path,
-            mark_project_dirty=False,
-        )
-        next_state["recent_projects"] = self._extract_recent_projects(current_state)
-        next_state["pending_recovery"] = {
-            "status": "pending",
-            "project_id": raw_project.get("project_id"),
-            "project_name": raw_project.get("project_name"),
-            "project_file_path": str(Path(project_file_path).resolve()),
-            "workspace_state": recovery_workspace_state,
-        }
-        return next_state
 
     def _normalize_workspace_state_without_recovery_conversion(
         self,
