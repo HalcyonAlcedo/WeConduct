@@ -1916,7 +1916,7 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
                 "path_kind": None,
             },
             "content": {
-                "type": "string",
+                "type": "any",
                 "required": False,
                 "editor_kind": "textarea",
                 "path_kind": None,

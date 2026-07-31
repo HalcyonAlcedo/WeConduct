@@ -3566,7 +3566,7 @@ class RuntimeExecutorRegistry:
             return _failed_result(node, "file.path_required", "file path is required")
         encoding = str(_resolve_value(node_config.get("encoding", "utf-8"), context))
         content = _resolve_value(node_config.get("content", ""), context)
-        text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        text = _serialize_text_file_content(content)
         path = _resolve_runtime_path(path_value, context)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding=encoding)
@@ -6195,6 +6195,17 @@ def _resolve_value(value: Any, context: RuntimeContext) -> Any:
             context,
         )
     return _resolve_standard_sensitive_runtime_value(value, context)
+
+
+def _serialize_text_file_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (dict, list)):
+        try:
+            return json.dumps(content, ensure_ascii=False, indent=2, default=str)
+        except (TypeError, ValueError):
+            return str(content)
+    return str(content)
 
 
 def _resolve_sensitive_runtime_value(value: Any, context: RuntimeContext) -> Any:
