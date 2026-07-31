@@ -121,6 +121,11 @@ const FIELD_DEFS = computed<Record<string, FieldDef[]>>(() => ({
     { key: 'default_package_embed_mode', label: t('framework.preferences.python.defaultPackageEmbedMode', '默认包嵌入模式'), type: 'select', options: ['none', 'wheelhouse_rebuild', 'full_venv'] },
     { key: 'blocked_import_modules', label: t('framework.preferences.python.blockedImportModules', '阻断导入模块'), type: 'string_list', hint: t('framework.preferences.python.blockedImportModulesHint', '这些模块会在 python.run 中被禁止导入。删除某项后，项目脚本即可导入该模块。') },
   ],
+  network: [
+    { key: 'base_url', label: t('framework.preferences.network.baseUrl', '基础 URL'), type: 'text', hint: t('framework.preferences.network.baseUrlHint', '相对 URL 会基于此地址解析。留空时必须在节点中填写绝对 URL。') },
+    { key: 'timeout_seconds', label: t('framework.preferences.network.timeoutSeconds', '默认超时（秒）'), type: 'number', hint: t('framework.preferences.network.timeoutSecondsHint', '节点未配置超时时使用此值。') },
+    { key: 'response_limits', label: t('framework.preferences.network.responseLimits', '响应限制'), type: 'json', hint: t('framework.preferences.network.responseLimitsHint', 'max_bytes 为总响应上限；max_in_memory_bytes 为内存阈值。0 表示使用默认行为。') },
+  ],
   nodegraph: [
     { key: 'show_node_id_on_node', label: t('framework.preferences.nodegraph.showNodeIdOnNode', '显示节点 ID'), type: 'bool' },
     { key: 'show_disabled_resource_badge', label: t('framework.preferences.nodegraph.showDisabledResourceBadge', '显示禁用资源徽章'), type: 'bool' }, { key: 'snap_to_grid', label: t('framework.preferences.nodegraph.snapToGrid', '吸附网格'), type: 'bool' },
@@ -131,10 +136,10 @@ const FIELD_DEFS = computed<Record<string, FieldDef[]>>(() => ({
   ],
 }))
 
-const SECTION_MAP: Record<string, string> = { general: 'program_settings', security: 'security_settings', python: 'python_runtime_settings', nodegraph: 'graph_settings' }
-const CATS = computed(() => [{ key: 'general', label: t('framework.preferences.cats.general', '程序设置') }, { key: 'security', label: t('framework.preferences.cats.security', '安全设置') }, { key: 'python', label: t('framework.preferences.cats.python', 'Python 运行时设置') }, { key: 'nodegraph', label: t('framework.preferences.cats.nodegraph', '节点图设置') }])
+const SECTION_MAP: Record<string, string> = { general: 'program_settings', security: 'security_settings', python: 'python_runtime_settings', network: 'network_settings', nodegraph: 'graph_settings' }
+const CATS = computed(() => [{ key: 'general', label: t('framework.preferences.cats.general', '程序设置') }, { key: 'security', label: t('framework.preferences.cats.security', '安全设置') }, { key: 'python', label: t('framework.preferences.cats.python', 'Python 运行时设置') }, { key: 'network', label: t('framework.preferences.cats.network', '网络设置') }, { key: 'nodegraph', label: t('framework.preferences.cats.nodegraph', '节点图设置') }])
 
-const form = reactive<Record<string, Record<string, any>>>({ program_settings: {}, security_settings: {}, python_runtime_settings: {}, graph_settings: {} })
+const form = reactive<Record<string, Record<string, any>>>({ program_settings: {}, security_settings: {}, python_runtime_settings: {}, network_settings: {}, graph_settings: {} })
 const saveState = reactive<Record<string, 'idle' | 'saving' | 'saved' | 'error'>>({}); const saveError = reactive<Record<string, string>>({})
 
 function normalizeRoots(value: unknown): string[] { if (!Array.isArray(value)) return []; const result: string[] = []; for (const item of value) { if (typeof item !== 'string') continue; const n = item.trim(); if (!n || result.includes(n)) continue; result.push(n) } return result }

@@ -51,6 +51,35 @@ def test_httpx_adapter_returns_404_as_a_normal_network_response(tmp_path) -> Non
     assert result.body_ref.read_text() == "missing"
 
 
+def test_httpx_adapter_enforces_network_context_response_limit(tmp_path) -> None:
+    adapter = HttpxAdapter(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=b"response body", request=request)
+        ),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+    operation = NetworkOperation(
+        operation_id="request-response-limit",
+        session_id="session-response-limit",
+        method="GET",
+        url="https://example.test/limited",
+    )
+
+    result = adapter.execute(
+        operation,
+        NetworkContextSnapshot(
+            context_id="context-response-limit",
+            response_limits={"max_bytes": 8},
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.transport_error == "network.response_too_large"
+    assert result.error is not None
+    assert result.error.error_code == "network.response_too_large"
+
+
 def test_httpx_adapter_default_client_uses_pinned_dns_transport(tmp_path) -> None:
     adapter = HttpxAdapter(response_root_directory=tmp_path)
     try:

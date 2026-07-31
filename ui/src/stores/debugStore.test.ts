@@ -787,6 +787,46 @@ describe('debugStore', () => {
     expect(store.pollingSessionId).toBe(null)
   })
 
+  it('图编译失败且未创建会话时写入返回的诊断并显示具体错误', async () => {
+    apiMocks.postDebugStart.mockResolvedValue({
+      status: 'failed',
+      message: '图校验失败',
+      request: {},
+      stage_timeline: [],
+      object_index: null,
+      diagnostic_links: [
+        {
+          diagnostic_id: 'graph-edge-invalid',
+          stage: 'validate',
+          severity: 'error',
+          category: 'graph.edge.relation_layer_mismatch',
+          message: '边 edge-a 的 relation_layer 不匹配',
+          object_ref: 'edge-a',
+          graph_ref: { edge_id: 'edge-a' },
+        },
+      ],
+    })
+
+    const { useDebugStore } = await import('./debugStore')
+    const { useProjectDiagnosticsStore } = await import('./projectDiagnosticsStore')
+    const store = useDebugStore()
+
+    const result = await store.startDebugSession({ graph_document: { graph_model_id: 'graph:workspace' } })
+
+    expect(result).toEqual({
+      phase: 'failed',
+      startError: '图校验失败',
+    })
+    expect(useProjectDiagnosticsStore().visibleEntries).toEqual([
+      expect.objectContaining({
+        diagnostic_id: 'graph-edge-invalid',
+        source: 'debug',
+        operation: 'debug.start',
+        object_ref: 'edge-a',
+      }),
+    ])
+  })
+
   it('startDebugSession ignores parse.completed fallback text and prefers meaningful diagnostic link', async () => {
     apiMocks.postDebugStart.mockRejectedValue({
       body: {
@@ -808,6 +848,7 @@ describe('debugStore', () => {
     })
 
     const { useDebugStore } = await import('./debugStore')
+    const { useProjectDiagnosticsStore } = await import('./projectDiagnosticsStore')
     const store = useDebugStore()
 
     const result = await store.startDebugSession({ graph_document: { graph_model_id: 'graph:workspace' } })
@@ -816,6 +857,14 @@ describe('debugStore', () => {
       phase: 'failed',
       startError: 'binding failed on node-start',
     })
+    expect(useProjectDiagnosticsStore().visibleEntries).toEqual([
+      expect.objectContaining({
+        category: 'graph.binding.invalid_reference',
+        message: 'binding failed on node-start',
+        source: 'debug',
+        operation: 'debug.start',
+      }),
+    ])
   })
 
   it('startDebugSession 不把任意 completed 信息诊断当作启动错误', async () => {

@@ -12,4 +12,17 @@ describe('isSensitiveNodeConfigurationField', () => {
     expect(isSensitiveNodeConfigurationField('network.http_request', 'headers.Authorization', 'Bearer secret')).toBe(true)
     expect(isSensitiveNodeConfigurationField('network.http_request', 'headers.X-Trace-Id', 'trace')).toBe(false)
   })
+
+  it('识别认证对象中实际承载的敏感字段', () => {
+    expect(isSensitiveNodeConfigurationField(
+      'network.http_request',
+      'auth',
+      { type: 'bearer', token: 'secret' },
+    )).toBe(true)
+    expect(isSensitiveNodeConfigurationField(
+      'network.http_request',
+      'auth',
+      { type: 'bearer' },
+    )).toBe(false)
+  })
 })

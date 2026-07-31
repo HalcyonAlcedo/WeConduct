@@ -406,6 +406,9 @@ class CompilationWorkbenchService:
             "python_runtime_settings": self._get_configuration_domain(
                 scope="program", domain="python_defaults"
             ),
+            "network_settings": self._get_configuration_domain(
+                scope="program", domain="network_defaults"
+            ),
             "graph_settings": self._get_configuration_domain(
                 scope="graph", domain="editor_preferences"
             ),
@@ -4812,6 +4815,22 @@ class CompilationWorkbenchService:
                             secret_values=secret_values,
                         ),
                     )
+
+                def publish_runtime_diagnostic(payload: dict[str, object]) -> None:
+                    event = {
+                        "event_kind": "diagnostic.raised",
+                        "category": payload.get("category") or "runtime.message",
+                        "severity": payload.get("severity") or "info",
+                        "message": payload.get("message") or "",
+                        "recorded_at": datetime.now(timezone.utc).isoformat(),
+                        "session_id": session_id,
+                        "node_id": payload.get("node_id"),
+                        "node_kind": payload.get("node_kind"),
+                    }
+                    event_log.append(event)
+                    publish_live_update("runtime.diagnostic", event)
+
+                runtime_context.flow_runtime["runtime_diagnostic_sink"] = publish_runtime_diagnostic
 
                 def publish_network_audit_event(event_name: str, payload: dict[str, object]) -> None:
                     audit_event = {
@@ -15593,7 +15612,45 @@ class CompilationWorkbenchService:
         python_runtime_settings = self._get_configuration_domain(
             scope="program", domain="python_defaults"
         )
+        network_settings = self._get_configuration_domain(
+            scope="program", domain="network_defaults"
+        )
+        network_response_limits = (
+            network_settings.get("response_limits")
+            if isinstance(network_settings, dict)
+            and isinstance(network_settings.get("response_limits"), dict)
+            else {}
+        )
+        network_timeout_seconds = (
+            network_settings.get("timeout_seconds", 30)
+            if isinstance(network_settings, dict)
+            else 30
+        )
+        if (
+            not isinstance(network_timeout_seconds, int)
+            or isinstance(network_timeout_seconds, bool)
+            or network_timeout_seconds <= 0
+        ):
+            network_timeout_seconds = 30
         runtime_settings = {
+            "network_platform_defaults": {
+                "base_url": (
+                    network_settings.get("base_url").strip()
+                    if isinstance(network_settings, dict)
+                    and isinstance(network_settings.get("base_url"), str)
+                    and network_settings["base_url"].strip()
+                    else None
+                ),
+                "timeout_seconds": network_timeout_seconds,
+                "response_limits": {
+                    key: value
+                    for key, value in network_response_limits.items()
+                    if key in {"max_bytes", "max_in_memory_bytes"}
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value >= 0
+                },
+            },
             "confirm_high_risk_actions": (
                 security_settings.get("confirm_high_risk_actions", True)
                 if isinstance(security_settings, dict)
@@ -16149,6 +16206,7 @@ class CompilationWorkbenchService:
             "compile_settings": {},
             "security_settings": {},
             "python_runtime_settings": {},
+            "network_settings": {},
             "graph_settings": {},
             "other_settings": {},
             "preferences_file_version": 3,
@@ -16159,6 +16217,7 @@ class CompilationWorkbenchService:
             "updates": "program_settings",
             "security": "security_settings",
             "python_defaults": "python_runtime_settings",
+            "network_defaults": "network_settings",
         }
         for domain in self._configuration_service.get_schema(scope="program")["domains"]:
             section = section_by_domain.get(domain["key"])
@@ -20910,6 +20969,36 @@ class CompilationWorkbenchService:
                     "paused_reason": event.get("reason"),
                     "last_control_action": previous_action or "paused",
                 }
+
+        def publish_debug_runtime_diagnostic(payload: dict[str, object]) -> None:
+            node_id = payload.get("node_id")
+            category = payload.get("category") or "runtime.message"
+            severity = payload.get("severity") or "info"
+            message = payload.get("message") or ""
+            diagnostic_event = {
+                "event_kind": "diagnostic.raised",
+                "category": category,
+                "severity": severity,
+                "message": message,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "session_id": session_id,
+                "node_id": node_id,
+                "node_kind": payload.get("node_kind"),
+            }
+            append_debug_event(diagnostic_event)
+            diagnostic_links = list(session_document.get("diagnostic_links", []))
+            diagnostic_links.append(
+                {
+                    "diagnostic_id": f"debug:{session_id}:{node_id}:message:{len(debug_events)}",
+                    "category": category,
+                    "severity": severity,
+                    "message": message,
+                    "graph_ref": {"node_id": node_id},
+                }
+            )
+            session_document["diagnostic_links"] = diagnostic_links
+
+        runtime_context.flow_runtime["runtime_diagnostic_sink"] = publish_debug_runtime_diagnostic
 
         def append_debug_keyframe_for_event(
             *,

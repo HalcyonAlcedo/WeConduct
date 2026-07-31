@@ -20,15 +20,20 @@ def _network_context_ports() -> list[dict]:
     ]
 
 
-def _network_security_override_ports() -> list[dict]:
-    return [
+def _network_security_override_ports(*, include_query: bool = True) -> list[dict]:
+    ports = [
         {"port_id": "in:headers", "direction": "input", "relation_layer": "data", "semantic_slot": "in.headers"},
-        {"port_id": "in:query", "direction": "input", "relation_layer": "data", "semantic_slot": "in.query"},
         {"port_id": "in:auth", "direction": "input", "relation_layer": "data", "semantic_slot": "in.auth"},
         {"port_id": "in:tls", "direction": "input", "relation_layer": "data", "semantic_slot": "in.tls"},
         {"port_id": "in:proxy", "direction": "input", "relation_layer": "data", "semantic_slot": "in.proxy"},
         {"port_id": "in:timeout", "direction": "input", "relation_layer": "data", "semantic_slot": "in.timeout"},
     ]
+    if include_query:
+        ports.insert(
+            1,
+            {"port_id": "in:query", "direction": "input", "relation_layer": "data", "semantic_slot": "in.query"},
+        )
+    return ports
 
 
 def _network_response_ports() -> list[dict]:
@@ -79,6 +84,43 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
                 "type": "object",
                 "required": False,
                 "editor_kind": "object",
+                "path_kind": None,
+            },
+        },
+    },
+    "message.emit": {
+        "lowered_kind": "execution",
+        "expansion_role": "message:emit",
+        "ports": [
+            {
+                "port_id": "in",
+                "direction": "input",
+                "relation_layer": "control",
+                "semantic_slot": "in.control",
+            },
+            {
+                "port_id": "out",
+                "direction": "output",
+                "relation_layer": "control",
+                "semantic_slot": "out.control",
+            },
+        ],
+        "node_config": {
+            "message": "",
+            "severity": "info",
+        },
+        "parameter_schema": {
+            "message": {
+                "type": "string",
+                "required": True,
+                "editor_kind": "text",
+                "path_kind": None,
+            },
+            "severity": {
+                "type": "string",
+                "required": False,
+                "editor_kind": "enum",
+                "enum": ["info", "warning", "error", "fatal"],
                 "path_kind": None,
             },
         },
@@ -3404,8 +3446,7 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             "headers": {},
             "query": {},
             "body": "",
-            "timeout": 30,
-            "retry_policy": {"max_attempts": 1},
+            "timeout": None,
         },
     },
     "network.upload": {
@@ -3422,6 +3463,10 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             ]
             + _network_security_override_ports()
             + _network_response_ports()
+            + [
+                {"port_id": "out:uploaded_size", "direction": "output", "relation_layer": "data", "semantic_slot": "out.uploaded_size"},
+                {"port_id": "out:source_checksum_sha256", "direction": "output", "relation_layer": "data", "semantic_slot": "out.source_checksum_sha256"},
+            ]
         ),
         "node_config": {
             "context_strategy": "inherit",
@@ -3437,7 +3482,7 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             "max_upload_bytes": None,
             "headers": {},
             "query": {},
-            "timeout": 30,
+            "timeout": None,
         },
     },
     "network.download": {
@@ -3454,7 +3499,7 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             + _network_response_ports()
             + [
                 {"port_id": "out:file_size", "direction": "output", "relation_layer": "data", "semantic_slot": "out.file_size"},
-                {"port_id": "out:checksum", "direction": "output", "relation_layer": "data", "semantic_slot": "out.checksum"},
+                {"port_id": "out:checksum_sha256", "direction": "output", "relation_layer": "data", "semantic_slot": "out.checksum_sha256"},
             ]
         ),
         "node_config": {
@@ -3463,7 +3508,7 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             "url": "",
             "headers": {},
             "query": {},
-            "timeout": 30,
+            "timeout": None,
         },
     },
     "network.response_assert": {
@@ -3504,12 +3549,16 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
                 {"port_id": "in:variables", "direction": "input", "relation_layer": "data", "semantic_slot": "in.variables"},
                 {"port_id": "in:extensions", "direction": "input", "relation_layer": "data", "semantic_slot": "in.extensions"},
             ]
-            + _network_security_override_ports()
+            + _network_security_override_ports(include_query=False)
             + [
                 {"port_id": "out:data", "direction": "output", "relation_layer": "data", "semantic_slot": "out.data"},
                 {"port_id": "out:errors", "direction": "output", "relation_layer": "data", "semantic_slot": "out.errors"},
                 {"port_id": "out:extensions", "direction": "output", "relation_layer": "data", "semantic_slot": "out.extensions"},
-                {"port_id": "out:response", "direction": "output", "relation_layer": "data", "semantic_slot": "out.response"},
+            ]
+            + _network_response_ports()
+            + [
+                {"port_id": "out:request_id", "direction": "output", "relation_layer": "data", "semantic_slot": "out.request_id"},
+                {"port_id": "out:transport_error", "direction": "output", "relation_layer": "data", "semantic_slot": "out.transport_error"},
             ]
         ),
         "node_config": {
@@ -3520,7 +3569,7 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             "variables": {},
             "extensions": {},
             "headers": {},
-            "timeout": 30,
+            "timeout": None,
         },
     },
     "network.sse_connect": {

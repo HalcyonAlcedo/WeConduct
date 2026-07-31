@@ -18,8 +18,11 @@ import { useDockStore } from '@/stores/dockStore'
 import { useToastStore } from '@/stores/toastStore'
 import { useDebugStore } from '@/stores/debugStore'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
+import { useProjectDiagnosticsStore } from '@/stores/projectDiagnosticsStore'
 import { t } from '@/i18n'
-import { registerGraphNodeNavigator } from '@/services/graphNodeNavigation'
+import { registerGraphElementNavigator } from '@/services/graphNodeNavigation'
+import { resolveGraphDiagnosticTargets } from '@/services/graphDiagnosticTargets'
+import type { RelationLayer } from '@/types/domains/graph'
 
 const compilation = useCompilationStore()
 const workspace = useGraphWorkspaceStore()
@@ -101,13 +104,28 @@ async function toggleRecordFrameOnNode() {
 const graphStore = useGraphStore()
 const dock = useDockStore()
 const toast = useToastStore()
+const projectDiagnostics = useProjectDiagnosticsStore()
 
 const { setCenter } = useVueFlow()
-const unregisterGraphNodeNavigator = registerGraphNodeNavigator((nodeId: string) => {
-  const n = workspace.graphModel?.nodes.find(x => x.node_id === nodeId)
-  if (n?.position) setCenter(n.position.x + 90, n.position.y + 28, { zoom: 1.2, duration: 400 })
+const unregisterGraphElementNavigator = registerGraphElementNavigator(target => {
+  const graphModel = workspace.graphModel
+  if (!graphModel) return
+  if (target.kind === 'node') {
+    const node = graphModel.nodes.find(item => item.node_id === target.id)
+    if (node?.position) setCenter(node.position.x + 90, node.position.y + 28, { zoom: 1.2, duration: 400 })
+    return
+  }
+  const edge = graphModel.edges.find(item => item.edge_id === target.id)
+  const source = edge && graphModel.nodes.find(item => item.node_id === edge.from_node_id)
+  const targetNode = edge && graphModel.nodes.find(item => item.node_id === edge.to_node_id)
+  if (!source?.position || !targetNode?.position) return
+  setCenter(
+    (source.position.x + targetNode.position.x) / 2 + 90,
+    (source.position.y + targetNode.position.y) / 2 + 28,
+    { zoom: 1.2, duration: 400 },
+  )
 })
-onUnmounted(unregisterGraphNodeNavigator)
+onUnmounted(unregisterGraphElementNavigator)
 
 // Right-click context menu
 const contextMenu = ref<{ x: number; y: number; nodeId: string } | null>(null)
@@ -239,7 +257,8 @@ const graphData = computed(() => {
     compilationModel: compilation.outcome?.graph_model,
   })
   if (!model) return { nodes: [], edges: [] }
-  return graphStore.toVueFlow(model, graphPreferences.value.edge_line_style)
+  const highlights = resolveGraphDiagnosticTargets(model, projectDiagnostics.visibleEntries)
+  return graphStore.toVueFlow(model, graphPreferences.value.edge_line_style, highlights)
 })
 
 const isWorkspaceEmpty = computed(() =>
@@ -274,11 +293,35 @@ function onNodeDragStop(event: any) {
     y: node.position.y + 28,  // NODE_HEIGHT / 2 = center
   })
 }
-// Write back new connections — defaults to 'control'
+function resolveConnectionRelationLayer(connection: any): RelationLayer | null {
+  const graphModel = workspace.graphModel
+  if (!graphModel) return 'control'
+
+  const sourcePort = graphModel.nodes
+    .find(node => node.node_id === connection.source)
+    ?.ports?.find(port => port.port_id === connection.sourceHandle)
+  const targetPort = graphModel.nodes
+    .find(node => node.node_id === connection.target)
+    ?.ports?.find(port => port.port_id === connection.targetHandle)
+  const sourceLayer = sourcePort?.relation_layer
+  const targetLayer = targetPort?.relation_layer
+
+  if (sourceLayer && targetLayer && sourceLayer !== targetLayer) return null
+  return sourceLayer ?? targetLayer ?? 'control'
+}
+
 function onConnect(connection: any) {
+  const relationLayer = resolveConnectionRelationLayer(connection)
+  if (!relationLayer) {
+    toast.error(
+      t('framework.graph.toast.connectionRejected', '无法创建连接'),
+      t('framework.graph.toast.connectionLayerMismatch', '两端端口的数据层级不一致'),
+    )
+    return
+  }
   workspace.addEdge({
     edge_id: `edge-${Date.now().toString(36)}`,
-    relation_layer: 'control',
+    relation_layer: relationLayer,
     from_node_id: connection.source,
     to_node_id: connection.target,
     from_port_id: connection.sourceHandle || undefined,
@@ -436,11 +479,19 @@ const hasCachedViewport = computed(() => cachedRawViewport.value !== null)
   stroke-width: 1.5;
   stroke-dasharray: 3 2;
 }
+:deep(.vf-edge-error .vue-flow__edge-path) {
+  stroke: var(--state-error) !important;
+  stroke-width: 3;
+}
 
 /* Node selection ring */
 :deep(.vue-flow__node.selected .vf-node) {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-light);
+}
+:deep(.vue-flow__node.vf-node-error .vf-node) {
+  border-color: var(--state-error);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--state-error) 35%, transparent);
 }
 
 .vf-ctxmask { position: fixed; inset: 0; z-index: 99; }

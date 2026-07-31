@@ -490,7 +490,13 @@ export const useDebugStore = defineStore('debug', () => {
   async function startDebugSession(graphBody?: Record<string, unknown>): Promise<DebugStartResult> {
     try {
       const r = await postDebugStart(graphBody)
-      if (!r.debug_session?.session_id) return { phase: 'failed', startError: '无会话 ID' }
+      if (!r.debug_session?.session_id) {
+        useProjectDiagnosticsStore().ingestCatalog(r.diagnostic_links, {
+          source: 'debug',
+          operation: 'debug.start',
+        })
+        return { phase: 'failed', startError: extractDebugError({ body: r }, '启动失败') }
+      }
       const sid = r.debug_session.session_id
       if (r.status === 'unlock_required') {
         setActiveSessionDetail(r)
@@ -505,7 +511,20 @@ export const useDebugStore = defineStore('debug', () => {
         return { phase: 'started_with_sync_warning', sessionId: sid, syncError: extractDebugError(e, '同步失败') }
       }
     } catch (e: any) {
-      useProjectDiagnosticsStore().ingestApiError(e, { source: 'debug', operation: 'debug.start' })
+      const diagnosticLinks = Array.isArray(e?.body?.diagnostic_links)
+        ? e.body.diagnostic_links
+        : []
+      const hasUserFacingDiagnostic = diagnosticLinks.some(
+        (diagnostic: any) => !isNonUserFacingDebugDiagnostic(diagnostic),
+      )
+      const diagnosticsStore = useProjectDiagnosticsStore()
+      diagnosticsStore.ingestCatalog(diagnosticLinks, {
+        source: 'debug',
+        operation: 'debug.start',
+      })
+      if (!hasUserFacingDiagnostic) {
+        diagnosticsStore.ingestApiError(e, { source: 'debug', operation: 'debug.start' })
+      }
       return { phase: 'failed', startError: extractDebugError(e, '启动失败') }
     }
   }

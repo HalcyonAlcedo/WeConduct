@@ -141,6 +141,12 @@ vi.mock('@/components/common/ToastContainer.vue', () => ({
 vi.mock('@/components/common/StartupErrorScreen.vue', () => ({
   default: defineComponent({ setup() { return () => h('div', 'startup-error') } }),
 }))
+vi.mock('@/components/runtime/RuntimeInputDialog.vue', () => ({
+  default: defineComponent({ setup() { return () => h('div', 'runtime-input-dialog') } }),
+}))
+vi.mock('@/components/output/debug/DebugSensitiveValueDialog.vue', () => ({
+  default: defineComponent({ setup() { return () => h('div', 'debug-sensitive-value-dialog') } }),
+}))
 
 import App from './App.vue'
 

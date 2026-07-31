@@ -8,11 +8,19 @@ const apiMocks = vi.hoisted(() => ({
   fetchNodeDraft: vi.fn(),
 }))
 
+const diagnosticsState = vi.hoisted(() => ({
+  clearGraphObjectDiagnostics: vi.fn(),
+}))
+
 vi.mock('@/services/api', () => ({
   fetchGraphDocument: apiMocks.fetchGraphDocument,
   putGraphDocument: apiMocks.putGraphDocument,
   postSourceProjection: apiMocks.postSourceProjection,
   fetchNodeDraft: apiMocks.fetchNodeDraft,
+}))
+
+vi.mock('./projectDiagnosticsStore', () => ({
+  useProjectDiagnosticsStore: () => diagnosticsState,
 }))
 
 const emptyModel = () => ({
@@ -203,5 +211,38 @@ describe('graphWorkspaceStore', () => {
     })
 
     expect(store.graphModel?.edges.map(edge => edge.edge_id)).toEqual(['keep', 'unrelated'])
+  })
+
+  it('更新节点时清除该节点及因端口变更被移除边的高亮诊断', async () => {
+    const { useGraphWorkspaceStore } = await import('./graphWorkspaceStore')
+    const store = useGraphWorkspaceStore()
+    store.view = editableView()
+    store.graphModel = {
+      ...emptyModel(),
+      nodes: [{ node_id: 'node-a', node_kind: 'input.request', ports: [{ port_id: 'kept' }, { port_id: 'removed' }] }],
+      edges: [{ edge_id: 'edge-removed', from_node_id: 'node-a', from_port_id: 'removed', to_node_id: 'node-b', to_port_id: 'value' }],
+    } as any
+
+    store.updateNode('node-a', { ports: [{ port_id: 'kept' }] as any })
+
+    expect(diagnosticsState.clearGraphObjectDiagnostics).toHaveBeenCalledWith({
+      nodeIds: ['node-a'], edgeIds: ['edge-removed'],
+    })
+  })
+
+  it('修改或删除边时清除该边的高亮诊断', async () => {
+    const { useGraphWorkspaceStore } = await import('./graphWorkspaceStore')
+    const store = useGraphWorkspaceStore()
+    store.view = editableView()
+    store.graphModel = {
+      ...emptyModel(),
+      edges: [{ edge_id: 'edge-a', relation_layer: 'control', from_node_id: 'node-a', to_node_id: 'node-b' }],
+    } as any
+
+    store.updateEdgeRelation('edge-a', 'data')
+    store.removeEdge('edge-a')
+
+    expect(diagnosticsState.clearGraphObjectDiagnostics).toHaveBeenNthCalledWith(1, { edgeIds: ['edge-a'] })
+    expect(diagnosticsState.clearGraphObjectDiagnostics).toHaveBeenNthCalledWith(2, { edgeIds: ['edge-a'] })
   })
 })

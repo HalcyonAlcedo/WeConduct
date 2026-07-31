@@ -343,6 +343,7 @@ class RuntimeExecutorRegistry:
         self._network_runtime_service = network_runtime_service
         self._executors = {
             "flow.start": self._execute_flow_start,
+            "message.emit": self._execute_message_emit,
             "network.http_request": self._execute_network_http_request,
             "network.download": self._execute_network_download,
             "network.upload": self._execute_network_upload,
@@ -527,6 +528,32 @@ class RuntimeExecutorRegistry:
             "browser_config": browser_config,
         }
 
+    def _execute_message_emit(self, node: dict, context: RuntimeContext) -> dict:
+        node_config = _node_config(node)
+        resolved_message = _resolve_value(node_config.get("message", ""), context)
+        message = resolved_message if isinstance(resolved_message, str) else str(resolved_message)
+        resolved_severity = _resolve_value(node_config.get("severity", "info"), context)
+        severity_name = resolved_severity.lower().strip() if isinstance(resolved_severity, str) else "info"
+        severity = {"warn": "warning"}.get(severity_name, severity_name)
+        if severity not in {"info", "warning", "error", "fatal"}:
+            severity = "info"
+        event = {
+            "category": "runtime.message",
+            "severity": severity,
+            "message": message,
+            "node_id": node["node_id"],
+            "node_kind": "message.emit",
+        }
+        diagnostic_sink = context.flow_runtime.get("runtime_diagnostic_sink")
+        if callable(diagnostic_sink):
+            diagnostic_sink(event)
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "message": message,
+            "severity": severity,
+        }
+
     def _execute_network_http_request(
         self,
         node: dict,
@@ -542,7 +569,7 @@ class RuntimeExecutorRegistry:
         url = _resolve_value(node_config.get("url"), context)
         headers = _resolve_value(node_config.get("headers", {}), context)
         query = _resolve_value(node_config.get("query", {}), context)
-        timeout = _resolve_value(node_config.get("timeout", 30), context)
+        timeout = _resolve_value(node_config.get("timeout"), context)
         if not isinstance(method, str) or not method.strip():
             return _failed_result(node, "network.method_invalid", "network.http_request requires method")
         if not isinstance(url, str) or not url.strip():
@@ -551,10 +578,15 @@ class RuntimeExecutorRegistry:
             return _failed_result(node, "network.headers_invalid", "network headers must be an object")
         if not isinstance(query, dict):
             return _failed_result(node, "network.query_invalid", "network query must be an object")
-        try:
-            timeout_seconds = float(timeout)
-        except (TypeError, ValueError):
-            return _failed_result(node, "network.timeout_invalid", "network timeout must be numeric")
+        if timeout is None:
+            timeout_seconds: float | None = None
+        else:
+            try:
+                timeout_seconds = float(timeout)
+            except (TypeError, ValueError):
+                return _failed_result(node, "network.timeout_invalid", "network timeout must be numeric")
+            if timeout_seconds <= 0:
+                return _failed_result(node, "network.timeout_invalid", "network timeout must be greater than zero")
         body_value = _resolve_value(node_config.get("body"), context)
         request_headers = _normalize_network_headers(
             {str(key): value for key, value in headers.items()},
@@ -562,7 +594,7 @@ class RuntimeExecutorRegistry:
         )
         request_query = {str(key): str(value) for key, value in query.items()}
         connection_overrides: dict[str, object] = {}
-        for name in ("auth", "tls", "proxy", "retry_policy"):
+        for name in ("auth", "tls", "proxy", "retry_policy", "base_url", "response_limits"):
             if name in node_config:
                 connection_overrides[name] = _normalize_network_connection_value(
                     name,
@@ -589,12 +621,13 @@ class RuntimeExecutorRegistry:
                 "network context strategy must be a string",
             )
         context_strategy = raw_strategy.strip().lower()
-        context_overrides = {
+        context_overrides: dict[str, object] = {
             "headers": request_headers,
             "query": request_query,
-            "timeout_seconds": timeout_seconds,
             **connection_overrides,
         }
+        if timeout_seconds is not None:
+            context_overrides["timeout_seconds"] = timeout_seconds
         try:
             token_context = context.execution_token_context
             if token_context.network_context_id is None and context_strategy == "inherit":
@@ -626,11 +659,16 @@ class RuntimeExecutorRegistry:
             **connection_overrides,
         }
         request_snapshot = replace(context_snapshot, **request_snapshot_values)
+        effective_timeout_seconds = request_snapshot.timeout_seconds or 30.0
+        try:
+            effective_url = _resolve_network_request_url(url, request_snapshot)
+        except ValueError as exc:
+            return _failed_result(node, "network.url_invalid", str(exc))
         operation = NetworkOperation(
             operation_id=node["node_id"],
             session_id=session_id,
             method=method.strip().upper(),
-            url=url.strip(),
+            url=effective_url,
             headers=request_headers,
             query=request_query,
             content=(
@@ -640,7 +678,7 @@ class RuntimeExecutorRegistry:
             ),
             upload_file_path=upload_file_path,
             upload_stream=upload_stream,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=effective_timeout_seconds,
             response_storage=response_storage,
             node_id=node["node_id"],
         )
@@ -652,7 +690,7 @@ class RuntimeExecutorRegistry:
             result = service.submit(
                 operation,
                 request_snapshot,
-            ).result(timeout=timeout_seconds + 1)
+            ).result(timeout=effective_timeout_seconds + 1)
         except Exception as exc:
             output = _failed_result(node, "network.request_failed", str(exc))
             output["request_id"] = operation.request_id
@@ -885,7 +923,10 @@ class RuntimeExecutorRegistry:
         registry = session_context.network_context_registry
         if isinstance(registry, NetworkContextRegistry):
             return registry
-        registry = NetworkContextRegistry()
+        platform_defaults = self._runtime_settings.get("network_platform_defaults")
+        registry = NetworkContextRegistry(
+            platform_defaults=platform_defaults if isinstance(platform_defaults, Mapping) else None
+        )
         session_context.network_context_registry = registry
         session_id = session_context.session_id
         context.register_cleanup(
@@ -941,7 +982,7 @@ class RuntimeExecutorRegistry:
         *,
         headers: dict[str, str],
         query: dict[str, str],
-        timeout_seconds: float,
+        timeout_seconds: float | None,
         extra_overrides: dict[str, object] | None = None,
     ) -> NetworkContextSnapshot:
         session_id = context.execution_session_context.session_id
@@ -952,7 +993,7 @@ class RuntimeExecutorRegistry:
         strategy = raw_strategy.strip().lower()
         normalized_headers = _normalize_network_headers(headers, context)
         overrides: dict[str, object] = {"headers": normalized_headers, "query": query}
-        if "timeout" in node_config or "timeout_seconds" in node_config:
+        if timeout_seconds is not None:
             overrides["timeout_seconds"] = timeout_seconds
         for name, value in (extra_overrides or {}).items():
             if value is not None:
@@ -978,7 +1019,7 @@ class RuntimeExecutorRegistry:
             "headers": {**snapshot.headers, **normalized_headers},
             "query": {**snapshot.query, **query},
         }
-        if "timeout_seconds" in overrides:
+        if timeout_seconds is not None:
             effective_values["timeout_seconds"] = timeout_seconds
         for name, value in (extra_overrides or {}).items():
             if value is not None:
@@ -1227,7 +1268,13 @@ class RuntimeExecutorRegistry:
         action_value = _resolve_value(node_config.get("action"), context)
         action = action_value.strip().lower() if isinstance(action_value, str) else ""
         if action in {"connect", "receive", "close"}:
-            return self._execute_network_graphql_subscription(node, context)
+            return self._failed_network_result(
+                node,
+                context,
+                "network.graphql_subscription_not_supported",
+                "GraphQL Subscription is not supported in 0.9.0",
+                action=action,
+            )
         endpoint = _resolve_value(node_config.get("endpoint", node_config.get("url")), context)
         query = _resolve_value(node_config.get("query"), context)
         operation_name = _resolve_value(node_config.get("operation_name"), context)
@@ -1257,7 +1304,13 @@ class RuntimeExecutorRegistry:
             body = json.loads(graphql_operation.content or b"{}")
         except GraphQLAdapterError as exc:
             if str(exc) == "graphql.subscription_requires_websocket":
-                return self._execute_network_graphql_subscription(node, context)
+                return self._failed_network_result(
+                    node,
+                    context,
+                    "network.graphql_subscription_not_supported",
+                    "GraphQL Subscription is not supported in 0.9.0",
+                    action="subscription",
+                )
             return _failed_result(node, "network.graphql_request_invalid", str(exc))
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             return _failed_result(node, "network.graphql_request_invalid", str(exc))
@@ -1382,6 +1435,8 @@ class RuntimeExecutorRegistry:
                         "proxy": proxy_config,
                         "auth": _resolve_value(node_config["auth"], context) if "auth" in node_config else None,
                         "tls": _resolve_value(node_config["tls"], context) if "tls" in node_config else None,
+                        "base_url": _resolve_value(node_config["base_url"], context) if "base_url" in node_config else None,
+                        "response_limits": _resolve_value(node_config["response_limits"], context) if "response_limits" in node_config else None,
                     },
                 )
                 service = self._resolve_network_runtime_service(context)
@@ -1534,7 +1589,7 @@ class RuntimeExecutorRegistry:
             headers = _resolve_value(node_config.get("headers", {}), context)
             params = _resolve_value(node_config.get("query", node_config.get("params", {})), context)
             proxy_config = _resolve_value(node_config["proxy"], context) if "proxy" in node_config else None
-            timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout", 30)), context)
+            timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout")), context)
             max_queue_size = _resolve_value(node_config.get("max_queue_size", 100), context)
             if not isinstance(url, str) or not url.strip():
                 return self._failed_network_result(
@@ -1554,20 +1609,23 @@ class RuntimeExecutorRegistry:
                     url=url,
                 )
             try:
-                timeout_seconds = float(timeout_value)
                 queue_size = int(max_queue_size)
                 snapshot = self._resolve_network_connection_snapshot(
                     context,
                     node_config,
                     headers={str(key): str(value) for key, value in headers.items()},
                     query={str(key): str(value) for key, value in params.items()},
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=_resolve_optional_network_timeout(timeout_value),
                     extra_overrides={
                         "proxy": proxy_config,
                         "auth": _resolve_value(node_config["auth"], context) if "auth" in node_config else None,
                         "tls": _resolve_value(node_config["tls"], context) if "tls" in node_config else None,
+                        "base_url": _resolve_value(node_config["base_url"], context) if "base_url" in node_config else None,
+                        "response_limits": _resolve_value(node_config["response_limits"], context) if "response_limits" in node_config else None,
                     },
                 )
+                timeout_seconds = snapshot.timeout_seconds or 30.0
+                url = _resolve_network_request_url(url, snapshot)
                 service = self._resolve_network_runtime_service(context)
                 handle, metadata = service.connect_sse(
                     session_id=context.execution_session_context.session_id,
@@ -1595,6 +1653,7 @@ class RuntimeExecutorRegistry:
             existing = connections.get(("sse", connection_id))
             if existing is not None:
                 existing.close()
+                self._release_network_connection(context, existing)
             connections[("sse", connection_id)] = handle
             return {
                 "status": "succeeded",
@@ -1622,10 +1681,12 @@ class RuntimeExecutorRegistry:
                     "node_id": node["node_id"],
                     "action": "receive",
                     "connection_id": connection_id,
+                    "event": event,
                     **event,
                 }
             if action == "close":
                 handle.close()
+                self._release_network_connection(context, handle)
                 connections.pop(("sse", connection_id), None)
                 return {
                     "status": "succeeded",
@@ -1667,7 +1728,7 @@ class RuntimeExecutorRegistry:
             url = _resolve_value(node_config.get("url", node_config.get("endpoint")), context)
             headers = _resolve_value(node_config.get("headers", {}), context)
             proxy_config = _resolve_value(node_config["proxy"], context) if "proxy" in node_config else None
-            timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout", 30)), context)
+            timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout")), context)
             subprotocols = _resolve_value(node_config.get("subprotocols", []), context)
             if not isinstance(url, str) or not url.strip():
                 return self._failed_network_result(
@@ -1687,19 +1748,22 @@ class RuntimeExecutorRegistry:
                     url=url,
                 )
             try:
-                timeout_seconds = float(timeout_value)
                 snapshot = self._resolve_network_connection_snapshot(
                     context,
                     node_config,
                     headers={str(key): str(value) for key, value in headers.items()},
                     query={},
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=_resolve_optional_network_timeout(timeout_value),
                     extra_overrides={
                         "proxy": proxy_config,
                         "auth": _resolve_value(node_config["auth"], context) if "auth" in node_config else None,
                         "tls": _resolve_value(node_config["tls"], context) if "tls" in node_config else None,
+                        "base_url": _resolve_value(node_config["base_url"], context) if "base_url" in node_config else None,
+                        "response_limits": _resolve_value(node_config["response_limits"], context) if "response_limits" in node_config else None,
                     },
                 )
+                timeout_seconds = snapshot.timeout_seconds or 30.0
+                url = _resolve_network_request_url(url, snapshot, websocket=True)
                 service = self._resolve_network_runtime_service(context)
                 handle, metadata = service.connect_websocket(
                     session_id=context.execution_session_context.session_id,
@@ -1726,6 +1790,7 @@ class RuntimeExecutorRegistry:
             existing = connections.get(("websocket", connection_id))
             if existing is not None:
                 existing.close()
+                self._release_network_connection(context, existing)
             connections[("websocket", connection_id)] = handle
             return {
                 "status": "succeeded",
@@ -1746,7 +1811,8 @@ class RuntimeExecutorRegistry:
             )
         try:
             if action == "send":
-                handle.send(_resolve_value(node_config.get("value", node_config.get("message")), context))
+                message_config = node_config.get("message") if "message" in node_config else node_config.get("value")
+                handle.send(_resolve_value(message_config, context))
                 return {
                     "status": "succeeded",
                     "node_id": node["node_id"],
@@ -1765,7 +1831,8 @@ class RuntimeExecutorRegistry:
                     "message": message,
                 }
             if action == "ping":
-                value = _resolve_value(node_config.get("value"), context)
+                value_config = node_config.get("message") if "message" in node_config else node_config.get("value")
+                value = _resolve_value(value_config, context)
                 if isinstance(value, str):
                     value = value.encode("utf-8")
                 if value is not None and not isinstance(value, bytes):
@@ -1785,6 +1852,7 @@ class RuntimeExecutorRegistry:
                 }
             if action == "close":
                 handle.close()
+                self._release_network_connection(context, handle)
                 connections.pop(("websocket", connection_id), None)
                 return {
                     "status": "succeeded",
@@ -1911,6 +1979,15 @@ class RuntimeExecutorRegistry:
 
             context.register_cleanup("network-connections", close_connections)
         return store
+
+    def _release_network_connection(self, context: RuntimeContext, handle: object) -> None:
+        release_connection = getattr(
+            self._resolve_network_runtime_service(context),
+            "release_connection",
+            None,
+        )
+        if callable(release_connection):
+            release_connection(context.execution_session_context.session_id, handle)
 
     def _resolve_network_runtime_service(self, context: RuntimeContext) -> NetworkRuntimeService:
         if self._network_runtime_service is not None:
@@ -5137,6 +5214,49 @@ def _normalize_network_connection_value(name: str, value: object, context: Runti
     if name == "proxy":
         return _normalize_network_proxy(value, context)
     return value
+
+
+def _resolve_optional_network_timeout(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("network timeout must be a positive number")
+    try:
+        timeout_seconds = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("network timeout must be numeric") from exc
+    if timeout_seconds <= 0:
+        raise ValueError("network timeout must be greater than zero")
+    return timeout_seconds
+
+
+def _resolve_network_request_url(
+    value: str,
+    snapshot: NetworkContextSnapshot,
+    *,
+    websocket: bool = False,
+) -> str:
+    url = value.strip()
+    parsed = urllib.parse.urlsplit(url)
+    if not parsed.scheme:
+        base_url = snapshot.base_url
+        if not isinstance(base_url, str) or not base_url.strip():
+            raise ValueError("network.base_url_required_for_relative_url")
+        url = urllib.parse.urljoin(base_url.strip(), url)
+        parsed = urllib.parse.urlsplit(url)
+    if websocket:
+        if parsed.scheme == "http":
+            url = urllib.parse.urlunsplit(("ws", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+            parsed = urllib.parse.urlsplit(url)
+        elif parsed.scheme == "https":
+            url = urllib.parse.urlunsplit(("wss", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+            parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in {"ws", "wss"} or not parsed.hostname:
+            raise ValueError("network.websocket_url_invalid")
+        return url
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("network.url_invalid")
+    return url
 
 
 def _normalize_network_auth(value: object, context: RuntimeContext) -> object:

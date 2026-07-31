@@ -592,4 +592,29 @@ describe('runtimeStore', () => {
     expect(result.message).toContain('已有运行中的任务')
     expect(apiMocks.postRuntimeStart).not.toHaveBeenCalled()
   })
+
+  it('preserves an emitted runtime diagnostic category', async () => {
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    store.setActiveRt({
+      status: 'completed', request: {},
+      runtime_session: { session_id: 'rt-message', status: 'completed', execution_supported: true },
+      runtime_plan: null, node_states: [], result: null,
+      event_log: [],
+      diagnostic_events: [{
+        event_kind: 'diagnostic.raised',
+        category: 'runtime.message',
+        severity: 'warning',
+        message: '任务进行中',
+        node_id: 'node-message',
+      }],
+    } as any)
+
+    expect(store.getRuntimeDiagnosticEntries()).toEqual([
+      expect.objectContaining({ category: 'runtime.message', severity: 'warning', message: '任务进行中' }),
+    ])
+    expect(store.runtimeDiagnosticGroups).toEqual([
+      expect.objectContaining({ category: 'runtime.message', severity: 'warning', message: '任务进行中' }),
+    ])
+  })
 })

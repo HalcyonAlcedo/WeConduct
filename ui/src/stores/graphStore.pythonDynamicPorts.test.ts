@@ -46,4 +46,26 @@ describe('graphStore python.run dynamic ports', () => {
       'python-node::python::in-username',
     )
   })
+
+  it('为命中诊断的节点和边附加错误样式类', () => {
+    setActivePinia(createPinia())
+    const store = useGraphStore()
+    const graph: GraphModel = {
+      graph_model_id: 'graph:workspace', compilation_id: null, graph_effective_diagnostic_anchor_refs: [],
+      nodes: [
+        { node_id: 'node-error', lowered_kind: 'execution', source_anchor_ref: 'n1', expansion_role: 'x', ports: [] },
+        { node_id: 'node-ok', lowered_kind: 'execution', source_anchor_ref: 'n2', expansion_role: 'x', ports: [] },
+      ],
+      edges: [{ edge_id: 'edge-error', relation_layer: 'control', from_node_id: 'node-error', to_node_id: 'node-ok' }],
+    }
+
+    const rendered = (store.toVueFlow as any)(graph, undefined, {
+      errorNodeIds: new Set(['node-error']),
+      errorEdgeIds: new Set(['edge-error']),
+    })
+
+    expect(rendered.nodes.find((node: any) => node.id === 'node-error')?.class).toContain('vf-node-error')
+    expect(rendered.nodes.find((node: any) => node.id === 'node-ok')?.class).toBeUndefined()
+    expect(rendered.edges[0].class).toContain('vf-edge-error')
+  })
 })

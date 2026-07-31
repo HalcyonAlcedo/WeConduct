@@ -141,6 +141,21 @@ def test_builtin_sensitive_parameter_unlock_policy_defaults_to_always_prompt() -
     assert values["security"]["encrypted_parameter_unlock_policy"] == "always_prompt"
 
 
+def test_builtin_network_defaults_are_exposed_as_program_configuration() -> None:
+    service = ConfigurationService(
+        registry=build_builtin_configuration_registry(),
+        repositories={"program": InMemoryConfigurationRepository()},
+    )
+
+    values = service.get_values(scope="program")["values"]
+
+    assert values["network_defaults"] == {
+        "base_url": None,
+        "timeout_seconds": 30,
+        "response_limits": {"max_bytes": 0, "max_in_memory_bytes": 0},
+    }
+
+
 def test_apply_collection_add_and_remove_persists_only_registered_field() -> None:
     service = build_service()
 
@@ -366,7 +381,7 @@ def test_program_configuration_migration_converts_legacy_file_once(tmp_path: Pat
                     "external_api_project_allowed_roots": [],
                     "encrypted_parameter_unlock_policy": "always_prompt",
                 },
-        "python_defaults": {
+            "python_defaults": {
             "python_executable_path": None,
             "timeout_seconds": 60,
             "capture_stdout_stderr": True,
@@ -377,10 +392,15 @@ def test_program_configuration_migration_converts_legacy_file_once(tmp_path: Pat
             "default_cache_location_mode": "software_cache",
             "default_project_cache_mode": "full_venv",
             "default_requirements_source_mode": "inline",
-            "default_package_embed_mode": "wheelhouse_rebuild",
-        },
-        "updates": {"check_updates_on_startup": False},
-    }
+                "default_package_embed_mode": "wheelhouse_rebuild",
+            },
+            "network_defaults": {
+                "base_url": None,
+                "timeout_seconds": 30,
+                "response_limits": {"max_bytes": 0, "max_in_memory_bytes": 0},
+            },
+            "updates": {"check_updates_on_startup": False},
+        }
 
 
 def test_configuration_migration_does_not_write_defaults_without_legacy_files(

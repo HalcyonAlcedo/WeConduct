@@ -4,7 +4,7 @@ import { useProjectDiagnosticsStore } from '@/stores/projectDiagnosticsStore'
 import PlaceholderBanner from '@/components/common/PlaceholderBanner.vue'
 import type { DiagnosticSeverity, Diagnostic } from '@/types/domains/diagnostics'
 import { t } from '@/i18n'
-import { locateGraphNode } from '@/services/graphNodeNavigation'
+import { locateGraphEdge, locateGraphNode } from '@/services/graphNodeNavigation'
 
 const projectDiagnostics = useProjectDiagnosticsStore()
 
@@ -182,12 +182,34 @@ function diagnosticHasNodeRef(entry?: Diagnostic): boolean {
   return !!extractNodeId(entry)
 }
 
+function extractEdgeId(entry: Diagnostic): string | null {
+  const extension = entry.stage_extension as Record<string, any> | undefined
+  const graphEdgeId = extension?.graph_ref?.edge_id
+  if (typeof graphEdgeId === 'string' && graphEdgeId.trim()) return graphEdgeId
+  const objectRef = entry.object_ref
+  if (!objectRef) return null
+  const prefixed = objectRef.match(/^edge:([^\s]+)$/)
+  if (prefixed) return prefixed[1]
+  return /^edge-[A-Za-z0-9_-]+$/.test(objectRef) ? objectRef : null
+}
+
+function diagnosticHasEdgeRef(entry?: Diagnostic): boolean {
+  return !!entry && !!extractEdgeId(entry)
+}
+
 function locateNodeFromDiagnostic(entry?: Diagnostic) {
   if (!entry) return
   const nodeId = extractNodeId(entry)
   if (!nodeId) return
   closeCtxMenu()
   void locateGraphNode(nodeId)
+}
+function locateEdgeFromDiagnostic(entry?: Diagnostic) {
+  if (!entry) return
+  const edgeId = extractEdgeId(entry)
+  if (!edgeId) return
+  closeCtxMenu()
+  void locateGraphEdge(edgeId)
 }
 function formatDiagnosticForCopy(g: { stage: string; category: string; severity: string; message: string; count: number }): string {
   return `[${severityLabel(g.severity)}] ${g.stage}/${g.category}: ${g.message} (${t('framework.diagnostics.copy.count', `${g.count} 条`, { n: g.count })})`
@@ -324,6 +346,7 @@ function formatEntryForCopy(entry: Diagnostic): string {
           <button class="dt-ctx-btn" @click="copyToClipboard(ctxMenu.text)">{{ t('framework.diagnostics.ctxMenu.copyContent', '📋 复制内容') }}</button>
           <button v-if="ctxMenu.structured" class="dt-ctx-btn" @click="copyStructured()">{{ t('framework.diagnostics.ctxMenu.copyStructured', '📋 复制结构化数据') }}</button>
           <button v-if="diagnosticHasNodeRef(ctxMenu.entry)" class="dt-ctx-btn" @click="locateNodeFromDiagnostic(ctxMenu.entry)">{{ t('framework.diagnostics.ctxMenu.locateNode', '📍 定位节点') }}</button>
+          <button v-if="diagnosticHasEdgeRef(ctxMenu.entry)" class="dt-ctx-btn" @click="locateEdgeFromDiagnostic(ctxMenu.entry)">{{ t('framework.diagnostics.ctxMenu.locateEdge', '📍 定位边') }}</button>
         </div>
       </div>
     </Teleport>

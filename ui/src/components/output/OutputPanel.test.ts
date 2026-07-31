@@ -108,6 +108,9 @@ vi.mock('@/stores/dockStore', () => ({
 vi.mock('@/stores/toastStore', () => ({
   useToastStore: () => toastState,
 }))
+vi.mock('@/stores/projectDiagnosticsStore', () => ({
+  useProjectDiagnosticsStore: () => ({ visibleEntries: [] }),
+}))
 vi.mock('@/stores/resourceStore', () => ({
   useResourceStore: () => ({
     getResourceEnabledState: vi.fn(() => true),

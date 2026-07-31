@@ -8,6 +8,7 @@ import { ref, computed, watch } from 'vue'
 import { fetchGraphDocument, putGraphDocument, postSourceProjection, fetchNodeDraft } from '@/services/api'
 import { useToastStore } from './toastStore'
 import { useDebugStore } from './debugStore'
+import { useProjectDiagnosticsStore } from './projectDiagnosticsStore'
 import { describeSensitiveVariableNameConflict } from '@/security/sensitiveVariableNameConflict'
 import type { GraphDocumentResponse, GraphDocumentView, ParameterFieldSchema } from '@/types/domains/api'
 import type { GraphModel } from '@/types/domains/graph'
@@ -17,6 +18,7 @@ export type GraphSaveState = 'idle' | 'saving' | 'saved' | 'error' | 'conflict'
 
 export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   const debugStore = useDebugStore()
+  const projectDiagnostics = useProjectDiagnosticsStore()
   const loadState = ref<GraphLoadState>('idle')
   const saveState = ref<GraphSaveState>('idle')
   const loadError = ref<string | null>(null)
@@ -193,12 +195,14 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     redoStack.value.push(JSON.stringify(graphModel.value!))
     graphModel.value = JSON.parse(undoStack.value.pop()!)
     markChanged()
+    projectDiagnostics.clearGraphDiagnostics()
   }
   function redo() {
     if (!redoStack.value.length) return
     undoStack.value.push(JSON.stringify(graphModel.value!))
     graphModel.value = JSON.parse(redoStack.value.pop()!)
     markChanged()
+    projectDiagnostics.clearGraphDiagnostics()
   }
 
   /** P18: Check boundary/singleton placement rules. Returns error message or null if allowed. */
@@ -315,9 +319,13 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     if (!isGraphEditable.value) return
     pushUndo()
     if (!graphModel.value) return
+    const removedEdgeIds = graphModel.value.edges
+      .filter(edge => edge.from_node_id === nodeId || edge.to_node_id === nodeId)
+      .map(edge => edge.edge_id)
     graphModel.value.nodes = graphModel.value.nodes.filter(n => n.node_id !== nodeId)
     graphModel.value.edges = graphModel.value.edges.filter(e => e.from_node_id !== nodeId && e.to_node_id !== nodeId)
     markChanged()
+    projectDiagnostics.clearGraphObjectDiagnostics({ nodeIds: [nodeId], edgeIds: removedEdgeIds })
   }
 
   function updateNode(nodeId: string, patch: Partial<{ display_name: string; node_config: Record<string, unknown>; ports: GraphModel['nodes'][number]['ports'] }>) {
@@ -327,21 +335,24 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     const node = gm.nodes.find(n => n.node_id === nodeId); if (!node) return
     if (patch.display_name !== undefined) node.display_name = patch.display_name
     if (patch.node_config !== undefined) node.node_config = patch.node_config
+    const removedEdgeIds: string[] = []
     if (patch.ports !== undefined) {
       node.ports = patch.ports
       const validPortIds = new Set(node.ports.map(port => port.port_id))
       gm.edges = gm.edges.filter(edge => {
-        if (edge.from_node_id === nodeId && (typeof edge.from_port_id !== 'string' || !validPortIds.has(edge.from_port_id))) return false
-        if (edge.to_node_id === nodeId && (typeof edge.to_port_id !== 'string' || !validPortIds.has(edge.to_port_id))) return false
+        if (edge.from_node_id === nodeId && (typeof edge.from_port_id !== 'string' || !validPortIds.has(edge.from_port_id))) { removedEdgeIds.push(edge.edge_id); return false }
+        if (edge.to_node_id === nodeId && (typeof edge.to_port_id !== 'string' || !validPortIds.has(edge.to_port_id))) { removedEdgeIds.push(edge.edge_id); return false }
         return true
       })
     }
     markChanged()
+    projectDiagnostics.clearGraphObjectDiagnostics({ nodeIds: [nodeId], edgeIds: removedEdgeIds })
   }
   function updateNodePosition(nodeId: string, pos: { x: number; y: number }) {
     const gm = graphModel.value; if (!gm) return
     const node = gm.nodes.find(n => n.node_id === nodeId); if (!node) return
     node.position = pos; markChanged()
+    projectDiagnostics.clearGraphObjectDiagnostics({ nodeIds: [nodeId] })
   }
   function addEdge(edge: { edge_id: string; relation_layer: string; from_node_id: string; to_node_id: string; from_port_id?: string; to_port_id?: string }) {
     if (!isGraphEditable.value) return
@@ -354,7 +365,9 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     if (!isGraphEditable.value) return
     pushUndo()
     const gm = graphModel.value; if (!gm) return
+    if (!gm.edges.some(edge => edge.edge_id === edgeId)) return
     gm.edges = gm.edges.filter(e => e.edge_id !== edgeId); markChanged()
+    projectDiagnostics.clearGraphObjectDiagnostics({ edgeIds: [edgeId] })
   }
   function updateEdgeRelation(edgeId: string, layer: string) {
     if (!isGraphEditable.value) return
@@ -362,6 +375,7 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     const gm = graphModel.value; if (!gm) return
     const edge = gm.edges.find(e => e.edge_id === edgeId); if (!edge) return
     edge.relation_layer = layer as any; markChanged()
+    projectDiagnostics.clearGraphObjectDiagnostics({ edgeIds: [edgeId] })
   }
 
   function reset() {

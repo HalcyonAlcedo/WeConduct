@@ -15,7 +15,7 @@ def test_runtime_capabilities_report_the_090_network_execution_surface() -> None
         "sse": True,
         "websocket": True,
         "graphql": True,
-        "graphql_subscription": True,
+        "graphql_subscription": False,
         "oauth_client_credentials": True,
         "oauth_refresh": True,
         "http_proxy": True,

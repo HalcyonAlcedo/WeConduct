@@ -124,9 +124,18 @@ class ResponseBodyStore:
         *,
         content_type: str | None,
         force_file: bool = False,
+        max_bytes: int | None = None,
+        max_in_memory_bytes: int | None = None,
     ) -> ResponseBodyRef:
         if self._closed:
             raise RuntimeError("network.response_store_closed")
+        _validate_response_limit(max_bytes, "max_bytes")
+        _validate_response_limit(max_in_memory_bytes, "max_in_memory_bytes")
+        memory_limit = (
+            MAX_IN_MEMORY_RESPONSE_BYTES
+            if max_in_memory_bytes in {None, 0}
+            else max_in_memory_bytes
+        )
         payload = bytearray()
         path: Path | None = None
         handle = None
@@ -139,7 +148,9 @@ class ResponseBodyStore:
                 if not chunk:
                     continue
                 size_bytes += len(chunk)
-                if path is None and len(payload) + len(chunk) <= MAX_IN_MEMORY_RESPONSE_BYTES:
+                if max_bytes not in {None, 0} and size_bytes > max_bytes:
+                    raise ResponseBodyTooLargeError(size_bytes=size_bytes, max_bytes=max_bytes)
+                if path is None and len(payload) + len(chunk) <= memory_limit:
                     payload.extend(chunk)
                     continue
                 if path is None:
@@ -148,7 +159,13 @@ class ResponseBodyStore:
                     handle.write(payload)
                     payload.clear()
                 handle.write(chunk)
-        finally:
+        except BaseException:
+            if handle is not None:
+                handle.close()
+            if path is not None:
+                path.unlink(missing_ok=True)
+            raise
+        else:
             if handle is not None:
                 handle.close()
         if path is None:
@@ -180,3 +197,10 @@ class ResponseBodyStore:
         for path in self._directory.glob("*"):
             path.unlink(missing_ok=True)
         self._directory.rmdir()
+
+
+def _validate_response_limit(value: int | None, name: str) -> None:
+    if value is None:
+        return
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer or None")

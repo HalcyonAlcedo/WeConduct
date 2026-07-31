@@ -65,6 +65,44 @@ def test_response_body_store_can_force_small_stream_to_a_session_file(tmp_path) 
     assert body_ref.path.read_bytes() == b"small payload"
 
 
+def test_response_body_store_applies_response_limits_and_cleans_partial_file(tmp_path) -> None:
+    async def chunks():
+        yield b"first-chunk"
+        yield b"second-chunk"
+
+    store = ResponseBodyStore(session_id="session-1", root_directory=tmp_path)
+
+    with pytest.raises(ResponseBodyTooLargeError, match="network.response_too_large"):
+        asyncio.run(
+            store.create_from_async_chunks(
+                chunks(),
+                content_type="application/octet-stream",
+                force_file=True,
+                max_bytes=16,
+            )
+        )
+
+    assert list(store._directory.iterdir()) == []
+    store.close()
+
+
+def test_response_body_store_uses_configured_memory_threshold(tmp_path) -> None:
+    async def chunks():
+        yield b"small payload"
+
+    store = ResponseBodyStore(session_id="session-1", root_directory=tmp_path)
+    body_ref = asyncio.run(
+        store.create_from_async_chunks(
+            chunks(),
+            content_type="text/plain",
+            max_in_memory_bytes=1,
+        )
+    )
+
+    assert body_ref.storage_kind == "file"
+    assert body_ref.read_bytes() == b"small payload"
+
+
 def test_response_body_ref_enforces_caller_read_limit_and_supports_streaming_helpers(tmp_path) -> None:
     store = ResponseBodyStore(session_id="session-1", root_directory=tmp_path)
     body_ref = store.create(b'{"message":"hello"}', content_type="application/json")

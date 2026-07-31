@@ -11,6 +11,11 @@ import type { Node, Edge } from '@vue-flow/core'
 const NODE_WIDTH = 180
 const NODE_HEIGHT = 56
 
+export interface GraphDiagnosticHighlights {
+  errorNodeIds?: ReadonlySet<string>
+  errorEdgeIds?: ReadonlySet<string>
+}
+
 export const useGraphStore = defineStore('graph', () => {
   const selectedNodeId = ref<string | null>(null)
 
@@ -23,7 +28,11 @@ export const useGraphStore = defineStore('graph', () => {
     return 'smoothstep'
   }
 
-  function toVueFlow(graph: GraphModel, edgeLineStyle?: string): { nodes: Node[]; edges: Edge[] } {
+  function toVueFlow(
+    graph: GraphModel,
+    edgeLineStyle?: string,
+    highlights: GraphDiagnosticHighlights = {},
+  ): { nodes: Node[]; edges: Edge[] } {
     const edgeType = resolveEdgeType(edgeLineStyle)
     if (!graph.nodes.length) {
       return { nodes: [], edges: [] }
@@ -68,6 +77,7 @@ export const useGraphStore = defineStore('graph', () => {
           nodeKind: node.node_kind,
           ports: deriveVisualPorts(node),
         },
+        class: highlights.errorNodeIds?.has(node.node_id) ? 'vf-node-error' : undefined,
       }
     })
 
@@ -79,8 +89,11 @@ export const useGraphStore = defineStore('graph', () => {
       sourceHandle: edge.from_port_id || undefined,
       targetHandle: edge.to_port_id || undefined,
       type: edgeType,
-      class: `vf-edge-${edge.relation_layer}`,
-      style: edgeStyle(edge.relation_layer),
+      class: [
+        `vf-edge-${edge.relation_layer}`,
+        highlights.errorEdgeIds?.has(edge.edge_id) ? 'vf-edge-error' : '',
+      ].filter(Boolean).join(' '),
+      style: edgeStyle(edge.relation_layer, highlights.errorEdgeIds?.has(edge.edge_id) === true),
     }))
 
     return { nodes: vfNodes, edges: vfEdges }
@@ -107,7 +120,8 @@ export const useGraphStore = defineStore('graph', () => {
   return { selectedNodeId, selectedNode, toVueFlow, selectNode, selectGraphModel }
 })
 
-function edgeStyle(layer: string): Record<string, string> {
+function edgeStyle(layer: string, isError = false): Record<string, string> {
+  if (isError) return { stroke: 'var(--state-error)', strokeWidth: '3', strokeDasharray: 'none' }
   switch (layer) {
     case 'data':
       return { stroke: 'var(--state-info)', strokeDasharray: '6 3' }

@@ -41,7 +41,8 @@ def build_runtime_capabilities(
         "sse": available("httpx") and available("httpx_sse"),
         "websocket": available("websockets"),
         "graphql": available("httpx") and available("graphql"),
-        "graphql_subscription": available("websockets") and available("graphql"),
+        # 0.9.0 仅支持 GraphQL Query/Mutation；订阅需要方案 C 的统一连接内核。
+        "graphql_subscription": False,
         "oauth_client_credentials": available("httpx") and available("authlib"),
         "oauth_refresh": available("httpx") and available("authlib"),
         "http_proxy": available("httpx"),

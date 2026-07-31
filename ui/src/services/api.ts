@@ -357,13 +357,13 @@ export function fetchNodeDraft(params: { resource_key: string; node_id?: string;
 
 // ===== 0.8.1: Configuration (legacy visual adapter) =====
 type ProgramConfigurationValues = { values: Record<string, Record<string, unknown>> }
-const PROGRAM_SECTION_DOMAINS: Record<string, string[]> = { program_settings: ['ui', 'workspace', 'updates'], security_settings: ['security'], python_runtime_settings: ['python_defaults'] }
-function legacyPreferences(values: Record<string, Record<string, unknown>>): PreferencesResponse { return { preferences: { preferences_file_version: 2, program_settings: { ...(values.ui || {}), ...(values.workspace || {}), ...(values.updates || {}) }, compile_settings: {}, security_settings: values.security || {}, python_runtime_settings: values.python_defaults || {}, graph_settings: {}, other_settings: {} } } }
+const PROGRAM_SECTION_DOMAINS: Record<string, string[]> = { program_settings: ['ui', 'workspace', 'updates'], security_settings: ['security'], python_runtime_settings: ['python_defaults'], network_settings: ['network_defaults'] }
+function legacyPreferences(values: Record<string, Record<string, unknown>>): PreferencesResponse { return { preferences: { preferences_file_version: 2, program_settings: { ...(values.ui || {}), ...(values.workspace || {}), ...(values.updates || {}) }, compile_settings: {}, security_settings: values.security || {}, python_runtime_settings: values.python_defaults || {}, network_settings: values.network_defaults || {}, graph_settings: {}, other_settings: {} } } }
 function configurationOperations(section: string, values: Record<string, unknown>) {
   const domains = PROGRAM_SECTION_DOMAINS[section] || []
   const known = new Map<string, string>([['default_window_size', 'ui'], ['theme', 'ui'], ['language', 'ui'], ['resource_language', 'ui'], ['font_scale', 'ui'], ['default_project_directory', 'workspace'], ['recent_project_limit', 'workspace'], ['preferences_auto_save', 'workspace'], ['check_updates_on_startup', 'updates']])
   return Object.entries(values).flatMap(([key, value]) => {
-    const domain = known.get(key) || (domains.includes('security') ? 'security' : domains.includes('python_defaults') ? 'python_defaults' : undefined)
+    const domain = known.get(key) || (domains.includes('security') ? 'security' : domains.includes('python_defaults') ? 'python_defaults' : domains.includes('network_defaults') ? 'network_defaults' : undefined)
     return domain ? [{ op: 'replace', path: `/${domain}/${key}`, value }] : []
   })
 }

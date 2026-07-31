@@ -21,7 +21,8 @@ def _register_program_domains(registry: ConfigurationRegistry) -> None:
         ("workspace", "工作区设置", 20),
         ("security", "安全设置", 30),
         ("python_defaults", "Python 运行时设置", 40),
-        ("updates", "更新设置", 50),
+        ("network_defaults", "网络设置", 50),
+        ("updates", "更新设置", 60),
     ):
         registry.register_domain(
             ConfigurationDomain(scope="program", key=key, label=label, order=order)
@@ -143,6 +144,17 @@ def _register_program_fields(registry: ConfigurationRegistry) -> None:
                 "string_list",
                 ["ctypes", "importlib", "multiprocessing", "os", "socket", "subprocess"],
             ),
+        ),
+    )
+    _register_fields(
+        registry,
+        scope="program",
+        domain="network_defaults",
+        consumer="CompilationWorkbenchService._build_runtime_execution_settings",
+        fields=(
+            ("base_url", "nullable_string", None),
+            ("timeout_seconds", "integer", 30),
+            ("response_limits", "object", {"max_bytes": 0, "max_in_memory_bytes": 0}),
         ),
     )
     _register_fields(

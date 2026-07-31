@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Mapping
 from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 import ssl
@@ -14,7 +14,7 @@ from .access_policy import NetworkAccessPolicy
 from .authentication import apply_static_auth
 from .errors import build_network_error
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
-from .resources import ResponseBodyStore
+from .resources import ResponseBodyStore, ResponseBodyTooLargeError
 from .proxy import ProxyResolver
 from .tls import ResolvedTls, TlsResolver, verify_response_certificate_pins
 from .transport import PinnedDnsAsyncHTTPTransport
@@ -106,6 +106,7 @@ class HttpxAdapter:
                             response.aiter_bytes(),
                             content_type=response.headers.get("content-type"),
                             force_file=operation.response_storage == "file",
+                            **_resolve_response_limits(snapshot.response_limits),
                         )
                         break
                     next_url = urljoin(request_url, redirect_target)
@@ -140,6 +141,21 @@ class HttpxAdapter:
                 "network.cancelled",
                 operation=operation,
                 snapshot=snapshot,
+            )
+            return NetworkResult(
+                status="failed",
+                operation_id=operation.operation_id,
+                session_id=operation.session_id,
+                transport_error=error.error_code,
+                error=error,
+                duration_ms=(perf_counter() - started_at) * 1000,
+            )
+        except ResponseBodyTooLargeError as exc:
+            error = build_network_error(
+                exc,
+                operation=operation,
+                snapshot=snapshot,
+                error_code=exc.error_code,
             )
             return NetworkResult(
                 status="failed",
@@ -272,6 +288,21 @@ async def _iter_upload_file_chunks(path: Path, *, chunk_size: int = 64 * 1024):
     with Path(path).open("rb") as handle:
         while chunk := await asyncio.to_thread(handle.read, chunk_size):
             yield chunk
+
+
+def _resolve_response_limits(response_limits: Mapping[str, object]) -> dict[str, int | None]:
+    if not isinstance(response_limits, Mapping):
+        return {"max_bytes": None, "max_in_memory_bytes": None}
+    normalized: dict[str, int | None] = {}
+    for name in ("max_bytes", "max_in_memory_bytes"):
+        value = response_limits.get(name)
+        if value is None:
+            normalized[name] = None
+            continue
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"network.response_limits.{name}_invalid")
+        normalized[name] = value
+    return normalized
 
 
 def _parse_set_cookie_headers(headers: httpx.Headers) -> dict[str, str | None]:

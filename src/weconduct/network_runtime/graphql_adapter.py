@@ -220,6 +220,10 @@ class GraphQLProtocolAdapter:
     @staticmethod
     def _validate_endpoint(endpoint: str) -> None:
         parsed = urlsplit(endpoint)
+        if parsed.scheme in {"http", "https"} and parsed.hostname:
+            return
+        if not parsed.scheme and not parsed.netloc and endpoint.strip():
+            return
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise GraphQLAdapterError("graphql.endpoint_invalid")
 

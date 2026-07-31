@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import { useCompilationStore } from '@/stores/compilationStore'
+import { useProjectDiagnosticsStore } from '@/stores/projectDiagnosticsStore'
 import { useGraphStore } from '@/stores/graphStore'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useToastStore } from '@/stores/toastStore'
@@ -11,6 +12,7 @@ import VueFlowGraph from './VueFlowGraph.vue'
 import { t } from '@/i18n'
 
 const compilation = useCompilationStore()
+const projectDiagnostics = useProjectDiagnosticsStore()
 const graphStore = useGraphStore()
 const workspace = useGraphWorkspaceStore()
 const toast = useToastStore()
@@ -61,9 +63,14 @@ async function validateGraph() {
     toast.info(t('framework.graph.validate.title', '图校验'), t('framework.graph.validate.compilationSource', '当前显示的是编译结果图，请先保存为工作区图后再校验'))
     return
   }
+  projectDiagnostics.clearGraphDiagnostics()
   try {
     const model = selectedModel.value as unknown as Record<string, unknown>
     const result = await postGraphValidate(model)
+    projectDiagnostics.ingestCatalog(result.diagnostics, {
+      source: 'compilation',
+      operation: 'graph.validate',
+    })
     if (result.status === 'valid') { compilation.compilePhase = 'completed' }
     toast.info(t('framework.graph.validate.doneTitle', '图校验完成'), result.status === 'valid' ? t('framework.graph.validate.passed', '校验通过') : t('framework.graph.validate.errorCount', `${result.summary.error_count} 条错误`, { n: result.summary.error_count }))
   } catch (err: any) {
@@ -77,9 +84,14 @@ async function compileGraph() {
     toast.info(t('framework.graph.compile.title', '图编译'), t('framework.graph.compile.compilationSource', '当前显示的是编译结果图，请先保存为工作区图后再编译'))
     return
   }
+  projectDiagnostics.clearGraphDiagnostics()
   try {
     const model = selectedModel.value as unknown as Record<string, unknown>
     const result = await postGraphCompile(model)
+    projectDiagnostics.ingestCatalog(result.outcome?.diagnostic_catalog, {
+      source: 'compilation',
+      operation: 'graph.compile',
+    })
     // Route results to main compilation display (Summary/Diagnostics/Graph tabs)
     if (result.outcome) {
       compilation.lastResponse = {

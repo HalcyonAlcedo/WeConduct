@@ -4,6 +4,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useGraphStore } from '@/stores/graphStore'
 import { useCompilationStore } from '@/stores/compilationStore'
+import { useProjectDiagnosticsStore } from '@/stores/projectDiagnosticsStore'
 import { useToastStore } from '@/stores/toastStore'
 import { postGraphValidate, postGraphCompile, postCreateEmptyCustomComponent } from '@/services/api'
 import { useResourceStore } from '@/stores/resourceStore'
@@ -14,6 +15,7 @@ import { t } from '@/i18n'
 const workspace = useGraphWorkspaceStore()
 const graphStore = useGraphStore()
 const compilation = useCompilationStore()
+const projectDiagnostics = useProjectDiagnosticsStore()
 const toast = useToastStore()
 const resource = useResourceStore()
 
@@ -62,8 +64,13 @@ async function handleSave() {
 async function handleValidate() {
   if (!selectedModel.value) { toast.info('', t('framework.graph.panel.toast.graphEmpty', '当前图为空')); return }
   if (selectedSource.value === 'compilation') { toast.info('', t('framework.graph.panel.toast.saveFirst', '请先保存为工作区图')); return }
+  projectDiagnostics.clearGraphDiagnostics()
   try {
     const r = await postGraphValidate(selectedModel.value as unknown as Record<string, unknown>)
+    projectDiagnostics.ingestCatalog(r.diagnostics, {
+      source: 'compilation',
+      operation: 'graph.validate',
+    })
     // On valid: show passing state; on failure: bridge diagnostics to output tabs
     if (r.status === 'valid') {
       compilation.lastResponse = {
@@ -121,8 +128,13 @@ async function handleValidate() {
 async function handleCompile() {
   if (!selectedModel.value) { toast.info('', t('framework.graph.panel.toast.graphEmpty', '当前图为空')); return }
   if (selectedSource.value === 'compilation') { toast.info('', t('framework.graph.panel.toast.saveFirst', '请先保存为工作区图')); return }
+  projectDiagnostics.clearGraphDiagnostics()
   try {
     const r = await postGraphCompile(selectedModel.value as unknown as Record<string, unknown>)
+    projectDiagnostics.ingestCatalog(r.outcome?.diagnostic_catalog, {
+      source: 'compilation',
+      operation: 'graph.compile',
+    })
     if (r.outcome) {
       compilation.lastResponse = {
         status: r.status, request: r.request as unknown as CompilationRequest,

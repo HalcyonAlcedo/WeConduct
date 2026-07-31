@@ -47,6 +47,30 @@ function normalizeDiagnostic(input: Partial<Diagnostic>, fallbackMessage: string
   }
 }
 
+function graphReferenceOf(diagnostic: Diagnostic): Record<string, unknown> | null {
+  const extension = diagnostic.stage_extension
+  if (!extension || typeof extension !== 'object') return null
+  const graphRef = (extension as Record<string, unknown>).graph_ref
+  return graphRef && typeof graphRef === 'object' && !Array.isArray(graphRef)
+    ? graphRef as Record<string, unknown>
+    : null
+}
+
+function referencesGraphObject(diagnostic: Diagnostic, nodeIds: ReadonlySet<string>, edgeIds: ReadonlySet<string>): boolean {
+  const graphRef = graphReferenceOf(diagnostic)
+  const objectRef = diagnostic.object_ref
+  const nodeRef = typeof graphRef?.node_id === 'string' ? graphRef.node_id : null
+  const edgeRef = typeof graphRef?.edge_id === 'string' ? graphRef.edge_id : null
+  return (typeof objectRef === 'string' && (nodeIds.has(objectRef) || edgeIds.has(objectRef)
+    || nodeIds.has(objectRef.replace(/^node:/, '')) || edgeIds.has(objectRef.replace(/^edge:/, ''))))
+    || (nodeRef !== null && nodeIds.has(nodeRef))
+    || (edgeRef !== null && edgeIds.has(edgeRef))
+}
+
+function isGraphDiagnostic(diagnostic: Diagnostic): boolean {
+  return diagnostic.category.startsWith('graph.') || graphReferenceOf(diagnostic) !== null
+}
+
 export const useProjectDiagnosticsStore = defineStore('projectDiagnostics', () => {
   const entries = ref<ProjectDiagnostic[]>([])
   const activeProjectId = ref<string | null>(null)
@@ -139,6 +163,17 @@ export const useProjectDiagnosticsStore = defineStore('projectDiagnostics', () =
 
   function clearForProject() { entries.value = [] }
 
+  function clearGraphObjectDiagnostics(targets: { nodeIds?: Iterable<string>; edgeIds?: Iterable<string> }) {
+    const nodeIds = new Set(targets.nodeIds ?? [])
+    const edgeIds = new Set(targets.edgeIds ?? [])
+    if (nodeIds.size === 0 && edgeIds.size === 0) return
+    entries.value = entries.value.filter(entry => !referencesGraphObject(entry, nodeIds, edgeIds))
+  }
+
+  function clearGraphDiagnostics() {
+    entries.value = entries.value.filter(entry => !isGraphDiagnostic(entry))
+  }
+
   if (typeof window !== 'undefined' && !apiErrorListenerInstalled) {
     window.addEventListener('weconduct:api-error', ((event: CustomEvent) => {
       const detail = event.detail || {}
@@ -160,5 +195,7 @@ export const useProjectDiagnosticsStore = defineStore('projectDiagnostics', () =
     ingestCatalog,
     ingestApiError,
     clearForProject,
+    clearGraphObjectDiagnostics,
+    clearGraphDiagnostics,
   }
 })

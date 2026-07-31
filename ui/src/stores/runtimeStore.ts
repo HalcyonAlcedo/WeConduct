@@ -148,7 +148,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
     return {
       diagnostic_id: String(e.diagnostic_id || `runtime:${sessionId}:${idx}`),
       stage: (e.stage || 'runtime') as Diagnostic['stage'],
-      category: String(e.error_code || e.event_kind || e.category || 'runtime.node_failed'),
+      category: String(e.error_code || e.category || e.event_kind || 'runtime.node_failed'),
       severity: (e.severity || 'error') as Diagnostic['severity'],
       message: String(e.message || ''),
       object_ref: nodeId ? `node:${nodeId}` : null,
@@ -172,7 +172,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
     const map = new Map<string, { stage: string; category: string; severity: string; count: number; message: string }>()
     for (const e of events) {
       const stage = String(e.stage || 'runtime')
-      const category = String(e.error_code || e.event_kind || e.category || 'runtime')
+      const category = String(e.error_code || e.category || e.event_kind || 'runtime')
       const severity = String(e.severity || 'error')
       const message = String(e.message || '')
       const key = `${stage}|${category}|${severity}|${message}`

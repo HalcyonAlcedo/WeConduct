@@ -157,4 +157,20 @@ describe('MetadataEditorPanel', () => {
     expect(wrapper.text()).toContain('Python 元数据字段')
     expect(wrapper.findAll('.mep-om-add')).toHaveLength(3)
   })
+
+  it('为消息节点提供消息文本和严重度配置', () => {
+    graphWorkspaceState.graphModel.nodes[0] = {
+      ...graphWorkspaceState.graphModel.nodes[0],
+      node_kind: 'message.emit',
+      node_config: { message: '任务已完成', severity: 'info' },
+    }
+
+    const wrapper = mount(MetadataEditorPanel)
+
+    expect(wrapper.text()).toContain('消息')
+    expect(wrapper.text()).toContain('等级')
+    expect(wrapper.get('.mep-cfg-row select').findAll('option').map(option => option.element.value)).toEqual([
+      'info', 'warning', 'error', 'fatal',
+    ])
+  })
 })

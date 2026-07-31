@@ -19,9 +19,11 @@ class _StubSseHandle:
 class _StubNetworkRuntimeService:
     def __init__(self) -> None:
         self.snapshots = []
+        self.connect_calls = []
 
     def connect_sse(self, **kwargs):
         self.snapshots.append(kwargs["snapshot"])
+        self.connect_calls.append(kwargs)
         return _StubSseHandle(), {"status_code": 200, "headers": {}, "url": kwargs["url"]}
 
 
@@ -87,7 +89,11 @@ def test_network_sse_connect_node_supports_connect_receive_and_close() -> None:
                 {
                     "node_id": "sse-connect",
                     "node_kind": "network.sse_connect",
-                    "node_config": {"url": url, "connection_id": "stream"},
+                "node_config": {
+                    "url": url,
+                    "connection_id": "stream",
+                    "timeout_seconds": None,
+                },
                 },
                 context,
             )
@@ -121,18 +127,27 @@ def test_network_sse_connect_node_supports_connect_receive_and_close() -> None:
                 context,
             )
             assert closed["status"] == "succeeded"
+            runtime_service = context.flow_runtime["network_runtime_service"]
+            assert runtime_service._long_connections == {}
         finally:
             context.close()
 
 
 def test_network_sse_connect_node_uses_network_runtime_service_snapshot() -> None:
     service = _StubNetworkRuntimeService()
-    output = RuntimeExecutorRegistry(network_runtime_service=service).execute(
+    output = RuntimeExecutorRegistry(
+        runtime_settings={"network_platform_defaults": {"timeout_seconds": 12}},
+        network_runtime_service=service,
+    ).execute(
         "network.sse_connect",
         {
             "node_id": "sse-service-connect",
             "node_kind": "network.sse_connect",
-            "node_config": {"url": "https://example.test/events", "connection_id": "stream"},
+            "node_config": {
+                "url": "https://example.test/events",
+                "connection_id": "stream",
+                "timeout_seconds": None,
+            },
         },
         RuntimeContext(),
     )
@@ -140,6 +155,8 @@ def test_network_sse_connect_node_uses_network_runtime_service_snapshot() -> Non
     assert output["status"] == "succeeded"
     assert len(service.snapshots) == 1
     assert service.snapshots[0].context_id is not None
+    assert service.snapshots[0].timeout_seconds == 12
+    assert service.connect_calls[0]["timeout_seconds"] == 12
 
 
 def test_network_sse_connect_failure_exposes_structured_network_error() -> None:
@@ -196,7 +213,11 @@ def test_network_websocket_connect_node_supports_send_receive_ping_and_close() -
             {
                 "node_id": "ws-connect",
                 "node_kind": "network.websocket_connect",
-                "node_config": {"url": url, "connection_id": "socket"},
+                "node_config": {
+                    "url": url,
+                    "connection_id": "socket",
+                    "timeout_seconds": None,
+                },
             },
             context,
         )
@@ -210,7 +231,7 @@ def test_network_websocket_connect_node_supports_send_receive_ping_and_close() -
                 "node_config": {
                     "action": "send",
                     "connection_id": "socket",
-                    "value": "hello",
+                    "message": "hello",
                 },
             },
             context,
@@ -244,6 +265,8 @@ def test_network_websocket_connect_node_supports_send_receive_ping_and_close() -
             },
             context,
         )["status"] == "succeeded"
+        runtime_service = context.flow_runtime["network_runtime_service"]
+        assert runtime_service._long_connections == {}
     finally:
         context.close()
         server.close()
