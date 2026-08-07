@@ -18,7 +18,11 @@ const debugStore = useDebugStore()
 
 type TabId = 'summary' | 'diagnostics' | 'graph' | 'history' | 'runtime' | 'debug' | 'host'
 const activeTab = ref<TabId>('summary')
-watch(() => runtimeStore.runtimeTabRequest, () => { activeTab.value = 'runtime' })
+// 工作台事件流可能在面板挂载前发现外部运行会话。
+// 立即消费已发出的请求，并继续响应后续运行会话。
+watch(() => runtimeStore.runtimeTabRequest, (requestCount) => {
+  if (requestCount > 0) activeTab.value = 'runtime'
+}, { immediate: true })
 
 function tabClass(tab: TabId) {
   return {

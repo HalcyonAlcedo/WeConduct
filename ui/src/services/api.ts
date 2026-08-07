@@ -56,6 +56,37 @@ import type {
 
 const API_BASE = '/api'
 
+function readUiTokenFromLocation(): string | null {
+  if (typeof window === 'undefined') return null
+  const hash = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash
+  if (!hash) return null
+  const token = new URLSearchParams(hash).get('weconduct_token')
+  if (!token) return null
+  window.history.replaceState(
+    window.history.state,
+    document.title,
+    `${window.location.pathname}${window.location.search}`,
+  )
+  return token
+}
+
+const UI_TOKEN = readUiTokenFromLocation()
+
+function buildRequestHeaders(options?: RequestInit): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (options?.headers instanceof Headers) {
+    options.headers.forEach((value, key) => { headers[key] = value })
+  } else if (Array.isArray(options?.headers)) {
+    for (const [key, value] of options.headers) headers[key] = value
+  } else if (options?.headers) {
+    Object.assign(headers, options.headers)
+  }
+  if (UI_TOKEN) headers['X-WeConduct-Token'] = UI_TOKEN
+  return headers
+}
+
 class ApiError extends Error {
   status: number
   body: unknown
@@ -79,8 +110,8 @@ class ApiError extends Error {
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json' },
     ...options,
+    headers: buildRequestHeaders(options),
   })
 
   const body = await res.json()
@@ -126,13 +157,21 @@ export function fetchGraphDocument(documentId?: string): Promise<GraphDocumentRe
   return request<GraphDocumentResponse>('/workbench/graph' + qs)
 }
 
-export function putGraphDocument(graphModel: Record<string, unknown>, expectedRevision?: number, documentId?: string): Promise<GraphSaveResponse> {
+export function putGraphDocument(
+  graphModel: Record<string, unknown>,
+  expectedRevision?: number,
+  documentId?: string,
+  requireExpectedRevision = false,
+): Promise<GraphSaveResponse> {
   const body: Record<string, unknown> = { ...graphModel }
   if (expectedRevision !== undefined) {
     body.expected_graph_document_save_revision = expectedRevision
   }
   if (documentId) {
     body.document_id = documentId
+  }
+  if (requireExpectedRevision) {
+    body.require_expected_graph_document_save_revision = true
   }
   return request<GraphSaveResponse>('/workbench/graph', {
     method: 'PUT',
@@ -236,6 +275,80 @@ export function fetchRuntimePendingInput(sessionId: string): Promise<RuntimePend
 export function postRuntimePendingInput(sessionId: string, requestId: string, values: Record<string, unknown>): Promise<RuntimePendingInputSnapshot> { return request(`/workbench/runtime/${sessionId}/pending-input`, { method: 'POST', body: JSON.stringify({ request_id: requestId, values }) }) }
 export function postRuntimeParameterUnlock(sessionId: string, password: string): Promise<{ status: string; parameter_ids: string[] }> { return request(`/workbench/runtime/${sessionId}/unlock`, { method: 'POST', body: JSON.stringify({ password }) }) }
 export function getRuntimeStreamUrl(sessionId: string): string { return `${API_BASE}/workbench/runtime/${sessionId}/stream` }
+export function getRuntimeStreamPath(sessionId: string): string { return `/workbench/runtime/${sessionId}/stream` }
+
+export type SseEvent = { event: string; id: string | null; data: string }
+
+export async function consumeSse(
+  path: string,
+  options: {
+    lastEventId?: number | string | null
+    signal?: AbortSignal
+    onEvent: (event: SseEvent) => void | Promise<void>
+  },
+): Promise<void> {
+  const headers = buildRequestHeaders({ headers: { Accept: 'text/event-stream' } })
+  if (options.lastEventId !== undefined && options.lastEventId !== null) {
+    headers['Last-Event-ID'] = String(options.lastEventId)
+  }
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers,
+    signal: options.signal,
+  })
+  if (!response.ok) {
+    let body: unknown = null
+    try { body = await response.json() } catch { /* empty error body */ }
+    throw new ApiError(response.status, body)
+  }
+  if (!response.body) throw new Error('SSE response body is unavailable')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let eventName = 'message'
+  let eventId: string | null = null
+  let dataLines: string[] = []
+
+  const dispatch = async () => {
+    if (!dataLines.length) {
+      eventName = 'message'
+      eventId = null
+      return
+    }
+    const event: SseEvent = { event: eventName, id: eventId, data: dataLines.join('\n') }
+    eventName = 'message'
+    eventId = null
+    dataLines = []
+    await options.onEvent(event)
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      if (!line) {
+        await dispatch()
+      } else if (line.startsWith(':')) {
+        continue
+      } else if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim()
+      } else if (line.startsWith('id:')) {
+        eventId = line.slice(3).trim()
+      } else if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).startsWith(' ') ? line.slice(6) : line.slice(5))
+      }
+    }
+    if (done) {
+      if (buffer) dataLines.push(buffer.startsWith('data:') ? buffer.slice(5).trimStart() : buffer)
+      await dispatch()
+      return
+    }
+  }
+}
+
+export function getUiToken(): string | null { return UI_TOKEN }
 export function buildRuntimeProgressFromSession(detail: RuntimeSessionDetailResponse): RuntimeProgress {
   const nodeStates = Array.isArray(detail.node_states) ? detail.node_states : []
   const totalNodeCount = nodeStates.length
@@ -372,8 +485,8 @@ export async function postPreferences(body: PreferencesUpdateRequest): Promise<P
 export async function postPreferencesPreview(body: { section: string; values: Record<string, unknown> }): Promise<{ section: string; current_values: Record<string, unknown>; proposed_values: Record<string, unknown>; confirmation_required: boolean; high_risk_changes: { field: string; from: unknown; to: unknown; reason: string }[] }> { const result = await request<any>('/workbench/config/preview', { method: 'POST', body: JSON.stringify({ scope: 'program', operations: configurationOperations(body.section, body.values) }) }); return { section: body.section, current_values: legacyPreferences(result.current_values).preferences[body.section] as Record<string, unknown>, proposed_values: legacyPreferences(result.proposed_values).preferences[body.section] as Record<string, unknown>, confirmation_required: result.confirmation_required, high_risk_changes: (result.high_risk_changes || []).map((item: any) => ({ field: String(item.path || '').split('/').pop() || '', from: item.from, to: item.to, reason: 'changes high-risk configuration' })) } }
 export async function postPreferencesReset(): Promise<PreferencesResponse> { const result = await request<ProgramConfigurationValues>('/workbench/config/reset', { method: 'POST', body: JSON.stringify({ scope: 'program' }) }); return legacyPreferences(result.values) }
 
-export type ExternalApiPreferences = { enabled: boolean; token_configured: boolean; project_allowed_roots: string[] }
-export type ExternalApiPreferencesUpdate = { enabled: boolean; token?: string; clear_token: boolean; project_allowed_roots: string[]; confirm_high_risk: boolean }
+export type ExternalApiPreferences = { enabled: boolean; token: string | null; token_configured: boolean; external_api_port: number; project_allowed_roots: string[] }
+export type ExternalApiPreferencesUpdate = { enabled: boolean; token?: string; clear_token: boolean; external_api_port: number; project_allowed_roots: string[]; confirm_high_risk: boolean }
 export function fetchExternalApiPreferences(): Promise<ExternalApiPreferences> { return request('/workbench/preferences/external-api') }
 export function postExternalApiPreferences(body: ExternalApiPreferencesUpdate): Promise<ExternalApiPreferences> { return request('/workbench/preferences/external-api', { method: 'POST', body: JSON.stringify(body) }) }
 
@@ -475,15 +588,16 @@ export function postSecurityEnableRequired(body: { confirm_high_risk: boolean })
 // ===== Startup diagnostics & recovery =====
 
 /**
- * Fetch the startup diagnostics report. Uses a bare fetch (not `request`) so it
- * does NOT emit a `weconduct:api-error` event — this endpoint is itself the
- * error-reporting path and stays reachable even when the workbench service is
- * dead. Throws on transport failure (backend fully unreachable) so the caller
- * can fall back to a client-side "critical" classification.
+ * Fetch the startup diagnostics report. It intentionally bypasses `request`
+ * so it does NOT emit a `weconduct:api-error` event — this endpoint is itself
+ * the error-reporting path. It still uses the common header builder because
+ * desktop startup diagnostics are protected by the in-memory UI session token.
+ * Throws on transport failure (backend fully unreachable) so the caller can
+ * fall back to a client-side "critical" classification.
  */
 export async function fetchStartupDiagnostics(): Promise<StartupDiagnosticsResponse> {
   const res = await fetch(`${API_BASE}/startup/diagnostics`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: buildRequestHeaders({ headers: { 'Content-Type': 'application/json' } }),
   })
   const body = await res.json()
   if (!res.ok) throw new ApiError(res.status, body)

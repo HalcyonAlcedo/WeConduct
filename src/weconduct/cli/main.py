@@ -19,7 +19,7 @@ from weconduct.application.configuration.program_repository import (
 from weconduct.application.operations import HostOperationService
 from weconduct.application.pending_input.models import PendingInputSnapshot
 from weconduct.application.preview_smoke import run_preview_smoke
-from weconduct.api import build_api_server
+from weconduct.api import ExternalApiBindError, build_api_server
 from weconduct.cli.operation_adapter import CliOperationAdapter
 from weconduct.desktop_shell import (
     DesktopShellDependencyError,
@@ -273,15 +273,30 @@ def main() -> int:
             if args.ui_dist_path is not None
             else None
         )
-        server = build_api_server(
-            host=args.host,
-            port=args.port,
-            workspace_state_path=workspace_state_path,
-            preferences_path=preferences_path,
-            ui_dist_path=ui_dist_path,
-            api_token=args.api_token,
-            allow_non_loopback=args.allow_non_loopback,
-        )
+        try:
+            server = build_api_server(
+                host=args.host,
+                port=args.port,
+                workspace_state_path=workspace_state_path,
+                preferences_path=preferences_path,
+                ui_dist_path=ui_dist_path,
+                api_token=args.api_token,
+                allow_non_loopback=args.allow_non_loopback,
+            )
+        except ExternalApiBindError as exc:
+            print(str(exc), file=sys.stderr, flush=True)
+            return 1
+        except OSError as exc:
+            # Frozen windowed builds can surface a raw socket error before the
+            # server factory wraps it. Keep the CLI boundary from becoming an
+            # unhandled-script dialog and preserve a structured bind failure.
+            bind_error = ExternalApiBindError(
+                host=args.host,
+                configured_port=args.port,
+                cause=exc,
+            )
+            print(str(bind_error), file=sys.stderr, flush=True)
+            return 1
         runtime_host, runtime_port = server.server_address
         if args.allow_non_loopback:
             print(
@@ -301,6 +316,14 @@ def main() -> int:
             server.serve_forever()
         except KeyboardInterrupt:
             pass
+        except OSError as exc:
+            bind_error = ExternalApiBindError(
+                host=args.host,
+                configured_port=args.port,
+                cause=exc,
+            )
+            print(str(bind_error), file=sys.stderr, flush=True)
+            return 1
         finally:
             server.server_close()
         return 0
@@ -386,7 +409,7 @@ def main() -> int:
                     height=args.height,
                 )
             )
-        except DesktopShellDependencyError as exc:
+        except (DesktopShellDependencyError, ExternalApiBindError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
         workspace_state_detail = result.get("workspace_state_path", "n/a")

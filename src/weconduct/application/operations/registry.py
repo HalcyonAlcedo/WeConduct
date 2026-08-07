@@ -109,7 +109,7 @@ class OperationRegistry:
                 "operation.input_invalid",
                 "operation input does not match its schema",
                 operation_id=descriptor.operation_id,
-                details={"validation_errors": exc.errors(include_url=False)},
+                details={"validation_errors": _public_validation_errors(exc)},
             ) from exc
 
     def validate_output(
@@ -127,5 +127,18 @@ class OperationRegistry:
                 "operation.output_invalid",
                 "operation output does not match its schema",
                 operation_id=descriptor.operation_id,
-                details={"validation_errors": exc.errors(include_url=False)},
+                details={"validation_errors": _public_validation_errors(exc)},
             ) from exc
+
+
+def _public_validation_errors(exc: ValidationError) -> list[dict[str, object]]:
+    """只保留可诊断字段，避免 Pydantic 的 input/ctx 回显敏感载荷。"""
+    public_errors: list[dict[str, object]] = []
+    for error in exc.errors(include_url=False):
+        public_error = {
+            key: error[key]
+            for key in ("type", "loc", "msg")
+            if key in error
+        }
+        public_errors.append(public_error)
+    return public_errors

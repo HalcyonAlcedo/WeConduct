@@ -7,6 +7,28 @@ from enum import StrEnum
 
 _UNSET = object()
 
+_PENDING_INPUT_VALUE_TYPES = frozenset(
+    {
+        "any",
+        "array",
+        "boolean",
+        "bool",
+        "dict",
+        "float",
+        "int",
+         "integer",
+         "list",
+         "json",
+        "map",
+        "number",
+        "object",
+        "password",
+        "secret",
+        "string",
+        "text",
+    }
+)
+
 
 class PendingInputStatus(StrEnum):
     CREATED = "created"
@@ -32,6 +54,10 @@ class PendingInputField:
             raise ValueError("label must be a non-empty string")
         if not isinstance(self.value_type, str) or not self.value_type.strip():
             raise ValueError("value_type must be a non-empty string")
+        normalized_value_type = self.value_type.strip().lower()
+        if normalized_value_type not in _PENDING_INPUT_VALUE_TYPES:
+            raise ValueError(f"unsupported pending input value_type: {self.value_type}")
+        object.__setattr__(self, "value_type", normalized_value_type)
         if self.sensitive and self.default_value is not _UNSET:
             raise ValueError("sensitive fields cannot define defaults")
 

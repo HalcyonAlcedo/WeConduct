@@ -11,6 +11,14 @@ from weconduct.application.compilation_workbench_service import CompilationWorkb
 from weconduct.api.server import ApiServerClosingError, WeConductApiHandler
 
 
+class _ConnectionAbortedWriter:
+    def write(self, _body: bytes) -> int:
+        raise ConnectionAbortedError("client disconnected")
+
+    def flush(self) -> None:
+        raise ConnectionAbortedError("client disconnected")
+
+
 def _build_mock_debug_session_response(
     *,
     session_id: str = "debug-session-mock",
@@ -55,6 +63,32 @@ def test_build_api_server_applies_host_port_and_workspace_state_path(tmp_path: P
         server.server_close()
 
 
+def test_ui_index_response_is_not_cached_across_desktop_rebuilds(tmp_path: Path) -> None:
+    ui_dist_path = tmp_path / "ui-dist"
+    ui_dist_path.mkdir(parents=True)
+    (ui_dist_path / "index.html").write_text(
+        "<!doctype html><script src='/assets/index-new.js'></script>",
+        encoding="utf-8",
+    )
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        ui_dist_path=ui_dist_path,
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        with urllib.request.urlopen(f"{base_url}/", timeout=2) as response:
+            assert response.status == 200
+            assert response.headers["Cache-Control"] == "no-store"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_api_server_close_shuts_down_workbench_debug_sessions(tmp_path: Path) -> None:
     service = CompilationWorkbenchService()
     shutdown_calls: list[dict] = []
@@ -79,6 +113,234 @@ def test_api_server_close_shuts_down_workbench_debug_sessions(tmp_path: Path) ->
             "timeout_seconds": 5.0,
         }
     ]
+
+
+def test_api_exposes_workbench_event_stream_with_initial_snapshot(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    response = None
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        response = urllib.request.urlopen(f"{base_url}/api/workbench/events", timeout=2)
+        assert response.headers["Content-Type"].startswith("text/event-stream")
+        body = response.read(2048).decode("utf-8")
+        assert "event: workbench.snapshot" in body
+    finally:
+        if response is not None:
+            response.close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_workbench_event_stream_pushes_external_project_change_to_ui_client(
+    tmp_path: Path,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="ui-session-token",
+        external_api_enabled=True,
+        external_api_token="external-session-token",
+        external_api_project_allowed_roots=(tmp_path / "projects",),
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    response = None
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        ui_request = urllib.request.Request(
+            f"{base_url}/api/workbench/events",
+            headers={"X-WeConduct-Token": "ui-session-token"},
+        )
+        response = urllib.request.urlopen(ui_request, timeout=2)
+
+        initial_lines: list[str] = []
+        while True:
+            line = response.readline().decode("utf-8")
+            assert line, "workbench event stream closed before initial snapshot"
+            initial_lines.append(line)
+            if line == "\n":
+                break
+        assert any(line.startswith("event: workbench.snapshot") for line in initial_lines)
+
+        create_request = urllib.request.Request(
+            f"{base_url}/api/ext/v1/projects",
+            method="POST",
+            headers={
+                "Authorization": "Bearer external-session-token",
+                "Content-Type": "application/json",
+            },
+            data=json.dumps(
+                {
+                    "project_name": "external-event-project",
+                    "project_directory": str(tmp_path / "projects"),
+                }
+            ).encode("utf-8"),
+        )
+        with urllib.request.urlopen(create_request, timeout=2) as create_response:
+            assert create_response.status == 200
+
+        event_lines: list[str] = []
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            line = response.readline().decode("utf-8")
+            assert line, "workbench event stream closed after external project change"
+            event_lines.append(line)
+            if line == "\n" and any(
+                item.startswith("event: workspace.project_changed") for item in event_lines
+            ):
+                break
+        assert any(line.startswith("event: workspace.project_changed") for line in event_lines)
+        assert any('"reason": "created"' in line for line in event_lines)
+    finally:
+        if response is not None:
+            response.close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_workbench_event_stream_ignores_client_connection_abort() -> None:
+    class _Broker:
+        def __init__(self) -> None:
+            self.unsubscribed: str | None = None
+
+        def subscribe(self, **_kwargs: object) -> tuple[str, object]:
+            return "subscriber-1", object()
+
+        def iter_events(self, _queue: object, *, heartbeat_seconds: float):
+            assert heartbeat_seconds > 0
+            yield {
+                "event_name": "runtime.session_changed",
+                "event_id": 1,
+                "payload": {"session_id": "runtime-1", "status": "running"},
+            }
+
+        def unsubscribe(self, subscriber_id: str) -> None:
+            self.unsubscribed = subscriber_id
+
+    class _Service:
+        def __init__(self, broker: _Broker) -> None:
+            self.broker = broker
+
+        def get_workbench_event_broker(self) -> _Broker:
+            return self.broker
+
+        def get_workbench_snapshot(self) -> dict[str, object]:
+            return {}
+
+    broker = _Broker()
+    handler = object.__new__(WeConductApiHandler)
+    handler.headers = {}
+    handler.wfile = _ConnectionAbortedWriter()
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _name, _value: None
+    handler.end_headers = lambda: None
+
+    handler._write_workbench_event_stream(_Service(broker))
+
+    assert broker.unsubscribed == "subscriber-1"
+    assert handler.close_connection is True
+
+
+def test_runtime_event_stream_ignores_client_connection_abort() -> None:
+    class _Service:
+        def get_runtime_stream_snapshot(self, *, session_id: str) -> dict[str, object]:
+            return {"session_id": session_id, "status": "running"}
+
+        def iter_runtime_stream_events(self, *, session_id: str):
+            assert session_id == "runtime-1"
+            yield "runtime.node", {"session_id": session_id, "node_id": "node-1"}
+
+    handler = object.__new__(WeConductApiHandler)
+    handler.wfile = _ConnectionAbortedWriter()
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _name, _value: None
+    handler.end_headers = lambda: None
+
+    handler._write_runtime_stream(_Service(), "runtime-1")
+
+    assert handler.close_connection is True
+
+
+def test_runtime_event_stream_replays_aborted_terminal_event_for_late_subscriber() -> None:
+    class _Writer:
+        def __init__(self) -> None:
+            self.body = bytearray()
+
+        def write(self, body: bytes) -> int:
+            self.body.extend(body)
+            return len(body)
+
+        def flush(self) -> None:
+            return None
+
+    class _Service:
+        def get_runtime_stream_snapshot(self, *, session_id: str) -> dict[str, object]:
+            return {
+                "session_id": session_id,
+                "status": "aborted",
+                "node_states": [],
+                "execution_summary": {
+                    "completed_node_count": 0,
+                    "failed_node_count": 0,
+                    "event_count": 2,
+                },
+            }
+
+        def iter_runtime_stream_events(self, *, session_id: str):
+            raise AssertionError("a terminal session must not wait for a live stream")
+
+    writer = _Writer()
+    handler = object.__new__(WeConductApiHandler)
+    handler.wfile = writer
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _name, _value: None
+    handler.end_headers = lambda: None
+
+    handler._write_runtime_stream(_Service(), "runtime-aborted")
+
+    body = writer.body.decode("utf-8")
+    assert "event: runtime.snapshot" in body
+    assert "event: runtime.summary" in body
+    assert "event: runtime.aborted" in body
+
+
+def test_internal_post_routes_require_ui_token(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="ui-session-token",
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        request = urllib.request.Request(
+            f"{base_url}/api/workbench/compile",
+            data=b"{}",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(request, timeout=2)
+        assert exc_info.value.code == 401
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
 def test_build_api_server_migrates_program_configuration_before_serving(
@@ -2466,7 +2728,7 @@ def test_api_redacts_external_api_token_from_generic_configuration_and_snapshot(
         server.server_close()
 
 
-def test_api_updates_external_api_preferences_without_returning_token(tmp_path: Path) -> None:
+def test_api_external_api_preferences_returns_token_to_internal_client(tmp_path: Path) -> None:
     server = build_api_server(
         host="127.0.0.1",
         port=0,
@@ -2482,10 +2744,11 @@ def test_api_updates_external_api_preferences_without_returning_token(tmp_path: 
         updated = _post_json(
             f"{base_url}/api/workbench/preferences/external-api",
             {
-                "enabled": True,
-                "token": secret,
-                "project_allowed_roots": [str(tmp_path / "projects")],
-                "confirm_high_risk": True,
+            "enabled": True,
+            "token": secret,
+            "external_api_port": 0,
+            "project_allowed_roots": [str(tmp_path / "projects")],
+            "confirm_high_risk": True,
             },
         )
         fetched = _get_json(f"{base_url}/api/workbench/preferences/external-api")
@@ -2493,13 +2756,90 @@ def test_api_updates_external_api_preferences_without_returning_token(tmp_path: 
         assert updated == fetched
         assert updated == {
             "enabled": True,
+            "token": secret,
             "token_configured": True,
+            "external_api_port": 0,
             "project_allowed_roots": [str((tmp_path / "projects").resolve())],
         }
-        assert secret not in json.dumps(updated)
         assert server.external_api_enabled is True
         assert server.external_api_token == secret
         assert server.external_api_project_allowed_roots == ((tmp_path / "projects").resolve(),)
+
+        cleared = _post_json(
+            f"{base_url}/api/workbench/preferences/external-api",
+            {
+                "enabled": False,
+                "clear_token": True,
+                "external_api_port": 0,
+                "project_allowed_roots": [str(tmp_path / "projects")],
+                "confirm_high_risk": True,
+            },
+        )
+        assert cleared["token"] is None
+        assert cleared["token_configured"] is False
+        assert server.external_api_token is None
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_api_external_api_preferences_token_requires_internal_ui_token(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="ui-session-token",
+        external_api_enabled=True,
+        external_api_token="configured-external-token",
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        endpoint = f"{base_url}/api/workbench/preferences/external-api"
+
+        configure_request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(
+                {
+                    "enabled": True,
+                    "token": "configured-external-token",
+                    "external_api_port": 0,
+                    "project_allowed_roots": [],
+                    "confirm_high_risk": True,
+                }
+            ).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-WeConduct-Token": "ui-session-token",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(configure_request) as response:
+            assert response.status == 200
+
+        def fetch(headers: dict[str, str]) -> tuple[int, dict]:
+            request = urllib.request.Request(endpoint, headers=headers)
+            try:
+                with urllib.request.urlopen(request) as response:
+                    return response.status, json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+        assert fetch({})[0] == 401
+        assert fetch({"X-WeConduct-Token": "wrong-ui-token"})[0] == 401
+        status, payload = fetch({"X-WeConduct-Token": "ui-session-token"})
+        assert status == 200
+        assert payload["token"] == "configured-external-token"
+
+        external_status, external_payload = fetch(
+            {"Authorization": "Bearer configured-external-token"}
+        )
+        assert external_status == 401
+        assert external_payload["error"] == "unauthorized"
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -2621,6 +2961,51 @@ def test_api_exposes_graph_configuration_scope(tmp_path: Path) -> None:
             "headless": False,
             "slow_mo_ms": 25,
         }
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_api_graph_revision_conflict_exposes_revision_metadata(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        created = _post_json(
+            f"{base_url}/api/workbench/project/new",
+            {
+                "project_name": "revision-conflict-metadata",
+                "project_directory": str(tmp_path / "project"),
+            },
+        )
+        graph_document = created["graph_document"]
+        _put_json(f"{base_url}/api/workbench/graph", graph_document)
+
+        stale_document = json.loads(json.dumps(graph_document))
+        stale_document["expected_graph_document_save_revision"] = 0
+        stale_document["require_expected_graph_document_save_revision"] = True
+        request = urllib.request.Request(
+            f"{base_url}/api/workbench/graph",
+            data=json.dumps(stale_document).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+
+        assert error.value.code == 409
+        body = json.loads(error.value.read().decode("utf-8"))
+        assert body["error"] == "graph_revision_conflict"
+        assert body["expected_revision"] == 0
+        assert body["current_revision"] == 1
     finally:
         server.shutdown()
         thread.join(timeout=5)

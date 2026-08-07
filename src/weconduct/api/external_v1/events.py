@@ -4,6 +4,8 @@ from http import HTTPStatus
 import json
 from typing import Mapping
 
+from weconduct.application.runtime_session_stream import HEARTBEAT_EVENT_NAME
+
 
 _TERMINAL_EVENT_NAMES = frozenset(
     {"runtime.completed", "runtime.failed", "runtime.aborted"}
@@ -31,37 +33,44 @@ class ExternalExecutionEventStream:
         handler.send_header("Connection", "close")
         handler.end_headers()
         handler.close_connection = True
-        last_event_id = after_event_id
-        for event in replay["events"]:
-            self._write_event(event=event, request_id=request_id)
-            last_event_id = int(event["event_id"])
-            if event["event_name"] in _TERMINAL_EVENT_NAMES:
+        try:
+            last_event_id = after_event_id
+            for event in replay["events"]:
+                self._write_event(event=event, request_id=request_id)
+                last_event_id = int(event["event_id"])
+                if event["event_name"] in _TERMINAL_EVENT_NAMES:
+                    return
+
+            snapshot = self._service.get_runtime_stream_snapshot(session_id=execution_id)
+            if snapshot.get("status") in _TERMINAL_STATUSES:
+                self._flush_latest_events(
+                    execution_id=execution_id,
+                    after_event_id=last_event_id,
+                    request_id=request_id,
+                )
                 return
 
-        snapshot = self._service.get_runtime_stream_snapshot(session_id=execution_id)
-        if snapshot.get("status") in _TERMINAL_STATUSES:
+            for event_name, payload in self._service.iter_runtime_stream_events(
+                session_id=execution_id,
+                heartbeat_seconds=5.0,
+            ):
+                if event_name == HEARTBEAT_EVENT_NAME:
+                    self._write_heartbeat()
+                    continue
+                last_event_id, terminal_written = self._flush_latest_events(
+                    execution_id=execution_id,
+                    after_event_id=last_event_id,
+                    request_id=request_id,
+                )
+                if terminal_written:
+                    return
             self._flush_latest_events(
                 execution_id=execution_id,
                 after_event_id=last_event_id,
                 request_id=request_id,
             )
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return
-
-        for _event_name, _payload in self._service.iter_runtime_stream_events(
-            session_id=execution_id
-        ):
-            last_event_id, terminal_written = self._flush_latest_events(
-                execution_id=execution_id,
-                after_event_id=last_event_id,
-                request_id=request_id,
-            )
-            if terminal_written:
-                return
-        self._flush_latest_events(
-            execution_id=execution_id,
-            after_event_id=last_event_id,
-            request_id=request_id,
-        )
 
     def _parse_last_event_id(self) -> int:
         raw_cursor = self._handler.headers.get("Last-Event-ID")
@@ -104,4 +113,8 @@ class ExternalExecutionEventStream:
             f"data: {json.dumps({'request_id': request_id, 'result': payload}, ensure_ascii=False)}\n\n"
         ).encode("utf-8")
         self._handler.wfile.write(body)
+        self._handler.wfile.flush()
+
+    def _write_heartbeat(self) -> None:
+        self._handler.wfile.write(b": heartbeat\n\n")
         self._handler.wfile.flush()

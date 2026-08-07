@@ -89,6 +89,7 @@ from weconduct.contracts.debugger import DEBUG_SESSION_TERMINAL_STATUSES
 from weconduct.packaging.msgpack_codec import packb
 from weconduct.packaging.msgpack_codec import unpackb
 from weconduct.application.runtime_session_stream import RuntimeSessionStreamBroker
+from weconduct.application.workbench_event_stream import WorkbenchEventStreamBroker
 from weconduct.application.pending_input import (
     PendingInputField,
     PendingInputRequest,
@@ -313,11 +314,13 @@ class CompilationWorkbenchService:
         state_store: WorkspaceStateStore | None = None,
         configuration_service: ConfigurationService | None = None,
         runtime_stream_broker: RuntimeSessionStreamBroker | None = None,
+        workbench_event_broker: WorkbenchEventStreamBroker | None = None,
     ) -> None:
         self._compiler = CompilerFacade()
         self._state_store = state_store or InMemoryWorkspaceStateStore()
         self._configuration_service = configuration_service or self._build_default_configuration_service()
         self._runtime_stream_broker = runtime_stream_broker or RuntimeSessionStreamBroker()
+        self._workbench_event_broker = workbench_event_broker or WorkbenchEventStreamBroker()
         self._pending_input_service = PendingInputService()
         self._project_python_runtime_manager = ProjectPythonRuntimeManager(
             app_data_root=self._resolve_application_data_root()
@@ -442,6 +445,101 @@ class CompilationWorkbenchService:
             "compile_history": list(self._state["compile_history"]),
         }
 
+    def get_workbench_event_broker(self) -> WorkbenchEventStreamBroker:
+        return self._workbench_event_broker
+
+    def _publish_workbench_event(self, event_name: str, payload: dict[str, object]) -> None:
+        # 工作台事件只用于通知 UI 重新读取权威状态；事件本身不进入持久化历史。
+        self._workbench_event_broker.publish(event_name, payload)
+
+    def _publish_project_changed(self, *, reason: str) -> None:
+        project = self._build_project_metadata()
+        self._publish_workbench_event(
+            "workspace.project_changed",
+            {
+                "project_id": project.get("project_id"),
+                "project_name": project.get("project_name"),
+                "loaded": bool(project.get("loaded")),
+                "reason": reason,
+            },
+        )
+
+    def _publish_graph_changed(self, *, reason: str, document_id: str | None = None) -> None:
+        graph_meta = self._get_graph_document_meta(document_id=document_id)
+        self._publish_workbench_event(
+            "workspace.graph_changed",
+            {
+                "document_id": document_id or "graph:workspace",
+                "revision": graph_meta.get("save_revision", 0),
+                "reason": reason,
+            },
+        )
+
+    def _publish_runtime_session_changed(
+        self,
+        *,
+        session_id: str,
+        status: str,
+        reason: str,
+    ) -> None:
+        self._publish_workbench_event(
+            "runtime.session_changed",
+            {
+                "session_id": session_id,
+                "status": status,
+                "reason": reason,
+            },
+        )
+
+    def _publish_runtime_status_snapshot(
+        self,
+        *,
+        session_id: str,
+        status: str,
+    ) -> None:
+        """将待输入/中止等瞬时状态同步到运行时 Broker 快照。"""
+        latest_snapshot = self._runtime_stream_broker.get_latest_snapshot(session_id)
+        if not isinstance(latest_snapshot, dict):
+            return
+        runtime_session = latest_snapshot.get("runtime_session")
+        visible_runtime_session = (
+            dict(runtime_session) if isinstance(runtime_session, dict) else {}
+        )
+        visible_runtime_session["session_id"] = session_id
+        visible_runtime_session["status"] = status
+        node_states = latest_snapshot.get("node_states")
+        visible_node_states = node_states if isinstance(node_states, list) else []
+        event_log = latest_snapshot.get("event_log")
+        visible_event_log = event_log if isinstance(event_log, list) else []
+        result = latest_snapshot.get("result")
+        visible_result = result if isinstance(result, dict) else None
+        diagnostic_events = [
+            item
+            for item in visible_event_log
+            if isinstance(item, dict) and item.get("event_kind") == "diagnostic.raised"
+        ]
+        existing_summary = latest_snapshot.get("execution_summary")
+        rebuilt_summary = self._build_runtime_execution_summary(
+            runtime_session=visible_runtime_session,
+            node_states=visible_node_states,
+            event_log=visible_event_log,
+            diagnostic_events=diagnostic_events,
+            result=visible_result,
+        )
+        if isinstance(existing_summary, dict):
+            rebuilt_summary = {**existing_summary, **rebuilt_summary}
+        rebuilt_summary["status"] = status
+        payload = {
+            **latest_snapshot,
+            "status": status,
+            "runtime_session": visible_runtime_session,
+            "execution_summary": rebuilt_summary,
+        }
+        self._runtime_stream_broker.publish_snapshot(
+            session_id,
+            project_runtime_value_for_publication(payload),
+        )
+
     def get_runtime_health(self) -> dict:
         self._refresh_state_from_store()
         workbench = self._build_workbench_metadata()
@@ -461,7 +559,9 @@ class CompilationWorkbenchService:
         self._refresh_state_from_store()
         graph_model = self._resolve_graph_document_by_document_id(document_id)
         graph_model, _ = self._normalize_graph_model(graph_model)
-        graph_document_meta = self._get_graph_document_meta()
+        graph_document_meta = self._get_graph_document_meta(
+            document_id=document_id or graph_model.graph_model_id
+        )
         return {
             "graph_model": graph_model,
             "view": self._build_graph_document_view(graph_model),
@@ -635,6 +735,7 @@ class CompilationWorkbenchService:
 
         self._state = self._state_store.mutate(mutation)
         self._persist_project_settings_file_if_bound()
+        self._publish_project_changed(reason="settings_updated")
         return self.get_project_settings_document()
 
     def update_graph_entrypoint_runtime_defaults(self, *, runtime_defaults: dict) -> dict:
@@ -1508,9 +1609,9 @@ class CompilationWorkbenchService:
 
     def get_runtime_session(self, *, session_id: str) -> dict:
         self._refresh_state_from_store()
-        session = self._apply_runtime_transient_status(
+        session = self._build_current_runtime_session_projection(
             session_id=session_id,
-            session=self._find_runtime_session(session_id),
+            persisted_session=self._find_runtime_session(session_id),
         )
         response = project_runtime_value_for_publication(session)
         response["runtime_plan"] = project_runtime_plan_for_publication(
@@ -1523,6 +1624,101 @@ class CompilationWorkbenchService:
         )
         return response
 
+    def _build_current_runtime_session_projection(
+        self,
+        *,
+        session_id: str,
+        persisted_session: dict,
+    ) -> dict:
+        """Merge the persisted session with the newest in-memory runtime snapshot."""
+        session = self._apply_runtime_transient_status(
+            session_id=session_id,
+            session=persisted_session,
+        )
+        persisted_runtime_session = session.get("runtime_session")
+        if not isinstance(persisted_runtime_session, dict):
+            return session
+        persisted_status = persisted_runtime_session.get("status")
+        terminal_statuses = {"completed", "failed", "aborted"}
+        live_snapshot = None
+        if persisted_status not in terminal_statuses:
+            live_snapshot = self._runtime_stream_broker.get_latest_snapshot(session_id)
+        if isinstance(live_snapshot, dict):
+            live_runtime_session = live_snapshot.get("runtime_session")
+            live_status = (
+                live_runtime_session.get("status")
+                if isinstance(live_runtime_session, dict)
+                else live_snapshot.get("status")
+            )
+            # Once aborting has been persisted, an older running/pending snapshot
+            # must not roll the externally visible state backwards.  An aborting
+            # or aborted live snapshot is still allowed to advance the projection.
+            if persisted_status != "aborting" or live_status in {"aborting", "aborted"}:
+                if isinstance(live_runtime_session, dict):
+                    session = {
+                        **session,
+                        "runtime_session": dict(live_runtime_session),
+                    }
+                for field_name in ("node_states", "event_log", "execution_summary", "result"):
+                    if field_name in live_snapshot:
+                        session[field_name] = live_snapshot[field_name]
+
+        runtime_session = session.get("runtime_session")
+        if not isinstance(runtime_session, dict):
+            return session
+        node_states = session.get("node_states")
+        visible_node_states = node_states if isinstance(node_states, list) else []
+        event_log = session.get("event_log")
+        visible_event_log = event_log if isinstance(event_log, list) else []
+        diagnostic_events = [
+            item
+            for item in visible_event_log
+            if isinstance(item, dict) and item.get("event_kind") == "diagnostic.raised"
+        ]
+        session = {
+            **session,
+            # Query and SSE must derive the summary from the same visible node/event
+            # projection instead of trusting a stale or partial persisted summary.
+            "execution_summary": self._build_runtime_execution_summary(
+                runtime_session=runtime_session,
+                node_states=visible_node_states,
+                event_log=visible_event_log,
+                diagnostic_events=diagnostic_events,
+                result=session.get("result") if isinstance(session.get("result"), dict) else None,
+            ),
+        }
+        if runtime_session.get("status") in terminal_statuses:
+            return session
+
+        visible_status: str | None = None
+        if self.requires_runtime_session_parameter_unlock(session_id=session_id):
+            visible_status = "unlock_required"
+        elif self._pending_input_service.get_snapshot_for_execution(session_id) is not None:
+            visible_status = "waiting"
+        if visible_status is None:
+            return session
+        visible_runtime_session = {**runtime_session, "status": visible_status}
+        rebuilt_summary = self._build_runtime_execution_summary(
+            runtime_session=visible_runtime_session,
+            node_states=visible_node_states,
+            event_log=visible_event_log,
+            diagnostic_events=diagnostic_events,
+            result=session.get("result") if isinstance(session.get("result"), dict) else None,
+        )
+        rebuilt_summary["status"] = visible_status
+        return {
+            **session,
+            "runtime_session": visible_runtime_session,
+            "execution_summary": {
+                **(
+                    session.get("execution_summary")
+                    if isinstance(session.get("execution_summary"), dict)
+                    else {}
+                ),
+                **rebuilt_summary,
+            },
+        }
+
     def list_runtime_sessions(self) -> dict:
         self._refresh_state_from_store()
         sessions = self._get_runtime_sessions()
@@ -1530,24 +1726,36 @@ class CompilationWorkbenchService:
             "sessions": [
                 {
                     "session_id": visible_item["runtime_session"]["session_id"],
-                    "status": visible_item["runtime_session"]["status"],
+                    "status": self._get_visible_runtime_session_status(
+                        visible_item["runtime_session"]["session_id"],
+                        visible_item["runtime_session"]["status"],
+                    ),
                     "graph_model_id": item["runtime_plan"]["graph_model_id"],
                     "started_at": visible_item["runtime_session"]["started_at"],
                     "completed_at": visible_item["runtime_session"].get("completed_at"),
                     "completed_node_count": visible_item["runtime_session"].get("completed_node_count", 0),
                     "failed_node_count": visible_item["runtime_session"].get("failed_node_count", 0),
-                    "event_count": item.get("execution_summary", {}).get("event_count", 0),
-                    "latest_event_kind": item.get("execution_summary", {}).get("latest_event_kind"),
+                    "event_count": visible_item.get("execution_summary", {}).get("event_count", 0),
+                    "latest_event_kind": visible_item.get("execution_summary", {}).get("latest_event_kind"),
                 }
                 for item in sessions
                 for visible_item in [
-                    self._apply_runtime_transient_status(
+                    self._build_current_runtime_session_projection(
                         session_id=item["runtime_session"]["session_id"],
-                        session=item,
+                        persisted_session=item,
                     )
                 ]
             ]
         }
+
+    def _get_visible_runtime_session_status(self, session_id: str, status: object) -> object:
+        if status in {"completed", "failed", "aborted", "aborting"}:
+            return status
+        if self.requires_runtime_session_parameter_unlock(session_id=session_id):
+            return "unlock_required"
+        if self._pending_input_service.get_snapshot_for_execution(session_id) is not None:
+            return "waiting"
+        return status
 
     def _apply_runtime_transient_status(self, *, session_id: str, session: dict) -> dict:
         runtime_session = session.get("runtime_session")
@@ -3106,8 +3314,12 @@ class CompilationWorkbenchService:
             project_path = resolved_directory / f"{normalized_name}.weconduct.json"
             result = self._save_project_to_path(project_path)
             result["status"] = "created"
+            self._publish_project_changed(reason="created")
+            self._publish_graph_changed(reason="created")
             return result
         graph_model = self._get_graph_document_model()
+        self._publish_project_changed(reason="created")
+        self._publish_graph_changed(reason="created")
         return {
             "status": "created",
             "project": self._build_project_metadata(),
@@ -3123,7 +3335,9 @@ class CompilationWorkbenchService:
             raise ProjectRequiresSaveAsError()
         if graph_document_payload is not None:
             self.save_graph_document(graph_document_payload)
-        return self._save_project_to_path(Path(project_file_path))
+        result = self._save_project_to_path(Path(project_file_path))
+        self._publish_project_changed(reason="saved")
+        return result
 
     def save_project_as(
         self,
@@ -3136,7 +3350,9 @@ class CompilationWorkbenchService:
         if graph_document_payload is not None:
             self.save_graph_document(graph_document_payload)
         resolved_path = self._resolve_project_path(project_path)
-        return self._save_project_to_path(resolved_path)
+        result = self._save_project_to_path(resolved_path)
+        self._publish_project_changed(reason="saved_as")
+        return result
 
     def remove_recent_project(self, *, project_path: str | Path) -> dict:
         self._refresh_state_from_store()
@@ -3192,6 +3408,8 @@ class CompilationWorkbenchService:
         if project_document.get("project_configuration_migrated") is True:
             self._write_project_storage_layout(resolved_path)
         graph_model = self._get_graph_document_model()
+        self._publish_project_changed(reason="opened")
+        self._publish_graph_changed(reason="opened")
         return {
             "status": "opened",
             "project": self._build_project_metadata(),
@@ -3206,10 +3424,22 @@ class CompilationWorkbenchService:
             active_runtime = any(
                 thread.is_alive() for thread in self._runtime_execution_threads.values()
             )
+        active_runtime = active_runtime or any(
+            isinstance(item.get("runtime_session"), dict)
+            and item["runtime_session"].get("status")
+            not in {"completed", "failed", "aborted"}
+            for item in self._get_runtime_sessions()
+        )
         with self._debug_execution_lock:
             active_debug = any(
                 thread.is_alive() for thread in self._debug_execution_threads.values()
             )
+        active_debug = active_debug or any(
+            isinstance(item.get("debug_session"), dict)
+            and item["debug_session"].get("status")
+            not in DEBUG_SESSION_TERMINAL_STATUSES
+            for item in self._get_debug_sessions()
+        )
         if active_runtime or active_debug:
             raise ValueError("project.close_active_execution")
         if self._get_project_runtime().get("is_dirty") and not discard_changes:
@@ -3225,6 +3455,8 @@ class CompilationWorkbenchService:
             return current_state
 
         self._state = self._state_store.mutate(mutation)
+        self._publish_project_changed(reason="closed")
+        self._publish_graph_changed(reason="closed")
         return {
             "status": "closed",
             "project": self._build_project_metadata(),
@@ -4201,11 +4433,18 @@ class CompilationWorkbenchService:
         runtime_plan = project_runtime_plan_for_publication(execution_plan)
         session_id = f"runtime-session-{uuid.uuid4().hex[:12]}"
         started_at = datetime.now(timezone.utc).isoformat()
+        project_settings = self._extract_project_settings(self._state)
+        encrypted_parameter_set = project_settings.get("encrypted_parameter_set")
+        initial_status = (
+            "unlock_required"
+            if isinstance(encrypted_parameter_set, dict)
+            else "running"
+        )
         session_document = {
             "request": preparation.request,
             "runtime_session": {
                 "session_id": session_id,
-                "status": "running",
+                "status": initial_status,
                 "execution_supported": True,
                 "started_at": started_at,
                 "completed_at": None,
@@ -4246,7 +4485,7 @@ class CompilationWorkbenchService:
             ),
             "diagnostic_events": [],
             "execution_summary": {
-                "status": "running",
+                "status": initial_status,
                 "completed_node_count": 0,
                 "failed_node_count": 0,
                 "event_count": 1,
@@ -4272,6 +4511,11 @@ class CompilationWorkbenchService:
                 event_log=session_document["event_log"],
                 result=None,
             ),
+        )
+        self._publish_runtime_session_changed(
+            session_id=session_id,
+            status=initial_status,
+            reason="started",
         )
         return {
             "status": "started",
@@ -4305,7 +4549,20 @@ class CompilationWorkbenchService:
         snapshot = self._pending_input_service.get_snapshot(request_id)
         if snapshot.execution_id != execution_id:
             raise ValueError("pending input request was not found")
-        return self._pending_input_service.submit(request_id, values)
+        result = self._pending_input_service.submit(request_id, values)
+        visible_status = (
+            "waiting" if getattr(result, "status", None) == "waiting" else "running"
+        )
+        self._publish_runtime_status_snapshot(
+            session_id=execution_id,
+            status=visible_status,
+        )
+        self._publish_runtime_session_changed(
+            session_id=execution_id,
+            status=visible_status,
+            reason="pending_input_submitted",
+        )
+        return result
 
     def unlock_runtime_session_parameters(self, *, session_id: str, password: str) -> dict:
         self._refresh_state_from_store()
@@ -4341,6 +4598,11 @@ class CompilationWorkbenchService:
                 previous.revoke_scope(session_id)
             self._runtime_sensitive_values[session_id] = sensitive_values
             self._runtime_sensitive_parameter_refs[session_id] = dict(unlocked)
+        self._publish_runtime_session_changed(
+            session_id=session_id,
+            status="unlocked",
+            reason="parameters_unlocked",
+        )
         return {"status": "unlocked", "parameter_ids": sorted(unlocked)}
 
     def requires_runtime_session_parameter_unlock(self, *, session_id: str) -> bool:
@@ -4513,6 +4775,11 @@ class CompilationWorkbenchService:
                 self._runtime_cancellation_contexts.pop(session_id, None)
                 raise
         refreshed = self.get_runtime_session(session_id=session_id)
+        self._publish_runtime_session_changed(
+            session_id=session_id,
+            status=str(refreshed["runtime_session"].get("status", "running")),
+            reason="execution_started",
+        )
         return {
             "status": "accepted",
             **refreshed,
@@ -4530,6 +4797,10 @@ class CompilationWorkbenchService:
         if worker is not None and worker.is_alive() and cancellation_context is not None:
             requested_at = datetime.now(timezone.utc).isoformat()
             if cancellation_context.request_cancel(normalized_reason):
+                self._publish_runtime_status_snapshot(
+                    session_id=session_id,
+                    status="aborting",
+                )
                 self._runtime_stream_broker.publish_event(
                     session_id,
                     "runtime.aborting",
@@ -4673,6 +4944,11 @@ class CompilationWorkbenchService:
             session_id=session_id,
             session_document=session_document,
         )
+        self._publish_runtime_session_changed(
+            session_id=session_id,
+            status="aborted",
+            reason="execution_aborted",
+        )
         self._runtime_stream_broker.publish_event(session_id, "runtime.aborting", terminal_payload)
         self._runtime_stream_broker.publish_snapshot(session_id, terminal_payload)
         self._runtime_stream_broker.publish_event(session_id, "runtime.aborted", terminal_payload)
@@ -4769,9 +5045,16 @@ class CompilationWorkbenchService:
                 }
 
                 def publish_live_update(event_name: str, payload: dict) -> None:
+                    cancellation_requested = runtime_context.cancellation_context.is_cancelled
+                    if session_status in {"aborted", "failed"}:
+                        visible_status = session_status
+                    elif cancellation_requested:
+                        visible_status = "aborting"
+                    else:
+                        visible_status = "running"
                     runtime_session = {
                         **session["runtime_session"],
-                        "status": session_status if failure_reason is not None else "running",
+                        "status": visible_status,
                         "completed_node_count": len(completed_node_ids),
                         "failed_node_count": len(failed_node_ids),
                     }
@@ -5063,6 +5346,19 @@ class CompilationWorkbenchService:
                         data_edges_by_target=data_edges_by_target,
                         executor_registry=executor_registry,
                     )
+                    if runtime_context.cancellation_context.is_cancelled:
+                        if isinstance(node_output, dict):
+                            node_output = {
+                                **node_output,
+                                "status": "cancelled",
+                                "reason": runtime_context.cancellation_context.reason,
+                            }
+                        else:
+                            node_output = {
+                                "status": "cancelled",
+                                "node_id": executable_node["node_id"],
+                                "reason": runtime_context.cancellation_context.reason,
+                            }
                     node_state["output"] = node_output
                     if (
                         executable_node.get("node_kind") == "input.request"
@@ -5735,6 +6031,11 @@ class CompilationWorkbenchService:
 
             self._state = self._state_store.mutate(merge_runtime_execution)
             session_document = self.get_runtime_session(session_id=session_id)
+            self._publish_runtime_session_changed(
+                session_id=session_id,
+                status=str(session_document["runtime_session"].get("status", "failed")),
+                reason="execution_finished",
+            )
             self._runtime_stream_broker.publish_snapshot(
                 session_id,
                 self._build_runtime_stream_terminal_payload(
@@ -6145,13 +6446,18 @@ class CompilationWorkbenchService:
         executable_node: dict,
         semantic_slot: str,
     ) -> str | None:
+        accepted_semantic_slots = {semantic_slot}
+        if semantic_slot == "out.timed_out":
+            accepted_semantic_slots.update({"control.timeout", "out.timeout"})
+        elif semantic_slot == "control.timeout":
+            accepted_semantic_slots.update({"out.timed_out", "out.timeout"})
         for port in executable_node.get("ports", []):
             if not isinstance(port, dict):
                 continue
             if (
                 port.get("direction") != "output"
                 or port.get("relation_layer") != "control"
-                or port.get("semantic_slot") != semantic_slot
+                or port.get("semantic_slot") not in accepted_semantic_slots
             ):
                 continue
             port_id = port.get("port_id")
@@ -7716,7 +8022,7 @@ class CompilationWorkbenchService:
                 PendingInputField(
                     field_id=item["field_id"],
                     label=item["label"],
-                    value_type=item.get("value_type", "string"),
+                    value_type=item.get("type", item.get("value_type", "string")),
                     sensitive=item.get("sensitive", False),
                     required=item.get("required", True),
                     **(
@@ -7754,27 +8060,37 @@ class CompilationWorkbenchService:
                     "message": str(exc),
                 },
             )
+        self._publish_runtime_session_changed(
+            session_id=session_id,
+            status="waiting",
+            reason="pending_input_requested",
+        )
+        pending_event_payload = {
+            "session_id": session_id,
+            "execution_id": snapshot.execution_id,
+            "request_id": snapshot.request_id,
+            "node_id": snapshot.node_id,
+            "status": snapshot.status,
+            "timeout_seconds": snapshot.timeout_seconds,
+            "fields": [
+                {
+                    "field_id": field.field_id,
+                    "label": field.label,
+                    "value_type": field.value_type,
+                    "sensitive": field.sensitive,
+                    "required": field.required,
+                }
+                for field in snapshot.fields
+            ],
+        }
+        self._publish_runtime_status_snapshot(
+            session_id=session_id,
+            status="waiting",
+        )
         self._runtime_stream_broker.publish_event(
             session_id,
             "runtime.pending_input",
-            {
-                "session_id": session_id,
-                "execution_id": snapshot.execution_id,
-                "request_id": snapshot.request_id,
-                "node_id": snapshot.node_id,
-                "status": snapshot.status,
-                "timeout_seconds": snapshot.timeout_seconds,
-                "fields": [
-                    {
-                        "field_id": field.field_id,
-                        "label": field.label,
-                        "value_type": field.value_type,
-                        "sensitive": field.sensitive,
-                        "required": field.required,
-                    }
-                    for field in snapshot.fields
-                ],
-            },
+            pending_event_payload,
         )
         result = self._pending_input_service.wait(
             snapshot.request_id,
@@ -7806,7 +8122,7 @@ class CompilationWorkbenchService:
                         "request_id": snapshot.request_id,
                         "port_id": self._resolve_runtime_control_output_port_id(
                             executable_node=executable_node,
-                            semantic_slot="control.timeout",
+                        semantic_slot="out.timed_out",
                         ),
                     },
                 )
@@ -9790,11 +10106,17 @@ class CompilationWorkbenchService:
             self._save_custom_node_graph_document(
                 document_id=target_document_id,
                 graph_model=graph_model,
+                expected_graph_document_save_revision=expected_graph_document_save_revision,
+                require_expected_revision=require_expected_revision,
             )
         project_runtime = self._get_project_runtime()
         project_file_path = project_runtime.get("project_file_path")
         if isinstance(project_file_path, str) and project_file_path.strip():
             self._write_project_storage_layout(Path(project_file_path))
+        self._publish_graph_changed(
+            reason="saved",
+            document_id=target_document_id,
+        )
         return {
             "status": "saved",
             "graph_model": graph_model,
@@ -9833,6 +10155,7 @@ class CompilationWorkbenchService:
     def compile_graph_document(self, graph_document_payload: dict | None) -> dict:
         started_at = perf_counter()
         self._refresh_state_from_store()
+        graph_document_was_persisted = graph_document_payload is not None
         if graph_document_payload is None:
             graph_model = self._get_graph_document_model()
         else:
@@ -9878,6 +10201,9 @@ class CompilationWorkbenchService:
             last_compile["requested_graph_save_revision"] = graph_document_meta["save_revision"]
             last_compile["requested_graph_saved_at"] = graph_document_meta["saved_at"]
             self._remember_compile(last_compile)
+            self._publish_project_changed(reason="compiled")
+            if graph_document_was_persisted:
+                self._publish_graph_changed(reason="compiled")
             return result
 
         source_text = json.dumps(
@@ -9914,6 +10240,9 @@ class CompilationWorkbenchService:
                 "source_text": source_text,
             },
         }
+        self._publish_project_changed(reason="compiled")
+        if graph_document_was_persisted:
+            self._publish_graph_changed(reason="compiled")
         return compile_result
 
     def _prepare_execution(
@@ -12499,7 +12828,31 @@ class CompilationWorkbenchService:
 
         self._state = self._state_store.mutate(mutation)
 
-    def _get_graph_document_meta(self) -> dict:
+    def _get_graph_document_meta(self, *, document_id: str | None = None) -> dict:
+        if isinstance(document_id, str) and document_id.strip() and document_id != "graph:workspace":
+            resource_id = self._parse_custom_node_graph_document_id(document_id)
+            if resource_id is not None:
+                resource = next(
+                    (
+                        item
+                        for item in self._get_resource_registry()
+                        if item.get("resource_id") == resource_id
+                        and item.get("resource_type") == "custom_node_graph"
+                    ),
+                    None,
+                )
+                if resource is not None:
+                    raw_revision = resource.get("source_graph_document_save_revision", 0)
+                    save_revision = (
+                        raw_revision
+                        if isinstance(raw_revision, int) and not isinstance(raw_revision, bool)
+                        else 0
+                    )
+                    saved_at = resource.get("source_graph_document_saved_at")
+                    return {
+                        "save_revision": save_revision,
+                        "saved_at": saved_at if isinstance(saved_at, str) else None,
+                    }
         raw_meta = self._state.get("graph_document_meta")
         if not isinstance(raw_meta, dict):
             raw_meta = {}
@@ -12511,7 +12864,7 @@ class CompilationWorkbenchService:
         }
 
     def _build_graph_workspace_metadata(self, graph_model: GraphModel) -> dict:
-        meta = self._get_graph_document_meta()
+        meta = self._get_graph_document_meta(document_id=graph_model.graph_model_id)
         last_compile = self._state.get("last_compile")
         last_compiled_graph_model_id = None
         last_compiled_graph_save_revision = None
@@ -17017,7 +17370,14 @@ class CompilationWorkbenchService:
             )
         return documents
 
-    def _save_custom_node_graph_document(self, *, document_id: str, graph_model: GraphModel) -> None:
+    def _save_custom_node_graph_document(
+        self,
+        *,
+        document_id: str,
+        graph_model: GraphModel,
+        expected_graph_document_save_revision: int | None = None,
+        require_expected_revision: bool = False,
+    ) -> None:
         resource_id = self._parse_custom_node_graph_document_id(document_id)
         if resource_id is None:
             raise ValueError(f"graph document not found: {document_id}")
@@ -17028,6 +17388,7 @@ class CompilationWorkbenchService:
         def mutation(state: dict | None) -> dict:
             current_state, _ = self._normalize_workspace_state(state)
             resources = self._extract_resource_registry(current_state)
+            save_conflict_policy = self._get_graph_save_conflict_policy()
             matched = False
             next_resources: list[dict] = []
             for item in resources:
@@ -17037,9 +17398,19 @@ class CompilationWorkbenchService:
                 matched = True
                 updated_item = dict(item)
                 updated_item["source_graph_document_id"] = document_id
-                updated_item["source_graph_document_save_revision"] = (
-                    int(updated_item.get("source_graph_document_save_revision") or 0) + 1
-                )
+                current_revision = updated_item.get("source_graph_document_save_revision", 0)
+                if not isinstance(current_revision, int) or isinstance(current_revision, bool):
+                    current_revision = 0
+                if (
+                    expected_graph_document_save_revision is not None
+                    and expected_graph_document_save_revision != current_revision
+                    and (save_conflict_policy == "strict" or require_expected_revision)
+                ):
+                    raise GraphDocumentRevisionConflictError(
+                        expected_revision=expected_graph_document_save_revision,
+                        current_revision=current_revision,
+                    )
+                updated_item["source_graph_document_save_revision"] = current_revision + 1
                 updated_item["source_graph_document"] = graph_model.model_dump(mode="json")
                 if has_boundary_nodes:
                     updated_item["input_schema"] = deepcopy(derived_input_schema)
@@ -20720,12 +21091,24 @@ class CompilationWorkbenchService:
             after_event_id=after_event_id,
         )
 
-    def iter_runtime_stream_events(self, *, session_id: str):
+    def iter_runtime_stream_events(
+        self,
+        *,
+        session_id: str,
+        heartbeat_seconds: float | None = None,
+    ):
         subscriber_id, queue = self._runtime_stream_broker.subscribe(session_id)
         try:
-            yield from self._runtime_stream_broker.iter_events(queue)
+            yield from self._runtime_stream_broker.iter_events(
+                queue,
+                heartbeat_seconds=heartbeat_seconds,
+            )
         finally:
             self._runtime_stream_broker.unsubscribe(session_id, subscriber_id)
+
+    def get_runtime_stream_event_bounds(self, *, session_id: str) -> dict[str, int | None]:
+        self.get_runtime_session(session_id=session_id)
+        return self._runtime_stream_broker.get_event_bounds(session_id)
 
     def _get_debug_sessions(self) -> list[dict]:
         return self._extract_debug_sessions(self._state)

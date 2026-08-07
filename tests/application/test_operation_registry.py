@@ -15,6 +15,7 @@ from weconduct.application.operations.models import (
     OperationDescriptor,
     PublicOperationOutput,
 )
+from weconduct.application.pending_input.service import PendingInputValidationError
 
 
 _TEST_CALLER = OperationCaller(
@@ -84,6 +85,19 @@ class _FakeService:
 class _PendingInputErrorService(_FakeService):
     def submit_pending_input(self, *, execution_id: str, request_id: str, values: dict) -> dict:
         raise ValueError("pending input request is not waiting")
+
+
+class _PendingInputValidationErrorService(_FakeService):
+    def submit_pending_input(self, *, execution_id: str, request_id: str, values: dict) -> dict:
+        raise PendingInputValidationError(
+            "field attempt_count must be an integer",
+            details={
+                "validation_kind": "type_mismatch",
+                "field_id": "attempt_count",
+                "expected_type": "integer",
+                "actual_type": "string",
+            },
+        )
 
 
 class _StrictOutput(PublicOperationOutput):
@@ -200,6 +214,26 @@ def test_operation_service_rejects_unknown_operation_and_missing_fields() -> Non
     assert unsupported_graph_document.value.error_code == "operation.input_invalid"
 
 
+def test_operation_validation_errors_do_not_echo_input_payloads() -> None:
+    service = HostOperationService(service=_FakeService())
+    secret = "graph-input-secret-should-not-echo"
+
+    with pytest.raises(OperationRegistryError) as error:
+        service.invoke(
+            "graph.replace",
+            {
+                "graph_document": {
+                    "nodes": [{"node_config": {"authorization": secret}}],
+                },
+            },
+            caller=_TEST_CALLER,
+        )
+
+    assert error.value.error_code == "operation.input_invalid"
+    assert secret not in repr(error.value.details)
+    assert all("input" not in item for item in error.value.details["validation_errors"])
+
+
 def test_output_validation_failure_releases_idempotency_reservation() -> None:
     service = _OutputInvalidHostOperationService()
 
@@ -252,6 +286,25 @@ def test_operation_service_normalizes_pending_input_state_conflicts() -> None:
         )
 
     assert error.value.error_code == "operation.state_conflict"
+
+
+def test_operation_service_normalizes_pending_input_validation_details() -> None:
+    service = HostOperationService(service=_PendingInputValidationErrorService())
+
+    with pytest.raises(OperationRegistryError) as error:
+        service.invoke(
+            "pending_input.submit",
+            {"execution_id": "e-1", "request_id": "r-1", "values": {"attempt_count": "bad"}},
+            caller=_TEST_CALLER,
+        )
+
+    assert error.value.error_code == "operation.input_invalid"
+    assert error.value.details == {
+        "validation_kind": "type_mismatch",
+        "field_id": "attempt_count",
+        "expected_type": "integer",
+        "actual_type": "string",
+    }
 
 
 def test_execution_parameter_unlock_uses_stable_operation_and_redacts_password_audit() -> None:

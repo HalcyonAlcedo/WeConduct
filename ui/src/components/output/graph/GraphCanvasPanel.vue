@@ -61,6 +61,18 @@ async function handleSave() {
   if (!workspace.graphModel) return
   await workspace.saveGraph(workspace.graphModel as unknown as Record<string, unknown>)
 }
+
+function keepLocalDraft() {
+  workspace.dismissExternalGraphConflictNotice()
+}
+
+async function loadRemoteGraph() {
+  if (!workspace.externalGraphConflict) return
+  const confirmed = window.confirm('加载远端图将丢弃当前未保存的本地草稿，是否继续？')
+  if (!confirmed) return
+  await workspace.loadRemoteGraph()
+}
+
 async function handleValidate() {
   if (!selectedModel.value) { toast.info('', t('framework.graph.panel.toast.graphEmpty', '当前图为空')); return }
   if (selectedSource.value === 'compilation') { toast.info('', t('framework.graph.panel.toast.saveFirst', '请先保存为工作区图')); return }
@@ -168,6 +180,17 @@ async function handleCompile() {
 
 <template>
   <div class="gcp">
+    <div v-if="workspace.externalGraphConflict" class="gcp-conflict" data-testid="graph-conflict" role="alert">
+      <div class="gcp-conflict-copy">
+        <strong>{{ t('framework.graph.panel.conflict.title', '图稿存在外部修改冲突') }}</strong>
+        <span>{{ t('framework.graph.panel.conflict.revisions', `本地基准 rev ${workspace.externalGraphConflict.baseRevision ?? '未知'} · 远端 rev ${workspace.externalGraphConflict.remoteRevision ?? '未知'}`, { base: workspace.externalGraphConflict.baseRevision ?? '未知', remote: workspace.externalGraphConflict.remoteRevision ?? '未知' }) }}</span>
+        <span v-if="workspace.externalGraphConflictNoticeVisible" class="gcp-conflict-detail">{{ t('framework.graph.panel.conflict.detail', '本地未保存草稿未被覆盖，请选择处理方式') }}</span>
+      </div>
+      <span class="gcp-conflict-actions">
+        <button class="gcp-btn" data-testid="keep-local-draft" @click="keepLocalDraft">{{ t('framework.graph.panel.conflict.keepLocal', '保留本地草稿') }}</button>
+        <button class="gcp-btn danger" data-testid="load-remote-graph" @click="loadRemoteGraph">{{ t('framework.graph.panel.conflict.loadRemote', '加载远端图') }}</button>
+      </span>
+    </div>
     <div class="gcp-bar">
       <select class="gcp-graph-sel" :value="workspace.currentDocumentId || ''" @change="switchGraph(($event.target as HTMLSelectElement).value)">
         <option value="">📄 {{ t('framework.graph.panel.mainGraph', '主图') }}</option>
@@ -198,6 +221,16 @@ async function handleCompile() {
 
 <style scoped>
 .gcp { display: flex; flex-direction: column; height: 100%; }
+.gcp-conflict {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md); border-bottom: 1px solid var(--state-degraded);
+  background: color-mix(in srgb, var(--state-degraded) 12%, var(--bg-panel)); color: var(--text-primary);
+}
+.gcp-conflict-copy { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-sm); min-width: 0; }
+.gcp-conflict-copy span { color: var(--text-secondary); font-size: var(--text-small); }
+.gcp-conflict-detail { flex-basis: 100%; }
+.gcp-conflict-actions { display: flex; gap: var(--space-xs); flex-shrink: 0; }
+.gcp-btn.danger { color: var(--state-error); border-color: var(--state-error); }
 .gcp-graph-sel { padding: 1px 6px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text-primary); font-size: var(--text-small); font-family: var(--font-ui); max-width: 180px; }
 .gcp-bar {
   display: flex; align-items: center; gap: var(--space-sm);

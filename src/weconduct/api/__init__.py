@@ -1,3 +1,13 @@
-from .server import WeConductApiHandler, build_api_server, migrate_configuration_storage
+from .server import (
+    ExternalApiBindError,
+    WeConductApiHandler,
+    build_api_server,
+    migrate_configuration_storage,
+)
 
-__all__ = ["WeConductApiHandler", "build_api_server", "migrate_configuration_storage"]
+__all__ = [
+    "ExternalApiBindError",
+    "WeConductApiHandler",
+    "build_api_server",
+    "migrate_configuration_storage",
+]

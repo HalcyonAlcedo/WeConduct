@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from queue import Empty
 from threading import Thread
 from time import monotonic, sleep
 
@@ -299,6 +300,25 @@ def test_input_request_timeout_routes_only_to_connected_timeout_port() -> None:
     assert "default-target" in result["result"]["skipped_node_ids"]
 
 
+def test_input_request_timeout_routes_using_canonical_out_timed_out_port() -> None:
+    service = CompilationWorkbenchService()
+    graph = _build_input_timeout_graph()
+    input_node = next(node for node in graph["nodes"] if node["node_id"] == "input")
+    timeout_port = next(port for port in input_node["ports"] if port["port_id"] == "timeout")
+    timeout_port["port_id"] = "timed_out"
+    timeout_port["semantic_slot"] = "out.timed_out"
+    timeout_edge = next(edge for edge in graph["edges"] if edge["edge_id"] == "input-timeout")
+    timeout_edge["from_port_id"] = "timed_out"
+
+    started = service.start_runtime_session(graph_document_payload=graph)
+    result = service.run_runtime_session(session_id=started["runtime_session"]["session_id"])
+
+    node_states = {item["node_id"]: item for item in result["node_states"]}
+    assert result["status"] == "completed"
+    assert node_states["input"]["output"]["status"] == "timed_out"
+    assert node_states["timeout-target"]["node_status"] == "completed"
+
+
 def test_input_request_timeout_uses_complete_defaults_without_timeout_branch() -> None:
     service = CompilationWorkbenchService()
     started = service.start_runtime_session(
@@ -348,9 +368,62 @@ def test_abort_runtime_session_cancels_waiting_input_request_without_leaking_wor
     pending = service.get_pending_input_snapshot(execution_id=session_id)
     assert pending is not None
     assert pending.status == "waiting"
+    assert service.get_runtime_session(session_id=session_id)["runtime_session"]["status"] == "waiting"
 
     aborted = service.abort_runtime_session(session_id=session_id, reason="test_abort")
 
     assert aborted["status"] == "aborted"
     assert aborted["runtime_session"]["status"] == "aborted"
     assert service._runtime_execution_threads.get(session_id) is None  # type: ignore[attr-defined]
+
+
+def test_input_request_waiting_state_is_published_to_workbench_events() -> None:
+    service = CompilationWorkbenchService()
+    session_id = "runtime-session-workbench-waiting"
+    runtime_context = RuntimeContext(
+        execution_session_context=ExecutionSessionContext(session_id=session_id),
+    )
+    node = {
+        "node_id": "input-node-workbench-waiting",
+        "node_kind": "input.request",
+        "node_config": {
+            "fields": [{"field_id": "answer", "label": "Answer"}],
+            "timeout_seconds": 0,
+        },
+    }
+    broker = service.get_workbench_event_broker()
+    subscriber_id, queue = broker.subscribe()
+    worker = Thread(
+        target=service._execute_runtime_plan_node,
+        kwargs={
+            "executable_node": node,
+            "runtime_context": runtime_context,
+            "executor_registry": RuntimeExecutorRegistry(),
+        },
+        daemon=True,
+    )
+    try:
+        worker.start()
+        deadline = monotonic() + 1
+        while service.get_pending_input_snapshot(execution_id=session_id) is None and monotonic() < deadline:
+            sleep(0.01)
+
+        pending = service.get_pending_input_snapshot(execution_id=session_id)
+        assert pending is not None
+        events: list[dict] = []
+        while True:
+            try:
+                events.append(queue.get(timeout=0.05))
+            except Empty:
+                break
+
+        assert any(
+            event["event_name"] == "runtime.session_changed"
+            and event["payload"]["session_id"] == session_id
+            and event["payload"]["status"] == "waiting"
+            for event in events
+        )
+    finally:
+        runtime_context.cancellation_context.request_cancel("test_cleanup")
+        worker.join(timeout=1)
+        broker.unsubscribe(subscriber_id)

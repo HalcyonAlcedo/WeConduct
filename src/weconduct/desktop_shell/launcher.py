@@ -4,12 +4,14 @@ from dataclasses import dataclass
 import os
 import json
 from pathlib import Path
+import secrets
 import uuid
 import sys
 import webbrowser
 from threading import Thread
 from types import ModuleType
 from typing import Any
+from urllib.parse import quote
 
 from weconduct.api import build_api_server, migrate_configuration_storage
 
@@ -37,6 +39,8 @@ class LimitedBrowserSession:
     workspace_state_path: str
     preferences_path: str
     ui_dist_path: str
+    ui_url: str
+    ui_token: str
 
 
 @dataclass(frozen=True)
@@ -144,10 +148,11 @@ def launch_desktop_shell(
                 continue
             if prompt_action == "open_program":
                 if isinstance(active_session, LimitedBrowserSession):
-                    _open_url_in_default_browser(active_session.base_url)
+                    _open_url_in_default_browser(active_session.ui_url)
                     return {
                         "status": "limited_browser_opened",
                         "base_url": active_session.base_url,
+                        "ui_url": active_session.ui_url,
                         "desktop_environment": {
                             "status": probe_result.status,
                             "message": probe_result.message,
@@ -163,6 +168,7 @@ def launch_desktop_shell(
                 return {
                     "status": "limited_browser_running",
                     "base_url": active_session.base_url,
+                    "ui_url": active_session.ui_url,
                     "desktop_environment": {
                         "status": probe_result.status,
                         "message": probe_result.message,
@@ -198,10 +204,12 @@ def launch_desktop_shell(
         workspace_state_path=workspace_state_path,
         preferences_path=preferences_path,
         ui_dist_path=ui_dist_path,
+        api_token=(ui_token := secrets.token_urlsafe(32)),
     )
     server.ui_mode = "desktop_shell"
     runtime_host, runtime_port = server.server_address
     base_url = f"http://{runtime_host}:{runtime_port}"
+    ui_url = _build_ui_url(base_url, ui_token)
     window_ref: dict[str, Any] = {}
     server.file_dialog_provider = _build_file_dialog_provider(webview, window_ref)
     server.open_path_provider = _build_open_path_provider(window_ref)
@@ -210,7 +218,7 @@ def launch_desktop_shell(
     try:
         window_ref["window"] = webview.create_window(
             options.title,
-            base_url,
+            ui_url,
             width=preferred_width,
             height=preferred_height,
         )
@@ -253,11 +261,13 @@ def launch_limited_browser_session(
         workspace_state_path=workspace_state_path,
         preferences_path=preferences_path,
         ui_dist_path=ui_dist_path,
+        api_token=(ui_token := secrets.token_urlsafe(32)),
     )
     server.ui_mode = "limited_browser"
     server.open_path_provider = _build_open_path_provider()
     runtime_host, runtime_port = server.server_address
     base_url = f"http://{runtime_host}:{runtime_port}"
+    ui_url = _build_ui_url(base_url, ui_token)
     server_thread = Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     session = LimitedBrowserSession(
@@ -266,6 +276,8 @@ def launch_limited_browser_session(
         workspace_state_path=str(workspace_state_path.resolve()),
         preferences_path=str(preferences_path.resolve()),
         ui_dist_path=str(ui_dist_path.resolve()),
+        ui_url=ui_url,
+        ui_token=ui_token,
     )
     _LIMITED_BROWSER_SESSION_STATE["server"] = server
     _LIMITED_BROWSER_SESSION_STATE["thread"] = server_thread
@@ -282,6 +294,10 @@ def shutdown_limited_browser_session() -> None:
         active_server.server_close()
     if active_thread is not None:
         active_thread.join(timeout=5)
+
+
+def _build_ui_url(base_url: str, ui_token: str) -> str:
+    return f"{base_url}#weconduct_token={quote(ui_token, safe='')}"
 
 
 def probe_desktop_environment(*, runtime_checker=None) -> DesktopEnvironmentProbeResult:

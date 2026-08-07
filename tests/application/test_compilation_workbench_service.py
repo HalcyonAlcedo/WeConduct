@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
+from queue import Empty
 import subprocess
 from threading import Event, Thread
 from time import monotonic, sleep
 
 import weconduct.application.compilation_workbench_service as workbench_service_module
 from weconduct.application import CompilationWorkbenchService
+from weconduct.application.compilation_workbench_service import GraphDocumentRevisionConflictError
 from weconduct.application.sensitive_values.encryption import (
     SensitiveUnlockError,
     decrypt_parameter_values,
@@ -22,6 +24,7 @@ from weconduct.application.configuration.builtin_registry import (
     build_builtin_configuration_registry,
 )
 from weconduct.application.runtime_projection import project_runtime_value_for_publication
+from weconduct.application.workbench_event_stream import WorkbenchEventStreamBroker
 from weconduct.contracts import CompilationOutcome, Diagnostic, DiagnosticCatalog, create_initial_summary
 from weconduct.network_runtime.resources import ResponseBodyRef
 import pytest
@@ -1631,6 +1634,8 @@ def test_workbench_service_can_load_and_save_custom_node_graph_document() -> Non
 
     assert loaded_document["graph_model"].graph_model_id == document_id
     assert loaded_document["graph_model"].nodes[0].display_name == "输入"
+    assert loaded_document["revision"] == 1
+    assert loaded_document["view"]["graph_document_save_revision"] == 1
 
     updated_payload = loaded_document["graph_model"].model_dump(mode="json")
     updated_payload["document_id"] = document_id
@@ -1661,8 +1666,79 @@ def test_workbench_service_can_load_and_save_custom_node_graph_document() -> Non
     )
 
     assert save_document_result["graph_model"].graph_model_id == document_id
+    assert save_document_result["view"]["graph_document_save_revision"] == 2
     assert updated_resource["source_graph_document"]["graph_model_id"] == document_id
     assert updated_resource["output_schema"]["accepted"]["type"] == "boolean"
+
+
+def test_workbench_service_publishes_custom_graph_revision_for_graph_changed_event() -> None:
+    broker = WorkbenchEventStreamBroker()
+    service = CompilationWorkbenchService(workbench_event_broker=broker)
+    subscriber_id, queue = broker.subscribe(snapshot=service.get_workbench_snapshot())
+
+    seed_graph_payload = {
+        "graph_model_id": "graph:workspace",
+        "compilation_id": None,
+        "graph_schema_version": "graph-v1",
+        "nodes": [],
+        "edges": [],
+        "graph_effective_diagnostic_anchor_refs": [],
+    }
+    service.save_graph_document(seed_graph_payload)
+    queue.get(timeout=0.2)  # workbench.snapshot
+    queue.get(timeout=0.2)  # main graph workspace.graph_changed
+
+    resource_id = service.save_custom_node_graph_resource(resource_name="事件组件")["resource"][
+        "resource_id"
+    ]
+    custom_graph = service.get_graph_document(document_id=resource_id)["graph_model"].model_dump(
+        mode="json"
+    )
+    custom_graph["document_id"] = resource_id
+    service.save_graph_document(custom_graph)
+
+    event = queue.get(timeout=0.2)
+    broker.unsubscribe(subscriber_id)
+
+    assert event["event_name"] == "workspace.graph_changed"
+    assert event["payload"] == {
+        "document_id": resource_id,
+        "revision": 2,
+        "reason": "saved",
+    }
+
+
+def test_custom_node_graph_save_rejects_stale_revision_when_required() -> None:
+    service = CompilationWorkbenchService()
+    seed_graph_payload = {
+        "graph_model_id": "graph:workspace",
+        "compilation_id": None,
+        "graph_schema_version": "graph-v1",
+        "nodes": [],
+        "edges": [],
+        "graph_effective_diagnostic_anchor_refs": [],
+    }
+    service.save_graph_document(seed_graph_payload)
+    resource_id = service.save_custom_node_graph_resource(resource_name="版本组件")["resource"]["resource_id"]
+    document_id = resource_id
+
+    current = service.get_graph_document(document_id=document_id)["graph_model"].model_dump(mode="json")
+    service.save_graph_document({**current, "document_id": document_id})
+    stale = {**current, "document_id": document_id}
+
+    with pytest.raises(GraphDocumentRevisionConflictError) as error:
+        service.save_graph_document(
+            stale,
+            expected_graph_document_save_revision=0,
+            require_expected_revision=True,
+        )
+
+    assert error.value.expected_revision == 0
+    assert error.value.current_revision == 2
+    resource = next(
+        item for item in service.get_resource_registry_document()["resources"] if item["resource_id"] == resource_id
+    )
+    assert resource["source_graph_document_save_revision"] == 2
 
 
 def test_workbench_service_can_create_empty_custom_node_graph_resource() -> None:
@@ -1822,6 +1898,74 @@ def test_runtime_abort_interrupts_active_node_and_is_idempotent(monkeypatch) -> 
         event["event_kind"] == "session.aborted"
         for event in repeated["event_log"]
     ) == 1
+
+
+def test_runtime_stream_does_not_publish_running_snapshot_after_abort(monkeypatch) -> None:
+    service = CompilationWorkbenchService()
+    node_started = Event()
+    release_node = Event()
+    aborting_published = Event()
+
+    def execute_until_release(*, runtime_context, **_kwargs) -> dict:
+        node_started.set()
+        while not runtime_context.cancellation_context.is_cancelled:
+            sleep(0.005)
+        assert release_node.wait(timeout=1.0)
+        return {"status": "succeeded", "node_id": "node-start"}
+
+    monkeypatch.setattr(service, "_execute_runtime_plan_node", execute_until_release)
+    original_publish_status_snapshot = service._publish_runtime_status_snapshot
+
+    def publish_status_snapshot(*, session_id: str, status: str) -> None:
+        original_publish_status_snapshot(session_id=session_id, status=status)
+        if status == "aborting":
+            aborting_published.set()
+
+    monkeypatch.setattr(service, "_publish_runtime_status_snapshot", publish_status_snapshot)
+
+    started = service.start_runtime_session(
+        graph_document_payload=_build_minimal_workspace_graph()
+    )
+    session_id = started["runtime_session"]["session_id"]
+    broker = service._runtime_stream_broker  # type: ignore[attr-defined]
+    subscriber_id, queue = broker.subscribe(session_id)
+    service.start_runtime_session_execution(session_id=session_id)
+    assert node_started.wait(timeout=1.0)
+
+    abort_thread = Thread(
+        target=lambda: service.abort_runtime_session(session_id=session_id, reason="user_abort"),
+        daemon=True,
+    )
+    abort_thread.start()
+    assert aborting_published.wait(timeout=1.0)
+    release_node.set()
+    abort_thread.join(timeout=1.0)
+    assert not abort_thread.is_alive()
+    assert service.get_runtime_session(session_id=session_id)["runtime_session"]["status"] == "aborted"
+
+    events: list[tuple[str, dict]] = []
+    deadline = monotonic() + 1.0
+    while monotonic() < deadline:
+        try:
+            item = queue.get(timeout=0.1)
+        except Empty:
+            break
+        if not isinstance(item, tuple):
+            break
+        event_name, payload = item
+        events.append((event_name, payload))
+
+    broker.unsubscribe(session_id, subscriber_id)
+    aborting_index = next(
+        index
+        for index, (event_name, _payload) in enumerate(events)
+        if event_name == "runtime.aborting"
+    )
+    assert all(
+        payload.get("status") != "running"
+        for event_name, payload in events[aborting_index + 1 :]
+        if event_name == "runtime.snapshot"
+    )
 
 
 def test_runtime_abort_forces_terminal_state_when_active_node_ignores_cancellation(monkeypatch) -> None:
@@ -2885,7 +3029,308 @@ def test_runtime_session_requires_unlock_before_starting_encrypted_parameters() 
     result = service.start_runtime_session_execution(session_id=session_id)
 
     assert result["status"] == "unlock_required"
+    assert result["runtime_session"]["status"] == "unlock_required"
     assert session_id not in service._runtime_execution_threads  # type: ignore[attr-defined]
+
+
+def test_runtime_session_query_prefers_live_broker_snapshot_for_active_session() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    session_id = service.start_runtime_session(graph_document_payload=None)["runtime_session"]["session_id"]
+
+    service._runtime_stream_broker.publish_snapshot(  # type: ignore[attr-defined]
+        session_id,
+        {
+            "session_id": session_id,
+            "status": "waiting",
+            "runtime_session": {
+                "session_id": session_id,
+                "status": "waiting",
+                "completed_node_count": 0,
+                "failed_node_count": 0,
+            },
+            "node_states": [
+                {
+                    "node_id": "node-start",
+                    "node_status": "waiting",
+                    "started_at": "2026-08-03T00:00:00Z",
+                    "completed_at": None,
+                }
+            ],
+            "event_log": [
+                {"event_kind": "runtime.pending_input", "node_id": "node-start"},
+                {"event_kind": "runtime.waiting", "node_id": "node-start"},
+            ],
+            "execution_summary": {
+                "status": "waiting",
+                "completed_node_count": 0,
+                "failed_node_count": 0,
+                "event_count": 2,
+            },
+            "result": None,
+        },
+    )
+
+    result = service.get_runtime_session(session_id=session_id)
+
+    assert result["runtime_session"]["status"] == "waiting"
+    assert result["node_states"] == [
+        {
+            "node_id": "node-start",
+            "node_status": "waiting",
+            "started_at": "2026-08-03T00:00:00Z",
+            "completed_at": None,
+        }
+    ]
+    assert result["execution_summary"]["status"] == "waiting"
+    assert result["execution_summary"]["event_count"] == 2
+
+
+def test_runtime_session_query_and_sse_snapshot_share_the_same_live_projection() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    session_id = service.start_runtime_session(graph_document_payload=None)["runtime_session"]["session_id"]
+
+    service._runtime_stream_broker.publish_snapshot(  # type: ignore[attr-defined]
+        session_id,
+        {
+            "session_id": session_id,
+            "status": "waiting",
+            "runtime_session": {
+                "session_id": session_id,
+                "status": "waiting",
+                "completed_node_count": 1,
+                "failed_node_count": 0,
+            },
+            "node_states": [
+                {"node_id": "node-done", "node_status": "completed"},
+                {"node_id": "node-waiting", "node_status": "waiting"},
+            ],
+            "event_log": [
+                {"event_kind": "runtime.node", "node_id": "node-done"},
+                {"event_kind": "runtime.waiting", "node_id": "node-waiting"},
+            ],
+            "execution_summary": {"status": "waiting", "event_count": 2},
+            "result": None,
+        },
+    )
+
+    query_projection = service.get_runtime_session(session_id=session_id)
+    sse_projection = service.get_runtime_stream_snapshot(session_id=session_id)
+
+    assert sse_projection["runtime_session"] == query_projection["runtime_session"]
+    assert sse_projection["node_states"] == query_projection["node_states"]
+    assert sse_projection["event_log"] == query_projection["event_log"]
+    assert sse_projection["execution_summary"] == query_projection["execution_summary"]
+
+
+def test_runtime_session_projection_rebuilds_summary_for_visible_transient_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    session_id = service.start_runtime_session(graph_document_payload=None)["runtime_session"]["session_id"]
+
+    monkeypatch.setattr(
+        service,
+        "requires_runtime_session_parameter_unlock",
+        lambda *, session_id: True,
+    )
+    service._runtime_stream_broker.publish_snapshot(  # type: ignore[attr-defined]
+        session_id,
+        {
+            "session_id": session_id,
+            "status": "running",
+            "runtime_session": {
+                "session_id": session_id,
+                "status": "running",
+                "completed_node_count": 1,
+                "failed_node_count": 0,
+            },
+            "node_states": [
+                {"node_id": "node-done", "node_status": "completed"},
+                {"node_id": "node-running", "node_status": "running"},
+                {"node_id": "node-pending", "node_status": "pending"},
+            ],
+            "event_log": [
+                {"event_kind": "runtime.node", "node_id": "node-done"},
+                {"event_kind": "diagnostic.raised", "node_id": "node-running"},
+                {"event_kind": "runtime.waiting", "node_id": "node-pending"},
+            ],
+            "execution_summary": {
+                "status": "running",
+                "completed_node_count": 99,
+                "failed_node_count": 7,
+                "event_count": 1,
+                "diagnostic_event_count": 0,
+                "node_status_counts": {"pending": 99},
+                "latest_event_kind": "stale",
+            },
+            "result": {"status": "running"},
+        },
+    )
+
+    result = service.get_runtime_session(session_id=session_id)
+
+    assert result["runtime_session"]["status"] == "unlock_required"
+    assert result["execution_summary"] == {
+        "status": "unlock_required",
+        "completed_node_count": 1,
+        "failed_node_count": 0,
+        "event_count": 3,
+        "diagnostic_event_count": 1,
+        "node_status_counts": {"completed": 1, "running": 1, "pending": 1},
+        "latest_event_kind": "runtime.waiting",
+    }
+
+
+def test_runtime_live_status_snapshot_rebuilds_summary_for_sse_consumers() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    session_id = service.start_runtime_session(graph_document_payload=None)["runtime_session"]["session_id"]
+
+    service._publish_runtime_status_snapshot(  # type: ignore[attr-defined]
+        session_id=session_id,
+        status="waiting",
+    )
+
+    snapshot = service._runtime_stream_broker.get_latest_snapshot(session_id)  # type: ignore[attr-defined]
+    assert snapshot is not None
+    assert snapshot["status"] == "waiting"
+    assert snapshot["runtime_session"]["status"] == "waiting"
+    assert snapshot["execution_summary"]["status"] == "waiting"
+    assert snapshot["execution_summary"]["event_count"] == len(snapshot["event_log"])
+
+
+def test_runtime_session_projection_does_not_regress_aborting_to_stale_running_snapshot() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    session_id = service.start_runtime_session(graph_document_payload=None)["runtime_session"]["session_id"]
+
+    def mark_aborting(state: dict | None) -> dict:
+        assert state is not None
+        for item in state["runtime_sessions"]:
+            if item["runtime_session"]["session_id"] == session_id:
+                item["runtime_session"]["status"] = "aborting"
+        return state
+
+    service._state_store.mutate(mark_aborting)  # type: ignore[attr-defined]
+    service._runtime_stream_broker.publish_snapshot(  # type: ignore[attr-defined]
+        session_id,
+        {
+            "session_id": session_id,
+            "status": "running",
+            "runtime_session": {"session_id": session_id, "status": "running"},
+            "node_states": [{"node_id": "node-start", "node_status": "pending"}],
+            "event_log": [],
+            "execution_summary": {"status": "running", "event_count": 0},
+            "result": None,
+        },
+    )
+
+    result = service.get_runtime_session(session_id=session_id)
+
+    assert result["runtime_session"]["status"] == "aborting"
+
+
+def test_runtime_session_projection_prefers_persisted_terminal_state_over_stale_live_snapshot() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    session_id = service.start_runtime_session(graph_document_payload=None)["runtime_session"]["session_id"]
+
+    def mark_completed(state: dict | None) -> dict:
+        assert state is not None
+        for item in state["runtime_sessions"]:
+            if item["runtime_session"]["session_id"] != session_id:
+                continue
+            item["runtime_session"].update(
+                {
+                    "status": "completed",
+                    "completed_node_count": 1,
+                    "failed_node_count": 0,
+                }
+            )
+            item["node_states"] = [{"node_id": "persisted-node", "node_status": "completed"}]
+            item["event_log"] = [{"event_kind": "runtime.completed", "node_id": "persisted-node"}]
+            item["execution_summary"] = {
+                "status": "succeeded",
+                "completed_node_count": 1,
+                "failed_node_count": 0,
+                "event_count": 1,
+            }
+            item["result"] = {"status": "succeeded", "source": "persisted"}
+            break
+        return state
+
+    service._state_store.mutate(mark_completed)  # type: ignore[attr-defined]
+    service._runtime_stream_broker.publish_snapshot(  # type: ignore[attr-defined]
+        session_id,
+        {
+            "session_id": session_id,
+            "status": "running",
+            "runtime_session": {"session_id": session_id, "status": "running"},
+            "node_states": [{"node_id": "stale-node", "node_status": "running"}],
+            "event_log": [{"event_kind": "runtime.snapshot", "node_id": "stale-node"}],
+            "execution_summary": {"status": "running", "event_count": 1},
+            "result": {"status": "running", "source": "stale"},
+        },
+    )
+
+    result = service.get_runtime_session(session_id=session_id)
+
+    assert result["runtime_session"]["status"] == "completed"
+    assert result["node_states"][0]["node_id"] == "persisted-node"
+    assert result["event_log"] == [{"event_kind": "runtime.completed", "node_id": "persisted-node"}]
+    assert result["result"] == {"status": "succeeded", "source": "persisted"}
+
+
+def test_runtime_session_projection_can_query_while_live_snapshots_publish() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    session_id = service.start_runtime_session(graph_document_payload=None)["runtime_session"]["session_id"]
+    broker = service._runtime_stream_broker  # type: ignore[attr-defined]
+    snapshot_published = Event()
+    errors: list[BaseException] = []
+
+    def publish_snapshots() -> None:
+        try:
+            for index in range(100):
+                broker.publish_snapshot(
+                    session_id,
+                    {
+                        "session_id": session_id,
+                        "status": "running",
+                        "runtime_session": {"session_id": session_id, "status": "running"},
+                        "node_states": [{"node_id": f"node-{index}", "node_status": "running"}],
+                        "event_log": [{"event_kind": "runtime.snapshot", "sequence": index}],
+                        "execution_summary": {"status": "running", "event_count": 1},
+                        "result": None,
+                    },
+                )
+                snapshot_published.set()
+        except BaseException as exc:  # pragma: no cover - assertion is below
+            errors.append(exc)
+
+    def query_snapshots() -> None:
+        try:
+            assert snapshot_published.wait(timeout=1.0)
+            for _ in range(100):
+                result = service.get_runtime_session(session_id=session_id)
+                assert result["runtime_session"]["session_id"] == session_id
+                assert result["execution_summary"]["status"] == "running"
+        except BaseException as exc:  # pragma: no cover - assertion is below
+            errors.append(exc)
+
+    publisher = Thread(target=publish_snapshots, daemon=True)
+    querier = Thread(target=query_snapshots, daemon=True)
+    publisher.start()
+    querier.start()
+    publisher.join(timeout=2.0)
+    querier.join(timeout=2.0)
+
+    assert not publisher.is_alive()
+    assert not querier.is_alive()
+    assert errors == []
 
 
 def test_runtime_session_direct_run_requires_unlock_before_execution() -> None:
@@ -2907,7 +3352,29 @@ def test_runtime_session_direct_run_requires_unlock_before_execution() -> None:
     result = service.run_runtime_session(session_id=session_id)
 
     assert result["status"] == "unlock_required"
-    assert result["runtime_session"]["status"] == "running"
+    assert result["runtime_session"]["status"] == "unlock_required"
+
+
+def test_project_close_rejects_an_unlocked_waiting_runtime_session() -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    project_settings = service.get_project_settings_document()["project_settings"]
+    project_settings["encrypted_parameter_set"] = {
+        "parameter_set_id": "parameters-close",
+        "parameters": [{"parameter_id": "api_key", "name": "API Key", "type": "string"}],
+        "envelope": encrypt_parameter_values(
+            {"api_key": "close-secret"},
+            password="close-password",
+            parameter_set_id="parameters-close",
+        ),
+    }
+    service.update_project_settings(project_settings=project_settings)
+    session_id = service.start_runtime_session(graph_document_payload=None)["runtime_session"]["session_id"]
+
+    with pytest.raises(ValueError, match="active_execution"):
+        service.close_project(discard_changes=True)
+
+    assert service.get_runtime_session(session_id=session_id)["runtime_session"]["status"] == "unlock_required"
 
 
 def test_runtime_session_injects_unlocked_parameter_as_sensitive_reference(

@@ -52,6 +52,20 @@ _NON_SENSITIVE_STRUCTURE_FIELD_NAMES = frozenset(
         "token_queue",
     }
 )
+_NON_SENSITIVE_PROTOCOL_CAPABILITY_FIELDS = frozenset(
+    {
+        "http1",
+        "http2",
+        "sse",
+        "websocket",
+        "graphql",
+        "graphql_subscription",
+        "oauth_client_credentials",
+        "oauth_refresh",
+        "http_proxy",
+        "socks_proxy",
+    }
+)
 
 
 def redact_sensitive_payload(value: object, *, secret_values: Iterable[object] = ()) -> Any:
@@ -75,11 +89,21 @@ def _redact(value: object, secrets: tuple[object, ...], *, parent_key: str | Non
         for key, item in value.items():
             key_name = str(key)
             if (
-                _is_sensitive_field(key_name)
-                and not _is_debug_variable_descriptor_name(parent_key)
-            ) or _is_sensitive_mapping_value(
-                parent_key=parent_key,
-                key_name=key_name,
+                not _is_non_sensitive_capability_flag(
+                    parent_key=parent_key,
+                    key_name=key_name,
+                    value=item,
+                )
+                and (
+                    (
+                        _is_sensitive_field(key_name)
+                        and not _is_debug_variable_descriptor_name(parent_key)
+                    )
+                    or _is_sensitive_mapping_value(
+                        parent_key=parent_key,
+                        key_name=key_name,
+                    )
+                )
             ):
                 redacted[key_name] = "<redacted>"
                 continue
@@ -94,6 +118,21 @@ def _redact(value: object, secrets: tuple[object, ...], *, parent_key: str | Non
 
 def _is_debug_variable_descriptor_name(parent_key: str | None) -> bool:
     return parent_key == "variable_descriptors"
+
+
+def _is_non_sensitive_capability_flag(
+    *,
+    parent_key: str | None,
+    key_name: str,
+    value: object,
+) -> bool:
+    normalized_parent = (parent_key or "").strip().lower().replace("-", "_")
+    normalized_key = key_name.strip().lower().replace("-", "_")
+    return (
+        normalized_parent == "protocols"
+        and type(value) is bool
+        and normalized_key in _NON_SENSITIVE_PROTOCOL_CAPABILITY_FIELDS
+    )
 
 
 def _is_sensitive_field(field_name: str) -> bool:

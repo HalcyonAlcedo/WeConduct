@@ -193,6 +193,7 @@ export interface SnapshotResponse {
   preferences?: Record<string, unknown>
   graph_workspace?: {
     graph_preferences?: Record<string, unknown>
+    graph_document_save_revision?: number
     /** 嵌套分组对象: { program_settings: { default_project_directory: "active" }, ... } */
     preferences_state?: Record<string, Record<string, string>>
   }
@@ -839,6 +840,8 @@ export interface RuntimeSessionsResponse { sessions: RuntimeSessionSummary[] }
 export type RuntimeSessionStatus =
   | 'preparing'
   | 'ready'
+  | 'unlock_required'
+  | 'waiting'
   | 'running'
   | 'aborting'
   | 'aborted'

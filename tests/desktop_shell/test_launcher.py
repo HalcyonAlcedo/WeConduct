@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import urllib.request
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -56,6 +57,15 @@ def _build_ui_dist(tmp_path: Path) -> Path:
     return ui_dist_path
 
 
+def _ui_api_request(ui_url: str, path: str) -> urllib.request.Request:
+    parsed = urlsplit(ui_url)
+    token = parse_qs(parsed.fragment).get("weconduct_token", [""])[0]
+    return urllib.request.Request(
+        f"{parsed.scheme}://{parsed.netloc}{path}",
+        headers={"Content-Type": "application/json", "X-WeConduct-Token": token},
+    )
+
+
 def test_launch_desktop_shell_starts_api_and_opens_window(tmp_path: Path) -> None:
     ui_dist_path = tmp_path / "ui-dist"
     ui_dist_path.mkdir(parents=True)
@@ -82,14 +92,39 @@ def test_launch_desktop_shell_starts_api_and_opens_window(tmp_path: Path) -> Non
     assert result["status"] == "closed"
     assert result["base_url"].startswith("http://127.0.0.1:")
     assert fake_webview.started is True
-    assert fake_webview.created_windows == [
-        {
-            "title": "WeConduct",
-            "url": result["base_url"],
-            "width": 1280,
-            "height": 800,
-        }
-    ]
+    created = fake_webview.created_windows[0]
+    assert created["title"] == "WeConduct"
+    assert created["url"].startswith(result["base_url"] + "#weconduct_token=")
+    assert created["width"] == 1280
+    assert created["height"] == 800
+
+
+def test_launch_desktop_shell_generates_a_new_internal_token_each_start(
+    tmp_path: Path,
+) -> None:
+    ui_dist_path = _build_ui_dist(tmp_path)
+    first_webview = FakeWebView()
+    second_webview = FakeWebView()
+    options = DesktopShellOptions(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "state" / "workspace-state.json",
+        preferences_path=tmp_path / "state" / "preferences.json",
+        ui_dist_path=ui_dist_path,
+    )
+
+    launch_desktop_shell(options, webview_module=first_webview)
+    launch_desktop_shell(options, webview_module=second_webview)
+
+    first_token = parse_qs(urlsplit(first_webview.created_windows[0]["url"]).fragment).get(
+        "weconduct_token", [None]
+    )[0]
+    second_token = parse_qs(urlsplit(second_webview.created_windows[0]["url"]).fragment).get(
+        "weconduct_token", [None]
+    )[0]
+    assert isinstance(first_token, str) and first_token
+    assert isinstance(second_token, str) and second_token
+    assert first_token != second_token
 
 
 def test_launch_desktop_shell_reads_window_size_from_current_configuration(
@@ -176,19 +211,19 @@ def test_launch_desktop_shell_exposes_host_file_dialog_provider(tmp_path: Path) 
 
     def post_file_dialog_during_window_lifetime() -> None:
         fake_webview.started = True
-        base_url = fake_webview.created_windows[0]["url"]
-        request = urllib.request.Request(
-            f"{base_url}/api/host/file-dialog",
-            data=json.dumps(
-                {
-                    "mode": "open_file",
-                    "title": "选择节点图",
-                    "file_types": ["JSON Files (*.json)"],
-                }
-            ).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        ui_url = fake_webview.created_windows[0]["url"]
+        request = _ui_api_request(
+            ui_url,
+            "/api/host/file-dialog",
         )
+        request.data = json.dumps(
+            {
+                "mode": "open_file",
+                "title": "选择节点图",
+                "file_types": ["JSON Files (*.json)"],
+            }
+        ).encode("utf-8")
+        request.method = "POST"
         with urllib.request.urlopen(request) as response:
             fake_webview.file_dialog_response = json.loads(response.read().decode("utf-8"))
 
@@ -242,13 +277,9 @@ def test_launch_desktop_shell_exposes_host_open_path_provider(
 
     def post_open_path_during_window_lifetime() -> None:
         fake_webview.started = True
-        base_url = fake_webview.created_windows[0]["url"]
-        request = urllib.request.Request(
-            f"{base_url}/api/host/open-path",
-            data=json.dumps({"path": str(project_dir)}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        request = _ui_api_request(fake_webview.created_windows[0]["url"], "/api/host/open-path")
+        request.data = json.dumps({"path": str(project_dir)}).encode("utf-8")
+        request.method = "POST"
         with urllib.request.urlopen(request) as response:
             fake_webview.open_path_response = json.loads(response.read().decode("utf-8"))
 
@@ -349,7 +380,7 @@ def test_limited_browser_session_exposes_open_path_provider_without_webview(
     request = urllib.request.Request(
         f"{session.base_url}/api/host/open-path",
         data=json.dumps({"path": str(project_dir)}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "X-WeConduct-Token": session.ui_token},
         method="POST",
     )
     with urllib.request.urlopen(request) as response:
@@ -479,7 +510,7 @@ def test_missing_runtime_prompt_can_open_program_in_same_launch_cycle(
 
     assert len(prompt_calls) == 2
     assert result["status"] == "limited_browser_opened"
-    assert opened_urls == [result["base_url"]]
+    assert opened_urls == [result["ui_url"]]
     shutdown_limited_browser_session()
 
 
@@ -493,7 +524,12 @@ def test_limited_browser_session_exposes_mode_metadata(tmp_path: Path) -> None:
         ui_dist_path=_build_ui_dist(tmp_path),
     )
 
-    with urllib.request.urlopen(f"{session.base_url}/api/health") as response:
+    with pytest.raises(urllib.error.HTTPError) as unauthenticated:
+        urllib.request.urlopen(f"{session.base_url}/api/health")
+    assert unauthenticated.value.code == 401
+
+    request = _ui_api_request(session.ui_url, "/api/health")
+    with urllib.request.urlopen(request) as response:
         payload = json.loads(response.read().decode("utf-8"))
 
     assert payload["ui_hosting"]["ui_mode"] == "limited_browser"

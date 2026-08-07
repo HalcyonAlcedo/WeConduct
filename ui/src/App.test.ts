@@ -6,6 +6,8 @@ const registeredShortcuts = vi.hoisted(() => [] as any[])
 
 const workspaceState = vi.hoisted(() => ({
   initialize: vi.fn().mockResolvedValue(undefined),
+  startEventStream: vi.fn(),
+  stopEventStream: vi.fn(),
   reset: vi.fn(),
   connectionState: 'connected' as string,
   initError: null as unknown,
@@ -47,6 +49,7 @@ const runtimeState = vi.hoisted(() => ({
   isRuntimeActive: false,
   startAndRun: vi.fn().mockResolvedValue({ success: true, message: 'ok' }),
   refreshAll: vi.fn(),
+  recoverActiveSession: vi.fn(),
 }))
 
 const toastState = vi.hoisted(() => ({

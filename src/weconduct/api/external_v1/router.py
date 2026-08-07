@@ -60,6 +60,10 @@ def resolve_external_operation(
             payload = dict(read())
             payload["execution_id"] = parts[0]
             return "execution.cancel", payload
+        if len(parts) == 2 and parts[1] == "unlock" and method == "POST":
+            payload = dict(read())
+            payload["execution_id"] = parts[0]
+            return "execution.parameters.unlock", payload
         if len(parts) == 2 and parts[1] == "events" and method == "GET":
             return "execution.events.subscribe", {"execution_id": parts[0]}
         if len(parts) == 2 and parts[1] == "pending-input" and method == "GET":
@@ -145,7 +149,11 @@ class ExternalV1Router:
                 caller=caller,
                 idempotency_key=idempotency_key,
             )
-            response_status = HTTPStatus.ACCEPTED if operation_id in {"execution.start", "pending_input.submit"} else HTTPStatus.OK
+            response_status = HTTPStatus.ACCEPTED if operation_id in {
+                "execution.start",
+                "execution.parameters.unlock",
+                "pending_input.submit",
+            } else HTTPStatus.OK
             response_payload = {
                 "operation_id": operation_id,
                 "contract_version": descriptor.contract_version,
@@ -158,6 +166,7 @@ class ExternalV1Router:
             status = {
                 "operation.not_found": HTTPStatus.NOT_FOUND,
                 "operation.input_invalid": HTTPStatus.UNPROCESSABLE_ENTITY,
+                "sensitive.unlock_failed": HTTPStatus.UNPROCESSABLE_ENTITY,
                 "operation.path_denied": HTTPStatus.FORBIDDEN,
                 "operation.permission_denied": HTTPStatus.FORBIDDEN,
                 "operation.state_conflict": HTTPStatus.CONFLICT,
@@ -178,8 +187,12 @@ class ExternalV1Router:
                 execution_id = payload.get("execution_id")
                 if isinstance(execution_id, str):
                     try:
-                        replay = service.get_runtime_stream_events_since(session_id=execution_id, after_event_id=None)
-                        details = {"oldest_event_id": replay.get("oldest_event_id"), "latest_event_id": replay.get("latest_event_id")}
+                        get_bounds = getattr(service, "get_runtime_stream_event_bounds", None)
+                        if callable(get_bounds):
+                            details = dict(get_bounds(session_id=execution_id))
+                        else:
+                            replay = service.get_runtime_stream_events_since(session_id=execution_id, after_event_id=None)
+                            details = {"oldest_event_id": replay.get("oldest_event_id"), "latest_event_id": replay.get("latest_event_id")}
                     except (ValueError, KeyError):
                         details = {}
             response_payload = {"error_code": error_code, "message": str(exc), "details": details, "request_id": request_id}

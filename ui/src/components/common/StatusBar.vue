@@ -66,12 +66,34 @@ const limitedBrowserLabel = computed(() => {
   if (!workspace.isLimitedBrowser) return null
   return t('framework.statusBar.limitedBrowser', '⚠ 受限浏览器模式 — 缺少 WebView2 Runtime，部分功能不可用')
 })
+
+const workbenchSyncLabel = computed(() => {
+  if (!workspace.isConnected) return null
+  if (workspace.workbenchEventError) {
+    return t('framework.statusBar.workbenchSync.disconnected', '实时同步已断开')
+  }
+  if (workspace.workbenchEventConnected) {
+    return t('framework.statusBar.workbenchSync.connected', '实时同步')
+  }
+  return t('framework.statusBar.workbenchSync.connecting', '实时同步连接中')
+})
+
+const workbenchSyncClass = computed(() => {
+  if (workspace.workbenchEventError) return 'status-error'
+  if (!workspace.workbenchEventConnected) return 'status-warning'
+  return 'status-success'
+})
 </script>
 
 <template>
   <footer class="statusbar" role="contentinfo">
     <span v-if="limitedBrowserLabel" class="status-limited">{{ limitedBrowserLabel }}</span>
     <span :class="['status-left', statusClass]">{{ statusText }}</span>
+    <span
+      v-if="workbenchSyncLabel"
+      :class="['status-sync', workbenchSyncClass]"
+      :title="workspace.workbenchEventError || undefined"
+    >{{ workbenchSyncLabel }}</span>
     <span class="status-flex"></span>
     <span class="status-item">{{ compileCountLabel }}</span>
     <span v-if="lastCompileTimeLabel" class="status-divider">|</span>
@@ -114,6 +136,14 @@ const limitedBrowserLabel = computed(() => {
 .status-left.status-success { color: var(--state-success); }
 .status-left.status-warning { color: var(--state-warning); }
 .status-left.status-error   { color: var(--state-error); }
+
+.status-sync {
+  font-size: var(--text-caption);
+  white-space: nowrap;
+}
+.status-sync.status-success { color: var(--state-success); }
+.status-sync.status-warning { color: var(--state-warning); }
+.status-sync.status-error { color: var(--state-error); }
 
 .status-item {
   color: var(--text-secondary);

@@ -10,7 +10,11 @@ const graphWorkspaceState = vi.hoisted(() => ({
   saveRevision: 1,
   lastCompileMatches: true,
   graphDocuments: [] as any[],
+  externalGraphConflict: null as any,
+  externalGraphConflictNoticeVisible: false,
   loadGraph: vi.fn(),
+  loadRemoteGraph: vi.fn(),
+  dismissExternalGraphConflictNotice: vi.fn(),
   refreshGraphDocuments: vi.fn(),
   syncSource: vi.fn(),
   saveGraph: vi.fn(),
@@ -66,6 +70,8 @@ describe('GraphCanvasPanel', () => {
     compilationState.outcome = null
     compilationState.lastResponse = null
     compilationState.compilePhase = 'idle'
+    graphWorkspaceState.externalGraphConflict = null
+    graphWorkspaceState.externalGraphConflictNoticeVisible = false
     apiState.validate.mockResolvedValue({
       status: 'invalid', summary: { error_count: 1, warning_count: 0 }, diagnostics: [diagnostic],
     })
@@ -100,5 +106,36 @@ describe('GraphCanvasPanel', () => {
       source: 'compilation', operation: 'graph.compile',
     })
     expect(diagnosticsState.clearGraphDiagnostics).toHaveBeenCalledBefore(diagnosticsState.ingestCatalog)
+  })
+
+  it('存在外部修订冲突时显示基准和远端版本，并允许保留本地草稿', async () => {
+    graphWorkspaceState.externalGraphConflict = {
+      documentId: undefined, baseRevision: 2, remoteRevision: 5, detectedAt: '2026-08-03T00:00:00.000Z',
+    }
+    graphWorkspaceState.externalGraphConflictNoticeVisible = true
+    const wrapper = mount(GraphCanvasPanel, {
+      global: { stubs: { VueFlowGraph: defineComponent({ template: '<div />' }) } },
+    })
+
+    expect(wrapper.get('[data-testid="graph-conflict"]').text()).toContain('2')
+    expect(wrapper.get('[data-testid="graph-conflict"]').text()).toContain('5')
+    await wrapper.get('[data-testid="keep-local-draft"]').trigger('click')
+    expect(graphWorkspaceState.dismissExternalGraphConflictNotice).toHaveBeenCalled()
+    expect(graphWorkspaceState.externalGraphConflict).not.toBeNull()
+  })
+
+  it('加载远端图前要求确认，确认后调用强制刷新动作', async () => {
+    graphWorkspaceState.externalGraphConflict = {
+      documentId: undefined, baseRevision: 2, remoteRevision: 5, detectedAt: '2026-08-03T00:00:00.000Z',
+    }
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true))
+    const wrapper = mount(GraphCanvasPanel, {
+      global: { stubs: { VueFlowGraph: defineComponent({ template: '<div />' }) } },
+    })
+
+    await wrapper.get('[data-testid="load-remote-graph"]').trigger('click')
+    expect(window.confirm).toHaveBeenCalled()
+    expect(graphWorkspaceState.loadRemoteGraph).toHaveBeenCalled()
+    vi.unstubAllGlobals()
   })
 })

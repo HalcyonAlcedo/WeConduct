@@ -245,4 +245,93 @@ describe('graphWorkspaceStore', () => {
     expect(diagnosticsState.clearGraphObjectDiagnostics).toHaveBeenNthCalledWith(1, { edgeIds: ['edge-a'] })
     expect(diagnosticsState.clearGraphObjectDiagnostics).toHaveBeenNthCalledWith(2, { edgeIds: ['edge-a'] })
   })
+
+  it('记录外部图稿变更时保留本地草稿并暴露基准和远端修订', async () => {
+    const { useGraphWorkspaceStore } = await import('./graphWorkspaceStore')
+    const store = useGraphWorkspaceStore()
+
+    store.currentDocumentId = undefined
+    store.graphModel = emptyModel()
+    store.isDirty = true
+    const created = store.markExternalGraphConflict({ documentId: undefined, baseRevision: 1, remoteRevision: 9 })
+
+    expect(created).toBe(true)
+    expect(store.externalGraphConflict).toMatchObject({
+      documentId: undefined,
+      baseRevision: 1,
+      remoteRevision: 9,
+    })
+    expect(store.externalGraphConflict?.detectedAt).toEqual(expect.any(String))
+    expect(store.isDirty).toBe(true)
+
+    store.dismissExternalGraphConflictNotice()
+    expect(store.externalGraphConflict).not.toBeNull()
+    expect(store.externalGraphConflictNoticeVisible).toBe(false)
+    store.clearExternalGraphConflict()
+    expect(store.externalGraphConflict).toBeNull()
+  })
+
+  it('重复外部修订只更新远端版本并保持初始基准', async () => {
+    const { useGraphWorkspaceStore } = await import('./graphWorkspaceStore')
+    const store = useGraphWorkspaceStore()
+
+    store.currentDocumentId = undefined
+    expect(store.markExternalGraphConflict({ documentId: undefined, baseRevision: 2, remoteRevision: 5 })).toBe(true)
+    expect(store.markExternalGraphConflict({ documentId: undefined, baseRevision: 2, remoteRevision: 5 })).toBe(false)
+    expect(store.markExternalGraphConflict({ documentId: undefined, baseRevision: 2, remoteRevision: 7 })).toBe(false)
+
+    expect(store.externalGraphConflict).toMatchObject({ baseRevision: 2, remoteRevision: 7 })
+  })
+
+  it('主图和组件子图的冲突状态按文档隔离', async () => {
+    const { useGraphWorkspaceStore } = await import('./graphWorkspaceStore')
+    const store = useGraphWorkspaceStore()
+
+    store.currentDocumentId = undefined
+    store.markExternalGraphConflict({ documentId: undefined, baseRevision: 1, remoteRevision: 3 })
+    store.currentDocumentId = 'custom_node_graph:component-a'
+    store.markExternalGraphConflict({ documentId: 'custom_node_graph:component-a', baseRevision: 4, remoteRevision: 8 })
+
+    expect(store.externalGraphConflict).toMatchObject({ documentId: 'custom_node_graph:component-a', baseRevision: 4, remoteRevision: 8 })
+    store.currentDocumentId = undefined
+    expect(store.externalGraphConflict).toMatchObject({ documentId: undefined, baseRevision: 1, remoteRevision: 3 })
+  })
+
+  it('确认加载远端图后才丢弃本地草稿并清除冲突', async () => {
+    const { useGraphWorkspaceStore } = await import('./graphWorkspaceStore')
+    const store = useGraphWorkspaceStore()
+    apiMocks.fetchGraphDocument.mockResolvedValue({ graph_model: emptyModel(), view: editableView() })
+    store.currentDocumentId = undefined
+    store.graphModel = { ...emptyModel(), nodes: [{ node_id: 'local-node' }] } as any
+    store.isDirty = true
+    store.markExternalGraphConflict({ documentId: undefined, baseRevision: 1, remoteRevision: 2 })
+
+    await store.loadRemoteGraph()
+
+    expect(apiMocks.fetchGraphDocument).toHaveBeenCalledWith(undefined)
+    expect(store.isDirty).toBe(false)
+    expect(store.externalGraphConflict).toBeNull()
+  })
+
+  it('保存返回旧 revision 冲突时保留本地图并记录远端修订', async () => {
+    const { useGraphWorkspaceStore } = await import('./graphWorkspaceStore')
+    const store = useGraphWorkspaceStore()
+    const localModel = { ...emptyModel(), nodes: [{ node_id: 'local-node' }] } as any
+    store.currentDocumentId = undefined
+    store.view = editableView()
+    store.graphModel = localModel
+    store.isDirty = true
+    store.markExternalGraphConflict({ documentId: undefined, baseRevision: 1, remoteRevision: 5 })
+    apiMocks.putGraphDocument.mockRejectedValue({
+      status: 409,
+      body: { error: 'graph_revision_conflict', current_revision: 6 },
+    })
+
+    await store.saveGraph(localModel)
+
+    expect(apiMocks.putGraphDocument).toHaveBeenCalledWith(localModel, 1, undefined, true)
+    expect(store.graphModel).toEqual(localModel)
+    expect(store.isDirty).toBe(true)
+    expect(store.externalGraphConflict).toMatchObject({ baseRevision: 1, remoteRevision: 6 })
+  })
 })

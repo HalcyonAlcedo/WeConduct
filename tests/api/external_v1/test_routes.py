@@ -92,6 +92,20 @@ def test_external_rest_route_invokes_shared_operation_service_with_derived_calle
     assert "route-test-token" not in caller.caller_id
 
 
+def test_external_route_maps_execution_parameter_unlock() -> None:
+    operation_id, payload = router.resolve_external_operation(
+        method="POST",
+        request_path="/api/ext/v1/executions/execution-1/unlock",
+        read_payload=lambda: {"password": "test-password"},
+    )
+
+    assert operation_id == "execution.parameters.unlock"
+    assert payload == {
+        "execution_id": "execution-1",
+        "password": "test-password",
+    }
+
+
 def test_external_router_replays_idempotent_result_across_requests() -> None:
     class _ProjectService:
         def __init__(self) -> None:
@@ -148,6 +162,54 @@ def test_external_router_replays_idempotent_result_across_requests() -> None:
     assert first_handler.response is not None
     assert second_handler.response is not None
     assert second_handler.response[1]["result"] == first_handler.response[1]["result"]
+
+
+def test_external_router_includes_event_bounds_when_cursor_is_expired() -> None:
+    class _Service:
+        def get_runtime_stream_events_since(
+            self,
+            *,
+            session_id: str,
+            after_event_id: int | None,
+        ) -> dict[str, object]:
+            raise ValueError("execution.event_cursor_expired")
+
+        def get_runtime_stream_event_bounds(self, *, session_id: str) -> dict[str, object]:
+            assert session_id == "execution-expired"
+            return {"oldest_event_id": 12, "latest_event_id": 42}
+
+        def get_runtime_session(self, *, session_id: str) -> dict[str, object]:
+            return {"runtime_session": {"session_id": session_id, "status": "running"}}
+
+    server = SimpleNamespace(
+        external_api_enabled=True,
+        external_api_token="expired-token",
+        external_api_instance_id="instance-expired",
+        external_api_project_allowed_roots=(),
+    )
+
+    class _Handler:
+        def __init__(self) -> None:
+            self.path = "/api/ext/v1/executions/execution-expired/events"
+            self.headers = {
+                "Authorization": "Bearer expired-token",
+                "Last-Event-ID": "2",
+            }
+            self.server = server
+            self.response: tuple[HTTPStatus, dict[str, object]] | None = None
+
+        def _get_service(self) -> object:
+            return _Service()
+
+        def _write_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+            self.response = status, payload
+
+    handler = _Handler()
+    assert router.ExternalV1Router(handler).handle(method="GET") is True
+    assert handler.response is not None
+    status, payload = handler.response
+    assert status == HTTPStatus.CONFLICT
+    assert payload["details"] == {"oldest_event_id": 12, "latest_event_id": 42}
 
 
 def test_api_server_owns_external_operation_idempotency_and_audit_state(tmp_path) -> None:

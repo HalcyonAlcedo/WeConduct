@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import socket
 from threading import Event, Thread
 from time import monotonic, sleep
 import urllib.error
@@ -14,6 +15,7 @@ from weconduct.application.configuration.program_repository import (
     FileProgramConfigurationRepository,
 )
 from weconduct.application.pending_input.models import PendingInputField, PendingInputRequest
+from weconduct.application.sensitive_values.encryption import SensitiveUnlockError
 from weconduct.runtime.engine import CancellationContext
 
 
@@ -66,6 +68,28 @@ def test_external_router_keeps_bearer_semantics_and_maps_the_fixed_host_route() 
     )
 
 
+def test_external_api_host_capabilities_preserve_boolean_protocol_flags(tmp_path: Path) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, payload = _request_json(
+            f"{base_url}/api/ext/v1/host/capabilities",
+            token="external-secret",
+        )
+
+        assert status == 200
+        protocols = payload["result"]["capabilities"]["network"]["protocols"]
+        assert protocols
+        assert all(isinstance(value, bool) for value in protocols.values())
+        assert protocols["oauth_client_credentials"] is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
 def test_external_api_non_loopback_bind_requires_explicit_confirmation() -> None:
     from weconduct.api.server import _validate_external_api_bind_host
 
@@ -106,6 +130,458 @@ def test_build_api_server_loads_external_api_settings_from_program_configuration
         assert server.external_api_token == "configured-external-token"
         assert server.external_api_project_allowed_roots == (allowed_root.resolve(),)
     finally:
+        server.server_close()
+
+
+def test_build_api_server_uses_configured_external_api_port_when_port_is_zero(
+    tmp_path: Path,
+) -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        configured_port = probe.getsockname()[1]
+    preferences_path = tmp_path / "runtime" / "preferences.json"
+    FileProgramConfigurationRepository(preferences_path).save(
+        {"security": {"external_api_port": configured_port}}
+    )
+
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=preferences_path,
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    try:
+        assert server.server_address[1] == configured_port
+    finally:
+        server.server_close()
+
+
+def test_build_api_server_reports_fixed_port_conflict_without_dynamic_fallback(
+    tmp_path: Path,
+) -> None:
+    from weconduct.api.server import ExternalApiBindError
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        probe.listen(1)
+        configured_port = probe.getsockname()[1]
+        preferences_path = tmp_path / "runtime" / "preferences.json"
+        FileProgramConfigurationRepository(preferences_path).save(
+            {"security": {"external_api_port": configured_port}}
+        )
+
+        with pytest.raises(ExternalApiBindError, match="external_api.port_in_use") as failure:
+            build_api_server(
+                host="127.0.0.1",
+                port=0,
+                workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+                preferences_path=preferences_path,
+                ui_dist_path=tmp_path / "ui-dist",
+            )
+
+    assert failure.value.configured_port == configured_port
+    assert failure.value.active_port is None
+
+
+def test_build_api_server_rejects_second_fixed_listener(
+    tmp_path: Path,
+) -> None:
+    from weconduct.api.server import ExternalApiBindError
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        configured_port = probe.getsockname()[1]
+
+    first_server = build_api_server(
+        host="127.0.0.1",
+        port=configured_port,
+        workspace_state_path=tmp_path / "first" / "workspace-state.json",
+        preferences_path=tmp_path / "first" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    try:
+        with pytest.raises(ExternalApiBindError, match="external_api.port_in_use"):
+            build_api_server(
+                host="127.0.0.1",
+                port=configured_port,
+                workspace_state_path=tmp_path / "second" / "workspace-state.json",
+                preferences_path=tmp_path / "second" / "preferences.json",
+                ui_dist_path=tmp_path / "ui-dist",
+            )
+    finally:
+        first_server.server_close()
+
+
+def test_program_config_reset_disables_external_api_in_current_process(
+    tmp_path: Path,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="internal-ui-token",
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+        external_api_enabled=True,
+        external_api_token="external-secret",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, _ = _request_json(
+            f"{base_url}/api/ext/v1/host",
+            token="external-secret",
+        )
+        assert status == 200
+
+        status, _ = _request_json(
+            f"{base_url}/api/workbench/config/reset",
+            method="POST",
+            payload={"scope": "program"},
+            extra_headers={"X-WeConduct-Token": "internal-ui-token"},
+        )
+        assert status == 200
+
+        status, body = _request_json(
+            f"{base_url}/api/ext/v1/host",
+            token="external-secret",
+        )
+        assert status == 404
+        assert body["error_code"] == "external_api.disabled"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+@pytest.mark.parametrize("invalid_port", [-1, 65536, 12.5, True, "12345"])
+def test_external_api_preferences_reject_invalid_port_and_keep_previous_value(
+    tmp_path: Path,
+    invalid_port: object,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="internal-ui-token",
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        valid_port = 62681
+        status, saved = _request_json(
+            f"{base_url}/api/workbench/preferences/external-api",
+            method="POST",
+            payload={
+                "enabled": False,
+                "clear_token": False,
+                "external_api_port": valid_port,
+                "project_allowed_roots": [],
+                "confirm_high_risk": True,
+            },
+            extra_headers={"X-WeConduct-Token": "internal-ui-token"},
+        )
+        assert status == 200
+        assert saved["external_api_port"] == valid_port
+
+        status, rejected = _request_json(
+            f"{base_url}/api/workbench/preferences/external-api",
+            method="POST",
+            payload={
+                "enabled": False,
+                "clear_token": False,
+                "external_api_port": invalid_port,
+                "project_allowed_roots": [],
+                "confirm_high_risk": True,
+            },
+            extra_headers={"X-WeConduct-Token": "internal-ui-token"},
+        )
+        assert status == 400
+        assert rejected["error"] == "invalid_request"
+
+        status, current = _request_json(
+            f"{base_url}/api/workbench/preferences/external-api",
+            extra_headers={"X-WeConduct-Token": "internal-ui-token"},
+        )
+        assert status == 200
+        assert current["external_api_port"] == valid_port
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+@pytest.mark.parametrize("token", [None, "wrong-token", "external-secret"])
+def test_disabled_external_api_rejects_all_bearer_tokens_but_keeps_internal_ui_available(
+    tmp_path: Path,
+    token: str | None,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="internal-ui-token",
+        external_api_enabled=False,
+        external_api_token="external-secret",
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, payload = _request_json(
+            f"{base_url}/api/ext/v1/host",
+            token=token,
+        )
+        assert status == 404
+        assert payload["error_code"] == "external_api.disabled"
+
+        status, health = _request_json(
+            f"{base_url}/api/health",
+            extra_headers={"X-WeConduct-Token": "internal-ui-token"},
+        )
+        assert status == 200
+        assert health["status"] in {"ok", "healthy", "degraded"}
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_internal_and_external_tokens_are_not_interchangeable(
+    tmp_path: Path,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="internal-ui-token",
+        external_api_enabled=True,
+        external_api_token="external-secret",
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, payload = _request_json(
+            f"{base_url}/api/ext/v1/host",
+            token="internal-ui-token",
+        )
+        assert status == 401
+        assert payload["error_code"] == "external_api.unauthorized"
+
+        status, payload = _request_json(
+            f"{base_url}/api/ext/v1/host",
+            token="external-secret",
+        )
+        assert status == 200
+        assert payload["operation_id"] == "host.describe"
+
+        status, payload = _request_json(
+            f"{base_url}/api/health",
+            extra_headers={"X-WeConduct-Token": "external-secret"},
+        )
+        assert status == 401
+        assert payload["error"] == "unauthorized"
+
+        status, health = _request_json(
+            f"{base_url}/api/health",
+            extra_headers={"X-WeConduct-Token": "internal-ui-token"},
+        )
+        assert status == 200
+        assert health["status"] in {"ok", "healthy", "degraded"}
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_enabled_state_persists_across_server_rebuilds(
+    tmp_path: Path,
+) -> None:
+    preferences_path = tmp_path / "runtime" / "preferences.json"
+    common = {
+        "host": "127.0.0.1",
+        "port": 0,
+        "api_token": "internal-ui-token",
+        "workspace_state_path": tmp_path / "runtime" / "workspace-state.json",
+        "preferences_path": preferences_path,
+        "ui_dist_path": tmp_path / "ui-dist",
+    }
+
+    first = build_api_server(**common)
+    first_thread = Thread(target=first.serve_forever, daemon=True)
+    first_thread.start()
+    try:
+        base_url = f"http://{first.server_address[0]}:{first.server_address[1]}"
+        status, enabled = _request_json(
+            f"{base_url}/api/workbench/preferences/external-api",
+            method="POST",
+            payload={
+                "enabled": True,
+                "token": "external-secret",
+                "clear_token": False,
+                "external_api_port": 0,
+                "project_allowed_roots": [],
+                "confirm_high_risk": True,
+            },
+            extra_headers={"X-WeConduct-Token": "internal-ui-token"},
+        )
+        assert status == 200
+        assert enabled["enabled"] is True
+    finally:
+        first.shutdown()
+        first_thread.join(timeout=2)
+        first.server_close()
+
+    second = build_api_server(**common)
+    second_thread = Thread(target=second.serve_forever, daemon=True)
+    second_thread.start()
+    try:
+        base_url = f"http://{second.server_address[0]}:{second.server_address[1]}"
+        status, payload = _request_json(
+            f"{base_url}/api/ext/v1/host",
+            token="external-secret",
+        )
+        assert status == 200
+        assert payload["operation_id"] == "host.describe"
+
+        status, disabled = _request_json(
+            f"{base_url}/api/workbench/preferences/external-api",
+            method="POST",
+            payload={
+                "enabled": False,
+                "clear_token": False,
+                "external_api_port": 0,
+                "project_allowed_roots": [],
+                "confirm_high_risk": True,
+            },
+            extra_headers={"X-WeConduct-Token": "internal-ui-token"},
+        )
+        assert status == 200
+        assert disabled["enabled"] is False
+    finally:
+        second.shutdown()
+        second_thread.join(timeout=2)
+        second.server_close()
+
+    third = build_api_server(**common)
+    third_thread = Thread(target=third.serve_forever, daemon=True)
+    third_thread.start()
+    try:
+        base_url = f"http://{third.server_address[0]}:{third.server_address[1]}"
+        for token in (None, "wrong-token", "external-secret"):
+            status, payload = _request_json(
+                f"{base_url}/api/ext/v1/host",
+                token=token,
+            )
+            assert status == 404
+            assert payload["error_code"] == "external_api.disabled"
+    finally:
+        third.shutdown()
+        third_thread.join(timeout=2)
+        third.server_close()
+
+
+def test_internal_workbench_routes_require_the_explicit_ui_token(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+        api_token="internal-ui-token",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, payload = _request_json(f"{base_url}/api/workbench/snapshot")
+        assert status == 401
+        assert payload["error"] == "unauthorized"
+
+        request = urllib.request.Request(
+            f"{base_url}/api/workbench/snapshot",
+            headers={"X-WeConduct-Token": "internal-ui-token"},
+        )
+        with urllib.request.urlopen(request) as response:
+            assert response.status == 200
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_internal_startup_recovery_requires_the_explicit_ui_token(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+        api_token="internal-ui-token",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, payload = _request_json(
+            f"{base_url}/api/startup/recover",
+            method="POST",
+            payload={},
+        )
+        assert status == 401
+        assert payload["error"] == "unauthorized"
+
+        status, payload = _request_json(
+            f"{base_url}/api/startup/recover",
+            method="POST",
+            payload={},
+            extra_headers={"X-WeConduct-Token": "internal-ui-token"},
+        )
+        assert status == 200
+        assert payload["status"] == "recovered"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_internal_get_does_not_leak_workspace_state_errors_before_authentication(
+    tmp_path: Path,
+) -> None:
+    workspace_state_path = tmp_path / "runtime" / "workspace-state.json"
+    workspace_state_path.parent.mkdir(parents=True, exist_ok=True)
+    workspace_state_path.write_text("{invalid-json", encoding="utf-8")
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=workspace_state_path,
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+        api_token="internal-ui-token",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, payload = _request_json(f"{base_url}/api/workbench/snapshot")
+        assert status == 401
+        assert payload == {
+            "error": "unauthorized",
+            "message": "invalid or missing API token",
+        }
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
         server.server_close()
 
 
@@ -391,6 +867,131 @@ def test_external_api_pending_input_submit_returns_202_and_hides_values(tmp_path
         server.server_close()
 
 
+def test_external_api_pending_input_type_error_returns_422_with_safe_details(tmp_path: Path) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        _request_json(f"{base_url}/api/ext/v1/host", token="external-secret")
+        service = server.workbench_service
+        request = PendingInputRequest(
+            request_id="request-type-error-api",
+            execution_id="execution-type-error-api",
+            node_id="node-type-error-api",
+            fields=(
+                PendingInputField(
+                    field_id="attempt_count",
+                    label="Attempts",
+                    value_type="integer",
+                ),
+            ),
+        )
+        service._pending_input_service.create(request)  # type: ignore[attr-defined]
+        service._pending_input_service.activate(request.request_id)  # type: ignore[attr-defined]
+
+        status, payload = _request_json(
+            f"{base_url}/api/ext/v1/executions/{request.execution_id}/pending-input/{request.request_id}/submit",
+            method="POST",
+            payload={"values": {"attempt_count": "not-an-integer"}},
+            token="external-secret",
+        )
+
+        assert status == 422
+        assert payload["error_code"] == "operation.input_invalid"
+        assert payload["details"] == {
+            "validation_kind": "type_mismatch",
+            "field_id": "attempt_count",
+            "expected_type": "integer",
+            "actual_type": "string",
+        }
+        assert service._pending_input_service.get_snapshot(request.request_id).status == "waiting"  # type: ignore[attr-defined]
+        assert "not-an-integer" not in json.dumps(payload)
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_pending_input_validation_boundaries_are_structured_and_atomic(
+    tmp_path: Path,
+) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        _request_json(f"{base_url}/api/ext/v1/host", token="external-secret")
+        service = server.workbench_service
+        request = PendingInputRequest(
+            request_id="request-validation-boundaries",
+            execution_id="execution-validation-boundaries",
+            node_id="node-validation-boundaries",
+            fields=(
+                PendingInputField(field_id="attempt_count", label="Attempts", value_type="integer"),
+                PendingInputField(field_id="secret", label="Secret", sensitive=True),
+            ),
+        )
+        service._pending_input_service.create(request)  # type: ignore[attr-defined]
+        service._pending_input_service.activate(request.request_id)  # type: ignore[attr-defined]
+
+        cases = (
+            (
+                {"values": {"attempt_count": True, "secret": "do-not-leak"}},
+                {
+                    "validation_kind": "type_mismatch",
+                    "field_id": "attempt_count",
+                    "expected_type": "integer",
+                    "actual_type": "boolean",
+                },
+            ),
+            (
+                {"values": {"attempt_count": 1, "secret": "do-not-leak", "unknown": "x"}},
+                {"validation_kind": "unknown_field", "field_ids": ["unknown"]},
+            ),
+            (
+                {"values": {"attempt_count": 1}},
+                {"validation_kind": "missing_required", "field_ids": ["secret"]},
+            ),
+            (
+                {"values": []},
+                {
+                    "validation_kind": "invalid_payload",
+                    "expected_type": "object",
+                    "actual_type": "array",
+                },
+            ),
+            (
+                {"values": "do-not-leak"},
+                {
+                    "validation_kind": "invalid_payload",
+                    "expected_type": "object",
+                    "actual_type": "string",
+                },
+            ),
+        )
+        for payload, details in cases:
+            status, response = _request_json(
+                f"{base_url}/api/ext/v1/executions/{request.execution_id}/pending-input/{request.request_id}/submit",
+                method="POST",
+                payload=payload,
+                token="external-secret",
+            )
+            assert status == 422
+            assert response["error_code"] == "operation.input_invalid"
+            assert response["details"] == details
+            assert "do-not-leak" not in json.dumps(response)
+
+        assert service._pending_input_service.get_snapshot(request.request_id).status == "waiting"  # type: ignore[attr-defined]
+        assert "do-not-leak" not in json.dumps(
+            [record.input_summary for record in server.external_api_audit_trail.records]
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
 def test_external_api_pending_input_submit_after_timeout_returns_410(tmp_path: Path) -> None:
     server = _build_server(tmp_path, enabled=True, token="external-secret")
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -434,6 +1035,37 @@ def test_external_api_pending_input_submit_after_timeout_returns_410(tmp_path: P
     finally:
         if waiter is not None:
             waiter.join(timeout=1)
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_parameter_unlock_failure_returns_422_without_secret_details(
+    tmp_path: Path,
+) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        _request_json(f"{base_url}/api/ext/v1/host", token="external-secret")
+
+        def reject_unlock(*, session_id: str, password: str) -> dict:
+            raise SensitiveUnlockError()
+
+        server.workbench_service.unlock_runtime_session_parameters = reject_unlock  # type: ignore[method-assign]
+        status, payload = _request_json(
+            f"{base_url}/api/ext/v1/executions/runtime-1/unlock",
+            method="POST",
+            payload={"password": "wrong-password"},
+            token="external-secret",
+        )
+
+        assert status == 422
+        assert payload["error_code"] == "sensitive.unlock_failed"
+        assert "wrong-password" not in json.dumps(payload)
+        assert "external-secret" not in json.dumps(payload)
+    finally:
         server.shutdown()
         thread.join(timeout=2)
         server.server_close()

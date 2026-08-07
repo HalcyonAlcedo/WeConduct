@@ -12,6 +12,7 @@ from weconduct.application.sensitive_values.redaction import redact_sensitive_pa
 
 
 _STOP_EVENT = object()
+HEARTBEAT_EVENT_NAME = "__heartbeat__"
 
 
 @dataclass
@@ -141,6 +142,16 @@ class RuntimeSessionStreamBroker:
             ],
         }
 
+    def get_event_bounds(self, session_id: str) -> dict[str, int | None]:
+        with self._lock:
+            history = list(self._event_history_by_session_id.get(session_id, ()))
+        if not history:
+            return {"oldest_event_id": None, "latest_event_id": None}
+        return {
+            "oldest_event_id": int(history[0]["event_id"]),
+            "latest_event_id": int(history[-1]["event_id"]),
+        }
+
     def _publish(self, session_id: str, event_name: str, payload: dict[str, Any]) -> None:
         with self._lock:
             if session_id in self._closed_session_id_set:
@@ -173,11 +184,20 @@ class RuntimeSessionStreamBroker:
             self._event_history_by_session_id.pop(expired_session_id, None)
             self._next_event_id_by_session_id.pop(expired_session_id, None)
 
-    def iter_events(self, queue: Queue) -> Iterator[tuple[str, dict[str, Any]]]:
+    def iter_events(
+        self,
+        queue: Queue,
+        *,
+        heartbeat_seconds: float | None = None,
+    ) -> Iterator[tuple[str, dict[str, Any]]]:
+        if heartbeat_seconds is not None and heartbeat_seconds <= 0:
+            raise ValueError("heartbeat_seconds must be positive")
         while True:
             try:
-                item = queue.get(timeout=0.5)
+                item = queue.get(timeout=heartbeat_seconds or 0.5)
             except Empty:
+                if heartbeat_seconds is not None:
+                    yield HEARTBEAT_EVENT_NAME, {}
                 continue
             if item is _STOP_EVENT:
                 return

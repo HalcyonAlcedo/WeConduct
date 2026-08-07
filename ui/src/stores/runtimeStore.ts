@@ -13,8 +13,10 @@ import {
   fetchRuntimePendingInput,
   postRuntimePendingInput,
   postRuntimeParameterUnlock,
-  getRuntimeStreamUrl,
+  consumeSse,
+  getRuntimeStreamPath,
   buildRuntimeProgressFromSession,
+  type SseEvent,
   type RuntimePendingInputSnapshot,
 } from '@/services/api'
 import type {
@@ -25,6 +27,7 @@ import type {
 } from '@/types/domains/api'
 import type { Diagnostic } from '@/types/domains/diagnostics'
 import { useProjectDiagnosticsStore } from './projectDiagnosticsStore'
+import { useDockStore } from './dockStore'
 
 type RuntimeLiveStatus =
   | 'idle'
@@ -84,7 +87,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
   const activeRuntimeStatus = computed(() => activeRt.value?.runtime_session?.status ?? null)
   const isRuntimeActive = computed(() =>
     isRunStarting.value
-      || ['preparing', 'ready', 'running', 'aborting'].includes(activeRuntimeStatus.value ?? '')
+      || ['preparing', 'ready', 'running', 'aborting', 'unlock_required', 'waiting'].includes(activeRuntimeStatus.value ?? '')
       || ['connecting', 'streaming', 'aborting', 'settling'].includes(runtimeLiveStatus.value)
   )
   const canAbortRuntime = computed(() =>
@@ -189,8 +192,10 @@ export const useRuntimeStore = defineStore('runtime', () => {
     return extractRuntimeDiagnosticEvents().map((e, i) => normalizeRuntimeEvent(e, i))
   }
 
-  let runtimeEventSource: EventSource | null = null
+  let runtimeStreamController: AbortController | null = null
   let subscribedRuntimeSessionId: string | null = null
+  let runtimeStreamReconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let runtimeStreamGeneration = 0
   let pendingRunResolver: ((result: { success: boolean; message: string }) => void) | null = null
   let settledRunResult: { success: boolean; message: string } | null = null
 
@@ -213,10 +218,99 @@ export const useRuntimeStore = defineStore('runtime', () => {
     } catch {}
   }
 
+  /** 启动或工作台事件流重连后接管仍处于活动状态的运行会话。 */
+  async function recoverActiveSession(): Promise<boolean> {
+    await refreshAll()
+    const candidate = rtSessions.value.find((session) => !isTerminalRuntimeStatus(session.status))
+    if (!candidate) return false
+    const currentSessionId = activeRt.value?.runtime_session?.session_id ?? null
+    if (
+      currentSessionId === candidate.session_id
+      && subscribedRuntimeSessionId === candidate.session_id
+      && runtimeStreamController
+    ) {
+      showRuntimePanel()
+      return true
+    }
+    await handleWorkbenchSessionEvent({
+      session_id: candidate.session_id,
+      status: candidate.status,
+      reason: 'session_recovered',
+    })
+    return true
+  }
+
   async function loadRtDetail(id: string) {
     try {
       setActiveRt(await fetchRuntimeSession(id))
     } catch {}
+  }
+
+  /** 将外部发现的运行会话呈现出来，即使用户此前关闭了输出面板。 */
+  function showRuntimePanel() {
+    const dock = useDockStore()
+    if (!dock.isPanelVisible('output')) dock.restorePanel('output', 'bottom')
+    dock.activatePanel('output')
+    requestRuntimeTab()
+  }
+
+  /** 收敛由外部 API 创建或推进的运行会话；UI 自己已有其他会话时只刷新列表。 */
+  async function handleWorkbenchSessionEvent(payload: Record<string, unknown>) {
+    await refreshAll()
+    const sessionId = typeof payload.session_id === 'string' ? payload.session_id : ''
+    if (!sessionId) return
+    const activeSessionId = activeRt.value?.runtime_session?.session_id ?? null
+    const activeStatus = getRuntimeSessionStatus(activeRt.value)
+    if (
+      activeSessionId
+      && activeSessionId !== sessionId
+      && !isTerminalRuntimeStatus(activeStatus)
+    ) return
+    try {
+      const detail = await fetchRuntimeSession(sessionId)
+      const status = getRuntimeSessionStatus(detail)
+      const hasLiveSnapshot = Boolean(
+        activeSessionId === sessionId
+        && subscribedRuntimeSessionId === sessionId
+        && runtimeStreamController
+        && runtimeLiveConnected.value,
+      )
+      if (isTerminalRuntimeStatus(status)) {
+        if (pendingParameterUnlockSessionId.value === sessionId) {
+          pendingParameterUnlockSessionId.value = null
+        }
+        setActiveRt(detail)
+        runtimeLiveStatus.value = status as RuntimeLiveStatus
+        showRuntimePanel()
+        if (activeSessionId === sessionId) unsubscribeRuntimeSession()
+        return
+      }
+      if (status === 'unlock_required') {
+        pendingParameterUnlockSessionId.value = sessionId
+      } else if (pendingParameterUnlockSessionId.value === sessionId) {
+        pendingParameterUnlockSessionId.value = null
+      }
+      if (hasLiveSnapshot && activeRt.value) {
+        // 工作台事件只反映会话状态，不能用较旧的持久化详情覆盖运行流快照。
+        // waiting/unlock_required 仍需同步到 UI，以便显示输入或解锁入口。
+        if (status === 'waiting' || status === 'unlock_required') {
+          setActiveRt({
+            ...activeRt.value,
+            status,
+            runtime_session: {
+              ...activeRt.value.runtime_session,
+              status,
+            },
+          })
+        }
+      } else {
+        setActiveRt(detail)
+      }
+      showRuntimePanel()
+      subscribeRuntimeSession(sessionId)
+    } catch {
+      // 外部会话可能在事件到达后立即被清理，列表刷新结果仍然有效。
+    }
   }
 
   function setActiveRt(detail: RuntimeSessionDetailResponse) {
@@ -234,12 +328,13 @@ export const useRuntimeStore = defineStore('runtime', () => {
   }
 
   function unsubscribeRuntimeSession() {
+    runtimeStreamGeneration += 1
     cancelRuntimeReconciliation?.()
     cancelRuntimeReconciliation = null
-    if (runtimeEventSource) {
-      runtimeEventSource.close()
-      runtimeEventSource = null
-    }
+    if (runtimeStreamReconnectTimer) clearTimeout(runtimeStreamReconnectTimer)
+    runtimeStreamReconnectTimer = null
+    runtimeStreamController?.abort()
+    runtimeStreamController = null
     subscribedRuntimeSessionId = null
     runtimeLiveConnected.value = false
     if (!isTerminalRuntimeStatus(runtimeLiveStatus.value)) {
@@ -303,15 +398,15 @@ export const useRuntimeStore = defineStore('runtime', () => {
 
   function subscribeRuntimeSession(sessionId: string) {
     if (!sessionId) return
-    if (subscribedRuntimeSessionId === sessionId && runtimeEventSource) return
+    if (subscribedRuntimeSessionId === sessionId && runtimeStreamController) return
     unsubscribeRuntimeSession()
     subscribedRuntimeSessionId = sessionId
     runtimeLiveStatus.value = 'connecting'
     runtimeLiveConnected.value = false
-
-    const eventSource = new EventSource(getRuntimeStreamUrl(sessionId))
-    runtimeEventSource = eventSource
-    const isCurrentStream = () => runtimeEventSource === eventSource && subscribedRuntimeSessionId === sessionId
+    const controller = new AbortController()
+    runtimeStreamController = controller
+    const generation = runtimeStreamGeneration
+    const isCurrentStream = () => runtimeStreamController === controller
     let reconcileTimer: ReturnType<typeof setTimeout> | null = null
     let reconcileInFlight: Promise<void> | null = null
 
@@ -366,75 +461,72 @@ export const useRuntimeStore = defineStore('runtime', () => {
       void reconcileFromBackend()
     }
 
-    eventSource.addEventListener('runtime.snapshot', ((event: MessageEvent) => {
-      if (!isCurrentStream()) return
-      const payload = JSON.parse(event.data) as RuntimeStreamSnapshot
-      const runtimeStatus = getRuntimeSessionStatus(payload)
-      if (isTerminalRuntimeStatus(runtimeStatus)) {
+    const handleStreamEvent = async (event: SseEvent) => {
+      if (!isCurrentStream() || !event.data) return
+      let payload: any
+      try { payload = JSON.parse(event.data) } catch { return }
+      if (event.event === 'runtime.snapshot') {
+        const runtimeStatus = getRuntimeSessionStatus(payload as RuntimeStreamSnapshot)
+        if (isTerminalRuntimeStatus(runtimeStatus)) {
+          clearPendingInputForSession(sessionId)
+          requestTerminalReconciliation()
+          return
+        }
+        cancelReconciliation()
+        applyRuntimeSnapshot(payload as RuntimeStreamSnapshot)
+      } else if (event.event === 'runtime.summary') {
+        cancelReconciliation()
+        applyRuntimeSummary(payload as RuntimeProgress)
+      } else if (event.event === 'runtime.node') {
+        cancelReconciliation()
+        applyRuntimeNode(payload)
+      } else if (event.event === 'runtime.pending_input') {
+        const pending = payload as RuntimePendingInputSnapshot
+        if (pending.request_id && pending.execution_id === sessionId) pendingRuntimeInput.value = pending
+      } else if (event.event === 'runtime.aborting') {
+        runtimeLiveStatus.value = 'aborting'
+        if (activeRt.value) {
+          activeRt.value = {
+            ...activeRt.value,
+            runtime_session: {
+              ...activeRt.value.runtime_session,
+              status: 'aborting',
+              abort_reason: payload.abort_reason ?? 'user_abort',
+            },
+          }
+        }
+      } else if (event.event === 'runtime.completed' || event.event === 'runtime.failed' || event.event === 'runtime.aborted') {
         clearPendingInputForSession(sessionId)
         requestTerminalReconciliation()
-        return
       }
-      cancelReconciliation()
-      applyRuntimeSnapshot(payload)
-    }) as EventListener)
+    }
 
-    eventSource.addEventListener('runtime.summary', ((event: MessageEvent) => {
-      if (!isCurrentStream()) return
-      cancelReconciliation()
-      const payload = JSON.parse(event.data) as RuntimeProgress
-      applyRuntimeSummary(payload)
-    }) as EventListener)
+    const reconnect = () => {
+      if (!isCurrentStream() || controller.signal.aborted || runtimeStreamReconnectTimer) return
+      runtimeStreamReconnectTimer = setTimeout(() => {
+        runtimeStreamReconnectTimer = null
+        if (!isCurrentStream() || controller.signal.aborted || generation !== runtimeStreamGeneration) return
+        runtimeLiveStatus.value = 'connecting'
+        void connect()
+      }, 500)
+    }
 
-    eventSource.addEventListener('runtime.node', ((event: MessageEvent) => {
-      if (!isCurrentStream()) return
-      cancelReconciliation()
-      const payload = JSON.parse(event.data)
-      applyRuntimeNode(payload)
-    }) as EventListener)
-
-    eventSource.addEventListener('runtime.pending_input', ((event: MessageEvent) => {
-      if (!isCurrentStream()) return
-      const payload = JSON.parse(event.data) as RuntimePendingInputSnapshot
-      if (payload.request_id && payload.execution_id === sessionId) pendingRuntimeInput.value = payload
-    }) as EventListener)
-
-    eventSource.addEventListener('runtime.completed', ((event: MessageEvent) => {
-      if (!isCurrentStream()) return
-      JSON.parse(event.data)
-      clearPendingInputForSession(sessionId)
-      requestTerminalReconciliation()
-    }) as EventListener)
-
-    eventSource.addEventListener('runtime.failed', ((event: MessageEvent) => {
-      if (!isCurrentStream()) return
-      JSON.parse(event.data)
-      clearPendingInputForSession(sessionId)
-      requestTerminalReconciliation()
-    }) as EventListener)
-
-    eventSource.addEventListener('runtime.aborting', ((event: MessageEvent) => {
-      if (!isCurrentStream()) return
-      const payload = JSON.parse(event.data) as { abort_reason?: string }
-      runtimeLiveStatus.value = 'aborting'
-      if (activeRt.value) {
-        activeRt.value = {
-          ...activeRt.value,
-          runtime_session: {
-            ...activeRt.value.runtime_session,
-            status: 'aborting',
-            abort_reason: payload.abort_reason ?? 'user_abort',
-          },
-        }
+    const connect = async () => {
+      try {
+        await consumeSse(getRuntimeStreamPath(sessionId), {
+          signal: controller.signal,
+          onEvent: handleStreamEvent,
+        })
+      } catch {
+        if (!isCurrentStream() || controller.signal.aborted) return
       }
-    }) as EventListener)
-
-    eventSource.addEventListener('runtime.aborted', ((event: MessageEvent) => {
-      if (!isCurrentStream()) return
-      JSON.parse(event.data)
-      clearPendingInputForSession(sessionId)
-      requestTerminalReconciliation()
-    }) as EventListener)
+      if (!isCurrentStream() || controller.signal.aborted) return
+      runtimeLiveConnected.value = false
+      runtimeLiveStatus.value = 'disconnected'
+      cancelReconciliation()
+      await reconcileFromBackend()
+      reconnect()
+    }
 
     void fetchRuntimePendingInput(sessionId)
       .then((snapshot) => {
@@ -449,13 +541,7 @@ export const useRuntimeStore = defineStore('runtime', () => {
       })
       .catch(() => {})
 
-    eventSource.onerror = async () => {
-      if (!isCurrentStream()) return
-      runtimeLiveConnected.value = false
-      runtimeLiveStatus.value = 'disconnected'
-      cancelReconciliation()
-      await reconcileFromBackend()
-    }
+    void connect()
   }
 
   /** One-click start + run: prepare, start session, subscribe stream, run, return result.
@@ -634,6 +720,8 @@ export const useRuntimeStore = defineStore('runtime', () => {
     canAbortRuntime,
     refreshAll,
     loadRtDetail,
+    recoverActiveSession,
+    handleWorkbenchSessionEvent,
     setActiveRt,
     subscribeRuntimeSession,
     unsubscribeRuntimeSession,

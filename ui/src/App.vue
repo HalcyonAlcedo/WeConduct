@@ -106,7 +106,7 @@ async function runWorkbenchBootstrap() {
       await graphWs.syncSource()
     }
     const runtime = useRuntimeStore()
-    await runtime.refreshAll()
+    await runtime.recoverActiveSession()
   }
 }
 
@@ -117,6 +117,7 @@ async function attemptStartup() {
     await startup.diagnose(workspace.initError)
     return
   }
+  workspace.startEventStream()
   startup.reset()
   await runWorkbenchBootstrap()
 }
@@ -133,6 +134,7 @@ async function handleRestart() {
 async function handleForceStart() {
   forceStarted.value = true
   startup.reset()
+  workspace.startEventStream()
   await runWorkbenchBootstrap()
 }
 
@@ -140,7 +142,10 @@ onMounted(async () => {
   await attemptStartup()
   window.addEventListener('beforeunload', beforeUnload)
 })
-onUnmounted(() => { window.removeEventListener('beforeunload', beforeUnload) })
+onUnmounted(() => {
+  window.removeEventListener('beforeunload', beforeUnload)
+  workspace.stopEventStream()
+})
 </script>
 
 <template>

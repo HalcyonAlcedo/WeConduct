@@ -1,6 +1,8 @@
 import json
+import errno
 import ipaddress
 import mimetypes
+import socket
 from copy import deepcopy
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -40,6 +42,10 @@ from weconduct.application.compilation_workbench_service import (
     DIAGNOSTIC_SEVERITY_RANK,
     ProjectPythonRuntimeExportError,
 )
+from weconduct.application.workbench_event_stream import (
+    HEARTBEAT_EVENT_NAME,
+    WorkbenchEventStreamBroker,
+)
 from weconduct.application.operations import (
     InMemoryOperationAuditTrail,
     InMemoryOperationIdempotencyStore,
@@ -53,6 +59,35 @@ DEFAULT_PREFERENCES_PATH = Path(__file__).resolve().parents[3] / ".weconduct" / 
 DEFAULT_UI_DIST_PATH = Path(__file__).resolve().parents[3] / "ui" / "dist"
 EXTERNAL_IDEMPOTENCY_CACHE_LIMIT = 256
 DebugActionResult = TypeVar("DebugActionResult")
+
+
+class ExternalApiBindError(RuntimeError):
+    """外部 API 监听器无法绑定时的可识别启动错误。"""
+
+    def __init__(self, *, host: str, configured_port: int, cause: OSError) -> None:
+        self.host = host
+        self.configured_port = configured_port
+        self.active_port: int | None = None
+        self.cause = cause
+        winerror = getattr(cause, "winerror", None)
+        # Windows may report WSAEACCES (10013) instead of WSAEADDRINUSE
+        # when an existing listener rejects a second bind with SO_REUSEADDR.
+        is_port_in_use = cause.errno == errno.EADDRINUSE or winerror in {10013, 10048}
+        self.error_code = (
+            "external_api.port_in_use"
+            if is_port_in_use and configured_port > 0
+            else "external_api.bind_failed"
+        )
+        if self.error_code == "external_api.port_in_use":
+            message = (
+                f"{self.error_code}: 外部 API 端口 {host}:{configured_port} 已被占用，"
+                "未回退到动态端口，请释放该端口或修改首选项。"
+            )
+        else:
+            message = (
+                f"{self.error_code}: 外部 API 无法绑定 {host}:{configured_port}：{cause}"
+            )
+        super().__init__(message)
 
 
 def _public_pending_input_snapshot(snapshot: object) -> dict[str, object]:
@@ -135,11 +170,20 @@ def _load_external_api_program_configuration(preferences_path: Path) -> dict[str
         return {
             "enabled": False,
             "token": None,
+            "port": 0,
             "project_allowed_roots": (),
         }
+    configured_port = security.get("external_api_port", 0)
+    if (
+        not isinstance(configured_port, int)
+        or isinstance(configured_port, bool)
+        or not 0 <= configured_port <= 65535
+    ):
+        configured_port = 0
     return {
         "enabled": security["external_api_enabled"],
         "token": security["external_api_token"],
+        "port": configured_port,
         "project_allowed_roots": tuple(security["external_api_project_allowed_roots"]),
     }
 
@@ -623,12 +667,32 @@ class WeConductApiServer(ThreadingHTTPServer):
         self.external_api_enabled = False
         self.external_api_token: str | None = None
         self.external_api_project_allowed_roots: tuple[Path, ...] = ()
+        self.workbench_event_broker = None
         self.external_api_instance_id = uuid.uuid4().hex
         self.external_api_audit_trail = InMemoryOperationAuditTrail()
         self.external_api_idempotency_store = InMemoryOperationIdempotencyStore(
             limit=EXTERNAL_IDEMPOTENCY_CACHE_LIMIT
         )
         super().__init__(*args, **kwargs)
+
+    def server_bind(self) -> None:
+        """Keep configured ports exclusive while retaining dynamic-port reuse."""
+        configured_port = self.server_address[1]
+        if configured_port:
+            previous_allow_reuse_address = self.allow_reuse_address
+            self.allow_reuse_address = False
+            try:
+                if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                    self.socket.setsockopt(
+                        socket.SOL_SOCKET,
+                        socket.SO_EXCLUSIVEADDRUSE,
+                        1,
+                    )
+                super().server_bind()
+            finally:
+                self.allow_reuse_address = previous_allow_reuse_address
+            return
+        super().server_bind()
 
     def execute_debug_action(
         self,
@@ -655,6 +719,9 @@ class WeConductApiServer(ThreadingHTTPServer):
             service = getattr(self, "workbench_service", None)
             if isinstance(service, CompilationWorkbenchService):
                 service.shutdown_debug_sessions()
+            broker = getattr(self, "workbench_event_broker", None)
+            if broker is not None and hasattr(broker, "close"):
+                broker.close()
         finally:
             super().server_close()
 
@@ -699,10 +766,17 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             if self._try_serve_ui_asset():
                 return
 
-        # Startup diagnostics must stay reachable even when the workbench service
-        # cannot be constructed, so it runs before _get_service().
+        # Startup diagnostics must stay independent from the workbench service,
+        # but it is still an internal API and therefore uses the UI session token.
         if request_path == "/api/startup/diagnostics":
+            if not self._require_api_token():
+                return
             self._handle_startup_diagnostics()
+            return
+
+        # Authenticate before constructing the service. A corrupt workspace must
+        # not turn an unauthenticated request into a workspace-state diagnostic.
+        if not self._require_api_token():
             return
 
         try:
@@ -720,9 +794,6 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             payload = dict(service.get_runtime_health())
             payload["ui_hosting"] = self._build_ui_hosting_metadata()
             self._write_json(HTTPStatus.OK, payload)
-            return
-
-        if not self._require_api_token():
             return
 
         if request_path == "/api/workbench/config/schema":
@@ -1000,6 +1071,10 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if request_path == "/api/workbench/events":
+            self._write_workbench_event_stream(service)
+            return
+
         if self.path == "/api/workbench/debug/sessions":
             result = service.list_debug_sessions()
             self._write_json(
@@ -1163,6 +1238,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._write_invalid_request_error(exc)
             return
+        if scope == "program":
+            self._sync_external_api_runtime_state(result.get("values"))
         self._write_json(
             HTTPStatus.OK,
             _public_program_configuration_response(result)
@@ -1191,10 +1268,17 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             self._handle_host_read_file()
             return
 
-        # Startup recovery must stay reachable even when the workbench service
-        # cannot be constructed, so it runs before _get_service().
+        # Startup recovery must stay independent from the workbench service, but
+        # it is still a state-changing internal API and requires the UI token.
         if self.path == "/api/startup/recover":
+            if not self._require_api_token():
+                return
             self._handle_startup_recover()
+            return
+
+        # All remaining POST endpoints are internal workbench operations and
+        # require the process-local UI session token here as a final guard.
+        if not self._require_api_token():
             return
 
         try:
@@ -1427,6 +1511,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
                 return
+            if scope == "program":
+                self._sync_external_api_runtime_state(result.get("values"))
             self._write_json(
                 HTTPStatus.OK,
                 _public_program_configuration_response(result)
@@ -2606,9 +2692,17 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     raise ValueError(
                         "field must be an integer when provided: expected_graph_document_save_revision"
                     )
+                require_expected_revision = payload.pop(
+                    "require_expected_graph_document_save_revision", False
+                )
+                if not isinstance(require_expected_revision, bool):
+                    raise ValueError(
+                        "field must be a boolean: require_expected_graph_document_save_revision"
+                    )
                 result = service.save_graph_document(
                     payload,
                     expected_graph_document_save_revision=expected_revision,
+                    require_expected_revision=require_expected_revision,
                 )
             except GraphDocumentRevisionConflictError as exc:
                 self._write_graph_revision_conflict_error(exc)
@@ -2725,6 +2819,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             {
                 "error": "graph_revision_conflict",
                 "message": str(exc),
+                "expected_revision": exc.expected_revision,
+                "current_revision": exc.current_revision,
             },
         )
 
@@ -3096,11 +3192,18 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
 
         return False
 
-    def _write_file_response(self, path: Path, *, content_type: str) -> bool:
+    def _write_file_response(
+        self,
+        path: Path,
+        *,
+        content_type: str,
+        cache_control: str = "no-store",
+    ) -> bool:
         body = path.read_bytes()
         self.send_response(HTTPStatus.OK.value)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(body)
         return True
@@ -3115,60 +3218,165 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
-        initial_snapshot = service.get_runtime_stream_snapshot(session_id=session_id)
-        self._write_sse_event("runtime.snapshot", initial_snapshot)
-        initial_status = initial_snapshot.get("status")
-        if initial_status == "completed":
-            self._write_sse_event(
-                "runtime.summary",
-                {
-                    "session_id": initial_snapshot.get("session_id"),
-                    "status": initial_snapshot.get("status"),
-                    "total_node_count": len(initial_snapshot.get("node_states", [])),
-                    "completed_node_count": initial_snapshot.get("execution_summary", {}).get("completed_node_count", 0),
-                    "failed_node_count": initial_snapshot.get("execution_summary", {}).get("failed_node_count", 0),
-                    "running_node_count": 0,
-                    "pending_node_count": 0,
-                    "percent": 100.0,
-                    "event_count": initial_snapshot.get("execution_summary", {}).get("event_count", 0),
-                },
-            )
-            self._write_sse_event("runtime.completed", initial_snapshot)
+        # SSE owns the connection for the lifetime of this handler.  Mark it
+        # closed so BaseHTTPRequestHandler does not try to parse a second
+        # request after a client closes the stream.
+        self.close_connection = True
+        try:
+            initial_snapshot = service.get_runtime_stream_snapshot(session_id=session_id)
+            self._write_sse_event("runtime.snapshot", initial_snapshot)
+            initial_status = initial_snapshot.get("status")
+            if initial_status == "completed":
+                self._write_sse_event(
+                    "runtime.summary",
+                    {
+                        "session_id": initial_snapshot.get("session_id"),
+                        "status": initial_snapshot.get("status"),
+                        "total_node_count": len(initial_snapshot.get("node_states", [])),
+                        "completed_node_count": initial_snapshot.get("execution_summary", {}).get("completed_node_count", 0),
+                        "failed_node_count": initial_snapshot.get("execution_summary", {}).get("failed_node_count", 0),
+                        "running_node_count": 0,
+                        "pending_node_count": 0,
+                        "percent": 100.0,
+                        "event_count": initial_snapshot.get("execution_summary", {}).get("event_count", 0),
+                    },
+                )
+                self._write_sse_event("runtime.completed", initial_snapshot)
+                return
+            if initial_status == "failed":
+                total_node_count = len(initial_snapshot.get("node_states", []))
+                failed_count = initial_snapshot.get("execution_summary", {}).get("failed_node_count", 0)
+                completed_count = initial_snapshot.get("execution_summary", {}).get("completed_node_count", 0)
+                pending_count = max(total_node_count - completed_count - failed_count, 0)
+                percent = ((completed_count + failed_count) / total_node_count * 100.0) if total_node_count else 0.0
+                self._write_sse_event(
+                    "runtime.summary",
+                    {
+                        "session_id": initial_snapshot.get("session_id"),
+                        "status": initial_snapshot.get("status"),
+                        "total_node_count": total_node_count,
+                        "completed_node_count": completed_count,
+                        "failed_node_count": failed_count,
+                        "running_node_count": 0,
+                        "pending_node_count": pending_count,
+                        "percent": round(percent, 1),
+                        "event_count": initial_snapshot.get("execution_summary", {}).get("event_count", 0),
+                    },
+                )
+                self._write_sse_event("runtime.failed", initial_snapshot)
+                return
+            if initial_status == "aborted":
+                total_node_count = len(initial_snapshot.get("node_states", []))
+                failed_count = initial_snapshot.get("execution_summary", {}).get("failed_node_count", 0)
+                completed_count = initial_snapshot.get("execution_summary", {}).get("completed_node_count", 0)
+                pending_count = max(total_node_count - completed_count - failed_count, 0)
+                percent = ((completed_count + failed_count) / total_node_count * 100.0) if total_node_count else 0.0
+                self._write_sse_event(
+                    "runtime.summary",
+                    {
+                        "session_id": initial_snapshot.get("session_id"),
+                        "status": initial_snapshot.get("status"),
+                        "total_node_count": total_node_count,
+                        "completed_node_count": completed_count,
+                        "failed_node_count": failed_count,
+                        "running_node_count": 0,
+                        "pending_node_count": pending_count,
+                        "percent": round(percent, 1),
+                        "event_count": initial_snapshot.get("execution_summary", {}).get("event_count", 0),
+                    },
+                )
+                self._write_sse_event("runtime.aborted", initial_snapshot)
+                return
+            skip_initial_snapshot = True
+            for event_name, payload in service.iter_runtime_stream_events(session_id=session_id):
+                if event_name == "runtime.snapshot" and skip_initial_snapshot and payload == initial_snapshot:
+                    skip_initial_snapshot = False
+                    continue
+                skip_initial_snapshot = False
+                self._write_sse_event(event_name, payload)
+                if event_name in {"runtime.completed", "runtime.failed", "runtime.aborted"}:
+                    break
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return
-        if initial_status == "failed":
-            total_node_count = len(initial_snapshot.get("node_states", []))
-            failed_count = initial_snapshot.get("execution_summary", {}).get("failed_node_count", 0)
-            completed_count = initial_snapshot.get("execution_summary", {}).get("completed_node_count", 0)
-            pending_count = max(total_node_count - completed_count - failed_count, 0)
-            percent = ((completed_count + failed_count) / total_node_count * 100.0) if total_node_count else 0.0
-            self._write_sse_event(
-                "runtime.summary",
-                {
-                    "session_id": initial_snapshot.get("session_id"),
-                    "status": initial_snapshot.get("status"),
-                    "total_node_count": total_node_count,
-                    "completed_node_count": completed_count,
-                    "failed_node_count": failed_count,
-                    "running_node_count": 0,
-                    "pending_node_count": pending_count,
-                    "percent": round(percent, 1),
-                    "event_count": initial_snapshot.get("execution_summary", {}).get("event_count", 0),
-                },
-            )
-            self._write_sse_event("runtime.failed", initial_snapshot)
-            return
-        for event_name, payload in service.iter_runtime_stream_events(session_id=session_id):
-            if event_name == "runtime.snapshot":
-                continue
-            self._write_sse_event(event_name, payload)
-            if event_name in {"runtime.completed", "runtime.failed", "runtime.aborted"}:
-                break
 
-    def _write_sse_event(self, event_name: str, payload: dict) -> None:
+    def _write_workbench_event_stream(self, service: CompilationWorkbenchService) -> None:
+        raw_cursor = self.headers.get("Last-Event-ID")
+        after_event_id: int | None = None
+        if isinstance(raw_cursor, str) and raw_cursor.strip():
+            try:
+                after_event_id = int(raw_cursor.strip())
+            except ValueError:
+                self._write_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {
+                        "error": "workbench.event_cursor_invalid",
+                        "message": "Last-Event-ID must be a non-negative integer",
+                    },
+                )
+                return
+
+        broker = service.get_workbench_event_broker()
+        try:
+            subscriber_id, queue = broker.subscribe(
+                after_event_id=after_event_id,
+                snapshot_factory=service.get_workbench_snapshot if after_event_id is None else None,
+            )
+        except ValueError as exc:
+            status = (
+                HTTPStatus.CONFLICT
+                if str(exc) == "workbench.event_cursor_expired"
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._write_json(
+                status,
+                {
+                    "error": str(exc),
+                    "message": str(exc),
+                    "details": broker.get_event_bounds(),
+                },
+            )
+            return
+
+        self.send_response(HTTPStatus.OK.value)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            for event in broker.iter_events(queue, heartbeat_seconds=10.0):
+                event_name = event.get("event_name")
+                if event_name == HEARTBEAT_EVENT_NAME:
+                    self._write_sse_comment("heartbeat")
+                    continue
+                self._write_sse_event(
+                    str(event_name),
+                    event.get("payload") if isinstance(event.get("payload"), dict) else {},
+                    event_id=event.get("event_id"),
+                )
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+        finally:
+            broker.unsubscribe(subscriber_id)
+
+    def _write_sse_event(
+        self,
+        event_name: str,
+        payload: dict,
+        *,
+        event_id: int | None = None,
+    ) -> None:
+        event_id_line = f"id: {event_id}\n" if isinstance(event_id, int) and event_id > 0 else ""
         body = (
-            f"event: {event_name}\n"
-            f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            event_id_line
+            + f"event: {event_name}\n"
+            + f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
         ).encode("utf-8")
+        self.wfile.write(body)
+        self.wfile.flush()
+
+    def _write_sse_comment(self, comment: str) -> None:
+        body = f": {comment}\n\n".encode("utf-8")
         self.wfile.write(body)
         self.wfile.flush()
 
@@ -3303,6 +3511,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 self.server.workbench_service = CompilationWorkbenchService(
                     state_store=FileWorkspaceStateStore(self._resolve_workspace_state_path()),
                     configuration_service=self._get_configuration_service(),
+                    workbench_event_broker=self.server.workbench_event_broker,
                 )
             return self.server.workbench_service
 
@@ -3356,16 +3565,41 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         roots = security.get("external_api_project_allowed_roots", [])
         if not isinstance(roots, list):
             raise ValueError("external API project allowed roots configuration is invalid")
+        token = security.get("external_api_token")
+        visible_token = token if isinstance(token, str) and token else None
         return {
             "enabled": bool(security.get("external_api_enabled", False)),
-            "token_configured": bool(security.get("external_api_token")),
+            "token": visible_token,
+            "token_configured": visible_token is not None,
+            "external_api_port": int(security.get("external_api_port", 0) or 0),
             "project_allowed_roots": list(roots),
         }
+
+    def _sync_external_api_runtime_state(self, values: object) -> None:
+        """同步通用程序配置变更到当前 API Server 的鉴权内存态。"""
+        if not isinstance(values, dict):
+            return
+        security = values.get("security")
+        if not isinstance(security, dict):
+            return
+        token = security.get("external_api_token")
+        roots = security.get("external_api_project_allowed_roots", [])
+        if not isinstance(roots, list):
+            roots = []
+        self.server.external_api_enabled = bool(
+            security.get("external_api_enabled", False)
+        )
+        self.server.external_api_token = token if isinstance(token, str) else None
+        self.server.external_api_port = int(security.get("external_api_port", 0) or 0)
+        self.server.external_api_project_allowed_roots = tuple(
+            Path(root) for root in roots if isinstance(root, str) and root.strip()
+        )
 
     def _update_external_api_preferences(self, payload: dict) -> dict:
         enabled = payload.get("enabled")
         token = payload.get("token")
         clear_token = payload.get("clear_token", False)
+        external_api_port = payload.get("external_api_port")
         project_allowed_roots = payload.get("project_allowed_roots")
         confirm_high_risk = payload.get("confirm_high_risk", False)
         if not isinstance(enabled, bool):
@@ -3374,6 +3608,12 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             raise ValueError("field must be a non-empty string when provided: token")
         if not isinstance(clear_token, bool):
             raise ValueError("field must be a boolean: clear_token")
+        if external_api_port is not None and (
+            not isinstance(external_api_port, int)
+            or isinstance(external_api_port, bool)
+            or not 0 <= external_api_port <= 65535
+        ):
+            raise ValueError("field must be an integer from 0 to 65535: external_api_port")
         if token is not None and clear_token:
             raise ValueError("token and clear_token cannot be provided together")
         if not isinstance(project_allowed_roots, list) or any(
@@ -3394,6 +3634,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         if not isinstance(security, dict):
             raise ValueError("program security configuration is invalid")
         current_token = security.get("external_api_token")
+        current_port = security.get("external_api_port", 0)
+        effective_port = external_api_port if external_api_port is not None else current_port
         effective_token = (
             token.strip()
             if isinstance(token, str)
@@ -3407,6 +3649,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         requested_values = {
             "external_api_enabled": enabled,
             "external_api_token": effective_token,
+            "external_api_port": effective_port,
             "external_api_project_allowed_roots": normalized_roots,
         }
         operations = [
@@ -3421,14 +3664,11 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         )
         self.server.external_api_enabled = enabled
         self.server.external_api_token = effective_token if isinstance(effective_token, str) else None
+        self.server.external_api_port = effective_port
         self.server.external_api_project_allowed_roots = tuple(
             Path(root) for root in normalized_roots
         )
-        return {
-            "enabled": enabled,
-            "token_configured": bool(effective_token),
-            "project_allowed_roots": normalized_roots,
-        }
+        return self._get_external_api_preferences_summary()
 
     def _get_update_service(self) -> UpdateService:
         if not hasattr(self.server, "update_service"):
@@ -3510,26 +3750,40 @@ def build_api_server(
     allow_non_loopback: bool = False,
 ) -> WeConductApiServer:
     _validate_external_api_bind_host(host, allow_non_loopback=allow_non_loopback)
-    server = WeConductApiServer((host, port), WeConductApiHandler)
+    resolved_preferences_path = (
+        Path(preferences_path) if preferences_path is not None else DEFAULT_PREFERENCES_PATH
+    )
+    migration_result = migrate_configuration_storage(resolved_preferences_path)
+    external_api_configuration = _load_external_api_program_configuration(
+        resolved_preferences_path
+    )
+    effective_port = port
+    if port == 0:
+        configured_port = external_api_configuration.get("port", 0)
+        if isinstance(configured_port, int) and not isinstance(configured_port, bool):
+            effective_port = configured_port
+    try:
+        server = WeConductApiServer((host, effective_port), WeConductApiHandler)
+    except OSError as exc:
+        raise ExternalApiBindError(
+            host=host,
+            configured_port=effective_port,
+            cause=exc,
+        ) from exc
+    server.workbench_event_broker = WorkbenchEventStreamBroker()
     server.workspace_state_path = (
         Path(workspace_state_path)
         if workspace_state_path is not None
         else DEFAULT_WORKSPACE_STATE_PATH
     )
-    server.preferences_path = (
-        Path(preferences_path) if preferences_path is not None else DEFAULT_PREFERENCES_PATH
-    )
+    server.preferences_path = resolved_preferences_path
     server.ui_dist_path = (
         Path(ui_dist_path)
         if ui_dist_path is not None
         else DEFAULT_UI_DIST_PATH
     )
-    migration_result = migrate_configuration_storage(server.preferences_path)
     server.configuration_migration_result = migration_result["program"]
     server.graph_configuration_migration_result = migration_result["graph"]
-    external_api_configuration = _load_external_api_program_configuration(
-        server.preferences_path
-    )
     server.api_token = api_token
     server.external_api_enabled = (
         bool(external_api_configuration["enabled"])
@@ -3541,6 +3795,7 @@ def build_api_server(
         if external_api_token is None
         else external_api_token
     )
+    server.external_api_port = effective_port
     configured_roots = external_api_configuration["project_allowed_roots"]
     server.external_api_project_allowed_roots = tuple(
         Path(root).expanduser().resolve()

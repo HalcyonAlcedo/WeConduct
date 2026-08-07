@@ -57,6 +57,50 @@ def test_redaction_hides_camel_case_keys_and_credential_fields() -> None:
     }
 
 
+def test_redaction_preserves_protocol_capability_boolean_fields() -> None:
+    redacted = redact_sensitive_payload(
+        {
+            "network": {
+                "protocols": {
+                    "oauth_client_credentials": True,
+                    "oauth_refresh": False,
+                }
+            }
+        }
+    )
+
+    assert redacted["network"]["protocols"] == {
+        "oauth_client_credentials": True,
+        "oauth_refresh": False,
+    }
+
+
+def test_redaction_still_hides_credentials_outside_capability_context() -> None:
+    redacted = redact_sensitive_payload(
+        {
+            "oauth_client_credentials": "private-client-credentials",
+            "network": {
+                "protocols": {
+                    "oauth_client_credentials": "private-client-credentials",
+                }
+            },
+            "auth": {
+                "type": "oauth_client_credentials",
+                "client_secret": "private-client-secret",
+            },
+        }
+    )
+
+    assert redacted == {
+        "oauth_client_credentials": "<redacted>",
+        "network": {"protocols": {"oauth_client_credentials": "<redacted>"}},
+        "auth": {
+            "type": "oauth_client_credentials",
+            "client_secret": "<redacted>",
+        },
+    }
+
+
 def test_redaction_keeps_debug_variable_descriptor_structure() -> None:
     redacted = redact_sensitive_payload(
         {

@@ -185,12 +185,24 @@ class HostOperationService:
         outcome: str,
         payload: Mapping[str, object],
     ) -> None:
+        audit_payload = dict(payload)
+        if operation_id == "pending_input.submit" and "values" in audit_payload:
+            values = audit_payload["values"]
+            if isinstance(values, Mapping):
+                # 待输入字段的敏感性由请求定义决定；审计层不持有该定义，
+                # 因此只保留字段名，统一丢弃所有提交值。
+                audit_payload["values"] = {
+                    str(field_id): "<redacted>"
+                    for field_id in values
+                }
+            else:
+                audit_payload["values"] = "<redacted>"
         self._audit_trail.append(
             OperationAuditRecord(
                 operation_id=operation_id,
                 caller_id=caller.caller_id,
                 outcome=outcome,  # type: ignore[arg-type]
-                input_summary=redact_sensitive_payload(dict(payload)),
+                input_summary=redact_sensitive_payload(audit_payload),
             )
         )
 
@@ -347,7 +359,26 @@ def _normalize_dispatch_value_error(error: ValueError, *, operation_id: str) -> 
         error_code = "graph.revision_conflict"
     else:
         error_code = "operation.execution_failed"
-    details = {name: value for name in ("expected_revision", "current_revision", "recovery_action", "state") if (value := getattr(error, name, None)) is not None}
+    details = {
+        name: value
+        for name in ("expected_revision", "current_revision", "recovery_action", "state")
+        if (value := getattr(error, name, None)) is not None
+    }
+    raw_details = getattr(error, "details", None)
+    if isinstance(raw_details, Mapping):
+        for name in (
+            "validation_kind",
+            "field_id",
+            "field_ids",
+            "expected_type",
+            "actual_type",
+        ):
+            value = raw_details.get(name)
+            if name == "field_ids":
+                if isinstance(value, list) and all(isinstance(item, str) for item in value):
+                    details[name] = list(value)
+            elif isinstance(value, str):
+                details[name] = value
     if message.startswith("project.close_"):
         details["state"] = message.removeprefix("project.close_")
     return OperationRegistryError(error_code, message, operation_id=operation_id, details=details)

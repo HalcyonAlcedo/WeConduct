@@ -10,7 +10,9 @@ const apiMocks = vi.hoisted(() => ({
   postRuntimeRun: vi.fn(),
   postRuntimeAbort: vi.fn(),
   fetchRuntimePendingInput: vi.fn(),
+  consumeSse: vi.fn(),
   getRuntimeStreamUrl: vi.fn((sessionId: string) => `/api/workbench/runtime/${sessionId}/stream`),
+  getRuntimeStreamPath: vi.fn((sessionId: string) => `/workbench/runtime/${sessionId}/stream`),
   buildRuntimeProgressFromSession: vi.fn((detail: any) => {
     const nodeStates = Array.isArray(detail?.node_states) ? detail.node_states : []
     const completed = nodeStates.filter((node: any) => node?.node_status === 'completed').length
@@ -31,6 +33,12 @@ const apiMocks = vi.hoisted(() => ({
   }),
 }))
 
+const dockState = vi.hoisted(() => ({
+  isPanelVisible: vi.fn(() => true),
+  restorePanel: vi.fn(),
+  activatePanel: vi.fn(),
+}))
+
 vi.mock('@/services/api', () => ({
   fetchRuntimeSessions: apiMocks.fetchRuntimeSessions,
   fetchRuntimeSession: apiMocks.fetchRuntimeSession,
@@ -40,8 +48,14 @@ vi.mock('@/services/api', () => ({
   postRuntimeRun: apiMocks.postRuntimeRun,
   postRuntimeAbort: apiMocks.postRuntimeAbort,
   fetchRuntimePendingInput: apiMocks.fetchRuntimePendingInput,
+  consumeSse: apiMocks.consumeSse,
   getRuntimeStreamUrl: apiMocks.getRuntimeStreamUrl,
+  getRuntimeStreamPath: apiMocks.getRuntimeStreamPath,
   buildRuntimeProgressFromSession: apiMocks.buildRuntimeProgressFromSession,
+}))
+
+vi.mock('./dockStore', () => ({
+  useDockStore: () => dockState,
 }))
 
 type RuntimeStreamHandler = (event: MessageEvent) => void
@@ -53,6 +67,9 @@ class MockEventSource {
   readonly listeners = new Map<string, RuntimeStreamHandler[]>()
   onerror: ((event: Event) => void) | null = null
   closed = false
+  onEvent: ((event: { event: string; id: string | null; data: string }) => void | Promise<void>) | null = null
+  finish: (() => void) | null = null
+  fail: ((error: Error) => void) | null = null
 
   constructor(url: string) {
     this.url = url
@@ -75,9 +92,14 @@ class MockEventSource {
 
   close() {
     this.closed = true
+    this.finish?.()
   }
 
   emit(eventName: string, payload: unknown) {
+    if (this.onEvent) {
+      void this.onEvent({ event: eventName, id: null, data: JSON.stringify(payload) })
+      return
+    }
     const handlers = this.listeners.get(eventName) ?? []
     const event = { data: JSON.stringify(payload) } as MessageEvent
     handlers.forEach((handler) => handler(event))
@@ -89,7 +111,18 @@ describe('runtimeStore', () => {
     setActivePinia(createPinia())
     MockEventSource.instances = []
     vi.clearAllMocks()
+    dockState.isPanelVisible.mockReturnValue(true)
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
+    apiMocks.consumeSse.mockImplementation(async (path: string, options: any) => {
+      const source = new MockEventSource(`/api${path}`)
+      source.onEvent = options.onEvent
+      await new Promise<void>((resolve, reject) => {
+        source.finish = resolve
+        source.fail = reject
+        source.onerror = () => reject(new Error('stream disconnected'))
+        options.signal?.addEventListener('abort', () => { source.close(); resolve() }, { once: true })
+      })
+    })
     apiMocks.fetchRuntimeSessions.mockResolvedValue({ sessions: [] })
     apiMocks.fetchDebugSessions.mockResolvedValue({ sessions: [] })
     apiMocks.fetchRuntimePendingInput.mockResolvedValue({
@@ -536,6 +569,183 @@ describe('runtimeStore', () => {
     expect(currentStream.closed).toBe(false)
   })
 
+  it('外部运行会话事件在 UI 空闲时加载详情并订阅运行流', async () => {
+    const detail = {
+      status: 'accepted',
+      request: {},
+      runtime_session: { session_id: 'rt-external-1', status: 'running', execution_supported: true },
+      runtime_plan: null,
+      node_states: [],
+      event_log: [],
+      result: null,
+    }
+    apiMocks.fetchRuntimeSessions.mockResolvedValue({
+      sessions: [{ session_id: 'rt-external-1', status: 'running', graph_model_id: 'graph:workspace' }],
+    })
+    apiMocks.fetchRuntimeSession.mockResolvedValue(detail)
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    await store.handleWorkbenchSessionEvent({ session_id: 'rt-external-1', status: 'running' })
+
+    expect(store.activeRt?.runtime_session.session_id).toBe('rt-external-1')
+    expect(MockEventSource.instances).toHaveLength(1)
+    expect(MockEventSource.instances[0].url).toBe('/api/workbench/runtime/rt-external-1/stream')
+  })
+
+  it('重复工作台会话事件不会覆盖已经收到的实时运行快照', async () => {
+    const initialDetail = {
+      status: 'accepted',
+      request: { request_origin: 'external_api' },
+      runtime_session: { session_id: 'rt-external-live', status: 'running', execution_supported: true },
+      runtime_plan: null,
+      node_states: [{ node_id: 'node-a', node_status: 'pending' }],
+      event_log: [{ event_kind: 'session.started' }],
+      result: null,
+    }
+    const staleDetail = {
+      ...initialDetail,
+      status: 'waiting',
+      runtime_session: { ...initialDetail.runtime_session, status: 'waiting' },
+    }
+    const liveSnapshot = {
+      ...initialDetail,
+      status: 'running',
+      runtime_session: { ...initialDetail.runtime_session, status: 'running' },
+      node_states: [{ node_id: 'node-a', node_status: 'completed' }],
+      event_log: [{ event_kind: 'session.started' }, { event_kind: 'node.completed', node_id: 'node-a' }],
+    }
+    apiMocks.fetchRuntimeSessions.mockResolvedValue({
+      sessions: [{ session_id: 'rt-external-live', status: 'running', graph_model_id: 'graph:workspace' }],
+    })
+    apiMocks.fetchRuntimeSession
+      .mockResolvedValueOnce(initialDetail)
+      .mockResolvedValueOnce(staleDetail)
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    await store.handleWorkbenchSessionEvent({ session_id: 'rt-external-live', status: 'running' })
+    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    MockEventSource.instances[0].emit('runtime.snapshot', liveSnapshot)
+    await vi.waitFor(() => expect(store.activeRt?.node_states?.[0]?.node_status).toBe('completed'))
+
+    await store.handleWorkbenchSessionEvent({ session_id: 'rt-external-live', status: 'running' })
+
+    expect(store.activeRt?.node_states?.[0]?.node_status).toBe('completed')
+    expect(store.activeRt?.event_log).toHaveLength(2)
+    expect(store.activeRt?.runtime_session.status).toBe('waiting')
+  })
+
+  it('外部运行会话事件自动显示输出面板并切换到运行标签页', async () => {
+    const detail = {
+      status: 'accepted',
+      request: {},
+      runtime_session: { session_id: 'rt-external-visible', status: 'running', execution_supported: true },
+      runtime_plan: null,
+      node_states: [],
+      event_log: [],
+      result: null,
+    }
+    dockState.isPanelVisible.mockReturnValue(false)
+    apiMocks.fetchRuntimeSessions.mockResolvedValue({ sessions: [] })
+    apiMocks.fetchRuntimeSession.mockResolvedValue(detail)
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    await store.handleWorkbenchSessionEvent({ session_id: 'rt-external-visible', status: 'running' })
+
+    expect(dockState.restorePanel).toHaveBeenCalledWith('output', 'bottom')
+    expect(dockState.activatePanel).toHaveBeenCalledWith('output')
+    expect(store.runtimeTabRequest).toBe(1)
+  })
+
+  it('启动恢复会话列表中的外部活动运行会话并订阅实时流', async () => {
+    const detail = {
+      status: 'accepted',
+      request: { request_origin: 'external_api' },
+      runtime_session: { session_id: 'rt-recovered-1', status: 'running', execution_supported: true },
+      runtime_plan: null,
+      node_states: [{ node_id: 'node-a', node_status: 'running' }],
+      event_log: [],
+      result: null,
+    }
+    apiMocks.fetchRuntimeSessions.mockResolvedValue({
+      sessions: [
+        { session_id: 'rt-recovered-1', status: 'running', graph_model_id: 'graph:workspace' },
+      ],
+    })
+    apiMocks.fetchRuntimeSession.mockResolvedValue(detail)
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    await store.recoverActiveSession()
+
+    expect(store.activeRt?.runtime_session.session_id).toBe('rt-recovered-1')
+    expect(MockEventSource.instances).toHaveLength(1)
+    expect(MockEventSource.instances[0].url).toBe('/api/workbench/runtime/rt-recovered-1/stream')
+  })
+
+  it('外部加密运行会话事件登记待解锁会话', async () => {
+    const detail = {
+      status: 'unlock_required',
+      request: { request_origin: 'external_api' },
+      runtime_session: { session_id: 'rt-external-unlock', status: 'unlock_required', execution_supported: true },
+      runtime_plan: null,
+      node_states: [{ node_id: 'node-a', node_status: 'pending' }],
+      event_log: [],
+      result: null,
+    }
+    apiMocks.fetchRuntimeSessions.mockResolvedValue({
+      sessions: [{ session_id: 'rt-external-unlock', status: 'unlock_required', graph_model_id: 'graph:workspace' }],
+    })
+    apiMocks.fetchRuntimeSession.mockResolvedValue(detail)
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    await store.handleWorkbenchSessionEvent({ session_id: 'rt-external-unlock', status: 'unlock_required' })
+
+    expect(store.pendingParameterUnlockSessionId).toBe('rt-external-unlock')
+    expect(store.isRuntimeActive).toBe(true)
+  })
+
+  it('外部运行会话事件会替换已终态的旧活动会话', async () => {
+    const previousDetail = {
+      status: 'completed',
+      request: {},
+      runtime_session: { session_id: 'rt-previous', status: 'completed', execution_supported: true },
+      runtime_plan: null,
+      node_states: [{ node_id: 'node-old', node_status: 'completed' }],
+      event_log: [{ event_kind: 'session.completed' }],
+      result: { status: 'succeeded' },
+    }
+    const externalDetail = {
+      status: 'accepted',
+      request: {},
+      runtime_session: { session_id: 'rt-external-2', status: 'running', execution_supported: true },
+      runtime_plan: null,
+      node_states: [],
+      event_log: [],
+      result: null,
+    }
+    apiMocks.fetchRuntimeSessions.mockResolvedValue({
+      sessions: [
+        { session_id: 'rt-previous', status: 'completed', graph_model_id: 'graph:workspace' },
+        { session_id: 'rt-external-2', status: 'running', graph_model_id: 'graph:workspace' },
+      ],
+    })
+    apiMocks.fetchRuntimeSession.mockResolvedValue(externalDetail)
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    store.setActiveRt(previousDetail as any)
+
+    await store.handleWorkbenchSessionEvent({ session_id: 'rt-external-2', status: 'running' })
+
+    expect(store.activeRt?.runtime_session.session_id).toBe('rt-external-2')
+    expect(MockEventSource.instances).toHaveLength(1)
+    expect(MockEventSource.instances[0].url).toBe('/api/workbench/runtime/rt-external-2/stream')
+  })
+
   it('aborts the active runtime session and exposes stable active states', async () => {
     const runningSession = {
       status: 'accepted',
@@ -575,6 +785,43 @@ describe('runtimeStore', () => {
     expect(store.isRuntimeActive).toBe(false)
     expect(store.canAbortRuntime).toBe(false)
     expect(store.pendingParameterUnlockSessionId).toBeNull()
+  })
+
+  it('treats externally waiting or unlock-required sessions as active and abortable', async () => {
+    const waitingSession = {
+      status: 'unlock_required',
+      request: { request_origin: 'external_api' },
+      runtime_session: {
+        session_id: 'rt-external-waiting',
+        status: 'unlock_required',
+        execution_supported: true,
+      },
+      runtime_plan: null,
+      node_states: [{ node_id: 'node-a', node_status: 'pending' }],
+      event_log: [],
+      result: null,
+    }
+    apiMocks.postRuntimeAbort.mockResolvedValue({
+      ...waitingSession,
+      status: 'aborted',
+      runtime_session: {
+        ...waitingSession.runtime_session,
+        status: 'aborted',
+      },
+    })
+
+    const { useRuntimeStore } = await import('./runtimeStore')
+    const store = useRuntimeStore()
+    store.setActiveRt(waitingSession as any)
+
+    expect(store.isRuntimeActive).toBe(true)
+    expect(store.canAbortRuntime).toBe(true)
+
+    const result = await store.abortActiveRun()
+
+    expect(apiMocks.postRuntimeAbort).toHaveBeenCalledWith('rt-external-waiting', 'user_abort')
+    expect(result.success).toBe(true)
+    expect(store.isRuntimeActive).toBe(false)
   })
 
   it('rejects duplicate start while a runtime session is active', async () => {

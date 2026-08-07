@@ -185,6 +185,28 @@ describe('OutputPanel', () => {
     expect(wrapper.text()).toContain('诊断 (C2/R3/D1)')
     expect(wrapper.text()).not.toContain('parsed source document')
   })
+
+  it('面板挂载前已有运行标签请求时首次显示 Runtime', async () => {
+    runtimeState.runtimeTabRequest = 1
+
+    const wrapper = mount(OutputPanel, {
+      global: {
+        stubs: {
+          SummaryTab: true,
+          DiagnosticsTab: true,
+          GraphTab: true,
+          HistoryTab: true,
+          RuntimeTab: true,
+          DebugTab: true,
+          HostInfoTab: true,
+        },
+      },
+    })
+
+    await nextTick()
+    const runtimeTab = wrapper.findAll('button.ot-tab').find((button) => button.text() === 'Runtime')
+    expect(runtimeTab?.classes()).toContain('ot-tab-active')
+  })
 })
 
 describe('VueFlowGraph', () => {

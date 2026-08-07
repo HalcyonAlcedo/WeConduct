@@ -111,7 +111,9 @@ class ExecutionParameterUnlockInput(ExecutionReferenceInput):
 
 class PendingInputSubmitInput(ExecutionReferenceInput):
     request_id: str = Field(min_length=1)
-    values: dict[str, Any]
+    # 结构化类型校验由 PendingInputService 统一处理，保留数组/字符串等
+    # 非对象载荷进入领域层，以便返回稳定的 invalid_payload 细节。
+    values: Any
 
 
 class SideEffectLevel(StrEnum):

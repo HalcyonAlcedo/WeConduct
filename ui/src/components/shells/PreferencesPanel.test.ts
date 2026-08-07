@@ -94,7 +94,7 @@ describe('PreferencesPanel', () => {
     })
     apiMocks.fetchLanguages.mockResolvedValue({ languages: [] })
     apiMocks.fetchLanguagePack.mockResolvedValue({ locale: 'zh-CN', messages: {} })
-    apiMocks.fetchExternalApiPreferences.mockResolvedValue({ enabled: false, token_configured: false, project_allowed_roots: [] })
+    apiMocks.fetchExternalApiPreferences.mockResolvedValue({ enabled: false, token: null, token_configured: false, external_api_port: 0, project_allowed_roots: [] })
     try { localStorage.clear() } catch { /* jsdom */ }
   })
 
@@ -204,7 +204,7 @@ describe('PreferencesPanel', () => {
     expect(wrapper.text()).not.toContain('manual_apply')
   })
 
-  it('安全设置显示外部 API 与固定的加密参数解锁策略，且不回填 token', async () => {
+  it('安全设置直接显示专用接口返回的外部 API Token', async () => {
     const workspace = useWorkspaceStore()
     workspace.snapshot = {
       preferences: {
@@ -223,16 +223,93 @@ describe('PreferencesPanel', () => {
       graph_workspace: { preferences_state: {} },
     } as any
 
+    apiMocks.fetchExternalApiPreferences.mockResolvedValue({
+      enabled: true,
+      token: 'visible-external-token',
+      token_configured: true,
+      external_api_port: 0,
+      project_allowed_roots: ['C:\\projects'],
+    })
     const wrapper = mount(PreferencesPanel, { global: { plugins: [createPinia()] } })
     await flushPromises()
     await wrapper.get('.pref-nav-item:nth-child(2)').trigger('click')
     await nextTick()
 
     expect(wrapper.text()).toContain('外部 API')
+    expect(wrapper.text()).toContain('设为 0 自动分配')
     expect(wrapper.text()).toContain('加密参数解锁策略')
-    const token = wrapper.find('input[type="password"]')
-    expect(token.exists()).toBe(true)
-    expect((token.element as HTMLInputElement).value).toBe('')
+    const tokenField = wrapper.findAll('.pref-field').find((item) => item.text().includes('外部 API Token'))
+    const token = tokenField?.find('input')
+    expect(token?.exists()).toBe(true)
+    expect(token?.attributes('type')).toBe('password')
+    expect((token?.element as HTMLInputElement).value).toBe('visible-external-token')
+
+    workspace.snapshot = {
+      ...(workspace.snapshot as any),
+      preferences: {
+        ...(workspace.snapshot as any).preferences,
+        security_settings: {
+          external_api_enabled: true,
+          external_api_token_configured: true,
+          external_api_project_allowed_roots: ['C:\\projects'],
+        },
+      },
+    } as any
+    await nextTick()
+    expect((token?.element as HTMLInputElement).value).toBe('visible-external-token')
+  })
+
+  it('清除外部 API Token 时不同时提交已回填的 Token', async () => {
+    const workspace = useWorkspaceStore()
+    workspace.snapshot = {
+      preferences: {
+        program_settings: { preferences_auto_save: false },
+        compile_settings: {},
+        security_settings: {
+          external_api_enabled: true,
+          external_api_token_configured: true,
+          external_api_project_allowed_roots: [],
+        },
+        python_runtime_settings: {},
+        graph_settings: {},
+        other_settings: {},
+      },
+      graph_workspace: { preferences_state: {} },
+    } as any
+    apiMocks.fetchExternalApiPreferences.mockResolvedValue({
+      enabled: true,
+      token: 'visible-external-token',
+      token_configured: true,
+      external_api_port: 0,
+      project_allowed_roots: [],
+    })
+    apiMocks.postExternalApiPreferences.mockResolvedValue({
+      enabled: false,
+      token: null,
+      token_configured: false,
+      external_api_port: 0,
+      project_allowed_roots: [],
+    })
+    apiMocks.postPreferences.mockResolvedValue({ preferences: { security_settings: {} } })
+    workspace.refreshSnapshot = vi.fn().mockResolvedValue(undefined)
+
+    const wrapper = mount(PreferencesPanel, { global: { plugins: [createPinia()] } })
+    await flushPromises()
+    await wrapper.get('.pref-nav-item:nth-child(2)').trigger('click')
+    await nextTick()
+
+    const clearField = wrapper.findAll('.pref-field').find((item) => item.text().includes('清除外部 API Token'))
+    const clearCheckbox = clearField?.find('input[type="checkbox"]')
+    expect(clearCheckbox?.exists()).toBe(true)
+    await clearCheckbox?.setValue(true)
+    await wrapper.get('.pref-btn-save').trigger('click')
+    await flushPromises()
+
+    const requestBody = apiMocks.postExternalApiPreferences.mock.calls[0][0]
+    expect(requestBody.clear_token).toBe(true)
+    expect(requestBody.token).toBeUndefined()
+    const tokenField = wrapper.findAll('.pref-field').find((item) => item.text().includes('外部 API Token'))
+    expect((tokenField?.find('input').element as HTMLInputElement).value).toBe('')
   })
 
   it('自动保存后不会用缺失字段覆盖尚未裁决的表单值', async () => {

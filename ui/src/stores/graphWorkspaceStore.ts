@@ -15,6 +15,12 @@ import type { GraphModel } from '@/types/domains/graph'
 
 export type GraphLoadState = 'idle' | 'loading' | 'loaded' | 'error'
 export type GraphSaveState = 'idle' | 'saving' | 'saved' | 'error' | 'conflict'
+export interface ExternalGraphConflict {
+  documentId: string | undefined
+  baseRevision: number | null
+  remoteRevision: number | null
+  detectedAt: string
+}
 
 export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   const debugStore = useDebugStore()
@@ -23,6 +29,8 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   const saveState = ref<GraphSaveState>('idle')
   const loadError = ref<string | null>(null)
   const saveError = ref<string | null>(null)
+  const externalGraphConflicts = ref<Map<string | undefined, ExternalGraphConflict>>(new Map())
+  const externalGraphConflictNoticeKeys = ref<Set<string | undefined>>(new Set())
 
   const document = ref<GraphDocumentResponse | null>(null)
   const graphModel = ref<GraphModel | null>(null)
@@ -30,6 +38,8 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   /** P18: current active document_id. null/undefined = main graph. "custom_node_graph:<id>" = custom component. */
   const currentDocumentId = ref<string | undefined>(undefined)
   const isCustomComponentGraph = computed(() => !!currentDocumentId.value)
+  const externalGraphConflict = computed(() => externalGraphConflicts.value.get(currentDocumentId.value) ?? null)
+  const externalGraphConflictNoticeVisible = computed(() => externalGraphConflictNoticeKeys.value.has(currentDocumentId.value) && !!externalGraphConflict.value)
   /** P18: graph document list (main + custom components) */
   const graphDocuments = ref<{ document_id: string; document_role: string; display_name?: string; resource_id?: string }[]>([])
 
@@ -136,6 +146,7 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
       currentDocumentId.value = documentId || undefined
       loadState.value = 'loaded'
       clearDirty()
+      clearExternalGraphConflict()
       changeRevision.value++ // trigger source-projection auto-sync after load
       hydrateSchemasFromGraph()
     } catch (err) {
@@ -149,8 +160,10 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     saveState.value = 'saving'
     saveError.value = null
     const toast = useToastStore()
+    const expectedRevision = saveRevision.value
+    const documentId = currentDocumentId.value
     try {
-      const result = await putGraphDocument(model, saveRevision.value, currentDocumentId.value)
+      const result = await putGraphDocument(model, expectedRevision, documentId, !!externalGraphConflict.value)
       // Full state sync: graph model + document + view + changeRevision for source projection
       document.value = { graph_model: result.graph_model, view: result.view }
       graphModel.value = result.graph_model
@@ -158,6 +171,7 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
       changeRevision.value++ // triggers source-projection auto-sync
       saveState.value = 'saved'
       clearDirty()
+      clearExternalGraphConflict()
       // Saving subgraph invalidates main graph drafts (schema may have changed)
       if (currentDocumentId.value) invalidateMainGraphDrafts()
       toast.success('图稿已保存', `修订号: ${result.view.graph_document_save_revision}`)
@@ -165,6 +179,11 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
       if (err?.status === 409 && err?.body?.error === 'graph_revision_conflict') {
         saveState.value = 'conflict'
         saveError.value = '图稿版本冲突：当前图稿已被其他操作修改，请刷新后重新保存。'
+        markExternalGraphConflict({
+          documentId,
+          baseRevision: expectedRevision,
+          remoteRevision: typeof err?.body?.current_revision === 'number' ? err.body.current_revision : null,
+        })
         toast.error('图稿版本冲突', '请刷新图稿后重新保存')
       } else {
         saveState.value = 'error'
@@ -182,6 +201,47 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
 
   function markChanged() { isDirty.value = true; changeRevision.value++ }
   function clearDirty() { isDirty.value = false }
+  function markExternalGraphConflict(conflict: {
+    documentId: string | undefined
+    baseRevision: number | null
+    remoteRevision: number | null
+    detectedAt?: string
+  }): boolean {
+    const existing = externalGraphConflicts.value.get(conflict.documentId)
+    if (!existing) {
+      externalGraphConflicts.value.set(conflict.documentId, {
+        documentId: conflict.documentId,
+        baseRevision: conflict.baseRevision,
+        remoteRevision: conflict.remoteRevision,
+        detectedAt: conflict.detectedAt ?? new Date().toISOString(),
+      })
+      externalGraphConflictNoticeKeys.value.add(conflict.documentId)
+      if (conflict.documentId === currentDocumentId.value) saveState.value = 'conflict'
+      return true
+    }
+    if (
+      typeof conflict.remoteRevision === 'number'
+      && (existing.remoteRevision === null || conflict.remoteRevision > existing.remoteRevision)
+    ) {
+      externalGraphConflicts.value.set(conflict.documentId, {
+        ...existing,
+        remoteRevision: conflict.remoteRevision,
+      })
+    }
+    if (conflict.documentId === currentDocumentId.value) saveState.value = 'conflict'
+    return false
+  }
+  function clearExternalGraphConflict() {
+    externalGraphConflicts.value.delete(currentDocumentId.value)
+    externalGraphConflictNoticeKeys.value.delete(currentDocumentId.value)
+    if (saveState.value === 'conflict') saveState.value = 'idle'
+  }
+  function dismissExternalGraphConflictNotice() {
+    externalGraphConflictNoticeKeys.value.delete(currentDocumentId.value)
+  }
+  async function loadRemoteGraph() {
+    await loadGraph(currentDocumentId.value, { forceRefresh: true })
+  }
 
   function pushUndo() {
     if (graphModel.value) {
@@ -385,6 +445,8 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
     clearAllDrafts()
     syncStatus.value = 'idle'; syncError.value = null
     clearDirty()
+    externalGraphConflicts.value.clear()
+    externalGraphConflictNoticeKeys.value.clear()
   }
 
   // ---- Parameter schema cache (from node drafts) ----
@@ -463,13 +525,15 @@ export const useGraphWorkspaceStore = defineStore('graphWorkspace', () => {
   }, { immediate: false })
 
   return {
-    loadState, saveState, loadError, saveError,
+    loadState, saveState, loadError, saveError, externalGraphConflict, externalGraphConflictNoticeVisible,
     document, graphModel, view, isDirty, changeRevision,
     saveRevision, hasGraph, isLoaded, lastCompileMatches, isGraphEditable,
     currentDocumentId, isCustomComponentGraph, graphDocuments, refreshGraphDocuments,
     draftsByDocumentId, saveCurrentDraft, restoreDraft, clearAllDrafts, invalidateMainGraphDrafts,
     loadGraph, saveGraph, addNode, pasteNode, removeNode, updateNode,
-    markChanged, updateNodePosition, addEdge, removeEdge, updateEdgeRelation, pushUndo, undo, redo, reset,
+    markChanged, clearDirty, markExternalGraphConflict, clearExternalGraphConflict,
+    dismissExternalGraphConflictNotice, loadRemoteGraph,
+    updateNodePosition, addEdge, removeEdge, updateEdgeRelation, pushUndo, undo, redo, reset,
     syncStatus, syncError, syncSource, scheduleAutoSync,
     parameterSchemas, cacheParameterSchema,
     viewport, updateViewport,

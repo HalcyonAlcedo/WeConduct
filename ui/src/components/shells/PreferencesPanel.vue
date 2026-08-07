@@ -86,16 +86,17 @@ const FIELD_DEFS = computed<Record<string, FieldDef[]>>(() => ({
     { key: 'confirm_high_risk_actions', label: t('framework.preferences.security.confirmHighRiskActions', '确认高风险操作'), type: 'bool' }, { key: 'show_security_warnings_in_runtime', label: t('framework.preferences.security.showSecurityWarningsInRuntime', '运行时显示安全警告'), type: 'bool' },
     { key: 'log_security_events', label: t('framework.preferences.security.logSecurityEvents', '记录安全事件'), type: 'bool' },
     { key: 'external_api_enabled', label: t('framework.preferences.security.externalApiEnabled', '启用外部 API'), type: 'bool' },
-    { key: 'external_api_token', label: t('framework.preferences.security.externalApiToken', '外部 API Token'), type: 'password', hint: t('framework.preferences.security.externalApiTokenHint', '已配置时不会回填；留空将保留当前 token。') },
+    { key: 'external_api_token', label: t('framework.preferences.security.externalApiToken', '外部 API Token'), type: 'password', hint: t('framework.preferences.security.externalApiTokenHint', '外部 API 调用的认证令牌。') },
     { key: 'external_api_clear_token', label: t('framework.preferences.security.externalApiClearToken', '清除外部 API Token'), type: 'bool' },
+    { key: 'external_api_port', label: t('framework.preferences.security.externalApiPort', '外部 API 端口'), type: 'number', hint: t('framework.preferences.security.externalApiPortHint', '外部 API 服务监听端口，设为 0 自动分配。') },
     { key: 'external_api_project_allowed_roots', label: t('framework.preferences.security.externalApiProjectRoots', '外部 API 项目目录'), type: 'directory_list' },
     { key: 'encrypted_parameter_unlock_policy', label: t('framework.preferences.security.encryptedParameterUnlockPolicy', '加密参数解锁策略'), type: 'select', options: ['always_prompt'], hint: t('framework.preferences.security.encryptedParameterUnlockPolicyHint', '每次运行均要求输入密码。') },
     { key: 'allow_file_access', label: t('framework.preferences.security.allowFileAccess', '允许文件访问'), type: 'bool' }, { key: 'file_access_scope', label: t('framework.preferences.security.fileAccessScope', '文件访问范围'), type: 'select', options: ['restricted', 'custom_roots', 'allow_all'] },
     { key: 'file_access_require_absolute_path', label: t('framework.preferences.security.fileAccessRequireAbsolutePath', '要求绝对路径'), type: 'bool' },
-    { key: 'file_access_allowed_roots', label: t('framework.preferences.security.fileAccessAllowedRoots', '允许访问目录'), type: 'directory_list', hint: t('framework.preferences.security.fileAccessAllowedRootsHint', '仅在 custom_roots 模式下生效') },
+    { key: 'file_access_allowed_roots', label: t('framework.preferences.security.fileAccessAllowedRoots', '允许访问目录'), type: 'directory_list', hint: t('framework.preferences.security.fileAccessAllowedRootsHint', '「自定义目录」模式下允许访问的目录。') },
     { key: 'file_access_blocked_roots', label: t('framework.preferences.security.fileAccessBlockedRoots', '禁止访问目录'), type: 'directory_list' },
-    { key: 'file_access_allowed_extensions', label: t('framework.preferences.security.fileAccessAllowedExtensions', '允许文件扩展名'), type: 'text', hint: t('framework.preferences.security.fileAccessAllowedExtensionsHint', '逗号分隔，如 .txt,.json') },
-    { key: 'file_access_blocked_extensions', label: t('framework.preferences.security.fileAccessBlockedExtensions', '禁止文件扩展名'), type: 'text', hint: t('framework.preferences.security.fileAccessBlockedExtensionsHint', '逗号分隔，如 .exe,.bat') },
+    { key: 'file_access_allowed_extensions', label: t('framework.preferences.security.fileAccessAllowedExtensions', '允许文件扩展名'), type: 'text', hint: t('framework.preferences.security.fileAccessAllowedExtensionsHint', '允许访问的文件扩展名，逗号分隔。') },
+    { key: 'file_access_blocked_extensions', label: t('framework.preferences.security.fileAccessBlockedExtensions', '禁止文件扩展名'), type: 'text', hint: t('framework.preferences.security.fileAccessBlockedExtensionsHint', '禁止访问的文件扩展名，逗号分隔。') },
     { key: 'allow_browser_executor', label: t('framework.preferences.security.allowBrowserExecutor', '允许浏览器执行器'), type: 'bool' },
     { key: 'allow_browser_screenshots', label: t('framework.preferences.security.allowBrowserScreenshots', '允许截图'), type: 'bool' },
     { key: 'allow_cookie_manipulation', label: t('framework.preferences.security.allowCookieManipulation', '允许 Cookie 操作'), type: 'bool' },
@@ -113,18 +114,18 @@ const FIELD_DEFS = computed<Record<string, FieldDef[]>>(() => ({
   python: [
     { key: 'python_executable_path', label: t('framework.preferences.python.pythonExecutablePath', 'Python 路径'), type: 'text' }, { key: 'timeout_seconds', label: t('framework.preferences.python.timeoutSeconds', '超时（秒）'), type: 'number' },
     { key: 'sandbox_mode', label: t('framework.preferences.python.sandboxMode', '沙盒模式'), type: 'select', options: ['restricted'] }, { key: 'capture_stdout_stderr', label: t('framework.preferences.python.captureStdoutStderr', '捕获标准输出/错误'), type: 'bool' },
-    { key: 'variable_apply_mode', label: t('framework.preferences.python.variableApplyMode', '调试变量应用策略'), type: 'select', options: ['staged', 'immediate'], hint: t('framework.preferences.python.variableApplyModeHint', 'staged 为暂存后再继续调试，immediate 为立即生效') },
+    { key: 'variable_apply_mode', label: t('framework.preferences.python.variableApplyMode', '调试变量应用策略'), type: 'select', options: ['staged', 'immediate'], hint: t('framework.preferences.python.variableApplyModeHint', 'staged 暂存后继续调试，immediate 立即生效。') },
     { key: 'default_python_version_spec', label: t('framework.preferences.python.defaultPythonVersionSpec', '默认 Python 版本'), type: 'text' },
     { key: 'default_cache_location_mode', label: t('framework.preferences.python.defaultCacheLocationMode', '默认缓存位置模式'), type: 'select', options: ['software_cache', 'project_cache'] },
     { key: 'default_project_cache_mode', label: t('framework.preferences.python.defaultProjectCacheMode', '默认项目缓存模式'), type: 'select', options: ['full_venv', 'wheelhouse_rebuild'] },
     { key: 'default_requirements_source_mode', label: t('framework.preferences.python.defaultRequirementsSourceMode', '默认需求来源模式'), type: 'select', options: ['inline', 'requirements_txt', 'lock_file'] },
     { key: 'default_package_embed_mode', label: t('framework.preferences.python.defaultPackageEmbedMode', '默认包嵌入模式'), type: 'select', options: ['none', 'wheelhouse_rebuild', 'full_venv'] },
-    { key: 'blocked_import_modules', label: t('framework.preferences.python.blockedImportModules', '阻断导入模块'), type: 'string_list', hint: t('framework.preferences.python.blockedImportModulesHint', '这些模块会在 python.run 中被禁止导入。删除某项后，项目脚本即可导入该模块。') },
+    { key: 'blocked_import_modules', label: t('framework.preferences.python.blockedImportModules', '阻断导入模块'), type: 'string_list', hint: t('framework.preferences.python.blockedImportModulesHint', '禁止在 Python 脚本中导入的模块。') },
   ],
   network: [
-    { key: 'base_url', label: t('framework.preferences.network.baseUrl', '基础 URL'), type: 'text', hint: t('framework.preferences.network.baseUrlHint', '相对 URL 会基于此地址解析。留空时必须在节点中填写绝对 URL。') },
-    { key: 'timeout_seconds', label: t('framework.preferences.network.timeoutSeconds', '默认超时（秒）'), type: 'number', hint: t('framework.preferences.network.timeoutSecondsHint', '节点未配置超时时使用此值。') },
-    { key: 'response_limits', label: t('framework.preferences.network.responseLimits', '响应限制'), type: 'json', hint: t('framework.preferences.network.responseLimitsHint', 'max_bytes 为总响应上限；max_in_memory_bytes 为内存阈值。0 表示使用默认行为。') },
+    { key: 'base_url', label: t('framework.preferences.network.baseUrl', '基础 URL'), type: 'text', hint: t('framework.preferences.network.baseUrlHint', '网络请求的基础地址，相对 URL 将基于此解析。') },
+    { key: 'timeout_seconds', label: t('framework.preferences.network.timeoutSeconds', '默认超时（秒）'), type: 'number', hint: t('framework.preferences.network.timeoutSecondsHint', '网络请求默认超时，节点可单独覆盖。') },
+    { key: 'response_limits', label: t('framework.preferences.network.responseLimits', '响应限制'), type: 'json', hint: t('framework.preferences.network.responseLimitsHint', '网络请求响应的字节数与内存限制。') },
   ],
   nodegraph: [
     { key: 'show_node_id_on_node', label: t('framework.preferences.nodegraph.showNodeIdOnNode', '显示节点 ID'), type: 'bool' },
@@ -151,13 +152,17 @@ function initForm() {
   const prefs = workspace.snapshot?.preferences || {}
   for (const section of Object.values(SECTION_MAP)) {
     const source = (prefs as Record<string, any>)[section] || {}
+    const existingToken = section === 'security_settings'
+      ? form.security_settings?.external_api_token
+      : undefined
     const next = Object.fromEntries(
       Object.entries(source).map(([key, value]) => [key, normalizePreferenceValue(value)]),
     )
     if (section === 'security_settings') {
       next.file_access_allowed_roots = normalizeRoots(next.file_access_allowed_roots)
       next.file_access_blocked_roots = normalizeRoots(next.file_access_blocked_roots)
-      next.external_api_token = ''
+      // Token 只来自专用首选项接口；通用快照刷新不能覆盖已加载或正在编辑的值。
+      next.external_api_token = typeof existingToken === 'string' ? existingToken : ''
       next.external_api_clear_token = false
       next.external_api_project_allowed_roots = normalizeRoots(next.external_api_project_allowed_roots)
     }
@@ -191,8 +196,9 @@ async function loadExternalApiPreferences() {
     form.security_settings = {
       ...form.security_settings,
       external_api_enabled: externalApi.enabled,
-      external_api_token: '',
+      external_api_token: externalApi.token ?? '',
       external_api_token_configured: externalApi.token_configured,
+      external_api_port: externalApi.external_api_port,
       external_api_clear_token: false,
       external_api_project_allowed_roots: normalizeRoots(externalApi.project_allowed_roots),
     }
@@ -210,6 +216,9 @@ watch(() => (workspace.snapshot as any)?.graph_workspace?.graph_preferences, () 
 const prefsState = computed(() => (workspace.snapshot as any)?.graph_workspace?.preferences_state || {})
 function fieldState(s: string, k: string): string | undefined { const n = (prefsState.value as any)[s]; if (!n || typeof n !== 'object') return; const v = n[k]; return typeof v === 'string' ? v : undefined }
 function stateLabel(s: string | undefined): string { if (s === 'active') return t('framework.preferences.fieldState.active', '已接入'); if (s === 'stored_only') return t('framework.preferences.fieldState.storedOnly', '待接入'); return '—' }
+
+const passwordVisible = ref<Record<string, boolean>>({})
+function togglePasswordVisible(key: string) { passwordVisible.value = { ...passwordVisible.value, [key]: !passwordVisible.value[key] } }
 
 const autoSaveTimers: Record<string, ReturnType<typeof setTimeout>> = {}
 const autoSaveEnabled = computed(() => !!form.program_settings?.preferences_auto_save)
@@ -302,7 +311,7 @@ async function confirmHighRiskSave() {
 function flattenForSave(section: string, vals: Record<string, any>): Record<string, unknown> {
   const r: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(vals)) {
-    if (section === 'security_settings' && ['external_api_enabled', 'external_api_token', 'external_api_token_configured', 'external_api_clear_token', 'external_api_project_allowed_roots'].includes(k)) continue
+    if (section === 'security_settings' && ['external_api_enabled', 'external_api_token', 'external_api_token_configured', 'external_api_clear_token', 'external_api_port', 'external_api_project_allowed_roots'].includes(k)) continue
     if (k === 'default_window_size') { r[k] = { width: (v as any)?.width ?? 800, height: (v as any)?.height ?? 600 }; continue }
     if (section === 'security_settings' && k === 'file_access_allowed_roots') { r[k] = normalizeRoots(v); continue }
     if (section === 'security_settings' && k === 'file_access_blocked_roots') { r[k] = normalizeRoots(v); continue }
@@ -313,21 +322,24 @@ function flattenForSave(section: string, vals: Record<string, any>): Record<stri
 }
 async function saveExternalApiPreferences(confirmHighRisk: boolean) {
   const settings = form.security_settings
-  const token = typeof settings.external_api_token === 'string' && settings.external_api_token.trim()
+  const clearToken = !!settings.external_api_clear_token
+  const token = !clearToken && typeof settings.external_api_token === 'string' && settings.external_api_token.trim()
     ? settings.external_api_token.trim()
     : undefined
   const result = await postExternalApiPreferences({
     enabled: !!settings.external_api_enabled,
     token,
     clear_token: !!settings.external_api_clear_token,
+    external_api_port: Number.isInteger(settings.external_api_port) ? settings.external_api_port : Number(settings.external_api_port || 0),
     project_allowed_roots: normalizeRoots(settings.external_api_project_allowed_roots),
     confirm_high_risk: confirmHighRisk,
   })
   form.security_settings = {
     ...form.security_settings,
     external_api_enabled: result.enabled,
-    external_api_token: '',
+    external_api_token: result.token ?? '',
     external_api_token_configured: result.token_configured,
+    external_api_port: result.external_api_port,
     external_api_clear_token: false,
     external_api_project_allowed_roots: normalizeRoots(result.project_allowed_roots),
   }
@@ -357,6 +369,8 @@ function getStringList(fieldKey: string): string[] { const v = getField(currentS
 function addStringListItem(fieldKey: string) { setField(currentSection.value, fieldKey, [...getStringList(fieldKey), '']) }
 function removeStringListItem(fieldKey: string, idx: number) { const n = [...getStringList(fieldKey)]; n.splice(idx, 1); setField(currentSection.value, fieldKey, n) }
 function updateStringListItem(fieldKey: string, idx: number, val: string) { const n = [...getStringList(fieldKey)]; n[idx] = val; setField(currentSection.value, fieldKey, n) }
+/** Update a string-list item value without triggering auto-save. */
+function updateStringListItemValue(fieldKey: string, idx: number, val: string) { const section = currentSection.value; if (!form[section]) return; const list = [...getStringList(fieldKey)]; list[idx] = val; form[section][fieldKey] = list }
 
 // Extension display helper: convert string[] to comma-separated display
 function extDisplay(fieldKey: string): string { const v = getField('security_settings', fieldKey); if (Array.isArray(v)) return v.join(', '); return typeof v === 'string' ? v : '' }
@@ -394,6 +408,18 @@ async function doReset(section: string) {
 
 function saveStatusLabel(section: string): string { const s = saveState[section]; if (s === 'saving') return t('framework.preferences.status.savingEllipsis', '保存中…'); if (s === 'saved') return t('framework.preferences.status.saved', '已保存'); if (s === 'error') return t('framework.preferences.saveFailed', '保存失败'); return '' }
 function getField(section: string, key: string): any { return form[section]?.[key] }
+/** Update form value without triggering auto-save. Used for password fields
+ *  so the user can finish typing before the token is persisted. */
+function setFieldValue(section: string, key: string, value: any) {
+  if (form[section]) {
+    form[section][key] = value
+    // Apply live overrides that don't need a server round-trip.
+    if (section === 'program_settings' && key === 'theme') theme.setPreference(value)
+    if (section === 'program_settings' && key === 'font_scale') fontScale.setScale(Number(value))
+    if (section === 'program_settings' && key === 'language') language.setLocale(String(value)).catch(() => {})
+    if (section === 'program_settings' && key === 'resource_language') language.setResourceLocale(String(value)).catch(() => {})
+  }
+}
 function setField(section: string, key: string, value: any) {
   if (form[section]) {
     form[section][key] = value
@@ -432,12 +458,12 @@ const currentFields = computed(() => {
       <div v-for="f in currentFields" :key="f.key" class="pref-field" v-show="f.key !== 'file_access_allowed_roots' || isRootsFieldVisible()">
         <label class="pref-field-label">{{ f.label }}</label><div class="pref-field-ctl">
           <template v-if="f.type === 'bool'"><label class="pref-check-label"><input type="checkbox" :checked="!!getField(currentSection, f.key)" @change="toggleBool(currentSection, f.key)" />{{ getField(currentSection, f.key) ? t('framework.preferences.common.yes', '是') : t('framework.preferences.common.no', '否') }}</label></template>
-          <input v-else-if="f.type === 'password'" type="password" class="pref-input" :value="getField(currentSection, f.key) ?? ''" autocomplete="new-password" @input="setField(currentSection, f.key, ($event.target as HTMLInputElement).value)" />
-          <input v-else-if="f.type === 'number'" type="number" class="pref-input pref-input-num" :value="getField(currentSection, f.key) ?? ''" @input="setField(currentSection, f.key, ($event.target as HTMLInputElement).valueAsNumber)" />
+          <span v-else-if="f.type === 'password'" class="pref-password-wrap"><input :type="passwordVisible[f.key] ? 'text' : 'password'" class="pref-input" :value="getField(currentSection, f.key) ?? ''" autocomplete="new-password" @input="setFieldValue(currentSection, f.key, ($event.target as HTMLInputElement).value)" @blur="setField(currentSection, f.key, ($event.target as HTMLInputElement).value)" @keyup.enter="setField(currentSection, f.key, ($event.target as HTMLInputElement).value); ($event.target as HTMLInputElement).blur()" /><button type="button" class="pref-password-toggle" :title="passwordVisible[f.key] ? t('framework.preferences.password.hide', '隐藏') : t('framework.preferences.password.show', '显示')" @click="togglePasswordVisible(f.key)">{{ passwordVisible[f.key] ? '🙈' : '👁' }}</button></span>
+          <input v-else-if="f.type === 'number'" type="number" class="pref-input pref-input-num" :value="getField(currentSection, f.key) ?? ''" @input="setFieldValue(currentSection, f.key, ($event.target as HTMLInputElement).valueAsNumber)" @blur="setField(currentSection, f.key, ($event.target as HTMLInputElement).valueAsNumber)" @keyup.enter="setField(currentSection, f.key, ($event.target as HTMLInputElement).valueAsNumber); ($event.target as HTMLInputElement).blur()" />
           <select v-else-if="f.type === 'select'" class="pref-input" :value="getField(currentSection, f.key) || f.options?.[0] || ''" @change="setField(currentSection, f.key, ($event.target as HTMLSelectElement).value)"><option v-for="o in f.options" :key="o" :value="o">{{ o }}</option></select>
           <select v-else-if="f.type === 'language'" class="pref-input" :value="getField(currentSection, f.key) || 'zh-CN'" @change="setField(currentSection, f.key, ($event.target as HTMLSelectElement).value)"><option v-for="o in languageOptionsFor(f.key)" :key="o.value" :value="o.value">{{ o.label }}</option></select>
           <select v-else-if="f.type === 'font_scale'" class="pref-input" :value="String(Number(getField(currentSection, f.key) ?? 1))" @change="setField(currentSection, f.key, Number(($event.target as HTMLSelectElement).value))"><option v-for="o in FONT_SCALE_PRESETS" :key="o.value" :value="String(o.value)">{{ o.label }}</option></select>
-          <template v-else-if="f.type === 'object' && f.key === 'default_window_size'"><input type="number" class="pref-input pref-input-num" :placeholder="t('framework.preferences.windowSize.width', '宽度')" :value="(getField(currentSection, 'default_window_size') || {}).width ?? ''" @input="(e: Event) => { const ws = { ...(form[currentSection]?.default_window_size || {}), width: (e.target as HTMLInputElement).valueAsNumber }; setField(currentSection, 'default_window_size', ws) }" /><span class="pref-obj-sep">×</span><input type="number" class="pref-input pref-input-num" :placeholder="t('framework.preferences.windowSize.height', '高度')" :value="(getField(currentSection, 'default_window_size') || {}).height ?? ''" @input="(e: Event) => { const ws = { ...(form[currentSection]?.default_window_size || {}), height: (e.target as HTMLInputElement).valueAsNumber }; setField(currentSection, 'default_window_size', ws) }" /></template>
+          <template v-else-if="f.type === 'object' && f.key === 'default_window_size'"><input type="number" class="pref-input pref-input-num" :placeholder="t('framework.preferences.windowSize.width', '宽度')" :value="(getField(currentSection, 'default_window_size') || {}).width ?? ''" @input="(e: Event) => { const ws = { ...(form[currentSection]?.default_window_size || {}), width: (e.target as HTMLInputElement).valueAsNumber }; setFieldValue(currentSection, 'default_window_size', ws) }" @blur="(e: Event) => { const ws = { ...(form[currentSection]?.default_window_size || {}), width: (e.target as HTMLInputElement).valueAsNumber }; setField(currentSection, 'default_window_size', ws) }" @keyup.enter="(e: Event) => { const ws = { ...(form[currentSection]?.default_window_size || {}), width: (e.target as HTMLInputElement).valueAsNumber }; setField(currentSection, 'default_window_size', ws); (e.target as HTMLInputElement).blur() }" /><span class="pref-obj-sep">×</span><input type="number" class="pref-input pref-input-num" :placeholder="t('framework.preferences.windowSize.height', '高度')" :value="(getField(currentSection, 'default_window_size') || {}).height ?? ''" @input="(e: Event) => { const ws = { ...(form[currentSection]?.default_window_size || {}), height: (e.target as HTMLInputElement).valueAsNumber }; setFieldValue(currentSection, 'default_window_size', ws) }" @blur="(e: Event) => { const ws = { ...(form[currentSection]?.default_window_size || {}), height: (e.target as HTMLInputElement).valueAsNumber }; setField(currentSection, 'default_window_size', ws) }" @keyup.enter="(e: Event) => { const ws = { ...(form[currentSection]?.default_window_size || {}), height: (e.target as HTMLInputElement).valueAsNumber }; setField(currentSection, 'default_window_size', ws); (e.target as HTMLInputElement).blur() }" /></template>
           <!-- Directory list editor -->
           <div v-else-if="f.type === 'directory_list'" class="pref-roots-editor">
             <div class="pref-roots-list" v-if="getDirectoryList(f.key).length"><div v-for="root in getDirectoryList(f.key)" :key="root" class="pref-roots-item"><span class="pref-roots-path">{{ root }}</span><button class="pref-btn pref-btn-rm" type="button" @click="removeDirectoryItem(f.key, root)">✕</button></div></div>
@@ -447,22 +473,23 @@ const currentFields = computed(() => {
           </div>
           <!-- Path picker for python_executable_path -->
           <div v-else-if="f.key === 'python_executable_path'" class="pref-path-row">
-            <input type="text" class="pref-input" :value="getField(currentSection, f.key) ?? ''" @input="setField(currentSection, f.key, ($event.target as HTMLInputElement).value)" />
+            <input type="text" class="pref-input" :value="getField(currentSection, f.key) ?? ''" @input="setFieldValue(currentSection, f.key, ($event.target as HTMLInputElement).value)" @blur="setField(currentSection, f.key, ($event.target as HTMLInputElement).value)" @keyup.enter="setField(currentSection, f.key, ($event.target as HTMLInputElement).value); ($event.target as HTMLInputElement).blur()" />
             <button class="pref-btn pref-btn-pick" type="button" @click="pickPythonPath">…</button>
           </div>
           <!-- String list editor -->
           <div v-else-if="f.type === 'string_list'" class="pref-string-list">
             <div v-for="(item, i) in getStringList(f.key)" :key="i" class="pref-string-item">
-              <input class="pref-input" :value="item" @input="updateStringListItem(f.key, i, ($event.target as HTMLInputElement).value)" :placeholder="t('framework.preferences.stringList.modulePlaceholder', '模块名')" />
+              <input class="pref-input" :value="item" @input="updateStringListItemValue(f.key, i, ($event.target as HTMLInputElement).value)" @blur="updateStringListItem(f.key, i, ($event.target as HTMLInputElement).value)" @keyup.enter="updateStringListItem(f.key, i, ($event.target as HTMLInputElement).value); ($event.target as HTMLInputElement).blur()" :placeholder="t('framework.preferences.stringList.modulePlaceholder', '模块名')" />
               <button class="pref-btn pref-btn-rm" type="button" @click="removeStringListItem(f.key, i)">✕</button>
             </div>
             <button class="pref-btn pref-btn-sm" type="button" @click="addStringListItem(f.key)">{{ t('framework.preferences.stringList.add', '+ 新增') }}</button>
             <div v-if="f.hint" class="pref-field-hint">{{ f.hint }}</div>
           </div>
           <!-- Extension fields (display string[] as comma-separated) -->
-          <input v-else-if="f.key.includes('extensions')" type="text" class="pref-input" :value="extDisplay(f.key)" @input="setField(currentSection, f.key, ($event.target as HTMLInputElement).value)" />
+          <input v-else-if="f.key.includes('extensions')" type="text" class="pref-input" :value="extDisplay(f.key)" @input="setFieldValue(currentSection, f.key, ($event.target as HTMLInputElement).value)" @blur="setField(currentSection, f.key, ($event.target as HTMLInputElement).value)" @keyup.enter="setField(currentSection, f.key, ($event.target as HTMLInputElement).value); ($event.target as HTMLInputElement).blur()" />
           <!-- Text -->
-          <input v-else type="text" class="pref-input" :value="typeof getField(currentSection, f.key) === 'string' ? getField(currentSection, f.key) : typeof getField(currentSection, f.key) === 'number' ? String(getField(currentSection, f.key)) : ''" @input="setField(currentSection, f.key, ($event.target as HTMLInputElement).value)" />
+          <input v-else type="text" class="pref-input" :value="typeof getField(currentSection, f.key) === 'string' ? getField(currentSection, f.key) : typeof getField(currentSection, f.key) === 'number' ? String(getField(currentSection, f.key)) : ''" @input="setFieldValue(currentSection, f.key, ($event.target as HTMLInputElement).value)" @blur="setField(currentSection, f.key, ($event.target as HTMLInputElement).value)" @keyup.enter="setField(currentSection, f.key, ($event.target as HTMLInputElement).value); ($event.target as HTMLInputElement).blur()" />
+          <div v-if="f.hint && !['directory_list', 'string_list'].includes(f.type)" class="pref-field-hint pref-field-hint-inline">{{ f.hint }}</div>
         </div>
         <span class="pref-fs" :class="fieldState(currentSection, f.key) === 'active' ? 'pref-fs-active' : 'pref-fs-pending'">{{ stateLabel(fieldState(currentSection, f.key)) }}</span>
       </div>
@@ -499,11 +526,15 @@ const currentFields = computed(() => {
 .pref-auto-label input { margin: 0; }
 .pref-field { display: flex; align-items: center; gap: var(--space-sm); padding: 2px 0; font-size: var(--text-small); }
 .pref-field-label { width: 130px; flex-shrink: 0; color: var(--text-secondary); }
-.pref-field-ctl { flex: 1; display: flex; align-items: center; gap: var(--space-xs); }
+.pref-field-ctl { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-xs); flex-wrap: wrap; }
 .pref-input { padding: 2px 6px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text-primary); font-family: var(--font-ui); font-size: var(--text-small); width: 100%; max-width: 240px; }
 .pref-input:focus { border-color: var(--accent); outline: none; }
 .pref-input-num { max-width: 90px; }
 select.pref-input { cursor: pointer; }
+.pref-password-wrap { display: flex; align-items: center; gap: 2px; width: 100%; }
+.pref-password-wrap .pref-input { flex: 1; }
+.pref-password-toggle { padding: 1px 6px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-panel); color: var(--text-secondary); cursor: pointer; font-size: var(--text-body); line-height: 1.4; }
+.pref-password-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
 .pref-obj-sep { color: var(--text-disabled); font-weight: 600; }
 .pref-check-label { display: flex; align-items: center; gap: 4px; cursor: pointer; color: var(--text-primary); }
 .pref-check-label input { margin: 0; }
@@ -534,6 +565,7 @@ select.pref-input { cursor: pointer; }
 .pref-roots-empty { font-size: var(--text-caption); color: var(--text-disabled); padding: 4px 0; }
 .pref-roots-actions { display: flex; gap: 4px; }
 .pref-field-hint { font-size: var(--text-caption); color: var(--text-disabled); margin-top: 2px; }
+.pref-field-hint-inline { flex-basis: 100%; }
 .pref-path-row { display: flex; gap: 2px; width: 100%; }
 .pref-path-row .pref-input { flex: 1; }
 .pref-btn-pick { padding: 2px 8px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-panel); color: var(--text-secondary); cursor: pointer; font-size: var(--text-small); font-family: var(--font-ui); }

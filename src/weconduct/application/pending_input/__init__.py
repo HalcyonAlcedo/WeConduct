@@ -5,13 +5,15 @@ from .models import (
     PendingInputSnapshot,
     PendingInputStatus,
 )
-from .service import PendingInputService
+from .service import PendingInputService, PendingInputStateError, PendingInputValidationError
 
 __all__ = [
     "PendingInputField",
     "PendingInputRequest",
     "PendingInputResult",
     "PendingInputService",
+    "PendingInputStateError",
+    "PendingInputValidationError",
     "PendingInputSnapshot",
     "PendingInputStatus",
 ]
