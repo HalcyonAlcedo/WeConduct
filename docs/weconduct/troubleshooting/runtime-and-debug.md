@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:troubleshooting:runtime-and-debug
 ---
 
@@ -31,6 +31,20 @@ debug.session_conflict
 ## 快照为空
 
 快照只在断点命中、手动暂停、步进暂停或记录帧命中时产生。检查事件是否出现 `breakpoint.hit`、`debug.paused` 或 `record_frame.hit`；普通节点完成不会自动生成快照。
+
+## 运行或 Debug 要求输入密码
+
+项目存在加密初始参数时，正常运行或 Debug 先显示 `unlock_required`。输入错误密码不会启动 worker；终止会话会关闭密码窗口并撤销内存敏感作用域。外部 API 客户端应调用对应的 unlock 操作，不要把密码放入普通变量或日志。
+
+## 等待用户输入或提交失败
+
+`input.request` 会使整个执行会话进入 `waiting`。UI、CLI 和外部 API 必须提交完整表单；敏感字段不会在查询响应中返回，也不能设置默认值。超时只在 `timeout_seconds > 0` 时启用，处理顺序为默认值、`out.timed_out` 分支、节点失败。会话终止后，迟到提交不会重新激活节点。
+
+## Debug 中看不到敏感变量
+
+这是默认安全行为。暂停后使用 **查看敏感值** 并再次输入项目参数密码，实际值只在内存中短暂返回，不进入日志、历史、快照或事件。继续、单步、终止或切换会话后需要重新授权。
+
+Debug 启动、图校验或编译失败时，应在诊断面板查看结构化错误；图修改或再次校验/编译会清理旧的节点/边高亮。
 
 ## 历史数据不是完整事件归档
 

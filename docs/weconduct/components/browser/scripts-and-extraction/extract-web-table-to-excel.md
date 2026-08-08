@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: component:browser.extract_web_table_to_excel
 ---
 

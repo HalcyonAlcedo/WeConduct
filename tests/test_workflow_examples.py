@@ -36,7 +36,7 @@ def test_all_workflow_examples_have_pages_graphs_and_downloads() -> None:
     for example_id in EXAMPLE_IDS:
         page = ROOT / "docs" / "weconduct" / "examples" / f"{example_id}.md"
         graph = ROOT / "docs" / "assets" / "graphs" / "examples" / f"{example_id}.json"
-        download = ROOT / "docs" / "downloads" / "weconduct" / "0.8.1" / f"{example_id}.zip"
+        download = ROOT / "docs" / "downloads" / "weconduct" / "0.9.0" / f"{example_id}.zip"
         assert page.exists(), example_id
         assert graph.exists(), example_id
         assert download.exists(), example_id
@@ -44,7 +44,7 @@ def test_all_workflow_examples_have_pages_graphs_and_downloads() -> None:
         front_matter, body = parse_front_matter(page)
         assert front_matter == {
             "product": "weconduct",
-            "version": "0.8.1",
+            "version": "0.9.0",
             "doc_id": f"weconduct:example:{example_id}",
         }
         for heading in (
@@ -59,7 +59,7 @@ def test_all_workflow_examples_have_pages_graphs_and_downloads() -> None:
 def test_download_archives_contain_directory_projects() -> None:
     for example_id in EXAMPLE_IDS:
         archive_path = (
-            ROOT / "docs" / "downloads" / "weconduct" / "0.8.1" / f"{example_id}.zip"
+            ROOT / "docs" / "downloads" / "weconduct" / "0.9.0" / f"{example_id}.zip"
         )
         with zipfile.ZipFile(archive_path) as archive:
             names = set(archive.namelist())
@@ -87,7 +87,7 @@ def test_example_index_lists_every_download() -> None:
         assert f"{example_id}.zip" in index
 
 
-def test_download_projects_open_with_weconduct_081(tmp_path: Path) -> None:
+def test_download_projects_open_with_weconduct_090(tmp_path: Path) -> None:
     source_root = Path(os.environ.get("WECONDUCT_SOURCE_ROOT", ROOT.parent / "WeConduct"))
     if not (source_root / "src" / "weconduct").exists():
         pytest.skip("WeConduct source tree is unavailable")
@@ -97,7 +97,7 @@ def test_download_projects_open_with_weconduct_081(tmp_path: Path) -> None:
 
         for example_id in EXAMPLE_IDS:
             archive_path = (
-                ROOT / "docs" / "downloads" / "weconduct" / "0.8.1" / f"{example_id}.zip"
+                ROOT / "docs" / "downloads" / "weconduct" / "0.9.0" / f"{example_id}.zip"
             )
             target = tmp_path / example_id
             with zipfile.ZipFile(archive_path) as archive:

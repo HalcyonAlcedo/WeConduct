@@ -8,16 +8,16 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGES = {
-    "docs/weconduct/troubleshooting/index.md": ("weconduct", "0.8.1", "weconduct:troubleshooting:index"),
-    "docs/weconduct/troubleshooting/project-and-startup.md": ("weconduct", "0.8.1", "weconduct:troubleshooting:project-and-startup"),
-    "docs/weconduct/troubleshooting/graph-validation.md": ("weconduct", "0.8.1", "weconduct:troubleshooting:graph-validation"),
-    "docs/weconduct/troubleshooting/runtime-and-debug.md": ("weconduct", "0.8.1", "weconduct:troubleshooting:runtime-and-debug"),
-    "docs/weconduct/troubleshooting/browser-and-network.md": ("weconduct", "0.8.1", "weconduct:troubleshooting:browser-and-network"),
-    "docs/weconduct/troubleshooting/files-python-and-packages.md": ("weconduct", "0.8.1", "weconduct:troubleshooting:files-python-and-packages"),
-    "docs/weconduct/reference/keyboard-shortcuts.md": ("weconduct", "0.8.1", "weconduct:reference:keyboard-shortcuts"),
-    "docs/weconduct/reference/project-format.md": ("weconduct", "0.8.1", "weconduct:reference:project-format"),
-    "docs/weconduct/reference/variable-syntax.md": ("weconduct", "0.8.1", "weconduct:reference:variable-syntax"),
-    "docs/weconduct/reference/glossary.md": ("weconduct", "0.8.1", "weconduct:reference:glossary"),
+    "docs/weconduct/troubleshooting/index.md": ("weconduct", "0.9.0", "weconduct:troubleshooting:index"),
+    "docs/weconduct/troubleshooting/project-and-startup.md": ("weconduct", "0.9.0", "weconduct:troubleshooting:project-and-startup"),
+    "docs/weconduct/troubleshooting/graph-validation.md": ("weconduct", "0.9.0", "weconduct:troubleshooting:graph-validation"),
+    "docs/weconduct/troubleshooting/runtime-and-debug.md": ("weconduct", "0.9.0", "weconduct:troubleshooting:runtime-and-debug"),
+    "docs/weconduct/troubleshooting/browser-and-network.md": ("weconduct", "0.9.0", "weconduct:troubleshooting:browser-and-network"),
+    "docs/weconduct/troubleshooting/files-python-and-packages.md": ("weconduct", "0.9.0", "weconduct:troubleshooting:files-python-and-packages"),
+    "docs/weconduct/reference/keyboard-shortcuts.md": ("weconduct", "0.9.0", "weconduct:reference:keyboard-shortcuts"),
+    "docs/weconduct/reference/project-format.md": ("weconduct", "0.9.0", "weconduct:reference:project-format"),
+    "docs/weconduct/reference/variable-syntax.md": ("weconduct", "0.9.0", "weconduct:reference:variable-syntax"),
+    "docs/weconduct/reference/glossary.md": ("weconduct", "0.9.0", "weconduct:reference:glossary"),
 }
 
 
@@ -54,7 +54,7 @@ def test_reference_and_troubleshooting_pages_are_published() -> None:
 
 def test_hidden_version_manifests_reserve_future_switcher() -> None:
     expected = {
-        "weconduct": "0.8.1",
+        "weconduct": "0.9.0",
         "weave": "0.5.0",
     }
     for product, version in expected.items():

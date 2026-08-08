@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:guide:resource-management
 ---
 
@@ -25,4 +25,4 @@ doc_id: weconduct:guide:resource-management
 
 ## 当前支持的操作
 
-0.8.1 的资源管理面板支持：新建、打开、启用/禁用、编辑标签、查看 schema 和删除用户组件。资源导入和导出功能暂未在面板中提供入口。
+0.9.0 的资源管理面板支持：新建、打开、启用/禁用、编辑标签、查看 schema 和删除用户组件。资源导入和导出功能暂未在面板中提供入口。

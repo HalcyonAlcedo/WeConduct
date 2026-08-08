@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -9,10 +10,10 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST_PATH = ROOT / "data" / "weconduct-0.8.1" / "components.json"
-DEFAULT_GROUPS_PATH = ROOT / "data" / "weconduct-0.8.1" / "component-groups.json"
+DEFAULT_MANIFEST_PATH = ROOT / "data" / "weconduct-0.9.0" / "components.json"
+DEFAULT_GROUPS_PATH = ROOT / "data" / "weconduct-0.9.0" / "component-groups.json"
 EXPECTED_PRODUCT = "weconduct"
-EXPECTED_VERSION = "0.8.1"
+SEMVER_RE = re.compile(r"\d+\.\d+\.\d+")
 
 
 def parse_args() -> argparse.Namespace:
@@ -95,8 +96,9 @@ def validate_catalog(
     version = catalog.get("version")
     if product != EXPECTED_PRODUCT:
         raise SystemExit(f"product mismatch: {product!r} expected {EXPECTED_PRODUCT!r}")
-    if version != EXPECTED_VERSION:
-        raise SystemExit(f"version mismatch: {version!r} expected {EXPECTED_VERSION!r}")
+    if not isinstance(version, str) or not SEMVER_RE.fullmatch(version.strip()):
+        raise SystemExit(f"version must be a semantic version X.Y.Z, got {version!r}")
+    version = version.strip()
 
     groups = catalog.get("groups")
     assignments = catalog.get("assignments")
@@ -190,7 +192,7 @@ def validate_catalog(
     summary = build_summary(group_rows, assignment_rows)
     return {
         "product": EXPECTED_PRODUCT,
-        "version": EXPECTED_VERSION,
+        "version": version,
         "groups": group_rows,
         "assignments": assignment_rows,
         "summary": summary,

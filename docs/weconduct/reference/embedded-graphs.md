@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:reference:embedded-graphs
 ---
 
@@ -25,9 +25,9 @@ doc_id: weconduct:reference:embedded-graphs
 
 - 文件必须是 `graph-v1` 顶层结构，至少包含 `graph_model_id`、`graph_schema_version`、`nodes`、`edges`、`root_metadata`。
 - `nodes` 至少 1 个节点；空图会被前后端验证同时拒绝，避免视口计算出现无意义坐标或 `NaN`。
-- `root_metadata.graph_compatibility.built_with_app_version` 当前固定要求 `0.8.1`。
+- `root_metadata.graph_compatibility.built_with_app_version` 当前固定要求 `0.9.0`。
 - 教学图目前只支持 `control` 和 `data` 两类边；`observe` 边会被验证器拒绝。
-- 节点需要真实 `position`，节点端口必须与 WeConduct 0.8.1 组件 manifest 契约一致。
+- 节点需要真实 `position`，节点端口必须与 WeConduct 0.9.0 组件 manifest 契约一致。
 - 教学图建议最多 20 个节点，超出后请拆成多张图，避免移动端阅读和演示交互失控。
 
 ## 可访问性与回退

@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:guide:python-runtime
 ---
 
@@ -48,6 +48,28 @@ doc_id: weconduct:guide:python-runtime
 | `package_embed_mode` | `wheelhouse_rebuild` | 打包时选择不嵌入、wheelhouse 或完整环境 |
 
 保存字段本身不立即重建环境；健康检查、准备、重建、运行或打包时消费新配置。
+
+## `python.run` 的 0.9.0 执行边界
+
+`python.run` 仍是项目级 Python 环境中的单节点代码执行能力，不是节点插件或环境插件。节点配置可以声明动态的
+`input_schema`、`output_schema`、`metadata_schema` 和 `data_fields`，代码通过执行信封访问这些域：
+
+```python
+name = ctx.inputs.get("name")
+ctx.outputs.set("greeting", f"hello {name}")
+ctx.metadata.set("trace", "request-1")
+counter = ctx.data.get("counter")
+session = ctx.session.info()
+network = ctx.network.current()
+ctx.cancel.check()
+```
+
+`ctx.data` 只允许读取或写入 `data_fields` 中声明的项目变量；未声明的字段会被拒绝。输出和元数据先保存在本次执行的信封中，只有 Python 子进程成功结束且字段校验通过后才一次性提交，失败或取消不会提交部分输出。
+
+当输入端口或 `data_fields` 中包含会话敏感引用时，默认不允许 Python 代码读取明文。只有在节点明确设置
+`allow_sensitive_values = true` 后，敏感值才会通过受控 Broker 在子进程内存中解引用；这不会关闭日志、事件、历史和诊断脱敏，也不会把明文写入项目文件。该开关只适合确有必要的脚本，普通网络认证应优先交给标准能力节点消费。
+
+Python 节点返回值、变量、输出和元数据必须可以转换为 JSON；无法直接转换的对象会按运行时规则转为表示字符串。标准输出和错误输出受项目设置控制，并会在返回前按当前会话中的敏感明文做脱敏。
 
 ## 操作按钮
 

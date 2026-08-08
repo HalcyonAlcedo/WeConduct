@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:example:file-csv-transformation
 ---
 
@@ -44,7 +44,7 @@ CSV 行写入 `rows`，映射结果写入 `csv_rows`，并生成 `output/summary
 
 ## 下载项目
 
-- [下载 file-csv-transformation.zip](../../downloads/weconduct/0.8.1/file-csv-transformation.zip)
+- [下载 file-csv-transformation.zip](../../downloads/weconduct/0.9.0/file-csv-transformation.zip)
 - [查看原始 graph-v1 JSON](../../assets/graphs/examples/file-csv-transformation.json)
 
-下载包基于 WeConduct 0.8.1 版本。示例中的 URL、选择器和凭据均为占位值，外部站点和网络响应不随示例分发。
+下载包基于 WeConduct 0.9.0 版本。示例中的 URL、选择器和凭据均为占位值，外部站点和网络响应不随示例分发。

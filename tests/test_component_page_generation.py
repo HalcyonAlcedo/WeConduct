@@ -24,21 +24,21 @@ def test_generator_creates_all_group_and_detail_contracts(tmp_path: Path) -> Non
     graphs_root = docs_root / "assets" / "graphs" / "components"
 
     result = generator.generate_component_pages(
-        manifest_path=ROOT / "data" / "weconduct-0.8.1" / "components.json",
-        groups_path=ROOT / "data" / "weconduct-0.8.1" / "component-groups.json",
+        manifest_path=ROOT / "data" / "weconduct-0.9.0" / "components.json",
+        groups_path=ROOT / "data" / "weconduct-0.9.0" / "component-groups.json",
         docs_root=docs_root,
         graphs_root=graphs_root,
         include_groups=True,
         include_details=True,
     )
 
-    assert result == {"groups": 25, "details": 126, "group_graphs": 25, "detail_graphs": 126}
+    assert result == {"groups": 26, "details": 135, "group_graphs": 26, "detail_graphs": 135}
     component_root = docs_root / "weconduct" / "components"
     assert (component_root / "index.md").exists()
     group_pages = [path for path in component_root.rglob("index.md") if path != component_root / "index.md"]
     detail_pages = [path for path in (docs_root / "weconduct" / "components").rglob("*.md") if path.name != "index.md"]
-    assert len(group_pages) == 25
-    assert len(detail_pages) == 126
+    assert len(group_pages) == 26
+    assert len(detail_pages) == 135
 
     required_sections = {
         "功能说明", "什么时候用", "需要什么权限", "端口说明", "配置参数",
@@ -55,8 +55,8 @@ def test_generator_creates_all_group_and_detail_contracts(tmp_path: Path) -> Non
 def test_generator_is_deterministic_and_graphs_use_manifest_ports(tmp_path: Path) -> None:
     generator = load_generator()
     kwargs = {
-        "manifest_path": ROOT / "data" / "weconduct-0.8.1" / "components.json",
-        "groups_path": ROOT / "data" / "weconduct-0.8.1" / "component-groups.json",
+        "manifest_path": ROOT / "data" / "weconduct-0.9.0" / "components.json",
+        "groups_path": ROOT / "data" / "weconduct-0.9.0" / "component-groups.json",
         "include_groups": True,
         "include_details": True,
     }
@@ -113,16 +113,16 @@ def test_parameter_tables_cover_node_config_and_schema_union(tmp_path: Path) -> 
     generator = load_generator()
     docs_root = tmp_path / "docs"
     generator.generate_component_pages(
-        manifest_path=ROOT / "data" / "weconduct-0.8.1" / "components.json",
-        groups_path=ROOT / "data" / "weconduct-0.8.1" / "component-groups.json",
+        manifest_path=ROOT / "data" / "weconduct-0.9.0" / "components.json",
+        groups_path=ROOT / "data" / "weconduct-0.9.0" / "component-groups.json",
         docs_root=docs_root,
         graphs_root=docs_root / "assets" / "graphs" / "components",
         include_groups=False,
         include_details=True,
     )
 
-    manifest = json.loads((ROOT / "data" / "weconduct-0.8.1" / "components.json").read_text(encoding="utf-8"))
-    catalog = json.loads((ROOT / "data" / "weconduct-0.8.1" / "component-groups.json").read_text(encoding="utf-8"))
+    manifest = json.loads((ROOT / "data" / "weconduct-0.9.0" / "components.json").read_text(encoding="utf-8"))
+    catalog = json.loads((ROOT / "data" / "weconduct-0.9.0" / "component-groups.json").read_text(encoding="utf-8"))
     assignments = catalog["assignments"]
     for component in manifest:
         page_path = assignments[component["resource_key"]]["page_path"].removeprefix("docs/")
@@ -141,14 +141,14 @@ def test_key_families_receive_domain_specific_guidance(tmp_path: Path) -> None:
     generator = load_generator()
     docs_root = tmp_path / "docs"
     generator.generate_component_pages(
-        manifest_path=ROOT / "data" / "weconduct-0.8.1" / "components.json",
-        groups_path=ROOT / "data" / "weconduct-0.8.1" / "component-groups.json",
+        manifest_path=ROOT / "data" / "weconduct-0.9.0" / "components.json",
+        groups_path=ROOT / "data" / "weconduct-0.9.0" / "component-groups.json",
         docs_root=docs_root,
         graphs_root=docs_root / "assets" / "graphs" / "components",
         include_groups=False,
         include_details=True,
     )
-    catalog = json.loads((ROOT / "data" / "weconduct-0.8.1" / "component-groups.json").read_text(encoding="utf-8"))
+    catalog = json.loads((ROOT / "data" / "weconduct-0.9.0" / "component-groups.json").read_text(encoding="utf-8"))
 
     def page(resource_key: str) -> str:
         relative = catalog["assignments"][resource_key]["page_path"].removeprefix("docs/")
@@ -161,3 +161,28 @@ def test_key_families_receive_domain_specific_guidance(tmp_path: Path) -> None:
     assert "工作簿" in page("excel.update_batch")
     assert "项目 Python 运行时" in page("python.run")
     assert "编译器管理" in page("control.retry")
+
+
+def test_090_network_and_input_examples_follow_runtime_boundaries(tmp_path: Path) -> None:
+    generator = load_generator()
+    docs_root = tmp_path / "docs"
+    generator.generate_component_pages(
+        manifest_path=ROOT / "data" / "weconduct-0.9.0" / "components.json",
+        groups_path=ROOT / "data" / "weconduct-0.9.0" / "component-groups.json",
+        docs_root=docs_root,
+        graphs_root=docs_root / "assets" / "graphs" / "components",
+        include_groups=False,
+        include_details=True,
+    )
+    catalog = json.loads((ROOT / "data" / "weconduct-0.9.0" / "component-groups.json").read_text(encoding="utf-8"))
+
+    def page(resource_key: str) -> str:
+        relative = catalog["assignments"][resource_key]["page_path"].removeprefix("docs/")
+        return (docs_root / relative).read_text(encoding="utf-8")
+
+    input_page = page("input.request")
+    assert "超时先使用已配置的默认值，否则尝试从 `timed_out` 继续" in input_page
+    expected_result = input_page.split("## 预期结果", 1)[1].split("## 常见问题", 1)[0]
+    assert expected_result.index("默认值") < expected_result.index("timed_out")
+    assert '"endpoint": "https://example.com/graphql"' in page("network.graphql_request")
+    assert '"url": "wss://example.com/socket"' in page("network.websocket_connect")

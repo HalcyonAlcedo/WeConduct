@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:concepts:projects-and-workspaces
 ---
 
@@ -25,7 +25,7 @@ doc_id: weconduct:concepts:projects-and-workspaces
 
 ## 三种项目形态
 
-WeConduct 0.8.1 支持三种不同来源的项目：
+WeConduct 0.9.0 支持三种不同来源的项目：
 
 - **目录项目**（推荐）：最常见的编辑形态，主文件和目录化存储一同组成完整项目。创建新项目时默认使用这种方式。
 - **旧式单文件项目**：早期版本创建的项目格式。打开后会自动转换为目录项目并保存。

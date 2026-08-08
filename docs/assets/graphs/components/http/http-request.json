@@ -4,12 +4,12 @@
   "graph_schema_version": "graph-v1",
   "nodes": [
     {
-      "node_id": "node-http-request-1",
+      "node_id": "node-network-http-request-1",
       "lowered_kind": "execution",
       "source_anchor_ref": "docs:http.request:1",
-      "expansion_role": "action:request",
-      "display_name": "HTTP 请求",
-      "node_kind": "http.request",
+      "expansion_role": "network:http_request",
+      "display_name": "网络 HTTP 请求",
+      "node_kind": "network.http_request",
       "position": {
         "x": 60,
         "y": 80
@@ -22,30 +22,153 @@
           "semantic_slot": "in.control"
         },
         {
-          "port_id": "in:url",
-          "direction": "input",
-          "relation_layer": "data",
-          "semantic_slot": "in.url"
-        },
-        {
           "port_id": "out",
           "direction": "output",
           "relation_layer": "control",
           "semantic_slot": "out.control"
         },
         {
-          "port_id": "out:body",
+          "port_id": "failed",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.failed"
+        },
+        {
+          "port_id": "in:context_strategy",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.context_strategy"
+        },
+        {
+          "port_id": "in:switch_context_id",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.switch_context_id"
+        },
+        {
+          "port_id": "in:url",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.url"
+        },
+        {
+          "port_id": "in:method",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.method"
+        },
+        {
+          "port_id": "in:body",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.body"
+        },
+        {
+          "port_id": "in:headers",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.headers"
+        },
+        {
+          "port_id": "in:query",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.query"
+        },
+        {
+          "port_id": "in:auth",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.auth"
+        },
+        {
+          "port_id": "in:tls",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.tls"
+        },
+        {
+          "port_id": "in:proxy",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.proxy"
+        },
+        {
+          "port_id": "in:timeout",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.timeout"
+        },
+        {
+          "port_id": "in:retry_policy",
+          "direction": "input",
+          "relation_layer": "data",
+          "semantic_slot": "in.retry_policy"
+        },
+        {
+          "port_id": "out:response",
           "direction": "output",
           "relation_layer": "data",
-          "semantic_slot": "out.body"
+          "semantic_slot": "out.response"
+        },
+        {
+          "port_id": "out:status_code",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.status_code"
+        },
+        {
+          "port_id": "out:headers",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.headers"
+        },
+        {
+          "port_id": "out:body_ref",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.body_ref"
+        },
+        {
+          "port_id": "out:duration_ms",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.duration_ms"
+        },
+        {
+          "port_id": "out:final_url",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.final_url"
+        },
+        {
+          "port_id": "out:network_context_id",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.network_context_id"
+        },
+        {
+          "port_id": "out:request_id",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.request_id"
+        },
+        {
+          "port_id": "out:transport_error",
+          "direction": "output",
+          "relation_layer": "data",
+          "semantic_slot": "out.transport_error"
         }
       ],
       "node_config": {
+        "context_strategy": "inherit",
+        "switch_context_id": null,
         "method": "GET",
         "url": "https://example.com",
         "headers": {},
-        "timeout": 30,
-        "body": null
+        "query": {},
+        "body": "example",
+        "timeout": null
       }
     }
   ],
@@ -57,10 +180,10 @@
   },
   "root_metadata": {
     "graph_compatibility": {
-      "graph_data_version": "0.6.2",
-      "built_with_app_version": "0.8.1",
+      "graph_data_version": "0.9.0",
+      "built_with_app_version": "0.9.0",
       "minimum_loader_app_version": "0.5.2",
-      "last_upgraded_by_app_version": "0.8.1",
+      "last_upgraded_by_app_version": "0.9.0",
       "upgrade_history": []
     }
   },

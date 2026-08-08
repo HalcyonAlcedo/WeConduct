@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.2
+version: 0.9.0
 doc_id: weconduct:guide:language-packs
 ---
 
@@ -19,13 +19,15 @@ WeConduct 界面默认使用简体中文。其他语言通过**外部语言包**
 
 你可以「英文界面 + 中文资源」，也可以反过来。缺少对应翻译时，各自回落到内置简体中文，不会出现空白或裸 key。
 
-## 下载官方英文语言包
+## 下载语言包
 
-当前版本官方维护**一份**英文语言包，同时作为制作语言包的**示例**：
+当前 Docs 仓库暂未随 WeConduct 0.9.0 发布官方 `en-US` 语言包。历史 0.8.2
+语言包仍作为制作参考保留，不能视为 0.9.0 的官方语言包：
 
-- [下载 en-US.zip](../../downloads/weconduct/0.8.2/en-US.zip)
+- [下载历史 0.8.2 en-US.zip](../../downloads/weconduct/0.8.2/en-US.zip)
 
-下载包基于 WeConduct 0.8.2 版本，解压后得到一个 `en-US/` 文件夹。
+该下载包基于 WeConduct 0.8.2。使用 0.9.0 时，建议先确认语言包覆盖的键与当前
+程序资源一致；缺少的键会回落到内置简体中文。解压后得到一个 `en-US/` 文件夹。
 
 ## 安装步骤
 

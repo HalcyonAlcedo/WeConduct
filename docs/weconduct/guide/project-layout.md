@@ -1,12 +1,12 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:guide:project-layout
 ---
 
 # 项目布局
 
-假设主文件是 `demo.weconduct.json`，0.8.1 保存后的核心结构如下：
+假设主文件是 `demo.weconduct.json`，0.9.0 保存后的核心结构如下：
 
 ```text
 demo.weconduct.json

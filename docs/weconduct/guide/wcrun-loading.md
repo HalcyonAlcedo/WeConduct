@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:guide:wcrun-loading
 ---
 
@@ -28,7 +28,7 @@ doc_id: weconduct:guide:wcrun-loading
 
 包要求的安全权限未满足时会显示确认窗口。**忽略**可以继续查看，但运行可能被安全策略阻止；**一键修改并放行权限**会修改程序级安全配置，只有确认包来源和所需能力后才使用。
 
-外部资源缺失时，在 **外部绑定** 输入 `resource_id` 和实际路径字符串。0.8.1 会把该值解析为绝对路径，且绑定目标仅支持 `initial_variable`。绑定完成后重新检查运行就绪状态。
+外部资源缺失时，在 **外部绑定** 输入 `resource_id` 和实际路径字符串。0.9.0 会把该值解析为绝对路径，且绑定目标仅支持 `initial_variable`。绑定完成后重新检查运行就绪状态。
 
 ## 卸载
 

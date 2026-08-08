@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: component:excel.write_table
 ---
 
@@ -38,7 +38,7 @@ doc_id: component:excel.write_table
 
 ## 输入、输出与副作用
 
-输入端口：`in`、`in:data`。输出端口：`out`。对外影响：可能读取或写入文件。
+输入端口：`in`、`in:data`。输出端口：`out`。对外影响：读取工作簿，写入类节点还会更新并保存目标文件。
 
 ## 使用示例
 

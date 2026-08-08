@@ -1,0 +1,59 @@
+{
+  "graph_model_id": "graph:docs:component:input.request",
+  "compilation_id": null,
+  "graph_schema_version": "graph-v1",
+  "nodes": [
+    {
+      "node_id": "node-input-request-1",
+      "lowered_kind": "execution",
+      "source_anchor_ref": "docs:input.request:1",
+      "expansion_role": "input:request",
+      "display_name": "请求输入",
+      "node_kind": "input.request",
+      "position": {
+        "x": 60,
+        "y": 80
+      },
+      "ports": [
+        {
+          "port_id": "in",
+          "direction": "input",
+          "relation_layer": "control",
+          "semantic_slot": "in.control"
+        },
+        {
+          "port_id": "out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.control"
+        },
+        {
+          "port_id": "timed_out",
+          "direction": "output",
+          "relation_layer": "control",
+          "semantic_slot": "out.timed_out"
+        }
+      ],
+      "node_config": {
+        "fields": [],
+        "timeout_seconds": 0
+      }
+    }
+  ],
+  "edges": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  },
+  "root_metadata": {
+    "graph_compatibility": {
+      "graph_data_version": "0.9.0",
+      "built_with_app_version": "0.9.0",
+      "minimum_loader_app_version": "0.5.2",
+      "last_upgraded_by_app_version": "0.9.0",
+      "upgrade_history": []
+    }
+  },
+  "graph_effective_diagnostic_anchor_refs": []
+}

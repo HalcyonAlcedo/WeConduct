@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import zipfile
 from pathlib import Path
@@ -7,9 +8,15 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "data" / "weconduct-0.8.1" / "components.json"
+MANIFEST_PATH = ROOT / "data" / "weconduct-0.9.0" / "components.json"
 DOCS_ROOT = ROOT / "docs"
-VERSION = "0.8.1"
+VERSION = "0.9.0"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--version", default=VERSION)
+    return parser.parse_args()
 
 
 EXAMPLES: tuple[dict[str, Any], ...] = (
@@ -147,13 +154,13 @@ EXAMPLES: tuple[dict[str, Any], ...] = (
         "prerequisites": "启用远程网络和 Python 执行；在项目设置启用并准备项目 Python 运行时。",
         "nodes": [
             ("flow.start", {}),
-            ("http.request", {"method": "GET", "url": "https://example.com/data.json", "headers": {"Accept": "application/json"}, "timeout": 30, "body": None}),
+            ("network.http_request", {"method": "GET", "url": "https://example.com/data.json", "headers": {"Accept": "application/json"}, "timeout": 30, "body": ""}),
             ("data.set_variable", {"name": "response_body", "value": None}),
             ("python.run", {"code": "result = {'processed': True, 'body': variables.get('response_body')}"}),
         ],
         "edges": [
             (0, "out", 1, "in"), (1, "out", 2, "in"), (2, "out", 3, "in"),
-            (1, "out:body", 2, "in:value", "data"),
+            (1, "out:body_ref", 2, "in:value", "data"),
         ],
         "expected": "HTTP 节点返回响应摘要，Python 子进程返回可 JSON 序列化的 `result`。",
         "diagnosis": "检查 URL、远程网络权限、Python runtime 状态、导入阻止列表和执行超时。",
@@ -181,7 +188,7 @@ EXAMPLES: tuple[dict[str, Any], ...] = (
         "prerequisites": "先保存下载项目，再在 `.wcrun` 包管理中执行预检；选择用户有写权限的输出路径。",
         "nodes": [
             ("flow.start", {}),
-            ("data.set_variables_batch", {"variables": {"package_demo": True, "version": "0.8.1"}}),
+            ("data.set_variables_batch", {"variables": {"package_demo": True, "version": VERSION}}),
             ("data.get_variable", {"name": "package_demo"}),
         ],
         "edges": [(0, "out", 1, "in"), (1, "out", 2, "in")],
@@ -198,7 +205,7 @@ def read_manifest() -> dict[str, dict[str, Any]]:
 
 def graph_compatibility() -> dict[str, Any]:
     return {
-        "graph_data_version": "0.6.2",
+        "graph_data_version": VERSION,
         "built_with_app_version": VERSION,
         "minimum_loader_app_version": "0.5.2",
         "last_upgraded_by_app_version": VERSION,
@@ -419,9 +426,9 @@ def write_page(spec: dict[str, Any], graph: dict[str, Any], manifest: dict[str, 
         "", "## 运行后应该看到什么", "", spec["expected"], "", "## 如果出错怎么办", "", spec["diagnosis"], "",
         "排查时建议记录节点的 ID、资源键和完整的错误信息，先判断是配置问题、权限问题还是运行环境问题，再对症解决。",
         "", "## 下载项目", "",
-        f"- [下载 {spec['id']}.zip](../../downloads/weconduct/0.8.1/{spec['id']}.zip)",
+        f"- [下载 {spec['id']}.zip](../../downloads/weconduct/{VERSION}/{spec['id']}.zip)",
         f"- [查看原始 graph-v1 JSON](../../assets/graphs/examples/{spec['id']}.json)",
-        "", "下载包基于 WeConduct 0.8.1 版本。示例中的 URL、选择器和凭据均为占位值，外部站点和网络响应不随示例分发。",
+        "", f"下载包基于 WeConduct {VERSION} 版本。示例中的 URL、选择器和凭据均为占位值，外部站点和网络响应不随示例分发。",
     ]
     page_path.parent.mkdir(parents=True, exist_ok=True)
     page_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
@@ -429,7 +436,7 @@ def write_page(spec: dict[str, Any], graph: dict[str, Any], manifest: dict[str, 
 
 def component_link(resource_key: str) -> str:
     catalog = json.loads(
-        (ROOT / "data" / "weconduct-0.8.1" / "component-groups.json").read_text(encoding="utf-8")
+        (ROOT / "data" / f"weconduct-{VERSION}" / "component-groups.json").read_text(encoding="utf-8")
     )
     page_path = catalog["assignments"][resource_key]["page_path"]
     return page_path.removeprefix("docs/weconduct/components/").removesuffix(".md")
@@ -439,13 +446,13 @@ def write_index() -> None:
     lines = [
         "---", "product: weconduct", f"version: {VERSION}",
         "doc_id: weconduct:examples:index", "---", "", "# 可下载示例", "",
-        "以下每个示例都包含详细的说明页、可交互的节点图和完整的项目 ZIP 下载包。所有流程图均使用 WeConduct 0.8.1 的节点格式。",
+        f"以下每个示例都包含详细的说明页、可交互的节点图和完整的项目 ZIP 下载包。所有流程图均使用 WeConduct {VERSION} 的节点格式。",
         "", "## 示例列表", "",
     ]
     for spec in EXAMPLES:
         lines.append(
             f"- [{spec['title']}]({spec['id']}.md)：{spec['scenario']} "
-            f"[下载 ZIP](../../downloads/weconduct/0.8.1/{spec['id']}.zip)"
+            f"[下载 ZIP](../../downloads/weconduct/{VERSION}/{spec['id']}.zip)"
         )
     lines.extend(
         [
@@ -460,6 +467,9 @@ def write_index() -> None:
 
 
 def main() -> int:
+    global VERSION, MANIFEST_PATH
+    VERSION = parse_args().version
+    MANIFEST_PATH = ROOT / "data" / f"weconduct-{VERSION}" / "components.json"
     manifest = read_manifest()
     graph_root = DOCS_ROOT / "assets" / "graphs" / "examples"
     download_root = DOCS_ROOT / "downloads" / "weconduct" / VERSION

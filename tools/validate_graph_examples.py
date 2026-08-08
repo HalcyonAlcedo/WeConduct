@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -9,10 +10,10 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_GRAPHS_ROOT = ROOT / "docs" / "assets" / "graphs"
-DEFAULT_COMPONENTS_PATH = ROOT / "data" / "weconduct-0.8.1" / "components.json"
+DEFAULT_COMPONENTS_PATH = ROOT / "data" / "weconduct-0.9.0" / "components.json"
 SUPPORTED_EDGE_LAYERS = {"control", "data"}
 SUPPORTED_GRAPH_SCHEMA_VERSION = "graph-v1"
-SUPPORTED_BUILT_WITH_VERSION = "0.8.1"
+SEMVER_RE = re.compile(r"\d+\.\d+\.\d+")
 
 
 def parse_args() -> argparse.Namespace:
@@ -158,9 +159,9 @@ def validate_graph_payload(
         errors.append(f"{relative_path}: root_metadata.graph_compatibility must be an object")
         compatibility = {}
     built_with = compatibility.get("built_with_app_version")
-    if built_with != SUPPORTED_BUILT_WITH_VERSION:
+    if not isinstance(built_with, str) or not SEMVER_RE.fullmatch(built_with.strip()):
         errors.append(
-            f"{relative_path}: root_metadata.graph_compatibility.built_with_app_version expected {SUPPORTED_BUILT_WITH_VERSION!r} got {built_with!r}"
+            f"{relative_path}: root_metadata.graph_compatibility.built_with_app_version must be semantic version X.Y.Z, got {built_with!r}"
         )
 
     node_lookup: dict[str, dict[str, Any]] = {}

@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: component:python.run
 ---
 
@@ -31,6 +31,13 @@ doc_id: component:python.run
 | 参数 | 类型 | 必填 | 默认值 | 编辑器 |
 |---|---|---|---|---|
 | `code` | `string` | 是 | `""` | `code` |
+| `inputs` | `object` | 否 | `{}` | `default` |
+| `input_schema` | `object` | 否 | `{}` | `json` |
+| `output_schema` | `object` | 否 | `{}` | `json` |
+| `metadata` | `object` | 否 | `{}` | `default` |
+| `metadata_schema` | `object` | 否 | `{}` | `json` |
+| `data_fields` | `array` | 否 | `[]` | `default` |
+| `allow_sensitive_values` | `boolean` | 否 | `false` | `checkbox` |
 
 ## 输入、输出与副作用
 
@@ -44,7 +51,14 @@ doc_id: component:python.run
 
 ```json
 {
-  "code": "result = variables"
+  "code": "result = variables",
+  "inputs": {},
+  "input_schema": {},
+  "output_schema": {},
+  "metadata": {},
+  "metadata_schema": {},
+  "data_fields": [],
+  "allow_sensitive_values": false
 }
 ```
 

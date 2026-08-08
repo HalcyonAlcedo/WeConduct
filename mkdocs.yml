@@ -1,7 +1,7 @@
 site_name: WeConduct 文档
-site_description: WeConduct 0.8.1 与 Weave 0.5.0 文档站点，当前处于建设阶段
+site_description: WeConduct 0.9.0 与 Weave 0.5.0 用户文档
 site_author: HalcyonAlcedo
-copyright: "&copy; 2026 WeConduct 用户文档 · 当前版本 0.8.1"
+copyright: "&copy; 2026 WeConduct 用户文档 · 当前版本 0.9.0"
 site_url: https://halcyonalcedo.github.io/WeConduct/
 repo_url: https://github.com/HalcyonAlcedo/WeConduct
 repo_name: HalcyonAlcedo/WeConduct
@@ -62,12 +62,20 @@ plugins:
   - search:
       lang: zh
 
+# 施工计划属于仓库内部资料，不应进入公开用户文档站点。
+exclude_docs: |
+  superpowers/**
+
+# 组件明细页由组件分组页和搜索索引提供入口；不要求每个生成页单独出现在 nav。
+not_in_nav: |
+  weconduct/components/**/*.md
+
 extra_javascript:
   - assets/graph-runtime/weconduct-graph.js
 
 extra:
   announce:
-    content: "📢 WeConduct 0.8.1 与 Weave 0.5.0 文档持续完善中 — 欢迎反馈！"
+    content: "📢 WeConduct 0.9.0 用户文档已更新；网络自动化和外部 API 以当前能力边界为准。"
     dismiss: true
 
 extra_css:
@@ -79,7 +87,7 @@ nav:
   - WeConduct:
       - 总览: weconduct/index.md
       - 快速开始:
-          - 安装 0.8.1: weconduct/getting-started/install.md
+          - 安装 0.9.0: weconduct/getting-started/install.md
           - 创建第一个项目: weconduct/getting-started/first-project.md
           - 第一次运行: weconduct/getting-started/first-run.md
           - 保存和打开: weconduct/getting-started/save-and-open.md
@@ -96,6 +104,9 @@ nav:
           - 图编辑器: weconduct/guide/graph-editor.md
           - 组件库: weconduct/guide/component-library.md
           - 节点配置: weconduct/guide/node-configuration.md
+          - 网络自动化: weconduct/guide/network-automation.md
+          - 加密参数与待输入: weconduct/guide/encrypted-parameters-and-input.md
+          - 外部 API: weconduct/guide/external-api.md
           - 子图与自定义组件: weconduct/guide/subgraphs-and-custom-components.md
           - WebControl 转换: weconduct/guide/webcontrol-conversion.md
       - 运行与 Debug:
@@ -143,7 +154,8 @@ nav:
           - 文本与 CSV 文件: weconduct/components/files/text-and-csv/index.md
           - Excel 读取: weconduct/components/excel/read/index.md
           - Excel 写入与更新: weconduct/components/excel/write-and-update/index.md
-          - HTTP 请求: weconduct/components/http/index.md
+          - 网络自动化: weconduct/components/network/index.md
+          - 输入与消息: weconduct/components/input/index.md
           - Python 执行: weconduct/components/python/index.md
           - 时间处理: weconduct/components/time/index.md
       - 兼容与内部节点: weconduct/components/internal/compatibility/index.md

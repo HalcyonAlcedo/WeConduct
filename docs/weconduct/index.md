@@ -1,10 +1,10 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:index
 ---
 
-# WeConduct 0.8.1
+# WeConduct 0.9.0
 
 WeConduct 是一个可视化的自动化流程工具。通过拖拽节点、连接端口，你可以快速构建浏览器操作、数据处理、文件读写等各种自动化工作流程——全程不需要写代码。
 
@@ -35,12 +35,22 @@ WeConduct 是一个可视化的自动化流程工具。通过拖拽节点、连�
 - [标准运行](guide/runtime.md) — 执行流程并查看结果
 - [调试流程](guide/debug-start.md) — 使用断点和单步执行排查问题
 - [项目设置](guide/project-settings.md) — 配置项目的运行环境
+- [网络自动化](guide/network-automation.md) — 配置会话级网络上下文和网络节点
+- [加密参数与待输入](guide/encrypted-parameters-and-input.md) — 处理敏感参数和运行时输入
+- [外部 API](guide/external-api.md) — 通过本地 HTTP API 管理项目和执行
 
 ## 内置节点
 
-WeConduct 0.8.1 包含 126 个内置节点，涵盖浏览器自动化、数据处理、文件操作、流程控制等多个领域。
+WeConduct 0.9.0 包含 135 个内置节点，其中 129 个可从组件库直接添加，6 个仅用于兼容或内部迁移。
+节点覆盖浏览器自动化、网络自动化、数据处理、文件操作、流程控制、运行时输入和 Python 执行等领域。
 
 [浏览全部节点 →](components/index.md)
+
+## 0.9.0 能力边界
+
+0.9.0 的重点是可控的网络自动化执行：网络节点可以继承或隔离会话上下文，显式端口可以覆盖本次请求配置；加密初始参数、待输入表单、运行期敏感值脱敏和 Debug 中的受控查看也已纳入标准流程。
+
+以下能力不属于当前版本：GraphQL Subscription、统一长连接状态机、自动重连、由网络事件直接激活图分支、完整浏览器 Cookie Jar、插件系统和插件动态修改 UI。SSE 与 WebSocket 目前是主动拉取式节点；外部 API 仅提供本机项目、图、执行和待输入操作，不提供 Debug 控制或公网部署保证。
 
 ## 可下载示例
 
@@ -50,6 +60,6 @@ WeConduct 0.8.1 包含 126 个内置节点，涵盖浏览器自动化、数据�
 
 ## 下载
 
-WeConduct 0.8.1 面向 Windows x64，提供便携包和安装包两种分发方式：
+WeConduct 0.9.0 面向 Windows x64，提供便携包和安装包两种分发方式：
 
-[GitHub Releases →](https://github.com/HalcyonAlcedo/WeConduct/releases/tag/0.8.1)
+[GitHub Releases →](https://github.com/HalcyonAlcedo/WeConduct/releases/tag/0.9.0)

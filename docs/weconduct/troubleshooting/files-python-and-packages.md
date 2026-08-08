@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:troubleshooting:files-python-and-packages
 ---
 
@@ -15,7 +15,7 @@ file.access_denied
 file.path_required
 ```
 
-开启 `allow_file_access`，并确认路径位于项目目录、工作区目录、状态目录、用户 `Downloads` 或 `custom_roots`。0.8.1 不会自动允许用户 `Documents`。
+开启 `allow_file_access`，并确认路径位于项目目录、工作区目录、状态目录、用户 `Downloads` 或 `custom_roots`。0.9.0 不会自动允许用户 `Documents`。
 
 ## Python 节点提示运行时未启用
 
@@ -44,4 +44,4 @@ package.security.requirement_blocked
 
 ## 外部资源仍未就绪
 
-0.8.1 的外部绑定值会解析为绝对路径，绑定目标只支持 `initial_variable`。输入真实路径字符串后重新检查运行就绪状态。
+0.9.0 的外部绑定值会解析为绝对路径，绑定目标只支持 `initial_variable`。输入真实路径字符串后重新检查运行就绪状态。

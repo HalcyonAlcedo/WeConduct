@@ -8,11 +8,11 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = ROOT / "data" / "weconduct-0.8.1" / "components.json"
-DEFAULT_GROUPS = ROOT / "data" / "weconduct-0.8.1" / "component-groups.json"
+DEFAULT_MANIFEST = ROOT / "data" / "weconduct-0.9.0" / "components.json"
+DEFAULT_GROUPS = ROOT / "data" / "weconduct-0.9.0" / "component-groups.json"
 DEFAULT_DOCS_ROOT = ROOT / "docs"
 DEFAULT_GRAPHS_ROOT = DEFAULT_DOCS_ROOT / "assets" / "graphs" / "components"
-VERSION = "0.8.1"
+VERSION = "0.9.0"
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--groups", default=str(DEFAULT_GROUPS))
     parser.add_argument("--docs-root", default=str(DEFAULT_DOCS_ROOT))
     parser.add_argument("--graphs-root", default=str(DEFAULT_GRAPHS_ROOT))
+    parser.add_argument("--version", default=VERSION)
     parser.add_argument("--family")
     parser.add_argument("--groups-only", action="store_true")
     parser.add_argument("--details", action="store_true")
@@ -29,6 +30,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    global VERSION
+    VERSION = args.version
     include_groups = args.groups_only or not args.details
     include_details = args.details or not args.groups_only
     result = generate_component_pages(
@@ -87,7 +90,7 @@ def generate_component_pages(
 
     counts = {"groups": 0, "details": 0, "group_graphs": 0, "detail_graphs": 0}
     if include_groups:
-        write_global_index(docs_root, groups, keys_by_group)
+        write_global_index(docs_root, groups, keys_by_group, manifest_by_key)
         for group in groups:
             if group["group_id"] not in selected_group_ids:
                 continue
@@ -141,7 +144,7 @@ def relative_link(from_page: Path, to_path: Path) -> str:
 
 def graph_compatibility() -> dict[str, Any]:
     return {
-        "graph_data_version": "0.6.2",
+        "graph_data_version": VERSION,
         "built_with_app_version": VERSION,
         "minimum_loader_app_version": "0.5.2",
         "last_upgraded_by_app_version": VERSION,
@@ -181,15 +184,27 @@ def slug(resource_key: str) -> str:
     return resource_key.replace(".", "-").replace("_", "-")
 
 
-def write_global_index(docs_root: Path, groups: list[dict[str, Any]], keys_by_group: dict[str, list[str]]) -> None:
+def write_global_index(
+    docs_root: Path,
+    groups: list[dict[str, Any]],
+    keys_by_group: dict[str, list[str]],
+    manifest: dict[str, dict[str, Any]],
+) -> None:
     path = docs_root / "weconduct" / "components" / "index.md"
-    total_count = sum(len(v) for v in keys_by_group.values())
-    visible_count = sum(1 for v in keys_by_group.values() for _ in v)  # all are visible in this view
+    total_count = len(manifest)
+    visible_count = sum(
+        1 for component in manifest.values()
+        if component.get("component_library_visible") is True
+    )
+    compatibility_count = sum(
+        1 for component in manifest.values()
+        if component.get("compatibility_only") is True
+    )
     lines = [
         "---", "product: weconduct", f"version: {VERSION}",
         "doc_id: weconduct:components:index", "---", "", "# 内置节点参考", "",
-        "WeConduct 0.8.1 提供了 " + str(total_count) + " 个内置节点，涵盖了浏览器自动化、数据处理、文件操作、流程控制等常见任务。",
-        "", "其中 120 个节点可直接从组件库拖入画布使用，另有 6 个节点仅用于兼容旧版项目的内部迁移。",
+        f"WeConduct {VERSION} 提供了 " + str(total_count) + " 个内置节点，涵盖了浏览器自动化、网络自动化、数据处理、文件操作、流程控制等常见任务。",
+        "", f"其中 {visible_count} 个节点可直接从组件库拖入画布使用，另有 {compatibility_count} 个节点仅用于兼容旧版项目的内部迁移。",
         "", "## 如何查找节点", "",
         "你可以按中文名称、英文名称或资源键（如 `browser.click`）在组件库中搜索。",
         "每个节点类别下都有一个聚合页，方便你对比同类节点并了解常见搭配方式；",
@@ -413,7 +428,13 @@ def sample_value(key: str, field_type: str, current: Any, *, resource_key: str =
     lower = key.lower()
     if "selector" in lower:
         return "#example"
+    if resource_key == "network.graphql_request" and lower == "endpoint":
+        return "https://example.com/graphql"
     if lower in {"url", "base_url"} or lower.endswith("_url"):
+        if resource_key == "network.websocket_connect" and lower == "url":
+            return "wss://example.com/socket"
+        if resource_key == "network.sse_connect" and lower == "url":
+            return "https://example.com/events"
         return "https://example.com"
     if "sheet" in lower:
         return "Sheet1"
@@ -471,8 +492,10 @@ def permission_text(component: dict[str, Any]) -> str:
     permissions: list[str] = []
     if key.startswith(("file.", "excel.")):
         permissions.append("需要开启文件访问权限，并确保目标路径在允许的目录范围内")
-    if key == "http.request":
+    if key.startswith("network."):
         permissions.append("需要按目标地址开启本地或远程网络访问")
+        if key == "network.upload":
+            permissions.append("需要开启文件访问，并确保上传文件位于允许的目录范围内")
     if key == "python.run":
         permissions.append("需要开启 Python 执行权限，并准备好项目的 Python 运行时环境")
     if "screenshot" in key:
@@ -505,7 +528,7 @@ def io_text(component: dict[str, Any], inputs: list[dict[str, Any]], outputs: li
     if key.startswith("browser."):
         side_effect = guidance.get("side_effect", "可能改变页面状态、浏览器上下文、网络记录或本地文件")
     elif key.startswith(("file.", "excel.")):
-        side_effect = "可能读取或写入文件"
+        side_effect = guidance.get("side_effect", "可能读取或写入文件")
     elif key.startswith("control."):
         side_effect = "改变后续执行路径"
     return f"输入端口：{input_names}。输出端口：{output_names}。对外影响：{side_effect}。"
@@ -528,7 +551,7 @@ def common_errors_text(component: dict[str, Any]) -> str:
     if required:
         messages.append("缺少必填参数：" + "、".join(f"`{key}`" for key in required))
     messages.extend(["端口名称写错或关系层不匹配", "输入值的类型与参数要求不一致"])
-    if component["resource_key"].startswith(("browser.", "file.", "excel.", "http.", "python.")):
+    if component["resource_key"].startswith(("browser.", "file.", "excel.", "http.", "network.", "python.")):
         messages.append("运行环境、资源路径或安全权限未正确配置")
     extra = domain_guidance(component["resource_key"]).get("error")
     if extra:
@@ -657,6 +680,46 @@ def domain_guidance(resource_key: str) -> dict[str, str]:
             "error": "工作簿或工作表不存在、单元格/行参数无效或文件被占用",
             "limit": "行号和表头选项会影响数据定位，写入前应确认目标文件备份",
         }
+    if resource_key == "file.read_text_file":
+        return {
+            "usage": "从允许文件根中读取文本内容，并按配置的编码返回结果。",
+            "side_effect": "读取目标文本文件，不修改文件内容",
+            "expected": "返回文件路径、编码和 `content`；当前节点不使用 CSV 行列参数，也不会执行写入。",
+            "error": "路径越界、文件不存在、编码不匹配或文件不可访问",
+            "limit": "读取结果会进入运行时输出；需要写入变量时应使用明确的数据输出或后续变量节点",
+        }
+    if resource_key == "file.write_text_file":
+        return {
+            "usage": "把文本或可转换的运行时值写入允许文件根中的目标文件。",
+            "side_effect": "创建或覆盖目标文本文件",
+            "expected": "字符串原样写入；`dict`/`list` 转为 UTF-8 JSON 文本；其他值使用运行时字符串表示，并返回路径、编码和 `bytes_written`。",
+            "error": "路径越界、编码不匹配、内容无法转换或文件不可写",
+            "limit": "该节点不使用 CSV 行列索引或 `has_header`；需要长期保存会话数据时应显式选择持久化路径",
+        }
+    if resource_key == "file.read_csv_cell":
+        return {
+            "usage": "读取 CSV 指定行和列的单元格值。",
+            "side_effect": "读取目标 CSV 文件，不修改文件内容",
+            "expected": "返回选定行列的 `value`，并可按节点配置写入运行时变量。",
+            "error": "路径越界、CSV 格式/编码错误、行号越界或列不存在",
+            "limit": "`has_header` 会影响列名解析；`row_index` 从 `0` 开始",
+        }
+    if resource_key == "file.read_csv_row":
+        return {
+            "usage": "读取 CSV 指定行，并返回该行的结构化值。",
+            "side_effect": "读取目标 CSV 文件，不修改文件内容",
+            "expected": "返回 `row` 和行元数据，并可按节点配置写入运行时变量。",
+            "error": "路径越界、CSV 格式/编码错误或行号越界",
+            "limit": "`row_index` 从 `0` 开始；`has_header` 会影响行对象的列名表示",
+        }
+    if resource_key == "file.read_csv_table":
+        return {
+            "usage": "读取 CSV 文件的完整表格，并保留表头和行集合。",
+            "side_effect": "读取目标 CSV 文件，不修改文件内容",
+            "expected": "返回 `headers`、`rows` 和 `row_count`，并可按节点配置写入运行时变量。",
+            "error": "路径越界、CSV 格式/编码错误或文件不可访问",
+            "limit": "`has_header` 决定是否把首行作为表头；大文件会占用运行时内存",
+        }
     if resource_key.startswith("file."):
         return {
             "usage": "在允许文件根中读取或写入文本、CSV 数据，并显式选择编码和表头规则。",
@@ -665,13 +728,80 @@ def domain_guidance(resource_key: str) -> dict[str, str]:
             "error": "路径越界、编码不匹配、CSV 行列越界或文件不可访问",
             "limit": "CSV 行列索引和 `has_header` 会共同影响实际定位",
         }
-    if resource_key == "http.request":
+    if resource_key.startswith("network."):
+        network_guidance = {
+            "network.http_request": {
+                "usage": "向 HTTP/HTTPS 目标发送 REST 请求；使用上下文策略继承认证、代理和会话状态，也可以通过数据端口覆盖本次请求。",
+                "side_effect": "访问本地或远程网络目标，并可能对服务端产生写操作",
+                "expected": "请求完成后返回响应摘要、状态码、响应头、响应体引用和请求元数据。",
+                "error": "URL、方法或请求体无效，网络权限不足，认证/TLS/代理配置错误，连接超时或响应处理失败",
+                "limit": "敏感认证值在运行链路中可用，但日志、事件、历史和诊断只保留脱敏结果",
+            },
+            "network.upload": {
+                "usage": "把允许目录中的文件或运行时数据上传到 HTTP/HTTPS 目标，支持 multipart 字段和校验值。",
+                "side_effect": "读取本地文件并向网络目标上传数据",
+                "expected": "上传完成后返回响应、上传字节数、源校验值和请求元数据。",
+                "error": "文件路径越界、文件不可读、目标拒绝上传、网络权限或认证配置错误",
+                "limit": "上传文件受文件访问允许根和大小限制约束",
+            },
+            "network.download": {
+                "usage": "从 HTTP/HTTPS 目标下载响应内容，并把结果保存到网络运行时的会话临时资源。",
+                "side_effect": "访问网络目标并创建会话级临时下载资源",
+                "expected": "下载完成后返回响应、文件大小、SHA-256 校验值和最终 URL。",
+                "error": "目标不可访问、响应状态不符合预期、网络权限不足或临时资源写入失败",
+                "limit": "临时下载资源随执行会话清理；需要长期保存时显式使用文件节点持久化",
+            },
+            "network.response_assert": {
+                "usage": "对前一个网络节点的响应执行状态码、响应头、正文、JSON、Schema、URL 或耗时断言。",
+                "side_effect": "读取响应并选择通过或失败控制分支",
+                "expected": "断言通过时从 `passed` 继续，失败时从 `failed` 继续，并输出断言报告。",
+                "error": "输入不是响应对象、断言规则格式错误或响应不满足条件",
+                "limit": "该节点不重新发送请求；必须连接已有网络响应",
+            },
+            "network.graphql_request": {
+                "usage": "发送 GraphQL Query 或 Mutation，配置 endpoint、query、变量和扩展字段。",
+                "side_effect": "访问 GraphQL 服务，并可能执行服务端 Mutation",
+                "expected": "返回 GraphQL data、errors、extensions 以及底层 HTTP 元数据。",
+                "error": "endpoint/query 无效、服务端返回 GraphQL errors、网络权限或认证配置错误",
+                "limit": "0.9.0 不支持 GraphQL Subscription；运行时会稳定拒绝该操作",
+            },
+            "network.sse_connect": {
+                "usage": "以拉取式操作连接 SSE 端点，使用 `action` 选择 connect、receive 或 close。",
+                "side_effect": "创建或消费会话级 SSE 连接",
+                "expected": "connect 返回连接 ID，receive 返回事件，close 释放连接登记",
+                "error": "端点不可访问、连接 ID 不存在、认证/TLS/代理失败或读取超时",
+                "limit": "0.9.0 是主动拉取式基础操作，不是推送事件源，也不提供方案 C 的自动重连",
+            },
+            "network.websocket_connect": {
+                "usage": "以拉取式操作连接 WebSocket，使用 `action` 选择 connect、send、receive、ping 或 close。",
+                "side_effect": "创建或消费会话级 WebSocket 连接",
+                "expected": "connect 返回连接 ID，send/receive/ping 按连接状态执行，close 释放连接登记",
+                "error": "握手失败、连接 ID 不存在、消息不可序列化或连接读写失败",
+                "limit": "0.9.0 不提供统一长连接状态机、自动重连或推送式图激活",
+            },
+            "network.batch_request": {
+                "usage": "在一个网络节点中按输入请求列表执行有界并发批量请求。",
+                "side_effect": "向多个网络目标发起请求并消耗网络运行时资源",
+                "expected": "返回与请求顺序对应的结果列表；并发度受 `max_concurrency` 限制",
+                "error": "请求列表结构错误、并发度无效、单项请求失败或网络策略拒绝目标",
+                "limit": "节点内支持有界并发；图级调度仍保持逻辑并行、实际串行",
+            },
+        }
+        return network_guidance.get(resource_key, {})
+    if resource_key == "message.emit":
         return {
-            "usage": "向明确的 HTTP URL 发送请求，配置方法、请求头、正文和超时。",
-            "side_effect": "访问本地或远程网络目标，并可能对服务端产生写操作",
-            "expected": "请求完成后返回状态码、响应头和解码后的响应内容。",
-            "error": "URL 无效、网络权限不足、连接超时或响应解码失败",
-            "limit": "本地和远程目标分别受网络安全权限约束",
+            "usage": "在运行或 Debug 流程中发布一条用户消息，用于进度、提示或错误分支说明。",
+            "side_effect": "向 Runtime/Debug 诊断和消息面板发布事件",
+            "expected": "消息出现在当前会话的消息/诊断视图中，随后继续控制流",
+            "error": "消息为空、严重级别不受支持或当前会话已经终止",
+        }
+    if resource_key == "input.request":
+        return {
+            "usage": "暂停整个执行会话，等待 UI、CLI 或外部 API 提交多字段表单。",
+            "side_effect": "暂停会话并创建会话级待输入请求",
+            "expected": "提交成功后从 `out` 继续；超时先使用已配置的默认值，否则尝试从 `timed_out` 继续；两者都没有时节点失败",
+            "error": "字段定义无效、必填字段缺失、类型校验失败、请求超时或会话被终止",
+            "limit": "敏感字段不提供默认值；提交值只在当前会话内存中存在并在日志、事件和历史中脱敏",
         }
     if resource_key == "python.run":
         return {

@@ -1,29 +1,13 @@
 ---
 product: weconduct
-version: 0.8.1
-doc_id: component-group:http
+version: 0.9.0
+doc_id: weconduct:legacy:http-group
 ---
 
-# HTTP 请求
+# 旧 HTTP 节点分组
 
-覆盖 HTTP 请求发送与结果处理。
+0.9.0 已将旧的 `http.request` 节点升级为 `network.http_request`，并把 HTTP、GraphQL、SSE、WebSocket、上传、下载、响应断言和批量请求统一放入[网络自动化](../network/index.md)分组。
 
-## 节点速览
+请不要在新项目中继续按本页的旧资源键配置节点。升级旧项目后，程序会通过图升级机制迁移节点和端口；迁移后请重新校验图并检查网络节点的输入输出连线。
 
-| 节点 | 资源键 | 主要用途 |
-|---|---|---|
-| [HTTP 请求](request.md) | `http.request` | 内置 HTTP 请求能力。 |
-
-## 典型搭配
-
-本组只有一个节点，通常与流程入口、变量节点以及其他功能模块组合使用。
-
-## 节点对比图
-
-<weconduct-graph src="../../../assets/graphs/components/groups/http.json" title="HTTP 请求节点概览">如果图示加载失败，可以使用下方的节点列表查看每个节点的信息。</weconduct-graph>
-
-上图展示了本组节点的外观、端口和默认配置，方便你快速对比，但不能直接作为完整流程运行。
-
-## 全部节点
-
-- [HTTP 请求](request.md) (`http.request`)
+前往[网络自动化节点总览](../network/index.md)查看当前 0.9.0 端口和配置。

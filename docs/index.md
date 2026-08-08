@@ -18,13 +18,15 @@ doc_id: site:index
 
 | 产品 | 版本 |
 |------|------|
-| WeConduct | 0.8.1 |
+| WeConduct | 0.9.0 |
 | Weave | 0.5.0 |
 
 ## 从哪里开始
 
 - **刚开始使用？** 从 [WeConduct 安装指南](weconduct/getting-started/install.md) 开始，创建你的第一个自动化项目。
-- **想了解某个节点？** 查看 [内置节点参考](weconduct/components/index.md)，126 个节点按功能分类，配有详细的配置说明。
+- **想了解某个节点？** 查看 [内置节点参考](weconduct/components/index.md)，135 个节点按功能分类，配有详细的配置说明。
+- **要执行网络流程？** 先阅读[网络自动化](weconduct/guide/network-automation.md)，了解上下文、认证、响应和连接生命周期。
+- **流程需要敏感输入？** 查看[加密参数与待输入](weconduct/guide/encrypted-parameters-and-input.md)，了解解锁、输入窗口和日志脱敏。
 - **想学一个完整例子？** 浏览 [可下载示例](weconduct/examples/index.md)，每个示例都附带流程图和可运行的 ZIP 项目包。
 - **使用 Weave？** 前往 [Weave 文档](weave/index.md)，了解如何分析网页和提取选择器。
 - **遇到问题了？** 查看 [故障排查](weconduct/troubleshooting/index.md) 寻找解决方案。

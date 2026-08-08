@@ -77,10 +77,10 @@ def test_smoke_fixture_matches_graph_v1_contract() -> None:
     assert [port["relation_layer"] for port in node["ports"]] == ["control", "data"]
 
     compatibility = graph["root_metadata"]["graph_compatibility"]
-    assert compatibility["graph_data_version"] == "0.6.2"
-    assert compatibility["built_with_app_version"] == "0.8.1"
+    assert compatibility["graph_data_version"] == "0.9.0"
+    assert compatibility["built_with_app_version"] == "0.9.0"
     assert compatibility["minimum_loader_app_version"] == "0.5.2"
-    assert compatibility["last_upgraded_by_app_version"] == "0.8.1"
+    assert compatibility["last_upgraded_by_app_version"] == "0.9.0"
 
 
 def test_validate_graph_examples_accepts_smoke_fixture() -> None:
@@ -115,7 +115,7 @@ def test_validate_graph_examples_rejects_invalid_graphs(tmp_path: Path) -> None:
     write_json(graphs_root / "invalid" / "missing-position.json", missing_position)
 
     bad_built = build_graph_fixture()
-    bad_built["root_metadata"]["graph_compatibility"]["built_with_app_version"] = "0.8.0"
+    bad_built["root_metadata"]["graph_compatibility"]["built_with_app_version"] = "not-a-version"
     write_json(graphs_root / "invalid" / "bad-built-version.json", bad_built)
 
     bad_edge_reference = build_graph_fixture()
@@ -291,7 +291,7 @@ def test_embedded_graph_doc_contains_front_matter_and_live_example() -> None:
     body = parts[2]
 
     assert "product: weconduct" in front_matter
-    assert "version: 0.8.1" in front_matter
+    assert "version: 0.9.0" in front_matter
     assert "doc_id: weconduct:reference:embedded-graphs" in front_matter
     assert "<weconduct-graph" in body
     assert 'src="../../assets/graphs/smoke/flow-start.json"' in body

@@ -1,12 +1,12 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:guide:execution-history
 ---
 
 # 执行历史
 
-执行历史用于回看已结束的标准运行和 Debug 会话摘要。每条记录以 `session_id` 识别；0.8.1 保存的是会话级摘要，不是完整节点事件、诊断或变量快照归档。
+执行历史用于回看已结束的标准运行和 Debug 会话摘要。每条记录以 `session_id` 识别；0.9.0 保存的是会话级摘要，不是完整节点事件、诊断或变量快照归档。
 
 ## 查看记录
 

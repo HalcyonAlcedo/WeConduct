@@ -8,8 +8,8 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "data" / "weconduct-0.8.1" / "components.json"
-GROUPS_PATH = ROOT / "data" / "weconduct-0.8.1" / "component-groups.json"
+MANIFEST_PATH = ROOT / "data" / "weconduct-0.9.0" / "components.json"
+GROUPS_PATH = ROOT / "data" / "weconduct-0.9.0" / "component-groups.json"
 SCRIPT_PATH = ROOT / "tools" / "build_document_catalog.py"
 
 EXPECTED_GROUP_IDS = {
@@ -34,7 +34,8 @@ EXPECTED_GROUP_IDS = {
     "files-text-and-csv",
     "excel-read",
     "excel-write-and-update",
-    "http",
+    "network-automation",
+    "input-and-messaging",
     "python",
     "time",
     "compatibility-and-internal",
@@ -82,13 +83,13 @@ def test_committed_component_group_snapshot_matches_manifest(
     group_payload: dict[str, Any],
 ) -> None:
     assert group_payload["product"] == "weconduct"
-    assert group_payload["version"] == "0.8.1"
+    assert group_payload["version"] == "0.9.0"
 
     groups = group_payload["groups"]
     assignments = group_payload["assignments"]
-    assert len(groups) == 25
+    assert len(groups) == 26
     assert {group["group_id"] for group in groups} == EXPECTED_GROUP_IDS
-    assert len(assignments) == 126
+    assert len(assignments) == 135
 
     manifest_keys = {item["resource_key"] for item in manifest}
     assert set(assignments) == manifest_keys
@@ -104,8 +105,8 @@ def test_committed_component_group_snapshot_matches_manifest(
         assert group["detail_dir"].strip()
         index_paths.add(group["index_path"])
         detail_dirs.add(group["detail_dir"])
-    assert len(index_paths) == 25
-    assert len(detail_dirs) == 25
+    assert len(index_paths) == 26
+    assert len(detail_dirs) == 26
 
     page_paths = set()
     hidden_assignments = {
@@ -130,27 +131,27 @@ def test_committed_component_group_snapshot_matches_manifest(
             assert assignment["primary_group_id"] != "compatibility-and-internal"
         else:
             assert component["compatibility_only"] is True
-    assert len(page_paths) == 126
+    assert len(page_paths) == 135
 
 
 def test_catalog_cli_report_list_and_family_filters(tmp_path: Path) -> None:
     report_path = tmp_path / "catalog.json"
     result = run_catalog_cli("--report", str(report_path))
     assert result.returncode == 0, result.stderr or result.stdout
-    assert result.stdout.strip() == "126 components, 25 groups, 0 unassigned, 0 duplicate paths"
+    assert result.stdout.strip() == "135 components, 26 groups, 0 unassigned, 0 duplicate paths"
     assert result.stderr == ""
     assert report_path.read_text(encoding="utf-8").endswith("\n")
 
     report = read_json(report_path)
     assert report["summary"] == {
-        "components": 126,
-        "groups": 25,
+        "components": 135,
+        "groups": 26,
         "unassigned": 0,
         "duplicate_page_paths": 0,
         "duplicate_index_paths": 0,
     }
-    assert len(report["groups"]) == 25
-    assert len(report["assignments"]) == 126
+    assert len(report["groups"]) == 26
+    assert len(report["assignments"]) == 135
 
     list_result = run_catalog_cli("--list", "--family", "browser,excel-read")
     assert list_result.returncode == 0, list_result.stderr or list_result.stdout
@@ -197,7 +198,7 @@ def test_catalog_cli_rejects_string_bool_manifest_flags(tmp_path: Path) -> None:
         json.dumps(
             {
                 "product": "weconduct",
-                "version": "0.8.1",
+                "version": "0.9.0",
                 "groups": [
                     {
                         "group_id": "browser-navigation",

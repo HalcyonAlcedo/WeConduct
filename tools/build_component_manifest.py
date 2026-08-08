@@ -29,6 +29,7 @@ PARAM_TEMPLATE_ITEM_RE = re.compile(
     r"(?:\s*,\s*options:\s*\[(?P<options>[^\]]*)\])?\s*\}"
 )
 OPTION_RE = re.compile(r"'([^']+)'")
+SEMVER_RE = re.compile(r"\d+\.\d+\.\d+")
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,26 +74,32 @@ def main() -> int:
 
 
 def validate_source_version(source_root: Path, expected_version: str) -> None:
+    expected_version = expected_version.strip()
+    if not SEMVER_RE.fullmatch(expected_version):
+        raise SystemExit(
+            f"requested version must be a semantic version X.Y.Z, got {expected_version!r}"
+        )
+
     pyproject_version = read_pyproject_version(source_root / "pyproject.toml")
     package_version = read_package_json_version(source_root / "ui" / "package.json")
     compatibility_versions = read_graph_compatibility_versions(
         source_root / "src" / "weconduct" / "contracts" / "graph.py"
     )
 
-    mismatches: list[str] = []
+    malformed: list[str] = []
     for anchor_name, actual_version in (
         ("pyproject.toml project.version", pyproject_version),
         ("ui/package.json version", package_version),
         ("graph.py built_with_app_version", compatibility_versions["built_with_app_version"]),
         ("graph.py last_upgraded_by_app_version", compatibility_versions["last_upgraded_by_app_version"]),
     ):
-        if actual_version != expected_version:
-            mismatches.append(
-                f"{anchor_name}={actual_version!r} expected {expected_version!r}"
-            )
+        if not SEMVER_RE.fullmatch(actual_version.strip()):
+            malformed.append(f"{anchor_name}={actual_version!r}")
 
-    if mismatches:
-        raise SystemExit("source version mismatch: " + "; ".join(mismatches))
+    if malformed:
+        raise SystemExit(
+            "source version must use semantic version X.Y.Z: " + "; ".join(malformed)
+        )
 
 
 def read_pyproject_version(path: Path) -> str:
@@ -113,6 +120,7 @@ def read_package_json_version(path: Path) -> str:
 
 def read_graph_compatibility_versions(path: Path) -> dict[str, str]:
     module = ast.parse(path.read_text(encoding="utf-8"))
+    constants = read_module_string_constants(path.parent.parent / "_version.py")
     for node in module.body:
         if not isinstance(node, ast.FunctionDef) or node.name != "create_empty_graph_model":
             continue
@@ -122,7 +130,9 @@ def read_graph_compatibility_versions(path: Path) -> dict[str, str]:
             for keyword in statement.value.keywords:
                 if keyword.arg != "root_metadata":
                     continue
-                root_metadata = ast.literal_eval(keyword.value)
+                root_metadata = evaluate_static_value(keyword.value, constants)
+                if not isinstance(root_metadata, dict):
+                    continue
                 graph_compatibility = root_metadata.get("graph_compatibility", {})
                 built_with = graph_compatibility.get("built_with_app_version")
                 last_upgraded = graph_compatibility.get("last_upgraded_by_app_version")
@@ -137,6 +147,46 @@ def read_graph_compatibility_versions(path: Path) -> dict[str, str]:
                         "last_upgraded_by_app_version": last_upgraded.strip(),
                     }
     raise SystemExit("failed to read graph compatibility versions from create_empty_graph_model")
+
+
+def read_module_string_constants(path: Path) -> dict[str, str]:
+    """Read simple string constants used by generated graph metadata."""
+    module = ast.parse(path.read_text(encoding="utf-8"))
+    constants: dict[str, str] = {}
+    for node in module.body:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+            continue
+        value = node.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            constants[targets[0].id] = value.value
+    return constants
+
+
+def evaluate_static_value(node: ast.AST, constants: dict[str, str]) -> Any:
+    """Evaluate the literal mapping while allowing imported string constants."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in constants:
+        return constants[node.id]
+    if isinstance(node, ast.Dict):
+        return {
+            evaluate_static_value(key, constants): evaluate_static_value(value, constants)
+            for key, value in zip(node.keys, node.values)
+            if key is not None
+        }
+    if isinstance(node, ast.List):
+        return [evaluate_static_value(item, constants) for item in node.elts]
+    if isinstance(node, ast.Tuple):
+        return tuple(evaluate_static_value(item, constants) for item in node.elts)
+    if isinstance(node, ast.Set):
+        return {evaluate_static_value(item, constants) for item in node.elts}
+    raise ValueError(f"unsupported static graph metadata expression: {ast.dump(node)}")
 
 
 def load_registry(source_root: Path) -> list[dict[str, Any]]:

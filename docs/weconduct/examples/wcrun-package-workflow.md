@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:example:wcrun-package-workflow
 ---
 
@@ -43,7 +43,7 @@ doc_id: weconduct:example:wcrun-package-workflow
 
 ## 下载项目
 
-- [下载 wcrun-package-workflow.zip](../../downloads/weconduct/0.8.1/wcrun-package-workflow.zip)
+- [下载 wcrun-package-workflow.zip](../../downloads/weconduct/0.9.0/wcrun-package-workflow.zip)
 - [查看原始 graph-v1 JSON](../../assets/graphs/examples/wcrun-package-workflow.json)
 
-下载包基于 WeConduct 0.8.1 版本。示例中的 URL、选择器和凭据均为占位值，外部站点和网络响应不随示例分发。
+下载包基于 WeConduct 0.9.0 版本。示例中的 URL、选择器和凭据均为占位值，外部站点和网络响应不随示例分发。

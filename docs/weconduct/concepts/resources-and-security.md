@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:concepts:resources-security
 ---
 
@@ -25,7 +25,7 @@ WeConduct 默认关闭了大部分高风险能力。运行一个流程时，程�
 
 ## 有哪些安全控制
 
-WeConduct 0.8.1 的安全策略涵盖以下几个方面：
+WeConduct 0.9.0 的安全策略涵盖以下几个方面：
 
 ### 默认关闭的能力
 

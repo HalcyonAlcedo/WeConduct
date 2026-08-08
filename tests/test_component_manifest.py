@@ -11,19 +11,21 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "tools" / "build_component_manifest.py"
-COMMITTED_OUTPUT_PATH = ROOT / "data" / "weconduct-0.8.1" / "components.json"
-COMMITTED_SCHEMA_PATH = ROOT / "data" / "weconduct-0.8.1" / "graph-schema.json"
+COMMITTED_OUTPUT_PATH = ROOT / "data" / "weconduct-0.9.0" / "components.json"
+COMMITTED_SCHEMA_PATH = ROOT / "data" / "weconduct-0.9.0" / "graph-schema.json"
 
 EXPECTED_DOMAIN_COUNTS = {
+    "flow": 1,
+    "message": 1,
+    "input": 1,
+    "network": 8,
+    "component": 3,
     "browser": 67,
     "data": 25,
     "control": 12,
     "excel": 9,
     "file": 5,
-    "component": 3,
-    "flow": 1,
     "graph": 1,
-    "http": 1,
     "python": 1,
     "time": 1,
 }
@@ -95,7 +97,7 @@ def run_builder(
     source_root: Path,
     output_path: Path,
     schema_path: Path,
-    version: str = "0.8.1",
+    version: str = "0.9.0",
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -139,22 +141,22 @@ def read_contract_schema(source_root: Path) -> dict[str, Any]:
 def test_committed_component_snapshot_statistics(
     committed_components: list[dict[str, Any]],
 ) -> None:
-    assert len(committed_components) == 126
+    assert len(committed_components) == 135
 
     resource_keys = [item["resource_key"] for item in committed_components]
-    assert len(set(resource_keys)) == 126
-    assert sum(1 for item in committed_components if item["enabled"]) == 126
+    assert len(set(resource_keys)) == 135
+    assert sum(1 for item in committed_components if item["enabled"]) == 135
     assert Counter(item["capability_domain"] for item in committed_components) == EXPECTED_DOMAIN_COUNTS
-    assert sum(1 for item in committed_components if item["component_library_visible"]) == 120
+    assert sum(1 for item in committed_components if item["component_library_visible"]) == 129
     assert sum(1 for item in committed_components if item["compatibility_only"]) == 6
     assert {
         item["resource_key"]
         for item in committed_components
         if not item["component_library_visible"]
     } == EXPECTED_HIDDEN_KEYS
-    assert sum(1 for item in committed_components if item["direct_runtime_executor"]) == 115
-    assert sum(1 for item in committed_components if item["parameter_schema"]) == 32
-    assert sum(len(item["ports"]) for item in committed_components) == 397
+    assert sum(1 for item in committed_components if item["direct_runtime_executor"]) == 123
+    assert sum(1 for item in committed_components if item["parameter_schema"]) == 34
+    assert sum(len(item["ports"]) for item in committed_components) == 542
     assert all(item["display_name_zh"].strip() for item in committed_components)
     assert all(item["description_zh"].strip() for item in committed_components)
 
@@ -273,7 +275,7 @@ def test_generated_graph_schema_matches_pydantic_contract(
     assert defs["GraphEdge"].get("additionalProperties") == contract["GraphEdge"].get("additionalProperties")
 
 
-def test_manifest_builder_rejects_version_mismatch(
+def test_manifest_builder_allows_semver_without_source_version_match(
     source_root: Path | None,
     tmp_path: Path,
 ) -> None:
@@ -288,5 +290,22 @@ def test_manifest_builder_rejects_version_mismatch(
             schema_path=schema_path,
             version=version,
         )
-        assert result.returncode != 0
-        assert "0.8.1" in (result.stderr or result.stdout)
+        assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_manifest_builder_rejects_malformed_requested_version(
+    source_root: Path | None,
+    tmp_path: Path,
+) -> None:
+    resolved_source_root = require_source_root(source_root)
+    output_path = tmp_path / "malformed" / "components.json"
+    schema_path = tmp_path / "malformed" / "graph-schema.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    result = run_builder(
+        source_root=resolved_source_root,
+        output_path=output_path,
+        schema_path=schema_path,
+        version="0.9",
+    )
+    assert result.returncode != 0
+    assert "semantic version" in (result.stderr or result.stdout)

@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:troubleshooting:browser-and-network
 ---
 
@@ -31,6 +31,14 @@ browser.selector_required
 ## frame 中找不到元素
 
 先用 `browser.switch_to_frame` 进入正确 frame。frame 被导航或分离后，后续节点可能回退顶层页面；重新定位 frame 后再执行选择器操作。
+
+## 网络节点没有继承认证或会话
+
+网络上下文按 `inherit`、`new`、`anonymous`、`fork`、`switch` 和 `reset` 策略管理。`anonymous` 会清除认证、Cookie 和会话材料；`fork` 会建立与父上下文隔离的分支。执行优先级是有效输入端口、节点配置、网络上下文、程序网络默认值。
+
+认证、TLS、代理、`base_url` 和 `response_limits` 都在网络运行时消费。检查 `network.access_denied`、`network.tls_*`、`network.proxy_*` 和 `network.response_too_large` 诊断，同时确认本地/远程网络权限。响应正文较大时使用 `out:body_ref` 和正文读取能力，不要把引用当作 JSON 字符串直接序列化。
+
+0.9.0 的 `network.graphql_request` 只支持 Query/Mutation；GraphQL Subscription 会稳定返回不支持错误。SSE 和 WebSocket 只提供主动连接、接收/发送、ping 和关闭，不自动重连，也不会直接触发新的图分支。Cookie 只传递名称和值，不是完整浏览器 Cookie Jar。
 
 ## 需要提交的证据
 

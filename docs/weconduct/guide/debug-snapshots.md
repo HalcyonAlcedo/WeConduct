@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:guide:debug-snapshots
 ---
 
@@ -23,3 +23,9 @@ doc_id: weconduct:guide:debug-snapshots
 手动暂停的 `reason` 为 `manual_pause`。记录帧的 `pause_requested` 为 `false`。选择历史会话或历史投影后，变量和快照均只读。
 
 原始 JSON 只用于深度排查；日常查看应使用字段分组和变量表。
+
+## 敏感字段的快照边界
+
+变量快照中的敏感变量只保留名称、类型、敏感标记和脱敏占位，不保存解密后的实际值。暂停时的二次确认查看不会回写快照、关键帧或 Debug 历史；明文只存在当前查看请求和 Debug 会话的内存作用域。
+
+会话继续、单步、终止或程序重启后，内存中的敏感值都会撤销。需要长期保留业务数据时，应通过明确的文件或项目资源流程持久化，而不是依赖 Debug 快照。

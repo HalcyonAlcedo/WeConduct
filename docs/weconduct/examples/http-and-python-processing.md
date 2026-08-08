@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.8.1
+version: 0.9.0
 doc_id: weconduct:example:http-and-python-processing
 ---
 
@@ -21,7 +21,7 @@ doc_id: weconduct:example:http-and-python-processing
 ## 图中使用了哪些节点
 
 - [开始](../components/flow/components/start.md) (`flow.start`)：声明流程入口和初始变量。
-- [HTTP 请求](../components/http/request.md) (`http.request`)：内置 HTTP 请求能力。
+- [网络 HTTP 请求](../components/network/http-request.md) (`network.http_request`)：通过会话级网络运行时执行 HTTP 请求。
 - [写入变量](../components/data/variables/set-variable.md) (`data.set_variable`)：写入运行时变量。
 - [运行 Python](../components/python/run.md) (`python.run`)：运行受限的 Python 脚本。
 
@@ -44,7 +44,7 @@ HTTP 节点返回响应摘要，Python 子进程返回可 JSON 序列化的 `res
 
 ## 下载项目
 
-- [下载 http-and-python-processing.zip](../../downloads/weconduct/0.8.1/http-and-python-processing.zip)
+- [下载 http-and-python-processing.zip](../../downloads/weconduct/0.9.0/http-and-python-processing.zip)
 - [查看原始 graph-v1 JSON](../../assets/graphs/examples/http-and-python-processing.json)
 
-下载包基于 WeConduct 0.8.1 版本。示例中的 URL、选择器和凭据均为占位值，外部站点和网络响应不随示例分发。
+下载包基于 WeConduct 0.9.0 版本。示例中的 URL、选择器和凭据均为占位值，外部站点和网络响应不随示例分发。
