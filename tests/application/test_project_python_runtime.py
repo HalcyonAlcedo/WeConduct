@@ -11,6 +11,7 @@ import pytest
 from weconduct.application.project_python_runtime import (
     ProjectPythonRuntimeManager,
     build_default_python_runtime_profile,
+    validate_custom_python_index_url,
 )
 
 
@@ -34,6 +35,53 @@ def test_python_runtime_manager_hash_changes_when_requirements_change(tmp_path: 
         changed,
         project_id="demo",
     )["manifest_hash"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "files.example.test/simple",
+        "file:///C:/private/packages",
+        "ftp://packages.example.test/simple",
+        "https://user:password@packages.example.test/simple",
+        "https:///simple",
+    ],
+)
+def test_custom_python_index_url_requires_safe_absolute_http_url(value: str) -> None:
+    with pytest.raises(ValueError, match="custom index URL"):
+        validate_custom_python_index_url(value)
+
+    assert validate_custom_python_index_url("http://packages.example.test/simple") == (
+        "http://packages.example.test/simple"
+    )
+
+
+def test_python_runtime_manager_rejects_tampered_custom_index_before_pip_executes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
+    profile = build_default_python_runtime_profile()
+    profile.update(
+        {
+            "index_strategy": "custom",
+            "custom_index_url": "file:///C:/private/packages",
+        }
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("invalid index URL must fail before starting pip"),
+    )
+
+    with pytest.raises(ValueError, match="custom index URL"):
+        manager._install_runtime_requirements(
+            normalized_profile=profile,
+            project_storage_root=tmp_path / "project.data",
+            runtime_root=tmp_path / "runtime.data",
+            python_executable=tmp_path / "python.exe",
+            requirements_lines=["example-package"],
+        )
 
 
 def test_python_runtime_manager_resolves_bundled_python_from_frozen_internal_dir(
@@ -206,6 +254,19 @@ def test_python_runtime_manager_resolves_project_cache_location(tmp_path: Path) 
     )
 
     assert runtime_root == tmp_path / "project.data" / "python-runtime" / "abc123"
+
+
+@pytest.mark.parametrize("stored_path", ["C:/outside/python.exe", "../outside/python.exe"])
+def test_materialized_python_executable_rejects_path_outside_runtime_root(
+    tmp_path: Path,
+    stored_path: str,
+) -> None:
+    manager = ProjectPythonRuntimeManager(app_data_root=tmp_path / "appdata")
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    (runtime_root / "python-executable.txt").write_text(stored_path, encoding="utf-8")
+
+    assert manager._read_materialized_python_executable(runtime_root) is None
 
 
 def test_python_runtime_manager_prepare_creates_materialization(tmp_path: Path) -> None:

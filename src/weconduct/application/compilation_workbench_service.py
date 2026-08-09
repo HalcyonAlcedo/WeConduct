@@ -2914,7 +2914,7 @@ class CompilationWorkbenchService:
         *,
         session_id: str,
         reason: str,
-        settle_timeout_ms: int = 75,
+        settle_timeout_ms: int = 500,
     ) -> dict:
         self._refresh_state_from_store()
         session_document = deepcopy(self._find_debug_session(session_id))
@@ -16084,6 +16084,11 @@ class CompilationWorkbenchService:
                 security_settings.get("allow_remote_network_access", False)
                 if isinstance(security_settings, dict)
                 else False
+            ),
+            "allow_insecure_tls": (
+                security_settings.get("allow_insecure_tls", True)
+                if isinstance(security_settings, dict)
+                else True
             ),
             "allow_python_execution": (
                 security_settings.get("allow_python_execution", False)

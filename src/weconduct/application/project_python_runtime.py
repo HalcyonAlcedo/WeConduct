@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 
 PYTHON_RUNTIME_INTERPRETER_STRATEGIES = {"bundled", "system", "custom_path"}
@@ -18,6 +19,29 @@ PYTHON_RUNTIME_REQUIREMENTS_SOURCE_MODES = {"inline", "requirements_txt", "lock_
 PYTHON_RUNTIME_INDEX_STRATEGIES = {"default", "custom"}
 PYTHON_RUNTIME_PACKAGE_EMBED_MODES = {"none", "wheelhouse_rebuild", "full_venv"}
 PYTHON_RUNTIME_HEALTH_STATUSES = {"unknown", "ready", "missing", "broken", "stale"}
+
+
+def validate_custom_python_index_url(value: object) -> str:
+    """返回可传给 pip 的自定义索引地址，拒绝本地文件和嵌入凭据的 URL。"""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("python runtime custom index URL is required")
+    normalized = value.strip()
+    parsed = urlsplit(normalized)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        raise ValueError("python runtime custom index URL must be an absolute http/https URL without credentials")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("python runtime custom index URL has an invalid port") from exc
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("python runtime custom index URL has an invalid port")
+    return normalized
 
 
 def _subprocess_windows_silent_kwargs() -> dict:
@@ -551,8 +575,14 @@ class ProjectPythonRuntimeManager:
             return None
         candidate = Path(raw_value)
         if candidate.is_absolute():
-            return candidate
-        return (runtime_root / candidate).resolve()
+            return None
+        resolved_runtime_root = runtime_root.resolve(strict=False)
+        resolved_candidate = (resolved_runtime_root / candidate).resolve(strict=False)
+        try:
+            resolved_candidate.relative_to(resolved_runtime_root)
+        except ValueError:
+            return None
+        return resolved_candidate
 
     def export_runtime_bundle(
         self,
@@ -987,8 +1017,7 @@ class ProjectPythonRuntimeManager:
             command[4:4] = ["--no-index", "--find-links", str(materialized_wheelhouse)]
         elif normalized_profile.get("index_strategy") == "custom":
             custom_index_url = normalized_profile.get("custom_index_url")
-            if isinstance(custom_index_url, str) and custom_index_url.strip():
-                command[4:4] = ["--index-url", custom_index_url.strip()]
+            command[4:4] = ["--index-url", validate_custom_python_index_url(custom_index_url)]
         try:
             result = subprocess.run(
                 command,

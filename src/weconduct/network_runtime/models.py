@@ -40,6 +40,8 @@ class NetworkOperation:
     query: Mapping[str, str] = field(default_factory=dict)
     content: bytes | str | None = None
     upload_file_path: Path | None = None
+    upload_allowed_roots: tuple[Path, ...] = ()
+    upload_allow_any_path: bool = False
     upload_stream: AsyncIterable[bytes] | None = None
     timeout_seconds: float = 30.0
     response_storage: Literal["auto", "file"] = "auto"
@@ -59,6 +61,12 @@ class NetworkOperation:
             raise ValueError("timeout_seconds must be greater than zero")
         if self.response_storage not in {"auto", "file"}:
             raise ValueError("response_storage must be 'auto' or 'file'")
+        if not isinstance(self.upload_allow_any_path, bool):
+            raise ValueError("upload_allow_any_path must be a boolean")
+        if not isinstance(self.upload_allowed_roots, tuple) or any(
+            not isinstance(root, Path) for root in self.upload_allowed_roots
+        ):
+            raise ValueError("upload_allowed_roots must be a tuple of paths")
         upload_sources = sum(
             source is not None
             for source in (self.content, self.upload_file_path, self.upload_stream)

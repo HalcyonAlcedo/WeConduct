@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import ctypes
 from multiprocessing import get_context
 from pathlib import Path
 import sys
 from typing import Any
 from urllib.parse import urlsplit
 
-from .proxy import ProxyConfigurationError, ResolvedProxy
+from .proxy import ProxyConfigurationError, ResolvedProxy, _validate_pac_url_shape
 
 
 class WindowsProxyResolverWorker:
@@ -80,19 +81,19 @@ def _resolve_with_winhttp(
     if parsed_target.scheme not in {"http", "https"} or not parsed_target.hostname:
         raise ProxyConfigurationError("proxy resolution failed: target URL is invalid")
 
-    import ctypes
     from ctypes import wintypes
 
     DWORD = wintypes.DWORD
     BOOL = wintypes.BOOL
     HINTERNET = wintypes.HANDLE
+    LPVOID = ctypes.c_void_p
 
     class CurrentUserProxyConfig(ctypes.Structure):
         _fields_ = [
             ("fAutoDetect", BOOL),
-            ("lpszAutoConfigUrl", wintypes.LPWSTR),
-            ("lpszProxy", wintypes.LPWSTR),
-            ("lpszProxyBypass", wintypes.LPWSTR),
+            ("lpszAutoConfigUrl", LPVOID),
+            ("lpszProxy", LPVOID),
+            ("lpszProxyBypass", LPVOID),
         ]
 
     class AutoProxyOptions(ctypes.Structure):
@@ -108,8 +109,8 @@ def _resolve_with_winhttp(
     class ProxyInfo(ctypes.Structure):
         _fields_ = [
             ("dwAccessType", DWORD),
-            ("lpszProxy", wintypes.LPWSTR),
-            ("lpszProxyBypass", wintypes.LPWSTR),
+            ("lpszProxy", LPVOID),
+            ("lpszProxyBypass", LPVOID),
         ]
 
     winhttp = ctypes.WinDLL("winhttp")
@@ -146,19 +147,27 @@ def _resolve_with_winhttp(
     try:
         normalized_mode = mode.strip().lower()
         if normalized_mode == "windows_system" and config.lpszProxy:
-            return _parse_winhttp_proxy_list(config.lpszProxy, target_url, source=normalized_mode)
+            return _parse_winhttp_proxy_list(
+                _read_winhttp_wide_string(config.lpszProxy),
+                target_url,
+                source=normalized_mode,
+            )
 
         options = AutoProxyOptions()
         if normalized_mode == "pac":
-            requested_pac_url = pac_url or config.lpszAutoConfigUrl
+            requested_pac_url = pac_url or _read_winhttp_wide_string(
+                config.lpszAutoConfigUrl
+            )
             if not requested_pac_url:
                 raise ProxyConfigurationError("proxy resolution failed: PAC URL unavailable")
-            options.dwFlags = 0x2  # WINHTTP_AUTOPROXY_CONFIG_URL
-            options.lpszAutoConfigUrl = requested_pac_url
+            requested_pac_url = _validate_pac_url_shape(requested_pac_url)
+            _configure_winhttp_auto_proxy_options(
+                options,
+                mode=normalized_mode,
+                pac_url=requested_pac_url,
+            )
         else:
-            options.dwFlags = 0x1  # WINHTTP_AUTOPROXY_AUTO_DETECT
-            options.dwAutoDetectFlags = 0x3  # DHCP | DNS_A
-        options.fAutoLogonIfChallenged = True
+            _configure_winhttp_auto_proxy_options(options, mode=normalized_mode, pac_url=None)
         info = ProxyInfo()
         if not winhttp.WinHttpGetProxyForUrl(handle, target_url, ctypes.byref(options), ctypes.byref(info)):
             raise ProxyConfigurationError("proxy resolution failed: WinHttpGetProxyForUrl")
@@ -169,7 +178,11 @@ def _resolve_with_winhttp(
             if info.dwAccessType == 1 and normalized_mode in {"pac", "wpad"}:
                 return ResolvedProxy(mode="direct", source=normalized_mode)
             raise ProxyConfigurationError("proxy resolution failed: WinHTTP returned no proxy")
-        return _parse_winhttp_proxy_list(info.lpszProxy, target_url, source=normalized_mode)
+        return _parse_winhttp_proxy_list(
+            _read_winhttp_wide_string(info.lpszProxy),
+            target_url,
+            source=normalized_mode,
+        )
     finally:
         for pointer in allocated:
             if pointer:
@@ -178,6 +191,13 @@ def _resolve_with_winhttp(
                 except BaseException:
                     pass
         winhttp.WinHttpCloseHandle(handle)
+
+
+def _read_winhttp_wide_string(pointer: int | None) -> str:
+    """复制 WinHTTP 所有的宽字符串，保留原始指针供 GlobalFree 释放。"""
+    if not pointer:
+        return ""
+    return str(ctypes.wstring_at(pointer))
 
 
 def _parse_winhttp_proxy_list(raw_value: str, target_url: str, *, source: str) -> ResolvedProxy:
@@ -195,10 +215,33 @@ def _parse_winhttp_proxy_list(raw_value: str, target_url: str, *, source: str) -
         if "://" not in candidate:
             candidate = f"http://{candidate}"
         parsed = urlsplit(candidate)
-        if parsed.scheme not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
+        if (
+            parsed.scheme not in {"http", "https", "socks5", "socks5h"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
             continue
-        if parsed.port is None or parsed.port <= 0 or parsed.port > 65535:
+        try:
+            port = parsed.port
+        except ValueError:
+            continue
+        if port is None or port <= 0 or port > 65535:
             continue
         mode = parsed.scheme if parsed.scheme.startswith("socks") else "http"
         return ResolvedProxy(mode=mode, url=candidate, source=source)
     raise ProxyConfigurationError("proxy resolution failed: WinHTTP result has no supported candidate")
+
+
+def _configure_winhttp_auto_proxy_options(options, *, mode: str, pac_url: str | None) -> None:
+    """填充 WinHTTP 自动代理选项；绝不自动回应代理身份挑战。"""
+    if mode == "pac":
+        options.dwFlags = 0x2  # WINHTTP_AUTOPROXY_CONFIG_URL
+        options.lpszAutoConfigUrl = pac_url
+    elif mode == "wpad":
+        options.dwFlags = 0x1  # WINHTTP_AUTOPROXY_AUTO_DETECT
+        options.dwAutoDetectFlags = 0x3  # DHCP | DNS_A
+    options.fAutoLogonIfChallenged = False

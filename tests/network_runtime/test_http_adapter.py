@@ -7,6 +7,7 @@ from threading import Thread
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
+import pytest
 
 from weconduct.application.sensitive_values.models import SensitiveConsumer, SensitiveRef
 from weconduct.application.sensitive_values.service import SensitiveValueService
@@ -87,6 +88,19 @@ def test_httpx_adapter_default_client_uses_pinned_dns_transport(tmp_path) -> Non
     finally:
         adapter.close()
         asyncio.run(adapter.aclose())
+
+
+def test_httpx_adapter_rejects_unwrapped_custom_transport(tmp_path) -> None:
+    class CustomTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, request=request)
+
+    with pytest.raises(ValueError, match="network.custom_transport_unsupported"):
+        HttpxAdapter(
+            transport=CustomTransport(),
+            response_root_directory=tmp_path,
+            access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+        )
 
 
 def test_httpx_adapter_binds_connection_to_prevalidated_dns_answer(
@@ -483,6 +497,50 @@ def test_network_http_request_node_delegates_to_network_runtime_service() -> Non
     assert service.operation.query == {"source": "node"}
     assert service.operation.content == b'{"request": "value"}'
     assert service.operation.headers["Content-Type"] == "application/json"
+
+
+def test_network_http_request_wraps_sensitive_response_headers_for_runtime_use() -> None:
+    class StubNetworkRuntimeService:
+        def submit(
+            self,
+            operation: NetworkOperation,
+            snapshot: NetworkContextSnapshot,
+        ) -> Future[NetworkResult]:
+            del snapshot
+            future: Future[NetworkResult] = Future()
+            future.set_result(
+                NetworkResult(
+                    status="succeeded",
+                    operation_id=operation.operation_id,
+                    session_id=operation.session_id,
+                    status_code=200,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Set-Cookie": "sid=response-cookie; Path=/",
+                        "X-Api-Key": "response-api-key",
+                    },
+                )
+            )
+            return future
+
+    context = RuntimeContext()
+    output = RuntimeExecutorRegistry(
+        network_runtime_service=StubNetworkRuntimeService()
+    ).execute(
+        "network.http_request",
+        {
+            "node_id": "response-header-sensitive",
+            "node_kind": "network.http_request",
+            "node_config": {"url": "https://example.test/resource"},
+        },
+        context,
+    )
+
+    assert output["headers"]["Content-Type"] == "application/json"
+    assert isinstance(output["headers"]["Set-Cookie"], SensitiveRef)
+    assert isinstance(output["headers"]["X-Api-Key"], SensitiveRef)
+    assert "response-cookie" not in repr(output)
+    assert "response-api-key" not in repr(output)
 
 
 def test_network_http_request_binds_and_reuses_a_session_network_context() -> None:

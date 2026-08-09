@@ -20,6 +20,19 @@ def migrate_program_configuration(
     registry: ConfigurationRegistry,
 ) -> dict:
     if repository.is_current():
+        values = repository.load()
+        if _replace_legacy_response_limit_defaults(values):
+            repository.save(values)
+            return {
+                "status": "migrated_response_limits",
+                "diagnostics": [
+                    {
+                        "category": "configuration.migration.response_limits_defaults",
+                        "path": "/network_defaults/response_limits",
+                        "severity": "info",
+                    }
+                ],
+            }
         return {"status": "already_current", "diagnostics": []}
     if not repository.path.exists():
         return {"status": "not_required", "diagnostics": []}
@@ -80,6 +93,23 @@ def _build_default_values(*, registry: ConfigurationRegistry, scope: str) -> dic
             config_field.default
         )
     return values
+
+
+def _replace_legacy_response_limit_defaults(values: dict) -> bool:
+    network_defaults = values.get("network_defaults")
+    if not isinstance(network_defaults, dict):
+        return False
+    response_limits = network_defaults.get("response_limits")
+    if not isinstance(response_limits, dict):
+        return False
+    if (
+        response_limits.get("max_bytes") != 0
+        or response_limits.get("max_in_memory_bytes") != 0
+    ):
+        return False
+    response_limits["max_bytes"] = None
+    response_limits["max_in_memory_bytes"] = None
+    return True
 
 
 def _find_target_domain(

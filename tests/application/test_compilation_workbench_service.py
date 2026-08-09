@@ -3613,6 +3613,46 @@ def test_debug_event_append_redacts_resolved_sensitive_values() -> None:
     )
 
 
+def test_debug_history_persistence_uses_sensitive_variable_descriptors_without_plaintext_registry(
+    tmp_path: Path,
+) -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(_build_minimal_workspace_graph())
+    service.save_project_as(project_path=str(tmp_path / "marked-debug-history.weconduct.json"))
+    session_id = "debug-marked-sensitive"
+
+    service._persist_debug_history_session_document(  # type: ignore[attr-defined]
+        {
+            "debug_session": {
+                "session_id": session_id,
+                "status": "paused",
+                "started_at": "2026-08-08T00:00:00+00:00",
+            },
+            "object_index": {"graph_model_id": "graph:workspace"},
+            "variable_descriptors": {
+                "sid": {"name": "sid", "sensitive": True, "value_type": "string"},
+            },
+            "variable_snapshot": {"sid": "private-session-id"},
+            "variable_changes": {"sid": "rotated-session-id"},
+            "debug_events": [],
+            "debug_keyframes": [],
+            "debug_snapshots": [],
+        }
+    )
+
+    history = service.open_debug_history_session(session_id=session_id)
+    persisted_bytes = b"".join(
+        path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    )
+
+    assert history["session"]["variable_snapshot"] == {"sid": "<redacted>"}
+    assert history["session"]["variable_changes"] == {"sid": "<redacted>"}
+    assert b"private-session-id" not in persisted_bytes
+    assert b"rotated-session-id" not in persisted_bytes
+
+
 def test_runtime_sensitive_parameter_rewrite_stays_redacted_and_records_warn_audit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

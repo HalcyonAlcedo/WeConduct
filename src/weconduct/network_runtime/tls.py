@@ -84,7 +84,7 @@ class TlsResolver:
             raise TlsConfigurationError(f"{label} must be configured")
         path = Path(value).expanduser()
         if not path.is_file():
-            raise TlsConfigurationError(f"{label} does not exist: {path}")
+            raise TlsConfigurationError(f"{label} does not exist")
         return str(path.resolve())
 
 

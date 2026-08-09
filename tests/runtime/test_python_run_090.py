@@ -4,9 +4,16 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from weconduct.application.sensitive_values.models import SensitiveConsumer, SensitiveRef
 from weconduct.application.sensitive_values.service import SensitiveValueService
-from weconduct.runtime.engine import RuntimeContext, RuntimeExecutorRegistry
+from weconduct.runtime.engine import (
+    PythonCodeRejected,
+    RuntimeContext,
+    RuntimeExecutorRegistry,
+    _validate_python_run_code,
+)
 from weconduct.runtime.python_sensitive_broker import PythonSensitiveValueBroker
 
 
@@ -20,6 +27,47 @@ def _registry(tmp_path):
             "python_timeout_seconds": 10,
         }
     )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import sys",
+        "import builtins",
+        "import subprocess",
+        "builtins.open('untrusted.txt')",
+        "value = ().__class__",
+        "value = frame.f_builtins",
+    ],
+)
+def test_python_run_hard_blocks_host_escape_probes_even_when_project_removes_blocklist(
+    tmp_path,
+    code: str,
+) -> None:
+    with pytest.raises(PythonCodeRejected):
+        _validate_python_run_code(code, blocked_imports=set())
+
+    registry = RuntimeExecutorRegistry(
+        runtime_settings={
+            "allow_python_execution": True,
+            "python_project_runtime_enabled": True,
+            "python_executable_path": sys.executable,
+            "python_project_runtime_root": str(tmp_path),
+            "python_timeout_seconds": 10,
+            "python_blocked_import_modules": [],
+        }
+    )
+    output = registry.execute(
+        "python.run",
+        {
+            "node_id": "python-sandbox-probe",
+            "node_kind": "python.run",
+            "node_config": {"code": code},
+        },
+        RuntimeContext(),
+    )
+    assert output["status"] == "failed"
+    assert output["error_code"] == "python.code_rejected"
 
 
 def test_python_run_supports_dynamic_inputs_outputs_and_metadata(tmp_path) -> None:
@@ -343,6 +391,52 @@ def test_python_run_marks_result_derived_from_sensitive_input_as_sensitive(tmp_p
     assert output["status"] == "succeeded"
     assert isinstance(output["result"], SensitiveRef)
     assert sensitive.resolve(output["result"], consumer=SensitiveConsumer.RUNTIME_EXECUTOR) == "python-secret"
+
+
+def test_python_run_rewraps_sensitive_plaintext_written_to_new_variable(tmp_path) -> None:
+    sensitive = SensitiveValueService()
+    secret_ref = sensitive.create(
+        "python-secret",
+        scope_id="session-sensitive-python",
+        source="runtime_input",
+    )
+    context = RuntimeContext(
+        variables={"api_key": secret_ref},
+        flow_runtime={"sensitive_value_service": sensitive},
+    )
+
+    output = _registry(tmp_path).execute(
+        "python.run",
+        {
+            "node_id": "python-sensitive-new-variable",
+            "node_kind": "python.run",
+            "node_config": {
+                "allow_sensitive_values": True,
+                "code": "variables['copied_api_key'] = ctx.inputs.get('api_key')",
+                "input_schema": {"api_key": {"type": "string", "required": True}},
+            },
+        },
+        context,
+    )
+
+    assert output["status"] == "succeeded"
+    assert isinstance(context.variables["api_key"], SensitiveRef)
+    assert (
+        sensitive.resolve(
+            context.variables["api_key"],
+            consumer=SensitiveConsumer.RUNTIME_EXECUTOR,
+        )
+        == "python-secret"
+    )
+    assert isinstance(context.variables["copied_api_key"], SensitiveRef)
+    assert (
+        sensitive.resolve(
+            context.variables["copied_api_key"],
+            consumer=SensitiveConsumer.RUNTIME_EXECUTOR,
+        )
+        == "python-secret"
+    )
+    assert "python-secret" not in repr(context.variables)
 
 
 def test_python_run_redacts_sensitive_value_from_captured_stdout(tmp_path) -> None:

@@ -15,7 +15,18 @@ _ENCRYPTION_SCHEMA_VERSION = 1
 _SALT_BYTES = 16
 _NONCE_BYTES = 12
 _KEY_BYTES = 32
-_SCRYPT_PARAMS = {"name": "scrypt", "n": 16384, "r": 8, "p": 1, "key_length": _KEY_BYTES}
+_MIN_SCRYPT_N = 2**14  # 兼容 0.9.0 之前已保存的合法 envelope。
+_MAX_SCRYPT_N = 2**17
+_MAX_SCRYPT_R = 8
+_MAX_SCRYPT_P = 4
+_MAX_SCRYPT_MEMORY_BYTES = 128 * 1024 * 1024
+_SCRYPT_PARAMS = {
+    "name": "scrypt",
+    "n": _MAX_SCRYPT_N,
+    "r": 8,
+    "p": 1,
+    "key_length": _KEY_BYTES,
+}
 
 
 @dataclass(frozen=True)
@@ -74,6 +85,7 @@ def decrypt_parameter_values(envelope: Mapping[str, object], *, password: str) -
         }
         if params["key_length"] != _KEY_BYTES:
             raise ValueError
+        _validate_scrypt_params(params)
         salt = _decode(kdf.get("salt"))
         nonce = _decode(cipher.get("nonce"))
         ciphertext = _decode(cipher.get("ciphertext"))
@@ -102,6 +114,18 @@ def _derive_key(*, password: str, salt: bytes, params: Mapping[str, object]) -> 
         r=int(params["r"]),
         p=int(params["p"]),
     ).derive(password.encode("utf-8"))
+
+
+def _validate_scrypt_params(params: Mapping[str, int]) -> None:
+    n = params["n"]
+    r = params["r"]
+    p = params["p"]
+    if n < _MIN_SCRYPT_N or n > _MAX_SCRYPT_N or n & (n - 1):
+        raise ValueError
+    if r > _MAX_SCRYPT_R or p > _MAX_SCRYPT_P:
+        raise ValueError
+    if n * r * 128 > _MAX_SCRYPT_MEMORY_BYTES:
+        raise ValueError
 
 
 def _build_aad(parameter_set_id: str) -> bytes:

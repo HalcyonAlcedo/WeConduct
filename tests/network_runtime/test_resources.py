@@ -86,6 +86,42 @@ def test_response_body_store_applies_response_limits_and_cleans_partial_file(tmp
     store.close()
 
 
+def test_response_body_store_treats_zero_max_bytes_as_no_response_body(tmp_path) -> None:
+    async def chunks():
+        yield b"one-byte"
+
+    store = ResponseBodyStore(session_id="session-zero-limit", root_directory=tmp_path)
+
+    with pytest.raises(ResponseBodyTooLargeError, match="network.response_too_large"):
+        asyncio.run(
+            store.create_from_async_chunks(
+                chunks(),
+                content_type="application/octet-stream",
+                max_bytes=0,
+            )
+        )
+
+    assert list(store._directory.iterdir()) == []
+    store.close()
+
+
+def test_response_body_store_treats_zero_memory_limit_as_force_file(tmp_path) -> None:
+    async def chunks():
+        yield b"small payload"
+
+    store = ResponseBodyStore(session_id="session-zero-memory", root_directory=tmp_path)
+    body_ref = asyncio.run(
+        store.create_from_async_chunks(
+            chunks(),
+            content_type="text/plain",
+            max_in_memory_bytes=0,
+        )
+    )
+
+    assert body_ref.storage_kind == "file"
+    assert body_ref.read_bytes() == b"small payload"
+
+
 def test_response_body_store_uses_configured_memory_threshold(tmp_path) -> None:
     async def chunks():
         yield b"small payload"

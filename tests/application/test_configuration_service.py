@@ -152,7 +152,79 @@ def test_builtin_network_defaults_are_exposed_as_program_configuration() -> None
     assert values["network_defaults"] == {
         "base_url": None,
         "timeout_seconds": 30,
-        "response_limits": {"max_bytes": 0, "max_in_memory_bytes": 0},
+        "response_limits": {"max_bytes": None, "max_in_memory_bytes": None},
+    }
+
+
+def test_program_configuration_migration_replaces_legacy_zero_response_limit_defaults(
+    tmp_path: Path,
+) -> None:
+    preferences_path = tmp_path / "preferences.json"
+    preferences_path.write_text(
+        json.dumps(
+            {
+                "configuration_format_version": 1,
+                "scope": "program",
+                "values": {
+                    "ui": {"theme": "dark"},
+                    "network_defaults": {
+                        "response_limits": {
+                            "max_bytes": 0,
+                            "max_in_memory_bytes": 0,
+                        }
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    repository = FileProgramConfigurationRepository(preferences_path)
+
+    result = migrate_program_configuration(
+        repository=repository,
+        registry=build_builtin_configuration_registry(),
+    )
+
+    assert result["status"] == "migrated_response_limits"
+    assert repository.load()["ui"] == {"theme": "dark"}
+    assert repository.load()["network_defaults"]["response_limits"] == {
+        "max_bytes": None,
+        "max_in_memory_bytes": None,
+    }
+
+
+def test_program_configuration_migration_preserves_explicit_response_limits(
+    tmp_path: Path,
+) -> None:
+    preferences_path = tmp_path / "preferences.json"
+    preferences_path.write_text(
+        json.dumps(
+            {
+                "configuration_format_version": 1,
+                "scope": "program",
+                "values": {
+                    "network_defaults": {
+                        "response_limits": {
+                            "max_bytes": 1024,
+                            "max_in_memory_bytes": 0,
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    repository = FileProgramConfigurationRepository(preferences_path)
+
+    result = migrate_program_configuration(
+        repository=repository,
+        registry=build_builtin_configuration_registry(),
+    )
+
+    assert result == {"status": "already_current", "diagnostics": []}
+    assert repository.load()["network_defaults"]["response_limits"] == {
+        "max_bytes": 1024,
+        "max_in_memory_bytes": 0,
     }
 
 
@@ -364,9 +436,10 @@ def test_program_configuration_migration_converts_legacy_file_once(tmp_path: Pat
             "allow_browser_uploads": True,
             "allow_browser_downloads": False,
             "allow_new_browser_windows": True,
-            "allow_local_network_access": False,
-            "allow_remote_network_access": False,
-            "allow_python_execution": False,
+                "allow_local_network_access": False,
+                "allow_remote_network_access": False,
+                "allow_insecure_tls": True,
+                "allow_python_execution": False,
             "allow_js_injection": False,
             "allow_js_evaluation": False,
             "show_security_warnings_in_runtime": True,
@@ -376,9 +449,10 @@ def test_program_configuration_migration_converts_legacy_file_once(tmp_path: Pat
                 "file_access_blocked_roots": [],
                 "file_access_allowed_extensions": [],
                 "file_access_blocked_extensions": [],
-                    "external_api_enabled": False,
-                    "external_api_token": None,
-                    "external_api_project_allowed_roots": [],
+                        "external_api_enabled": False,
+                        "external_api_token": None,
+                        "external_api_port": 0,
+                        "external_api_project_allowed_roots": [],
                     "encrypted_parameter_unlock_policy": "always_prompt",
                 },
             "python_defaults": {
@@ -397,7 +471,7 @@ def test_program_configuration_migration_converts_legacy_file_once(tmp_path: Pat
             "network_defaults": {
                 "base_url": None,
                 "timeout_seconds": 30,
-                "response_limits": {"max_bytes": 0, "max_in_memory_bytes": 0},
+                "response_limits": {"max_bytes": None, "max_in_memory_bytes": None},
             },
             "updates": {"check_updates_on_startup": False},
         }

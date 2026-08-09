@@ -31,6 +31,7 @@ def test_http_adapter_streams_upload_file_path(tmp_path) -> None:
         method="PUT",
         url="https://example.test/upload",
         upload_file_path=upload_path,
+        upload_allowed_roots=(tmp_path,),
     )
 
     result = adapter.execute(operation, NetworkContextSnapshot(context_id="context-1"))
@@ -38,6 +39,37 @@ def test_http_adapter_streams_upload_file_path(tmp_path) -> None:
     assert result.status == "succeeded"
     assert result.status_code == 201
     assert received_payloads == [b"streamed upload"]
+
+
+def test_http_adapter_rejects_upload_file_path_without_explicit_allowed_root(tmp_path) -> None:
+    upload_path = tmp_path / "private-upload.bin"
+    upload_path.write_bytes(b"must not leave this machine")
+    handler_called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal handler_called
+        handler_called = True
+        return httpx.Response(201, request=request)
+
+    adapter = HttpxAdapter(
+        transport=httpx.MockTransport(handler),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+    result = adapter.execute(
+        NetworkOperation(
+            operation_id="upload-untrusted-path",
+            session_id="upload-untrusted-session",
+            method="PUT",
+            url="https://example.test/upload",
+            upload_file_path=upload_path,
+        ),
+        NetworkContextSnapshot(context_id="upload-untrusted-context"),
+    )
+
+    assert handler_called is False
+    assert result.status == "failed"
+    assert result.transport_error == "network.upload_path_denied"
 
 
 def test_network_upload_passes_checked_file_path_to_network_runtime(tmp_path) -> None:
@@ -85,6 +117,7 @@ def test_network_upload_passes_checked_file_path_to_network_runtime(tmp_path) ->
     assert output["uploaded_size"] == len(b"payload")
     assert service.operation is not None
     assert service.operation.upload_file_path == upload_path
+    assert tmp_path.resolve() in service.operation.upload_allowed_roots
     assert service.operation.headers["Content-Type"] == "text/plain"
 
 

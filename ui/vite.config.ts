@@ -26,7 +26,6 @@ export default defineConfig({
           if (id.includes('node_modules/monaco-editor')) return 'monaco-editor'
           if (id.includes('node_modules/@vue-flow')) return 'vue-flow'
           if (id.includes('node_modules/vue') || id.includes('node_modules/pinia') || id.includes('node_modules/vue-router')) return 'vue-vendor'
-          if (id.includes('node_modules/naive-ui')) return 'naive-ui'
           if (id.includes('node_modules/dagre')) return 'dagre'
         },
       },

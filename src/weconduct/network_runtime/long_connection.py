@@ -14,6 +14,7 @@ from httpx_sse import aconnect_sse
 import websockets
 
 from .access_policy import NetworkAccessPolicy, ResolvedNetworkTarget
+from .errors import redact_network_message
 from .tls import verify_response_certificate_pins, verify_websocket_certificate_pins
 from .transport import PinnedDnsAsyncHTTPTransport
 
@@ -290,7 +291,7 @@ class SSEClientHandle:
             raise TimeoutError("network.sse_connect_timeout")
         if self._error is not None:
             self.close()
-            raise RuntimeError(str(self._error)) from self._error
+            raise RuntimeError(redact_network_message(str(self._error))) from self._error
         return {
             "status_code": self._status_code,
             "headers": dict(self._response_headers),
@@ -433,7 +434,7 @@ class WebSocketClientHandle:
             raise TimeoutError("network.websocket_connect_timeout")
         if self._error is not None:
             self.close()
-            raise RuntimeError(str(self._error)) from self._error
+            raise RuntimeError(redact_network_message(str(self._error))) from self._error
         return {"status": "connected", "url": self.url}
 
     def send(self, value: object) -> None:

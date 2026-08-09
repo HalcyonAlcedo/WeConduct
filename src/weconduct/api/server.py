@@ -9,7 +9,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import secrets
-from threading import Condition, RLock
+from threading import BoundedSemaphore, Condition, RLock
 from typing import Callable, TypeVar
 from urllib.parse import parse_qs, unquote, urlparse
 import uuid
@@ -58,6 +58,10 @@ DEFAULT_WORKSPACE_STATE_PATH = (
 DEFAULT_PREFERENCES_PATH = Path(__file__).resolve().parents[3] / ".weconduct" / "preferences.json"
 DEFAULT_UI_DIST_PATH = Path(__file__).resolve().parents[3] / "ui" / "dist"
 EXTERNAL_IDEMPOTENCY_CACHE_LIMIT = 256
+MAX_JSON_REQUEST_BODY_BYTES = 4 * 1024 * 1024
+MAX_JSON_REQUEST_DEPTH = 64
+REQUEST_SOCKET_TIMEOUT_SECONDS = 30.0
+DEFAULT_MAX_SSE_SUBSCRIBERS = 32
 DebugActionResult = TypeVar("DebugActionResult")
 
 
@@ -87,6 +91,14 @@ class ExternalApiBindError(RuntimeError):
             message = (
                 f"{self.error_code}: 外部 API 无法绑定 {host}:{configured_port}：{cause}"
             )
+        super().__init__(message)
+
+
+class ApiRequestLimitError(ValueError):
+    """请求在进入业务处理前触发的资源上限。"""
+
+    def __init__(self, error_code: str, message: str) -> None:
+        self.error_code = error_code
         super().__init__(message)
 
 
@@ -137,6 +149,21 @@ def _public_pending_input_snapshot(snapshot: object) -> dict[str, object]:
     }
 
 
+def _validate_json_request_depth(payload: object) -> None:
+    pending: list[tuple[object, int]] = [(payload, 1)]
+    while pending:
+        value, depth = pending.pop()
+        if depth > MAX_JSON_REQUEST_DEPTH:
+            raise ApiRequestLimitError(
+                "request.body_too_deep",
+                f"request JSON nesting exceeds {MAX_JSON_REQUEST_DEPTH}",
+            )
+        if isinstance(value, dict):
+            pending.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, list):
+            pending.extend((item, depth + 1) for item in value)
+
+
 def _validate_external_api_bind_host(
     host: str,
     *,
@@ -157,6 +184,13 @@ def _validate_external_api_bind_host(
             "external_api.non_loopback_confirmation_required: "
             "set allow_non_loopback=True only after reviewing the bind address and firewall exposure"
         )
+
+
+def _resolve_api_token(api_token: str | None) -> str:
+    """返回当前进程使用的内部 UI Token，绝不写入持久化配置。"""
+    if isinstance(api_token, str) and api_token.strip():
+        return api_token
+    return secrets.token_urlsafe(32)
 
 
 def _load_external_api_program_configuration(preferences_path: Path) -> dict[str, object]:
@@ -659,11 +693,19 @@ class WeConductApiServer(ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = False
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, max_sse_subscribers: int = DEFAULT_MAX_SSE_SUBSCRIBERS, **kwargs) -> None:
+        if (
+            not isinstance(max_sse_subscribers, int)
+            or isinstance(max_sse_subscribers, bool)
+            or max_sse_subscribers <= 0
+        ):
+            raise ValueError("max_sse_subscribers must be a positive integer")
         self._service_lock = RLock()
         self._debug_action_condition = Condition(RLock())
         self._active_debug_action_count = 0
         self._closing = False
+        self.max_sse_subscribers = max_sse_subscribers
+        self._sse_slots = BoundedSemaphore(max_sse_subscribers)
         self.external_api_enabled = False
         self.external_api_token: str | None = None
         self.external_api_project_allowed_roots: tuple[Path, ...] = ()
@@ -674,6 +716,17 @@ class WeConductApiServer(ThreadingHTTPServer):
             limit=EXTERNAL_IDEMPOTENCY_CACHE_LIMIT
         )
         super().__init__(*args, **kwargs)
+
+    def get_request(self):
+        request, client_address = super().get_request()
+        request.settimeout(REQUEST_SOCKET_TIMEOUT_SECONDS)
+        return request, client_address
+
+    def try_acquire_sse_slot(self) -> bool:
+        return self._sse_slots.acquire(blocking=False)
+
+    def release_sse_slot(self) -> None:
+        self._sse_slots.release()
 
     def server_bind(self) -> None:
         """Keep configured ports exclusive while retaining dynamic-port reuse."""
@@ -733,10 +786,96 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
 
     def _verify_api_token(self) -> bool:
         expected_token = getattr(self.server, "api_token", None)
-        if expected_token is None:
-            return True
+        if not isinstance(expected_token, str) or not expected_token:
+            return False
         provided_token = self.headers.get("X-WeConduct-Token", "")
         return secrets.compare_digest(provided_token, expected_token)
+
+    def _verify_host_header(self) -> bool:
+        """限制请求 Host，阻止 DNS rebinding 伪造本地 UI API。"""
+        raw_host = self.headers.get("Host")
+        if not isinstance(raw_host, str) or not raw_host or raw_host != raw_host.strip():
+            return False
+        try:
+            parsed = urlparse(f"//{raw_host}", allow_fragments=False)
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError:
+            return False
+        if (
+            not isinstance(hostname, str)
+            or not hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+        ):
+            return False
+        normalized_hostname = hostname.rstrip(".").lower()
+        bound_host = str(self.server.server_address[0]).rstrip(".").lower()
+        allowed_hosts = {"127.0.0.1", "localhost", bound_host}
+        if normalized_hostname not in allowed_hosts:
+            return False
+        bound_port = int(self.server.server_address[1])
+        return port is None or port == bound_port
+
+    def _require_host_header(self) -> bool:
+        if self._verify_host_header():
+            return True
+        self._write_json(
+            HTTPStatus.FORBIDDEN,
+            {
+                "error": "forbidden",
+                "message": "invalid Host header",
+            },
+        )
+        return False
+
+    def _verify_origin_header(self) -> bool:
+        """若浏览器发送 Origin，则它必须指向当前本地 API。"""
+        raw_origin = self.headers.get("Origin")
+        if raw_origin is None:
+            # CLI 和 pywebview 原生桥接请求通常没有 Origin，继续由 Token 保护。
+            return True
+        if not raw_origin or raw_origin == "null" or raw_origin != raw_origin.strip():
+            return False
+        try:
+            parsed = urlparse(raw_origin)
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError:
+            return False
+        if (
+            parsed.scheme.lower() != "http"
+            or not isinstance(hostname, str)
+            or not hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+        ):
+            return False
+        normalized_hostname = hostname.rstrip(".").lower()
+        bound_host = str(self.server.server_address[0]).rstrip(".").lower()
+        if normalized_hostname not in {"127.0.0.1", "localhost", bound_host}:
+            return False
+        return port is None or port == int(self.server.server_address[1])
+
+    def _require_origin_header(self) -> bool:
+        if self._verify_origin_header():
+            return True
+        self._write_json(
+            HTTPStatus.FORBIDDEN,
+            {
+                "error": "forbidden",
+                "message": "invalid Origin header",
+            },
+        )
+        return False
 
     def _require_api_token(self) -> bool:
         if self._verify_api_token():
@@ -751,6 +890,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self) -> None:  # noqa: N802
+        if not self._require_host_header():
+            return
         if self._handle_external_api(method="GET"):
             return
         parsed_url = urlparse(self.path)
@@ -1211,6 +1352,10 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         self._write_not_found_error()
 
     def do_PATCH(self) -> None:  # noqa: N802
+        if not self._require_host_header():
+            return
+        if not self._require_origin_header():
+            return
         if not self._require_api_token():
             return
         if urlparse(self.path).path != "/api/workbench/config/values":
@@ -1248,7 +1393,11 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._require_host_header():
+            return
         if self._handle_external_api(method="POST"):
+            return
+        if not self._require_origin_header():
             return
         if self.path == "/api/host/file-dialog":
             if not self._require_api_token():
@@ -2675,7 +2824,11 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         self._write_not_found_error()
 
     def do_PUT(self) -> None:  # noqa: N802
+        if not self._require_host_header():
+            return
         if self._handle_external_api(method="PUT"):
+            return
+        if not self._require_origin_header():
             return
         if not self._require_api_token():
             return
@@ -2772,8 +2925,13 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         details = getattr(exc, "details", None)
         if isinstance(details, dict):
             payload["details"] = details
+        status = (
+            HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+            if getattr(exc, "error_code", None) == "request.body_too_large"
+            else HTTPStatus.BAD_REQUEST
+        )
         self._write_json(
-            HTTPStatus.BAD_REQUEST,
+            status,
             payload,
         )
 
@@ -3213,6 +3371,18 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         service: CompilationWorkbenchService,
         session_id: str,
     ) -> None:
+        if not self._try_acquire_sse_slot():
+            return
+        try:
+            self._write_runtime_stream_with_slot(service, session_id)
+        finally:
+            self._release_sse_slot()
+
+    def _write_runtime_stream_with_slot(
+        self,
+        service: CompilationWorkbenchService,
+        session_id: str,
+    ) -> None:
         self.send_response(HTTPStatus.OK.value)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -3288,6 +3458,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 self._write_sse_event("runtime.aborted", initial_snapshot)
                 return
             skip_initial_snapshot = True
+            terminal_event_written = False
             for event_name, payload in service.iter_runtime_stream_events(session_id=session_id):
                 if event_name == "runtime.snapshot" and skip_initial_snapshot and payload == initial_snapshot:
                     skip_initial_snapshot = False
@@ -3295,11 +3466,63 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 skip_initial_snapshot = False
                 self._write_sse_event(event_name, payload)
                 if event_name in {"runtime.completed", "runtime.failed", "runtime.aborted"}:
+                    terminal_event_written = True
                     break
+            if terminal_event_written:
+                return
+
+            # The session may have reached a terminal state between the initial
+            # snapshot and broker subscription.  In that race the broker can
+            # close the iterator without delivering its terminal event, so use
+            # the persisted final snapshot as a one-shot completion fallback.
+            final_snapshot = service.get_runtime_stream_snapshot(session_id=session_id)
+            final_status = final_snapshot.get("status")
+            if final_status not in {"completed", "failed", "aborted"}:
+                return
+            self._write_sse_event("runtime.snapshot", final_snapshot)
+            total_node_count = len(final_snapshot.get("node_states", []))
+            execution_summary = final_snapshot.get("execution_summary", {})
+            completed_count = execution_summary.get("completed_node_count", 0)
+            failed_count = execution_summary.get("failed_node_count", 0)
+            pending_count = max(total_node_count - completed_count - failed_count, 0)
+            if final_status == "completed":
+                percent = 100.0
+            else:
+                percent = (
+                    (completed_count + failed_count) / total_node_count * 100.0
+                    if total_node_count
+                    else 0.0
+                )
+            self._write_sse_event(
+                "runtime.summary",
+                {
+                    "session_id": final_snapshot.get("session_id"),
+                    "status": final_status,
+                    "total_node_count": total_node_count,
+                    "completed_node_count": completed_count,
+                    "failed_node_count": failed_count,
+                    "running_node_count": 0,
+                    "pending_node_count": pending_count,
+                    "percent": round(percent, 1),
+                    "event_count": execution_summary.get("event_count", 0),
+                },
+            )
+            self._write_sse_event(f"runtime.{final_status}", final_snapshot)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return
 
     def _write_workbench_event_stream(self, service: CompilationWorkbenchService) -> None:
+        if not self._try_acquire_sse_slot():
+            return
+        try:
+            self._write_workbench_event_stream_with_slot(service)
+        finally:
+            self._release_sse_slot()
+
+    def _write_workbench_event_stream_with_slot(
+        self,
+        service: CompilationWorkbenchService,
+    ) -> None:
         raw_cursor = self.headers.get("Last-Event-ID")
         after_event_id: int | None = None
         if isinstance(raw_cursor, str) and raw_cursor.strip():
@@ -3380,6 +3603,28 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         self.wfile.flush()
 
+    def _try_acquire_sse_slot(self) -> bool:
+        server = getattr(self, "server", None)
+        acquire = getattr(server, "try_acquire_sse_slot", None)
+        if not callable(acquire):
+            return True
+        if acquire():
+            return True
+        self._write_json(
+            HTTPStatus.TOO_MANY_REQUESTS,
+            {
+                "error": "sse.connection_limit_reached",
+                "message": "too many concurrent SSE connections",
+            },
+        )
+        return False
+
+    def _release_sse_slot(self) -> None:
+        server = getattr(self, "server", None)
+        release = getattr(server, "release_sse_slot", None)
+        if callable(release):
+            release()
+
     def _handle_startup_diagnostics(self) -> None:
         report = build_startup_diagnostics(
             self._resolve_preferences_path(),
@@ -3451,30 +3696,48 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         )
 
     def _read_json_request_body(self) -> dict:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        raw_body = self.rfile.read(content_length)
+        raw_body = self._read_request_body_bytes()
         try:
             payload = json.loads(raw_body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
             raise ValueError("request body must be valid JSON") from exc
         if not isinstance(payload, dict):
             raise ValueError("request body must be a JSON object")
+        _validate_json_request_depth(payload)
         return payload
 
     def _read_optional_json_request_body(self) -> dict | None:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        raw_body = self.rfile.read(content_length)
+        raw_body = self._read_request_body_bytes()
         if not raw_body.strip():
             return None
         try:
             payload = json.loads(raw_body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
             raise ValueError("request body must be valid JSON") from exc
         if not isinstance(payload, dict):
             raise ValueError("request body must be a JSON object")
+        _validate_json_request_depth(payload)
         if payload == {}:
             return None
         return payload
+
+    def _read_request_body_bytes(self) -> bytes:
+        raw_content_length = self.headers.get("Content-Length", "0")
+        try:
+            content_length = int(raw_content_length)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Content-Length must be a non-negative integer") from exc
+        if content_length < 0:
+            raise ValueError("Content-Length must be a non-negative integer")
+        if content_length > MAX_JSON_REQUEST_BODY_BYTES:
+            raise ApiRequestLimitError(
+                "request.body_too_large",
+                f"request body exceeds {MAX_JSON_REQUEST_BODY_BYTES} bytes",
+            )
+        raw_body = self.rfile.read(content_length)
+        if len(raw_body) != content_length:
+            raise ValueError("request body is incomplete")
+        return raw_body
 
     def _extract_optional_graph_document_payload(
         self,
@@ -3748,6 +4011,7 @@ def build_api_server(
     external_api_token: str | None = None,
     external_api_project_allowed_roots: tuple[str | Path, ...] | None = None,
     allow_non_loopback: bool = False,
+    max_sse_subscribers: int = DEFAULT_MAX_SSE_SUBSCRIBERS,
 ) -> WeConductApiServer:
     _validate_external_api_bind_host(host, allow_non_loopback=allow_non_loopback)
     resolved_preferences_path = (
@@ -3763,7 +4027,11 @@ def build_api_server(
         if isinstance(configured_port, int) and not isinstance(configured_port, bool):
             effective_port = configured_port
     try:
-        server = WeConductApiServer((host, effective_port), WeConductApiHandler)
+        server = WeConductApiServer(
+            (host, effective_port),
+            WeConductApiHandler,
+            max_sse_subscribers=max_sse_subscribers,
+        )
     except OSError as exc:
         raise ExternalApiBindError(
             host=host,
@@ -3784,7 +4052,7 @@ def build_api_server(
     )
     server.configuration_migration_result = migration_result["program"]
     server.graph_configuration_migration_result = migration_result["graph"]
-    server.api_token = api_token
+    server.api_token = _resolve_api_token(api_token)
     server.external_api_enabled = (
         bool(external_api_configuration["enabled"])
         if external_api_enabled is None

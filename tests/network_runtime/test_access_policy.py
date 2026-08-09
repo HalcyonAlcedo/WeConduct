@@ -204,3 +204,44 @@ def test_pinned_proxy_transport_replaces_https_tunnel_connection_factory() -> No
 
     assert isinstance(connection, _PinnedDnsAsyncTunnelHTTPConnection)
     assert connection._remote_origin.host == b"93.184.216.34"
+
+
+def test_pinned_proxy_transport_uses_policy_approved_ip_for_proxy_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RecordingPool:
+        request: httpcore.Request | None = None
+
+        async def handle_async_request(self, request: httpcore.Request) -> httpcore.Response:
+            self.request = request
+
+            async def empty_body():
+                if False:
+                    yield b""
+
+            return httpcore.Response(status=204, headers=[], content=empty_body())
+
+    monkeypatch.setattr(
+        NetworkAccessPolicy,
+        "resolve_connect_addresses",
+        lambda _self, hostname, port: ("93.184.216.34",),
+    )
+    policy = NetworkAccessPolicy(allowed_hostnames=frozenset({"target.example.test"}))
+    pool = RecordingPool()
+    transport = object.__new__(PinnedDnsAsyncHTTPTransport)
+    transport._access_policy = policy
+    transport._pool = pool
+    transport._uses_proxy = True
+
+    async def exercise() -> None:
+        async with httpx.AsyncClient() as client:
+            request = client.build_request("GET", "https://target.example.test/resource")
+            response = await transport.handle_async_request(request)
+            await response.aclose()
+
+    asyncio.run(exercise())
+
+    assert pool.request is not None
+    assert pool.request.url.host == b"93.184.216.34"
+    assert dict(pool.request.headers)[b"Host"] == b"target.example.test"
+    assert pool.request.extensions["sni_hostname"] == "target.example.test"

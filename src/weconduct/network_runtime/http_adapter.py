@@ -20,6 +20,10 @@ from .tls import ResolvedTls, TlsResolver, verify_response_certificate_pins
 from .transport import PinnedDnsAsyncHTTPTransport
 
 
+class UploadPathDeniedError(ValueError):
+    error_code = "network.upload_path_denied"
+
+
 class HttpxAdapter:
     def __init__(
         self,
@@ -28,9 +32,19 @@ class HttpxAdapter:
         response_root_directory: Path,
         access_policy: NetworkAccessPolicy | None = None,
         client: httpx.AsyncClient | None = None,
+        allow_insecure_tls: bool = True,
     ) -> None:
+        if transport is not None and not isinstance(transport, httpx.MockTransport):
+            raise ValueError("network.custom_transport_unsupported")
+        if client is not None:
+            client_transport = getattr(client, "_transport", None)
+            if not isinstance(client_transport, httpx.MockTransport):
+                raise ValueError("network.custom_client_unsupported")
+        if not isinstance(allow_insecure_tls, bool):
+            raise ValueError("network.allow_insecure_tls_invalid")
         self._transport = transport
         self._access_policy = access_policy or NetworkAccessPolicy()
+        self._tls_resolver = TlsResolver(allow_insecure=allow_insecure_tls)
         self._client = client or self._build_client()
         self._owns_client = client is None
         self._response_root_directory = Path(response_root_directory)
@@ -64,12 +78,18 @@ class HttpxAdapter:
             if operation.upload_stream is not None:
                 request_content = operation.upload_stream
             elif operation.upload_file_path is not None:
-                request_content = _iter_upload_file_chunks(operation.upload_file_path)
+                request_content = _iter_upload_file_chunks(
+                    _validate_upload_file_path(
+                        operation.upload_file_path,
+                        allowed_roots=operation.upload_allowed_roots,
+                        allow_any_path=operation.upload_allow_any_path,
+                    )
+                )
             request_cookies = dict(snapshot.cookies)
             request_method = operation.method
             request_url = operation.url
             tls_config = snapshot.tls if isinstance(snapshot.tls, dict) else {}
-            resolved_tls = TlsResolver().resolve(tls_config)
+            resolved_tls = self._tls_resolver.resolve(tls_config)
             for _ in range(10):
                 resolved_target = self._access_policy.validate_url(request_url)
                 client = self._client_for_snapshot(
@@ -166,7 +186,12 @@ class HttpxAdapter:
                 duration_ms=(perf_counter() - started_at) * 1000,
             )
         except (httpx.HTTPError, ValueError) as exc:
-            error = build_network_error(exc, operation=operation, snapshot=snapshot)
+            error = build_network_error(
+                exc,
+                operation=operation,
+                snapshot=snapshot,
+                error_code=getattr(exc, "error_code", None),
+            )
             return NetworkResult(
                 status="failed",
                 operation_id=operation.operation_id,
@@ -206,7 +231,7 @@ class HttpxAdapter:
         resolved = resolved_tls
         if resolved is None:
             tls_config = snapshot.tls if isinstance(snapshot.tls, dict) else {}
-            resolved = TlsResolver().resolve(tls_config)
+            resolved = self._tls_resolver.resolve(tls_config)
         verify_argument: ssl.SSLContext | bool
         if resolved.verify == "system":
             verify_argument = True
@@ -226,7 +251,10 @@ class HttpxAdapter:
             client_context.load_cert_chain(*resolved.client_cert)
             verify_argument = client_context
         proxy_config = snapshot.proxy if isinstance(snapshot.proxy, dict) else {"mode": "direct"}
-        resolved_proxy = ProxyResolver().resolve(proxy_config, target_url)
+        resolved_proxy = ProxyResolver(access_policy=self._access_policy).resolve(
+            proxy_config,
+            target_url,
+        )
         if (
             resolved.verify == "system"
             and resolved.client_cert is None
@@ -288,6 +316,29 @@ async def _iter_upload_file_chunks(path: Path, *, chunk_size: int = 64 * 1024):
     with Path(path).open("rb") as handle:
         while chunk := await asyncio.to_thread(handle.read, chunk_size):
             yield chunk
+
+
+def _validate_upload_file_path(
+    path: Path,
+    *,
+    allowed_roots: tuple[Path, ...],
+    allow_any_path: bool,
+) -> Path:
+    try:
+        resolved_path = Path(path).expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise UploadPathDeniedError("network.upload_path_denied") from exc
+    if not resolved_path.is_file():
+        raise UploadPathDeniedError("network.upload_path_denied")
+    if allow_any_path:
+        return resolved_path
+    for root in allowed_roots:
+        try:
+            resolved_path.relative_to(root.expanduser().resolve(strict=True))
+            return resolved_path
+        except (OSError, ValueError):
+            continue
+    raise UploadPathDeniedError("network.upload_path_denied")
 
 
 def _resolve_response_limits(response_limits: Mapping[str, object]) -> dict[str, int | None]:

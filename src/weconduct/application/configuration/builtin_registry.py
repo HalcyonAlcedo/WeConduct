@@ -87,6 +87,7 @@ def _register_program_fields(registry: ConfigurationRegistry) -> None:
         ("allow_new_browser_windows", True),
         ("allow_local_network_access", False),
         ("allow_remote_network_access", False),
+        ("allow_insecure_tls", True),
         ("allow_python_execution", False),
         ("allow_js_injection", False),
         ("allow_js_evaluation", False),
@@ -155,7 +156,7 @@ def _register_program_fields(registry: ConfigurationRegistry) -> None:
         fields=(
             ("base_url", "nullable_string", None),
             ("timeout_seconds", "integer", 30),
-            ("response_limits", "object", {"max_bytes": 0, "max_in_memory_bytes": 0}),
+            ("response_limits", "object", {"max_bytes": None, "max_in_memory_bytes": None}),
         ),
     )
     _register_fields(

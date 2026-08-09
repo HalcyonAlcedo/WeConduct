@@ -56,10 +56,16 @@ class OAuthService:
         transport: httpx.BaseTransport | None = None,
         timeout_seconds: float = 30.0,
         access_policy: NetworkAccessPolicy | None = None,
+        allow_insecure_tls: bool = True,
     ) -> None:
+        if transport is not None and not isinstance(transport, httpx.MockTransport):
+            raise OAuthConfigurationError("oauth.custom_transport_unsupported")
+        if not isinstance(allow_insecure_tls, bool):
+            raise OAuthConfigurationError("oauth.allow_insecure_tls_invalid")
         self._sensitive_values = sensitive_values
         self._transport = transport
         self._access_policy = access_policy or NetworkAccessPolicy()
+        self._tls_resolver = TlsResolver(allow_insecure=allow_insecure_tls)
         if timeout_seconds <= 0:
             raise OAuthConfigurationError("oauth.timeout_invalid")
         self._timeout_seconds = float(timeout_seconds)
@@ -202,10 +208,13 @@ class OAuthService:
         try:
             resolved_target = self._access_policy.validate_url(token_url)
             tls_config = snapshot.tls if isinstance(getattr(snapshot, "tls", None), dict) else {}
-            resolved_tls = TlsResolver().resolve(tls_config)
+            resolved_tls = self._tls_resolver.resolve(tls_config)
             verify: ssl.SSLContext | bool = build_ssl_context(resolved_tls)
             proxy_config = snapshot.proxy if isinstance(getattr(snapshot, "proxy", None), dict) else {"mode": "direct"}
-            resolved_proxy = ProxyResolver().resolve(proxy_config, token_url)
+            resolved_proxy = ProxyResolver(access_policy=self._access_policy).resolve(
+                proxy_config,
+                token_url,
+            )
             transport = self._transport or PinnedDnsHTTPTransport(
                 access_policy=self._access_policy,
                 verify=verify,

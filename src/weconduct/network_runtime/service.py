@@ -167,6 +167,28 @@ def _parse_retry_after(headers: Mapping[str, str]) -> float | None:
         return max(0.0, (parsed - datetime.now(timezone.utc)).total_seconds())
 
 
+def _connection_security_audit_events(
+    snapshot: NetworkContextSnapshot,
+    url: str,
+) -> tuple[str, ...]:
+    """返回降级连接配置对应的审计事件，不包含地址或凭据。"""
+    events: list[str] = []
+    if urlsplit(url).scheme.lower() == "ws":
+        events.append("network.websocket_plaintext")
+    proxy = snapshot.proxy if isinstance(snapshot.proxy, Mapping) else {}
+    mode = proxy.get("mode") if isinstance(proxy, Mapping) else None
+    normalized_mode = mode.strip().lower() if isinstance(mode, str) else ""
+    proxy_url = proxy.get("url") if isinstance(proxy, Mapping) else None
+    proxy_scheme = urlsplit(proxy_url).scheme.lower() if isinstance(proxy_url, str) else ""
+    if normalized_mode == "socks5h" or proxy_scheme == "socks5h":
+        events.append("network.proxy_remote_dns")
+    elif normalized_mode == "pac":
+        events.append("network.proxy_pac")
+    elif normalized_mode in {"wpad", "windows_system"}:
+        events.append("network.proxy_auto_discovery")
+    return tuple(events)
+
+
 class NetworkRuntimeService:
     def __init__(
         self,
@@ -176,12 +198,17 @@ class NetworkRuntimeService:
         access_policy: NetworkAccessPolicy | None = None,
         sensitive_values: object | None = None,
         audit_event_sink: Callable[[str, dict[str, object]], None] | None = None,
+        allow_insecure_tls: bool = True,
     ) -> None:
+        if not isinstance(allow_insecure_tls, bool):
+            raise ValueError("network.allow_insecure_tls_invalid")
         self._access_policy = access_policy or NetworkAccessPolicy()
+        self._tls_resolver = TlsResolver(allow_insecure=allow_insecure_tls)
         self._adapter = HttpxAdapter(
             response_root_directory=response_root_directory,
             access_policy=self._access_policy,
             transport=transport,
+            allow_insecure_tls=allow_insecure_tls,
         )
         self._client = self._adapter._client
         self._loop = asyncio.new_event_loop()
@@ -197,11 +224,13 @@ class NetworkRuntimeService:
                 sensitive_values=sensitive_values,  # type: ignore[arg-type]
                 transport=transport,  # type: ignore[arg-type]
                 access_policy=self._access_policy,
+                allow_insecure_tls=allow_insecure_tls,
             )
             if sensitive_values is not None
             else None
         )
         self._oauth_tokens: dict[tuple[str, str | None], OAuthTokenState] = {}
+        self._oauth_tokens_lock = RLock()
         self._thread = Thread(target=self._run_loop, daemon=True, name="weconduct-network")
         self._thread.start()
         self._ready.wait(timeout=1)
@@ -237,7 +266,8 @@ class NetworkRuntimeService:
 
     def close(self) -> None:
         self._close_all_connections()
-        self._oauth_tokens.clear()
+        with self._oauth_tokens_lock:
+            self._oauth_tokens.clear()
         with self._lock:
             if self._closed:
                 return
@@ -272,10 +302,14 @@ class NetworkRuntimeService:
             timeout_seconds=timeout_seconds,
         )
         proxy = self._resolve_proxy(effective_snapshot, url)
-        resolved_tls = TlsResolver().resolve(
+        resolved_tls = self._tls_resolver.resolve(
             effective_snapshot.tls if isinstance(effective_snapshot.tls, dict) else {}
         )
-        self._emit_tls_audit_events(operation, effective_snapshot, resolved_tls.audit_events)
+        self._emit_network_security_events(
+            operation,
+            effective_snapshot,
+            (*resolved_tls.audit_events, *_connection_security_audit_events(effective_snapshot, url)),
+        )
         handle = SSEClientHandle(
             url=url,
             headers=self._effective_headers(effective_snapshot, headers),
@@ -318,10 +352,14 @@ class NetworkRuntimeService:
             timeout_seconds=timeout_seconds,
         )
         proxy = self._resolve_proxy(effective_snapshot, url)
-        resolved_tls = TlsResolver().resolve(
+        resolved_tls = self._tls_resolver.resolve(
             effective_snapshot.tls if isinstance(effective_snapshot.tls, dict) else {}
         )
-        self._emit_tls_audit_events(operation, effective_snapshot, resolved_tls.audit_events)
+        self._emit_network_security_events(
+            operation,
+            effective_snapshot,
+            (*resolved_tls.audit_events, *_connection_security_audit_events(effective_snapshot, url)),
+        )
         handle = WebSocketClientHandle(
             url=url,
             headers=self._effective_headers(effective_snapshot, headers),
@@ -424,10 +462,14 @@ class NetworkRuntimeService:
 
         start_time = monotonic()
         can_retry = _retry_is_allowed(operation, snapshot, policy)
-        resolved_tls = TlsResolver().resolve(
+        resolved_tls = self._tls_resolver.resolve(
             snapshot.tls if isinstance(snapshot.tls, dict) else {}
         )
-        self._emit_tls_audit_events(operation, snapshot, resolved_tls.audit_events)
+        self._emit_network_security_events(
+            operation,
+            snapshot,
+            (*resolved_tls.audit_events, *_connection_security_audit_events(snapshot, operation.url)),
+        )
         result: NetworkResult | None = None
         for attempt_index in range(policy["max_attempts"]):
             try:
@@ -495,7 +537,8 @@ class NetworkRuntimeService:
         if self._oauth_service is None or self._sensitive_values is None:
             raise ValueError("network.oauth_sensitive_values_unavailable")
         key = (operation.session_id, snapshot.context_id)
-        token_state = self._oauth_tokens.get(key)
+        with self._oauth_tokens_lock:
+            token_state = self._oauth_tokens.get(key)
         if token_state is None or (
             token_state.expires_at is not None and token_state.expires_at <= time() + 5
         ):
@@ -503,6 +546,12 @@ class NetworkRuntimeService:
             client_id = auth.get("client_id")
             client_secret = auth.get("client_secret")
             scope = auth.get("scope")
+            if isinstance(token_url, str) and urlsplit(token_url).scheme.lower() == "http":
+                self._emit_network_security_events(
+                    operation,
+                    snapshot,
+                    ("network.oauth_plaintext",),
+                )
             if token_state is not None and token_state.refresh_token is not None:
                 token_state = await asyncio.to_thread(
                     self._oauth_service.refresh_access_token,
@@ -527,7 +576,8 @@ class NetworkRuntimeService:
                     scope_id=operation.session_id,
                     snapshot=oauth_snapshot,
                 )
-            self._oauth_tokens[key] = token_state
+            with self._oauth_tokens_lock:
+                self._oauth_tokens[key] = token_state
         from weconduct.application.sensitive_values.models import SensitiveConsumer
 
         access_token = self._sensitive_values.resolve(
@@ -554,11 +604,12 @@ class NetworkRuntimeService:
         return future.result(timeout=timeout_seconds)
 
     def _clear_session_oauth(self, session_id: str) -> None:
-        for key in tuple(self._oauth_tokens):
-            if key[0] == session_id:
-                self._oauth_tokens.pop(key, None)
+        with self._oauth_tokens_lock:
+            for key in tuple(self._oauth_tokens):
+                if key[0] == session_id:
+                    self._oauth_tokens.pop(key, None)
 
-    def _emit_tls_audit_events(
+    def _emit_network_security_events(
         self,
         operation: NetworkOperation,
         snapshot: NetworkContextSnapshot,
@@ -700,10 +751,9 @@ class NetworkRuntimeService:
             )
         return apply_static_auth(effective, snapshot.auth)
 
-    @staticmethod
-    def _resolve_proxy(snapshot: NetworkContextSnapshot, url: str) -> str | None:
+    def _resolve_proxy(self, snapshot: NetworkContextSnapshot, url: str) -> str | None:
         config = snapshot.proxy if isinstance(snapshot.proxy, dict) else {"mode": "direct"}
-        return ProxyResolver().resolve(config, url).url
+        return ProxyResolver(access_policy=self._access_policy).resolve(config, url).url
 
     async def _shutdown(self) -> None:
         active_tasks = [task for tasks in self._active_tasks.values() for task in tasks]

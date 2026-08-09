@@ -137,7 +137,6 @@ def _iter_default_captcha_ocr_roots() -> list[Path]:
     roots.extend(
         [
             project_root / "third_party" / "captcha_ocr",
-            Path.cwd() / "captcha_ocr",
         ]
     )
     return roots

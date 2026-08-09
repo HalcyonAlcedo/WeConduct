@@ -85,6 +85,7 @@ const FIELD_DEFS = computed<Record<string, FieldDef[]>>(() => ({
   security: [
     { key: 'confirm_high_risk_actions', label: t('framework.preferences.security.confirmHighRiskActions', '确认高风险操作'), type: 'bool' }, { key: 'show_security_warnings_in_runtime', label: t('framework.preferences.security.showSecurityWarningsInRuntime', '运行时显示安全警告'), type: 'bool' },
     { key: 'log_security_events', label: t('framework.preferences.security.logSecurityEvents', '记录安全事件'), type: 'bool' },
+    { key: 'allow_insecure_tls', label: t('framework.preferences.security.allowInsecureTls', '允许不安全 TLS'), type: 'bool', hint: t('framework.preferences.security.allowInsecureTlsHint', '高风险：启用后，节点可跳过 HTTPS 证书校验。仅在受控测试环境使用。') },
     { key: 'external_api_enabled', label: t('framework.preferences.security.externalApiEnabled', '启用外部 API'), type: 'bool' },
     { key: 'external_api_token', label: t('framework.preferences.security.externalApiToken', '外部 API Token'), type: 'password', hint: t('framework.preferences.security.externalApiTokenHint', '外部 API 调用的认证令牌。') },
     { key: 'external_api_clear_token', label: t('framework.preferences.security.externalApiClearToken', '清除外部 API Token'), type: 'bool' },

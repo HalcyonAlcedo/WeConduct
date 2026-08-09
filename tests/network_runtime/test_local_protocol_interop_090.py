@@ -483,7 +483,22 @@ def _local_http2_server(tmp_path: Path):
         server.server_close()
 
 
-def test_httpx_adapter_uses_local_http_proxy_without_direct_fallback(tmp_path: Path) -> None:
+def test_httpx_adapter_uses_local_http_proxy_without_direct_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    original_resolve = NetworkAccessPolicy.resolve_connect_addresses
+
+    def resolve_target(
+        policy: NetworkAccessPolicy,
+        hostname: str,
+        port: int | None,
+    ) -> tuple[str, ...]:
+        if hostname == "example.test":
+            return ("93.184.216.34",)
+        return original_resolve(policy, hostname, port)
+
+    monkeypatch.setattr(NetworkAccessPolicy, "resolve_connect_addresses", resolve_target)
     with _local_http_proxy() as (proxy_url, observed):
         adapter = HttpxAdapter(
             response_root_directory=tmp_path,
@@ -503,7 +518,7 @@ def test_httpx_adapter_uses_local_http_proxy_without_direct_fallback(tmp_path: P
     assert result.status == "succeeded", result.transport_error
     assert result.status_code == 200
     assert len(observed) == 1
-    assert observed[0] == "http://example.test/resource"
+    assert observed[0] == "http://93.184.216.34/resource"
 
 
 def test_httpx_adapter_forwards_through_real_local_socks5_proxy(tmp_path: Path) -> None:

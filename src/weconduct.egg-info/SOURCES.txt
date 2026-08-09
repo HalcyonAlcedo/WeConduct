@@ -74,4 +74,3 @@ src/weconduct/runtime/__init__.py
 src/weconduct/runtime/captcha_ocr.py
 src/weconduct/runtime/engine.py
 tests/test_preview_packaging.py
-tests/test_workspace_layout.py

@@ -7,8 +7,9 @@ from typing import Mapping
 
 _NETWORK_ERROR_CODE = re.compile(r"\b(network\.[a-z0-9_]+)\b")
 _SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)\b(token|password|secret|cookie|authorization)=([^\s&]+)"
+    r"(?i)(?<![a-z0-9_-])(?P<name>[a-z0-9_-]*(?:token|password|secret|cookie|authorization|credential|api[-_]?key)[a-z0-9_-]*)(?P<separator>=|:\s*)(?P<value>[^\s&#]+)"
 )
+_URL_USERINFO = re.compile(r"(?i)(?P<scheme>[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/@\s]+)@")
 
 
 @dataclass(frozen=True)
@@ -57,7 +58,7 @@ def build_network_error(
     normalized_code = error_code or _infer_error_code(error, raw_message)
     return NetworkExecutionError(
         error_code=normalized_code,
-        message=_redact_message(raw_message),
+        message=redact_network_message(raw_message),
         details=dict(details or {}),
         request_id=_string_attribute(operation, "request_id"),
         node_id=_string_attribute(operation, "node_id"),
@@ -82,8 +83,16 @@ def _infer_error_code(error: BaseException | str, message: str) -> str:
     return "network.transport_failed"
 
 
-def _redact_message(message: str) -> str:
-    return _SENSITIVE_ASSIGNMENT.sub(lambda match: f"{match.group(1)}=<redacted>", message)
+def redact_network_message(message: str) -> str:
+    """将可公开的网络错误文本中的认证材料和 URL 凭据替换为占位符。"""
+    without_userinfo = _URL_USERINFO.sub(
+        lambda match: f"{match.group('scheme')}<redacted>@",
+        message,
+    )
+    return _SENSITIVE_ASSIGNMENT.sub(
+        lambda match: f"{match.group('name')}=<redacted>",
+        without_userinfo,
+    )
 
 
 def _string_attribute(value: object, attribute: str) -> str | None:

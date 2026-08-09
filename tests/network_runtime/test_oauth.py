@@ -117,6 +117,18 @@ def test_oauth_service_executes_client_credentials_exchange_without_exposing_sec
     assert sensitive.resolve(state.access_token, consumer=SensitiveConsumer.NETWORK_RUNTIME) == "access-secret"
 
 
+def test_oauth_service_rejects_unwrapped_custom_transport() -> None:
+    class CustomTransport(httpx.BaseTransport):
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, request=request)
+
+    with pytest.raises(OAuthConfigurationError, match="oauth.custom_transport_unsupported"):
+        OAuthService(
+            sensitive_values=SensitiveValueService(),
+            transport=CustomTransport(),
+        )
+
+
 def test_oauth_service_refreshes_a_token_and_normalizes_provider_failure() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

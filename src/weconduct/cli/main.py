@@ -1,6 +1,7 @@
 import argparse
 import getpass
 import json
+import multiprocessing
 from pathlib import Path
 import sys
 from threading import Thread
@@ -20,6 +21,7 @@ from weconduct.application.operations import HostOperationService
 from weconduct.application.pending_input.models import PendingInputSnapshot
 from weconduct.application.preview_smoke import run_preview_smoke
 from weconduct.api import ExternalApiBindError, build_api_server
+from weconduct.api.server import _resolve_api_token
 from weconduct.cli.operation_adapter import CliOperationAdapter
 from weconduct.desktop_shell import (
     DesktopShellDependencyError,
@@ -29,7 +31,13 @@ from weconduct.desktop_shell import (
 )
 
 
+def _initialize_multiprocessing() -> None:
+    """让 PyInstaller 冻结程序的 spawn 子进程走 multiprocessing 专用入口。"""
+    multiprocessing.freeze_support()
+
+
 def main() -> int:
+    _initialize_multiprocessing()
     parser = argparse.ArgumentParser(prog="weconduct")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -274,13 +282,17 @@ def main() -> int:
             else None
         )
         try:
+            generated_api_token = not (
+                isinstance(args.api_token, str) and args.api_token.strip()
+            )
+            resolved_api_token = _resolve_api_token(args.api_token)
             server = build_api_server(
                 host=args.host,
                 port=args.port,
                 workspace_state_path=workspace_state_path,
                 preferences_path=preferences_path,
                 ui_dist_path=ui_dist_path,
-                api_token=args.api_token,
+                api_token=resolved_api_token,
                 allow_non_loopback=args.allow_non_loopback,
             )
         except ExternalApiBindError as exc:
@@ -297,6 +309,12 @@ def main() -> int:
             )
             print(str(bind_error), file=sys.stderr, flush=True)
             return 1
+        if generated_api_token:
+            print(
+                "WeConduct internal API token (仅本次启动有效): "
+                f"{server.api_token}",
+                flush=True,
+            )
         runtime_host, runtime_port = server.server_address
         if args.allow_non_loopback:
             print(

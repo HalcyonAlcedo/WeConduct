@@ -259,6 +259,33 @@ describe('PreferencesPanel', () => {
     expect((token?.element as HTMLInputElement).value).toBe('visible-external-token')
   })
 
+  it('安全设置显示不安全 TLS 的高风险开关和说明', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workspace = useWorkspaceStore()
+    workspace.snapshot = {
+      preferences: {
+        program_settings: { preferences_auto_save: false },
+        compile_settings: {},
+        security_settings: { allow_insecure_tls: true },
+        python_runtime_settings: {},
+        graph_settings: {},
+        other_settings: {},
+      },
+      graph_workspace: { preferences_state: {} },
+    } as any
+
+    const wrapper = mount(PreferencesPanel, { global: { plugins: [pinia] } })
+    await flushPromises()
+    await wrapper.get('.pref-nav-item:nth-child(2)').trigger('click')
+    await nextTick()
+
+    const field = wrapper.findAll('.pref-field').find((item) => item.text().includes('允许不安全 TLS'))
+    expect(field?.text()).toContain('高风险')
+    expect(field?.text()).toContain('跳过 HTTPS 证书校验')
+    expect((field?.find('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(true)
+  })
+
   it('清除外部 API Token 时不同时提交已回填的 Token', async () => {
     const workspace = useWorkspaceStore()
     workspace.snapshot = {

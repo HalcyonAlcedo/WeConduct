@@ -6,6 +6,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ssl
 from threading import Thread
+from threading import Event as ThreadEvent
 from time import sleep
 
 import httpx
@@ -102,6 +103,134 @@ def test_network_runtime_service_executes_on_its_owned_loop_and_closes_cleanly(t
 
     assert result.status_code == 204
     assert service.is_closed is True
+
+
+def test_network_runtime_service_can_hard_block_insecure_tls(tmp_path) -> None:
+    called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(204, request=request)
+
+    service = NetworkRuntimeService(
+        transport=httpx.MockTransport(handler),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+        allow_insecure_tls=False,
+    )
+    try:
+        result = service.submit(
+            NetworkOperation(
+                operation_id="insecure-tls-blocked",
+                session_id="insecure-tls-session",
+                method="GET",
+                url="https://example.test/resource",
+            ),
+            NetworkContextSnapshot(
+                context_id="insecure-tls-context",
+                tls={"verify": "insecure"},
+            ),
+        ).result(timeout=2)
+    finally:
+        service.close()
+
+    assert called is False
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "insecure TLS is disabled" in result.error.message
+
+
+def test_network_runtime_service_audits_plaintext_websocket_and_remote_dns_proxy(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import weconduct.network_runtime.service as service_module
+
+    events: list[tuple[str, dict[str, object]]] = []
+
+    class StubWebSocketClientHandle:
+        def __init__(self, **_: object) -> None:
+            return None
+
+        def start(self, *, timeout_seconds: float) -> dict[str, object]:
+            return {"status": "connected", "url": "ws://example.test/events"}
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(service_module, "WebSocketClientHandle", StubWebSocketClientHandle)
+    service = NetworkRuntimeService(
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(
+            allowed_hostnames={"example.test", "proxy.example.test"}
+        ),
+        audit_event_sink=lambda name, payload: events.append((name, payload)),
+    )
+    try:
+        handle, _ = service.connect_websocket(
+            session_id="audit-websocket-session",
+            snapshot=NetworkContextSnapshot(
+                context_id="audit-websocket-context",
+                proxy={"mode": "manual", "url": "socks5h://proxy.example.test:1080"},
+            ),
+            url="ws://example.test/events",
+        )
+        service.release_connection("audit-websocket-session", handle)
+    finally:
+        service.close()
+
+    assert {name for name, _ in events} == {
+        "network.websocket_plaintext",
+        "network.proxy_remote_dns",
+    }
+    assert all("example.test" not in str(payload) for _, payload in events)
+
+
+def test_network_runtime_service_audits_plaintext_oauth_token_endpoint(tmp_path) -> None:
+    events: list[str] = []
+    sensitive_values = SensitiveValueService()
+    client_secret = sensitive_values.create(
+        "oauth-client-secret",
+        scope_id="oauth-plaintext-session",
+        source="runtime_input",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/token":
+            return httpx.Response(200, json={"access_token": "oauth-access-token"}, request=request)
+        return httpx.Response(204, request=request)
+
+    service = NetworkRuntimeService(
+        transport=httpx.MockTransport(handler),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+        sensitive_values=sensitive_values,
+        audit_event_sink=lambda name, _: events.append(name),
+    )
+    try:
+        result = service.submit(
+            NetworkOperation(
+                operation_id="oauth-plaintext-operation",
+                session_id="oauth-plaintext-session",
+                method="GET",
+                url="https://example.test/resource",
+            ),
+            NetworkContextSnapshot(
+                context_id="oauth-plaintext-context",
+                auth={
+                    "type": "oauth_client_credentials",
+                    "token_url": "http://example.test/token",
+                    "client_id": "oauth-client",
+                    "client_secret": client_secret,
+                },
+            ),
+        ).result(timeout=2)
+    finally:
+        service.close()
+
+    assert result.status == "succeeded"
+    assert "network.oauth_plaintext" in events
 
 
 def test_network_runtime_service_resolves_static_auth_sensitive_ref_at_consumer_boundary(tmp_path) -> None:
@@ -344,6 +473,9 @@ def test_network_runtime_service_resolves_proxy_credentials_before_oauth_exchang
     captured_proxy_config: dict[str, object] = {}
 
     class CaptureProxyResolver:
+        def __init__(self, **kwargs: object) -> None:
+            assert "access_policy" in kwargs
+
         def resolve(self, configuration: dict[str, object], target_url: str) -> ResolvedProxy:
             del target_url
             captured_proxy_config.update(configuration)
@@ -544,6 +676,32 @@ def test_network_runtime_service_cancels_active_session_requests(tmp_path) -> No
     assert result.error.request_id.startswith("request-cancel-")
     assert result.error.network_context_id == "context-1"
     assert result.error.retry_attempt == 1
+
+
+def test_network_runtime_service_serializes_oauth_cache_cleanup(tmp_path) -> None:
+    service = NetworkRuntimeService(
+        transport=httpx.MockTransport(lambda request: httpx.Response(204, request=request)),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+    )
+    key = ("oauth-lock-session", "oauth-lock-context")
+    service._oauth_tokens[key] = object()  # type: ignore[assignment, attr-defined]
+    finished = ThreadEvent()
+    worker = Thread(
+        target=lambda: (service._clear_session_oauth("oauth-lock-session"), finished.set()),  # type: ignore[attr-defined]
+        daemon=True,
+    )
+    try:
+        service._oauth_tokens_lock.acquire()  # type: ignore[attr-defined]
+        worker.start()
+        assert finished.wait(timeout=0.05) is False
+    finally:
+        service._oauth_tokens_lock.release()  # type: ignore[attr-defined]
+        worker.join(timeout=1)
+        service.close()
+
+    assert finished.is_set()
+    assert key not in service._oauth_tokens  # type: ignore[attr-defined]
 
 
 def test_network_runtime_service_reuses_its_single_async_client(tmp_path) -> None:

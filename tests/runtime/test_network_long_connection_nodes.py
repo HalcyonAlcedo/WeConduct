@@ -202,6 +202,34 @@ def test_network_websocket_failure_exposes_structured_network_error() -> None:
     assert output["network_error"]["details"] == {"action": "connect"}
 
 
+def test_websocket_node_checks_access_policy_before_calling_network_service() -> None:
+    class RecordingService:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def connect_websocket(self, **kwargs: object) -> tuple[object, dict[str, object]]:
+            self.calls.append(kwargs)
+            return object(), {"status": "connected"}
+
+    service = RecordingService()
+    output = RuntimeExecutorRegistry(network_runtime_service=service).execute(  # type: ignore[arg-type]
+        "network.websocket_connect",
+        {
+            "node_id": "ws-loopback-denied",
+            "node_kind": "network.websocket_connect",
+            "node_config": {
+                "url": "ws://127.0.0.1:8080",
+                "connection_id": "socket",
+            },
+        },
+        RuntimeContext(),
+    )
+
+    assert output["status"] == "failed"
+    assert output["error_code"] == "network.websocket_connect_failed"
+    assert service.calls == []
+
+
 def test_network_websocket_connect_node_supports_send_receive_ping_and_close() -> None:
     server = _WebSocketServer()
     context = RuntimeContext()

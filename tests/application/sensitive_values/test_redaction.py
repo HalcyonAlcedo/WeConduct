@@ -116,6 +116,41 @@ def test_redaction_keeps_debug_variable_descriptor_structure() -> None:
     assert redacted["variable_snapshot"]["api_key"] == "<redacted>"
 
 
+def test_redaction_uses_variable_descriptor_sensitive_marker_without_plaintext_value() -> None:
+    redacted = redact_sensitive_payload(
+        {
+            "variable_descriptors": {
+                "sid": {"name": "sid", "sensitive": True, "value_type": "string"},
+                "safe": {"name": "safe", "sensitive": False, "value_type": "string"},
+            },
+            "variable_snapshot": {"sid": "private-session-id", "safe": "visible"},
+            "variable_changes": {"sid": "rotated-session-id", "safe": "changed"},
+        }
+    )
+
+    assert redacted["variable_descriptors"]["sid"]["sensitive"] is True
+    assert redacted["variable_snapshot"] == {"sid": "<redacted>", "safe": "visible"}
+    assert redacted["variable_changes"] == {"sid": "<redacted>", "safe": "changed"}
+
+
+def test_redaction_hides_protocol_credential_aliases_in_headers_queries_and_urls() -> None:
+    redacted = redact_sensitive_payload(
+        {
+            "auth": {"clientKey": "client-key-secret", "type": "custom"},
+            "headers": {"X-Session-Id": "session-header", "Accept": "application/json"},
+            "query": {"sid": "session-query", "page": "1"},
+            "callback_url": "https://user:password@example.test/callback?sid=session-url&page=1",
+        }
+    )
+
+    assert redacted == {
+        "auth": {"clientKey": "<redacted>", "type": "custom"},
+        "headers": {"X-Session-Id": "<redacted>", "Accept": "application/json"},
+        "query": {"sid": "<redacted>", "page": "1"},
+        "callback_url": "https://<redacted>@example.test/callback?sid=%3Credacted%3E&page=1",
+    }
+
+
 def test_redaction_hides_sensitive_query_values_in_runtime_urls() -> None:
     redacted = redact_sensitive_payload(
         {

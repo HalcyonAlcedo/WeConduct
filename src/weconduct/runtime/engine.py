@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import ast
 import socket
 import subprocess
@@ -21,7 +22,6 @@ import threading
 from time import monotonic
 import urllib.error
 import urllib.parse
-import urllib.request
 from zipfile import BadZipFile
 from typing import Any, Callable, Mapping
 
@@ -561,6 +561,8 @@ class RuntimeExecutorRegistry:
         *,
         response_storage: str = "auto",
         upload_file_path: Path | None = None,
+        upload_allowed_roots: tuple[Path, ...] = (),
+        upload_allow_any_path: bool = False,
         upload_stream: Any = None,
     ) -> dict:
         _check_cancellation(context)
@@ -677,6 +679,8 @@ class RuntimeExecutorRegistry:
                 else request_content
             ),
             upload_file_path=upload_file_path,
+            upload_allowed_roots=upload_allowed_roots,
+            upload_allow_any_path=upload_allow_any_path,
             upload_stream=upload_stream,
             timeout_seconds=effective_timeout_seconds,
             response_storage=response_storage,
@@ -729,7 +733,7 @@ class RuntimeExecutorRegistry:
             "status": "succeeded",
             "node_id": node["node_id"],
             "status_code": result.status_code,
-            "headers": dict(result.headers),
+            "headers": _normalize_network_headers(result.headers, context),
             "body_ref": result.body_ref,
             "final_url": result.final_url,
             "duration_ms": result.duration_ms,
@@ -908,6 +912,8 @@ class RuntimeExecutorRegistry:
             upload_node,
             context,
             upload_file_path=upload_path,
+            upload_allowed_roots=_resolve_allowed_path_roots(context),
+            upload_allow_any_path=context.runtime_settings.get("file_access_scope") == "allow_all",
             upload_stream=upload_stream,
         )
         if output.get("status") == "succeeded":
@@ -1440,6 +1446,11 @@ class RuntimeExecutorRegistry:
                     },
                 )
                 service = self._resolve_network_runtime_service(context)
+                self._validate_engine_network_url(
+                    request.endpoint,
+                    context,
+                    allowed_schemes=frozenset({"ws", "wss"}),
+                )
                 handle, metadata = service.connect_websocket(
                     session_id=context.execution_session_context.session_id,
                     snapshot=snapshot,
@@ -1764,6 +1775,11 @@ class RuntimeExecutorRegistry:
                 )
                 timeout_seconds = snapshot.timeout_seconds or 30.0
                 url = _resolve_network_request_url(url, snapshot, websocket=True)
+                self._validate_engine_network_url(
+                    url,
+                    context,
+                    allowed_schemes=frozenset({"ws", "wss"}),
+                )
                 service = self._resolve_network_runtime_service(context)
                 handle, metadata = service.connect_websocket(
                     session_id=context.execution_session_context.session_id,
@@ -2004,10 +2020,23 @@ class RuntimeExecutorRegistry:
             ),
             sensitive_values=context.flow_runtime.get("sensitive_value_service"),
             audit_event_sink=audit_event_sink if callable(audit_event_sink) else None,
+            allow_insecure_tls=bool(self._runtime_settings.get("allow_insecure_tls", True)),
         )
         context.flow_runtime["network_runtime_service"] = service
         context.register_cleanup("network-runtime-service", service.close)
         return service
+
+    def _validate_engine_network_url(
+        self,
+        url: str,
+        context: RuntimeContext,
+        *,
+        allowed_schemes: frozenset[str],
+    ) -> None:
+        NetworkAccessPolicy(
+            allow_loopback=self._is_local_network_access_allowed(),
+            allow_local_network_access=self._is_local_network_access_allowed(),
+        ).validate_url(url, allowed_schemes=allowed_schemes)
 
     def _execute_browser_navigate(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
@@ -2778,6 +2807,7 @@ class RuntimeExecutorRegistry:
         return _read_browser_html(node=node, context=context, mode="inner")
 
     def _execute_browser_download_file(self, node: dict, context: RuntimeContext) -> dict:
+        _check_cancellation(context)
         node_config = _node_config(node)
         if not self._is_browser_downloads_allowed():
             return _failed_result(node, "browser.download_disabled", "browser downloads are disabled")
@@ -2802,21 +2832,105 @@ class RuntimeExecutorRegistry:
             timeout = float(timeout_value)
         except (TypeError, ValueError):
             return _failed_result(node, "browser.download_timeout_invalid", "node_config.timeout must be numeric")
-        response = urllib.request.urlopen(url.strip(), timeout=timeout)
-        close_response = _make_cleanup_action(response.close)
-        unregister_cleanup = context.cancellation_context.register_cleanup(close_response)
+        session_id = context.execution_session_context.session_id
         try:
-            with path.open("wb") as handle:
-                _copy_http_response_to_handle(
-                    response=response,
-                    handle=handle,
-                    context=context,
-                    timeout_seconds=timeout,
-                )
+            snapshot = self._resolve_network_connection_snapshot(
+                context,
+                node_config,
+                headers={},
+                query={},
+                timeout_seconds=timeout,
+            )
+        except ValueError as exc:
+            return self._failed_network_result(
+                node,
+                context,
+                "network.context_invalid",
+                str(exc),
+                action="download",
+                url=url,
+            )
+        operation = NetworkOperation(
+            operation_id=node["node_id"],
+            session_id=session_id,
+            method="GET",
+            url=url,
+            timeout_seconds=timeout,
+            response_storage="file",
+            node_id=node["node_id"],
+        )
+        service = self._resolve_network_runtime_service(context)
+        unregister_cleanup = context.cancellation_context.register_cleanup(
+            lambda: service.cancel_session(session_id)
+        )
+        try:
+            result = service.submit(operation, snapshot).result(timeout=timeout + 1)
+        except Exception as exc:
+            return self._failed_network_result(
+                node,
+                context,
+                "network.download_failed",
+                str(exc),
+                action="download",
+                snapshot=snapshot,
+                url=url,
+            )
         finally:
-            close_response()
             unregister_cleanup()
-        return {"status": "succeeded", "node_id": node["node_id"], "url": url.strip(), "path": str(path.resolve()), "bytes_written": path.stat().st_size}
+        if result.status != "succeeded":
+            network_error = result.error
+            error_code = (
+                network_error.error_code
+                if network_error is not None
+                else result.transport_error or "network.download_failed"
+            )
+            message = (
+                network_error.message
+                if network_error is not None
+                else result.transport_error or "network download failed"
+            )
+            output = self._failed_network_result(
+                node,
+                context,
+                error_code,
+                message,
+                action="download",
+                snapshot=snapshot,
+                url=url,
+            )
+            output["request_id"] = operation.request_id
+            if network_error is not None:
+                output["network_error"] = network_error.to_dict()
+            return output
+        if not isinstance(result.body_ref, ResponseBodyRef):
+            return self._failed_network_result(
+                node,
+                context,
+                "network.response_body_unavailable",
+                "browser download requires a response body",
+                action="download",
+                snapshot=snapshot,
+                url=url,
+            )
+        try:
+            bytes_written = result.body_ref.save_file(path)
+        except (OSError, RuntimeError) as exc:
+            return self._failed_network_result(
+                node,
+                context,
+                "network.download_write_failed",
+                str(exc),
+                action="download",
+                snapshot=snapshot,
+                url=url,
+            )
+        return {
+            "status": "succeeded",
+            "node_id": node["node_id"],
+            "url": url,
+            "path": str(path.resolve()),
+            "bytes_written": bytes_written,
+        }
 
     def _execute_browser_wait_for_download(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
@@ -4054,7 +4168,7 @@ class RuntimeExecutorRegistry:
             sensitive_broker.start()
             payload = {
                 "code": code,
-                "variables": _make_python_run_json_safe(context.variables),
+                "variables": _make_python_run_variables_json_safe(context.variables),
                 "result_variable": default_variable_name,
                 "envelope": {
                     "inputs": _make_python_run_json_safe(
@@ -4141,6 +4255,8 @@ class RuntimeExecutorRegistry:
         except RuntimeCancellationError:
             raise
         except subprocess.TimeoutExpired:
+            if process is not None:
+                _terminate_process(process)
             return {
                 "status": "failed",
                 "node_id": node["node_id"],
@@ -4214,6 +4330,11 @@ class RuntimeExecutorRegistry:
             }
         child_variables = child_result.get("variables")
         if isinstance(child_variables, dict):
+            child_variables = _restore_python_sensitive_variable_values(
+                child_variables,
+                envelope=envelope,
+                context=context,
+            )
             context.variables.clear()
             context.variables.update(child_variables)
         try:
@@ -5123,30 +5244,42 @@ _PYTHON_DANGEROUS_ATTRIBUTES = frozenset(
         "__closure__",
         "__code__",
         "__dict__",
+        "__delattr__",
         "__func__",
+        "__getattribute__",
         "__globals__",
         "__import__",
         "__mro__",
+        "__setattr__",
         "__self__",
         "__subclasses__",
+        "builtins",
+        "f_back",
+        "f_builtins",
+        "f_code",
+        "f_globals",
+        "f_locals",
+        "open",
     }
 )
 
 _PYTHON_DEFAULT_BLOCKED_IMPORTS = frozenset(
     {
+        "builtins",
         "ctypes",
         "importlib",
         "multiprocessing",
         "os",
         "socket",
         "subprocess",
+        "sys",
     }
 )
 
 
 def _subprocess_windows_silent_kwargs() -> dict[str, Any]:
     if os.name != "nt":
-        return {}
+        return {"start_new_session": True}
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = 0
@@ -5399,25 +5532,6 @@ def _read_http_response_body(*, response: Any, context: RuntimeContext, timeout_
         chunks.append(chunk)
 
 
-def _copy_http_response_to_handle(
-    *,
-    response: Any,
-    handle: Any,
-    context: RuntimeContext,
-    timeout_seconds: float,
-) -> None:
-    _check_cancellation(context)
-    deadline = monotonic() + max(timeout_seconds, 0.0)
-    while True:
-        _check_cancellation(context)
-        if timeout_seconds > 0 and monotonic() > deadline:
-            raise TimeoutError(f"http request timed out after {timeout_seconds} seconds")
-        chunk = response.read(65536)
-        if not chunk:
-            return
-        handle.write(chunk)
-
-
 def _communicate_process_with_cancellation(
     *,
     process: subprocess.Popen[str],
@@ -5446,6 +5560,38 @@ def _terminate_process(process: subprocess.Popen[str]) -> None:
         except Exception:
             pass
         return
+    if os.name == "nt":
+        process_id = getattr(process, "pid", None)
+        if isinstance(process_id, int) and process_id > 0:
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process_id), "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except OSError:
+                pass
+            if process.poll() is not None:
+                try:
+                    process.communicate(timeout=0.2)
+                except Exception:
+                    pass
+                return
+    else:
+        process_id = getattr(process, "pid", None)
+        if isinstance(process_id, int) and process_id > 0:
+            try:
+                os.killpg(process_id, signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                pass
+            if process.poll() is not None:
+                try:
+                    process.communicate(timeout=0.2)
+                except Exception:
+                    pass
+                return
     process.terminate()
     try:
         process.communicate(timeout=0.2)
@@ -5813,6 +5959,17 @@ def _make_python_run_json_safe(value: Any) -> Any:
     return repr(value)
 
 
+def _make_python_run_variables_json_safe(variables: object) -> dict[str, Any]:
+    """敏感变量只能经受控输入 capability 进入 Python 子进程。"""
+    if not isinstance(variables, Mapping):
+        return {}
+    return {
+        str(name): _make_python_run_json_safe(value)
+        for name, value in variables.items()
+        if not _contains_python_sensitive_ref(value)
+    }
+
+
 def _contains_python_sensitive_ref(value: Any) -> bool:
     from weconduct.application.sensitive_values.models import SensitiveRef
 
@@ -5863,6 +6020,90 @@ def _resolve_python_sensitive_plaintexts(
         if isinstance(value, str) and value:
             secrets.append(value)
     return tuple(dict.fromkeys(secrets))
+
+
+def _restore_python_sensitive_variable_values(
+    value: Any,
+    *,
+    envelope: ExecutionEnvelope,
+    context: RuntimeContext,
+) -> Any:
+    """将 Python 子进程回写的已知敏感明文重新收口为会话内引用。"""
+    candidates = _resolve_python_sensitive_value_candidates(envelope=envelope, context=context)
+    if not candidates:
+        return value
+    return _restore_python_sensitive_value(value, candidates=candidates, context=context)
+
+
+def _resolve_python_sensitive_value_candidates(
+    *,
+    envelope: ExecutionEnvelope,
+    context: RuntimeContext,
+) -> tuple[tuple[object, object], ...]:
+    sensitive_service = context.flow_runtime.get("sensitive_value_service")
+    resolver = getattr(sensitive_service, "resolve", None)
+    if not callable(resolver):
+        return ()
+    from weconduct.application.sensitive_values.models import SensitiveConsumer, SensitiveRef
+
+    candidates: list[tuple[object, object]] = []
+    for ref in envelope.sensitive_refs:
+        if not isinstance(ref, SensitiveRef):
+            continue
+        try:
+            resolved = resolver(ref, consumer=SensitiveConsumer.RUNTIME_EXECUTOR)
+        except (KeyError, PermissionError, TypeError, ValueError):
+            continue
+        candidates.append((ref, resolved))
+    return tuple(candidates)
+
+
+def _restore_python_sensitive_value(
+    value: Any,
+    *,
+    candidates: tuple[tuple[object, object], ...],
+    context: RuntimeContext,
+) -> Any:
+    for ref, plaintext in candidates:
+        if type(value) is type(plaintext) and value == plaintext:
+            return ref
+    if isinstance(value, dict):
+        return {
+            key: _restore_python_sensitive_value(item, candidates=candidates, context=context)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _restore_python_sensitive_value(item, candidates=candidates, context=context)
+            for item in value
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _restore_python_sensitive_value(item, candidates=candidates, context=context)
+            for item in value
+        )
+    if not isinstance(value, str):
+        return value
+    matched_refs = tuple(
+        ref
+        for ref, plaintext in candidates
+        if isinstance(plaintext, str) and plaintext and plaintext in value
+    )
+    if not matched_refs:
+        return value
+    sensitive_service = context.flow_runtime.get("sensitive_value_service")
+    derive = getattr(sensitive_service, "derive", None)
+    if callable(derive):
+        try:
+            return derive(value, parents=matched_refs)
+        except (KeyError, TypeError, ValueError):
+            pass
+    creator = getattr(sensitive_service, "create", None)
+    if not callable(creator):
+        return value
+    session_context = context.execution_session_context
+    session_id = session_context.session_id if session_context is not None else "runtime-context"
+    return creator(value, scope_id=session_id, source="derived")
 
 
 def _redact_python_text(value: object, secrets: tuple[str, ...]) -> str:
@@ -5982,11 +6223,9 @@ def _validate_python_run_code(code: str, *, blocked_imports: set[str] | None = N
         tree = ast.parse(code, mode="exec")
     except SyntaxError as exc:
         raise PythonCodeRejected(f"syntax error: {exc.msg}") from exc
-    effective_blocked_imports = (
-        blocked_imports
-        if blocked_imports is not None
-        else set(_PYTHON_DEFAULT_BLOCKED_IMPORTS)
-    )
+    effective_blocked_imports = set(_PYTHON_DEFAULT_BLOCKED_IMPORTS)
+    if blocked_imports is not None:
+        effective_blocked_imports.update(blocked_imports)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -6011,7 +6250,7 @@ def _resolve_python_blocked_import_modules(runtime_settings: dict[str, Any]) -> 
     raw_modules = runtime_settings.get("python_blocked_import_modules")
     if not isinstance(raw_modules, list):
         return set(_PYTHON_DEFAULT_BLOCKED_IMPORTS)
-    normalized: set[str] = set()
+    normalized: set[str] = set(_PYTHON_DEFAULT_BLOCKED_IMPORTS)
     for item in raw_modules:
         if not isinstance(item, str):
             continue

@@ -52,3 +52,12 @@ def test_tls_resolver_rejects_invalid_pin_and_incomplete_mtls(tmp_path) -> None:
     cert_file.write_text("cert", encoding="ascii")
     with pytest.raises(TlsConfigurationError, match="client certificate and key"):
         TlsResolver().resolve({"client_cert_file": str(cert_file)})
+
+
+def test_tls_resolver_does_not_expose_missing_certificate_path(tmp_path) -> None:
+    missing_path = tmp_path / "private-ca.pem"
+
+    with pytest.raises(TlsConfigurationError) as failure:
+        TlsResolver().resolve({"verify": "custom_ca", "ca_file": str(missing_path)})
+
+    assert str(missing_path) not in str(failure.value)

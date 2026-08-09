@@ -4,11 +4,33 @@ from threading import Event, Thread
 from time import monotonic, sleep
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 import pytest
 
 from weconduct.api import build_api_server
 from weconduct.application.compilation_workbench_service import CompilationWorkbenchService
 from weconduct.api.server import ApiServerClosingError, WeConductApiHandler
+
+
+_REAL_BUILD_API_SERVER = build_api_server
+_SERVER_UI_TOKENS: dict[str, str] = {}
+
+
+def build_api_server(*args, **kwargs):
+    """为本模块的旧 API 请求辅助函数登记进程级 UI Token。"""
+    server = _REAL_BUILD_API_SERVER(*args, **kwargs)
+    host, port = server.server_address[:2]
+    _SERVER_UI_TOKENS[f"{host}:{port}"] = server.api_token
+    return server
+
+
+def _request_headers(url: str, headers: dict[str, str] | None = None) -> dict[str, str]:
+    result = dict(headers or {})
+    parsed = urlsplit(url)
+    token = _SERVER_UI_TOKENS.get(parsed.netloc)
+    if token is not None:
+        result.setdefault("X-WeConduct-Token", token)
+    return result
 
 
 class _ConnectionAbortedWriter:
@@ -60,6 +82,218 @@ def test_build_api_server_applies_host_port_and_workspace_state_path(tmp_path: P
         assert server.workspace_state_path == workspace_state_path
         assert server.ui_dist_path == ui_dist_path
     finally:
+        server.server_close()
+
+
+def test_build_api_server_generates_ephemeral_token_and_fail_closed_by_default(
+    tmp_path: Path,
+) -> None:
+    first_server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "first" / "workspace-state.json",
+        preferences_path=tmp_path / "first" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    second_server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "second" / "workspace-state.json",
+        preferences_path=tmp_path / "second" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    try:
+        assert isinstance(first_server.api_token, str)
+        assert len(first_server.api_token) >= 43
+        assert first_server.api_token != second_server.api_token
+    finally:
+        first_server.server_close()
+        second_server.server_close()
+
+
+def test_default_internal_api_requires_generated_token(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        with pytest.raises(urllib.error.HTTPError) as missing_token:
+            urllib.request.urlopen(f"{base_url}/api/health", timeout=2)
+        assert missing_token.value.code == 401
+
+        request = urllib.request.Request(
+            f"{base_url}/api/health",
+            headers={"X-WeConduct-Token": server.api_token},
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            assert response.status == 200
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+@pytest.mark.parametrize("host_header", ["evil.example", "127.0.0.1:1"])
+def test_internal_api_rejects_invalid_host_before_token_processing(
+    tmp_path: Path,
+    host_header: str,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="ui-session-token",
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        request = urllib.request.Request(
+            f"{base_url}/api/health",
+            headers={
+                "Host": host_header,
+                "X-WeConduct-Token": "ui-session-token",
+            },
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(request, timeout=2)
+        assert exc_info.value.code == 403
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_internal_write_api_rejects_cross_origin_request_with_valid_token(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="ui-session-token",
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=json.dumps(
+                {
+                    "project_name": "origin-check",
+                    "project_directory": str(tmp_path / "project"),
+                }
+            ).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://evil.example",
+                "X-WeConduct-Token": "ui-session-token",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(request, timeout=2)
+        assert exc_info.value.code == 403
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_internal_api_rejects_oversized_json_body_before_route_execution(tmp_path: Path) -> None:
+    from weconduct.api.server import MAX_JSON_REQUEST_BODY_BYTES
+
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="ui-session-token",
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=b"{" + b"x" * MAX_JSON_REQUEST_BODY_BYTES + b"}",
+            headers={
+                "Content-Type": "application/json",
+                "X-WeConduct-Token": "ui-session-token",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(request, timeout=2)
+        assert exc_info.value.code == 413
+        assert json.loads(exc_info.value.read().decode("utf-8"))["error"] == "request.body_too_large"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_internal_api_rejects_excessive_json_nesting(tmp_path: Path) -> None:
+    from weconduct.api.server import MAX_JSON_REQUEST_DEPTH
+
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="ui-session-token",
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        payload = "{\"value\":" * (MAX_JSON_REQUEST_DEPTH + 1) + "0" + "}" * (MAX_JSON_REQUEST_DEPTH + 1)
+        request = urllib.request.Request(
+            f"{base_url}/api/workbench/project/new",
+            data=payload.encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-WeConduct-Token": "ui-session-token",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(request, timeout=2)
+        assert exc_info.value.code == 400
+        assert json.loads(exc_info.value.read().decode("utf-8"))["error"] == "request.body_too_deep"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_api_server_enforces_process_wide_sse_connection_limit(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        max_sse_subscribers=1,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    try:
+        assert server.try_acquire_sse_slot() is True
+        assert server.try_acquire_sse_slot() is False
+        server.release_sse_slot()
+        assert server.try_acquire_sse_slot() is True
+    finally:
+        server.release_sse_slot()
         server.server_close()
 
 
@@ -127,7 +361,13 @@ def test_api_exposes_workbench_event_stream_with_initial_snapshot(tmp_path: Path
     response = None
     try:
         base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
-        response = urllib.request.urlopen(f"{base_url}/api/workbench/events", timeout=2)
+        response = urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/events",
+                headers=_request_headers(f"{base_url}/api/workbench/events"),
+            ),
+            timeout=2,
+        )
         assert response.headers["Content-Type"].startswith("text/event-stream")
         body = response.read(2048).decode("utf-8")
         assert "event: workbench.snapshot" in body
@@ -314,6 +554,53 @@ def test_runtime_event_stream_replays_aborted_terminal_event_for_late_subscriber
     assert "event: runtime.snapshot" in body
     assert "event: runtime.summary" in body
     assert "event: runtime.aborted" in body
+
+
+def test_runtime_event_stream_recovers_terminal_event_closed_before_subscription() -> None:
+    class _Writer:
+        def __init__(self) -> None:
+            self.body = bytearray()
+
+        def write(self, body: bytes) -> int:
+            self.body.extend(body)
+            return len(body)
+
+        def flush(self) -> None:
+            return None
+
+    class _Service:
+        def __init__(self) -> None:
+            self.snapshot_calls = 0
+
+        def get_runtime_stream_snapshot(self, *, session_id: str) -> dict[str, object]:
+            self.snapshot_calls += 1
+            status = "running" if self.snapshot_calls == 1 else "completed"
+            return {
+                "session_id": session_id,
+                "status": status,
+                "node_states": [],
+                "execution_summary": {
+                    "completed_node_count": 1 if status == "completed" else 0,
+                    "failed_node_count": 0,
+                    "event_count": 2,
+                },
+            }
+
+        def iter_runtime_stream_events(self, *, session_id: str):
+            if False:
+                yield session_id, {}
+
+    writer = _Writer()
+    handler = object.__new__(WeConductApiHandler)
+    handler.wfile = writer
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _name, _value: None
+    handler.end_headers = lambda: None
+
+    handler._write_runtime_stream(_Service(), "runtime-race")
+
+    body = writer.body.decode("utf-8")
+    assert "event: runtime.completed" in body
 
 
 def test_internal_post_routes_require_ui_token(tmp_path: Path) -> None:
@@ -809,6 +1096,7 @@ def test_api_prepare_debug_session_is_pure_precheck_and_not_openable_before_star
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        request.headers["X-WeConduct-Token"] = server.api_token
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(request)
         body = json.loads(exc_info.value.read().decode("utf-8"))
@@ -1071,6 +1359,7 @@ def test_api_runtime_start_failure_retains_runtime_payload(tmp_path: Path) -> No
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        request.headers["X-WeConduct-Token"] = server.api_token
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(request)
         body = json.loads(exc_info.value.read().decode("utf-8"))
@@ -1162,6 +1451,7 @@ def test_api_runtime_start_conflict_failure_exposes_diagnostic_summary(tmp_path:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        request.headers["X-WeConduct-Token"] = server.api_token
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(request)
         body = json.loads(exc_info.value.read().decode("utf-8"))
@@ -1455,6 +1745,7 @@ def test_api_does_not_expose_debug_record_frame_event_injection(tmp_path: Path) 
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        request.headers["X-WeConduct-Token"] = server.api_token
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(request)
         assert exc_info.value.code == 404
@@ -1540,6 +1831,7 @@ def test_api_does_not_expose_context_free_debug_record_frame_event_injection(tmp
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        request.headers["X-WeConduct-Token"] = server.api_token
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(request)
         assert exc_info.value.code == 404
@@ -2187,6 +2479,7 @@ def test_api_debug_start_route_accepts_paused_async_result(
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        request.headers["X-WeConduct-Token"] = server.api_token
         with urllib.request.urlopen(request) as response:
             assert response.status == 200
             payload = json.loads(response.read().decode("utf-8"))
@@ -2643,7 +2936,8 @@ def test_api_debug_abort_route_accepts_pending_abort_result(
 
 
 def _get_json(url: str) -> dict:
-    with urllib.request.urlopen(url) as response:
+    request = urllib.request.Request(url, headers=_request_headers(url))
+    with urllib.request.urlopen(request) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -2998,6 +3292,7 @@ def test_api_graph_revision_conflict_exposes_revision_metadata(tmp_path: Path) -
             headers={"Content-Type": "application/json"},
             method="PUT",
         )
+        request.headers["X-WeConduct-Token"] = server.api_token
         with pytest.raises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request)
 
@@ -3065,8 +3360,12 @@ def test_api_does_not_expose_legacy_project_configuration_routes(
     thread.start()
     try:
         base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        request = urllib.request.Request(
+            f"{base_url}{route}",
+            headers=_request_headers(f"{base_url}{route}"),
+        )
         with pytest.raises(urllib.error.HTTPError) as error:
-            urllib.request.urlopen(f"{base_url}{route}")
+            urllib.request.urlopen(request)
         assert error.value.code == 404
     finally:
         server.shutdown()
@@ -3099,7 +3398,7 @@ def _post_json(url: str, payload: dict) -> dict:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=_request_headers(url, {"Content-Type": "application/json"}),
         method="POST",
     )
     try:
@@ -3114,7 +3413,7 @@ def _patch_json(url: str, payload: dict) -> dict:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=_request_headers(url, {"Content-Type": "application/json"}),
         method="PATCH",
     )
     try:
@@ -3129,7 +3428,7 @@ def _put_json(url: str, payload: dict) -> dict:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=_request_headers(url, {"Content-Type": "application/json"}),
         method="PUT",
     )
     try:

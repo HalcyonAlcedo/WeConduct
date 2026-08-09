@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from weconduct.network_runtime.access_policy import NetworkAccessPolicy
 from weconduct.network_runtime.proxy import ProxyConfigurationError, ProxyResolver, ResolvedProxy
-from weconduct.network_runtime.windows_proxy_worker import _parse_winhttp_proxy_list
+from weconduct.network_runtime.windows_proxy_worker import (
+    _configure_winhttp_auto_proxy_options,
+    _parse_winhttp_proxy_list,
+)
 
 
 def test_proxy_resolver_returns_explicit_direct_mode() -> None:
@@ -69,7 +73,12 @@ def test_proxy_resolver_delegates_windows_system_and_pac_modes_to_isolated_worke
             return ResolvedProxy(mode="http", url="http://proxy.example.test:8080", source=mode)
 
     worker = FakeWindowsWorker()
-    resolver = ProxyResolver(windows_worker=worker)
+    resolver = ProxyResolver(
+        windows_worker=worker,
+        access_policy=NetworkAccessPolicy(
+            allowed_hostnames=frozenset({"proxy.example.test"})
+        ),
+    )
 
     windows = resolver.resolve(
         {"mode": "windows_system"},
@@ -99,6 +108,87 @@ def test_proxy_resolver_rejects_worker_failure_without_direct_fallback() -> None
         resolver.resolve({"mode": "wpad"}, "https://example.test/resource")
 
 
+@pytest.mark.parametrize(
+    "pac_url",
+    [
+        "file:///C:/Windows/win.ini",
+        "//proxy.example.test/proxy.pac",
+        "https://user:password@proxy.example.test/proxy.pac",
+        "http://169.254.169.254/latest/meta-data",
+    ],
+)
+def test_proxy_resolver_rejects_unsafe_pac_url_before_starting_worker(pac_url: str) -> None:
+    class RecordingWorker:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str | None]] = []
+
+        def resolve(self, target_url: str, *, mode: str, pac_url: str | None = None) -> ResolvedProxy:
+            self.calls.append((target_url, mode, pac_url))
+            return ResolvedProxy(mode="direct", source=mode)
+
+    worker = RecordingWorker()
+    resolver = ProxyResolver(windows_worker=worker)
+
+    with pytest.raises(ProxyConfigurationError, match="PAC URL"):
+        resolver.resolve({"mode": "pac", "pac_url": pac_url}, "https://example.test/resource")
+
+    assert worker.calls == []
+
+
+def test_proxy_resolver_rejects_private_proxy_returned_by_pac() -> None:
+    class PrivateProxyWorker:
+        def resolve(self, target_url: str, *, mode: str, pac_url: str | None = None) -> ResolvedProxy:
+            return ResolvedProxy(mode="http", url="http://127.0.0.1:8080", source=mode)
+
+    resolver = ProxyResolver(
+        windows_worker=PrivateProxyWorker(),
+        access_policy=NetworkAccessPolicy(allowed_hostnames=frozenset({"pac.example.test"})),
+    )
+
+    with pytest.raises(ProxyConfigurationError, match="proxy candidate"):
+        resolver.resolve(
+            {"mode": "pac", "pac_url": "https://pac.example.test/proxy.pac"},
+            "https://example.test/resource",
+        )
+
+
+def test_proxy_resolver_accepts_policy_allowed_proxy_returned_by_pac() -> None:
+    class PublicProxyWorker:
+        def resolve(self, target_url: str, *, mode: str, pac_url: str | None = None) -> ResolvedProxy:
+            return ResolvedProxy(mode="http", url="http://proxy.example.test:8080", source=mode)
+
+    resolver = ProxyResolver(
+        windows_worker=PublicProxyWorker(),
+        access_policy=NetworkAccessPolicy(
+            allowed_hostnames=frozenset({"pac.example.test", "proxy.example.test"})
+        ),
+    )
+
+    resolved = resolver.resolve(
+        {"mode": "pac", "pac_url": "https://pac.example.test/proxy.pac"},
+        "https://example.test/resource",
+    )
+
+    assert resolved.url == "http://proxy.example.test:8080"
+
+
+def test_winhttp_auto_proxy_options_never_auto_log_on_to_proxy() -> None:
+    class Options:
+        dwFlags = 0
+        dwAutoDetectFlags = 0
+        lpszAutoConfigUrl = None
+        fAutoLogonIfChallenged = True
+
+    options = Options()
+    _configure_winhttp_auto_proxy_options(
+        options,
+        mode="wpad",
+        pac_url=None,
+    )
+
+    assert options.fAutoLogonIfChallenged is False
+
+
 def test_winhttp_proxy_list_preserves_order_and_only_allows_explicit_direct() -> None:
     resolved = _parse_winhttp_proxy_list(
         "https=proxy.example.test:8443;DIRECT",
@@ -115,3 +205,12 @@ def test_winhttp_proxy_list_preserves_order_and_only_allows_explicit_direct() ->
     )
     assert direct.mode == "direct"
     assert direct.url is None
+
+
+def test_winhttp_proxy_list_rejects_candidate_with_embedded_credentials() -> None:
+    with pytest.raises(ProxyConfigurationError, match="no supported candidate"):
+        _parse_winhttp_proxy_list(
+            "http://proxy-user:proxy-secret@proxy.example.test:8080",
+            "https://example.test/resource",
+            source="pac",
+        )

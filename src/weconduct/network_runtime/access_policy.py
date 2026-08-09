@@ -37,7 +37,7 @@ class NetworkAccessPolicy:
         hostname = parsed.hostname.lower()
         if hostname in {item.lower() for item in self.allowed_hostnames}:
             return None
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        port = parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80)
         return ResolvedNetworkTarget(
             hostname=hostname,
             port=port,

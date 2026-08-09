@@ -133,7 +133,7 @@ class ResponseBodyStore:
         _validate_response_limit(max_in_memory_bytes, "max_in_memory_bytes")
         memory_limit = (
             MAX_IN_MEMORY_RESPONSE_BYTES
-            if max_in_memory_bytes in {None, 0}
+            if max_in_memory_bytes is None
             else max_in_memory_bytes
         )
         payload = bytearray()
@@ -148,7 +148,7 @@ class ResponseBodyStore:
                 if not chunk:
                     continue
                 size_bytes += len(chunk)
-                if max_bytes not in {None, 0} and size_bytes > max_bytes:
+                if max_bytes is not None and size_bytes > max_bytes:
                     raise ResponseBodyTooLargeError(size_bytes=size_bytes, max_bytes=max_bytes)
                 if path is None and len(payload) + len(chunk) <= memory_limit:
                     payload.extend(chunk)
