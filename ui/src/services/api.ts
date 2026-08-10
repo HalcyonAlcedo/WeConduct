@@ -72,7 +72,79 @@ function readUiTokenFromLocation(): string | null {
   return token
 }
 
-const UI_TOKEN = readUiTokenFromLocation()
+let uiToken: string | null = null
+
+type DesktopTokenBridge = {
+  get_ui_token: () => Promise<unknown> | unknown
+}
+
+function getDesktopTokenBridge(): DesktopTokenBridge | null {
+  if (typeof window === 'undefined') return null
+  const bridge = (window as Window & { pywebview?: { api?: unknown } }).pywebview?.api
+  if (!bridge || typeof (bridge as DesktopTokenBridge).get_ui_token !== 'function') return null
+  return bridge as DesktopTokenBridge
+}
+
+function hasUiTokenFragment(): boolean {
+  if (typeof window === 'undefined') return false
+  const hash = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash
+  return Boolean(hash && new URLSearchParams(hash).get('weconduct_token'))
+}
+
+async function waitForDesktopTokenBridge(): Promise<DesktopTokenBridge | null> {
+  const currentBridge = getDesktopTokenBridge()
+  if (currentBridge) return currentBridge
+  if (hasUiTokenFragment()) return null
+  return new Promise<DesktopTokenBridge>((resolve, reject) => {
+    const onReady = () => {
+      const bridge = getDesktopTokenBridge()
+      if (!bridge) {
+        finish(() => reject(new Error('desktop UI token bridge is unavailable')))
+        return
+      }
+      finish(() => resolve(bridge))
+    }
+    const timeout = window.setTimeout(() => {
+      finish(() => reject(new Error('desktop UI token bridge timed out')))
+    }, 5000)
+    const finish = (action: () => void) => {
+      window.clearTimeout(timeout)
+      window.removeEventListener('pywebviewready', onReady)
+      action()
+    }
+    window.addEventListener('pywebviewready', onReady, { once: true })
+    const bridgeAfterListener = getDesktopTokenBridge()
+    if (bridgeAfterListener) finish(() => resolve(bridgeAfterListener))
+  })
+}
+
+async function readUiTokenFromDesktopBridge(bridge: DesktopTokenBridge): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      reject(new Error('desktop UI token bridge timed out'))
+    }, 5000)
+    Promise.resolve(bridge.get_ui_token()).then((token) => {
+      window.clearTimeout(timeout)
+      if (typeof token !== 'string' || !token) {
+        reject(new Error('desktop UI token bridge returned an empty token'))
+        return
+      }
+      resolve(token)
+    }, (error) => {
+      window.clearTimeout(timeout)
+      reject(new Error(`desktop UI token bridge failed: ${String(error)}`))
+    })
+  })
+}
+
+export async function initializeUiToken(): Promise<void> {
+  const bridge = await waitForDesktopTokenBridge()
+  uiToken = bridge
+    ? await readUiTokenFromDesktopBridge(bridge)
+    : readUiTokenFromLocation()
+}
 
 function buildRequestHeaders(options?: RequestInit): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -83,7 +155,7 @@ function buildRequestHeaders(options?: RequestInit): Record<string, string> {
   } else if (options?.headers) {
     Object.assign(headers, options.headers)
   }
-  if (UI_TOKEN) headers['X-WeConduct-Token'] = UI_TOKEN
+  if (uiToken) headers['X-WeConduct-Token'] = uiToken
   return headers
 }
 
@@ -348,7 +420,7 @@ export async function consumeSse(
   }
 }
 
-export function getUiToken(): string | null { return UI_TOKEN }
+export function getUiToken(): string | null { return uiToken }
 export function buildRuntimeProgressFromSession(detail: RuntimeSessionDetailResponse): RuntimeProgress {
   const nodeStates = Array.isArray(detail.node_states) ? detail.node_states : []
   const totalNodeCount = nodeStates.length
@@ -485,8 +557,8 @@ export async function postPreferences(body: PreferencesUpdateRequest): Promise<P
 export async function postPreferencesPreview(body: { section: string; values: Record<string, unknown> }): Promise<{ section: string; current_values: Record<string, unknown>; proposed_values: Record<string, unknown>; confirmation_required: boolean; high_risk_changes: { field: string; from: unknown; to: unknown; reason: string }[] }> { const result = await request<any>('/workbench/config/preview', { method: 'POST', body: JSON.stringify({ scope: 'program', operations: configurationOperations(body.section, body.values) }) }); return { section: body.section, current_values: legacyPreferences(result.current_values).preferences[body.section] as Record<string, unknown>, proposed_values: legacyPreferences(result.proposed_values).preferences[body.section] as Record<string, unknown>, confirmation_required: result.confirmation_required, high_risk_changes: (result.high_risk_changes || []).map((item: any) => ({ field: String(item.path || '').split('/').pop() || '', from: item.from, to: item.to, reason: 'changes high-risk configuration' })) } }
 export async function postPreferencesReset(): Promise<PreferencesResponse> { const result = await request<ProgramConfigurationValues>('/workbench/config/reset', { method: 'POST', body: JSON.stringify({ scope: 'program' }) }); return legacyPreferences(result.values) }
 
-export type ExternalApiPreferences = { enabled: boolean; token: string | null; token_configured: boolean; external_api_port: number; project_allowed_roots: string[] }
-export type ExternalApiPreferencesUpdate = { enabled: boolean; token?: string; clear_token: boolean; external_api_port: number; project_allowed_roots: string[]; confirm_high_risk: boolean }
+export type ExternalApiPreferences = { enabled: boolean; token: string | null; token_configured: boolean; local_api_port: number; active_listener: { host: string; port: number }; restart_required: boolean; project_allowed_roots: string[] }
+export type ExternalApiPreferencesUpdate = { enabled: boolean; token?: string; clear_token: boolean; local_api_port: number; project_allowed_roots: string[]; confirm_high_risk: boolean }
 export function fetchExternalApiPreferences(): Promise<ExternalApiPreferences> { return request('/workbench/preferences/external-api') }
 export function postExternalApiPreferences(body: ExternalApiPreferencesUpdate): Promise<ExternalApiPreferences> { return request('/workbench/preferences/external-api', { method: 'POST', body: JSON.stringify(body) }) }
 

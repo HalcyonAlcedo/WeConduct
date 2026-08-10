@@ -94,7 +94,7 @@ describe('PreferencesPanel', () => {
     })
     apiMocks.fetchLanguages.mockResolvedValue({ languages: [] })
     apiMocks.fetchLanguagePack.mockResolvedValue({ locale: 'zh-CN', messages: {} })
-    apiMocks.fetchExternalApiPreferences.mockResolvedValue({ enabled: false, token: null, token_configured: false, external_api_port: 0, project_allowed_roots: [] })
+    apiMocks.fetchExternalApiPreferences.mockResolvedValue({ enabled: false, token: null, token_configured: false, local_api_port: 0, active_listener: { host: '127.0.0.1', port: 2233 }, restart_required: false, project_allowed_roots: [] })
     try { localStorage.clear() } catch { /* jsdom */ }
   })
 
@@ -227,7 +227,9 @@ describe('PreferencesPanel', () => {
       enabled: true,
       token: 'visible-external-token',
       token_configured: true,
-      external_api_port: 0,
+      local_api_port: 0,
+      active_listener: { host: '127.0.0.1', port: 2233 },
+      restart_required: false,
       project_allowed_roots: ['C:\\projects'],
     })
     const wrapper = mount(PreferencesPanel, { global: { plugins: [createPinia()] } })
@@ -236,7 +238,9 @@ describe('PreferencesPanel', () => {
     await nextTick()
 
     expect(wrapper.text()).toContain('外部 API')
-    expect(wrapper.text()).toContain('设为 0 自动分配')
+    expect(wrapper.text()).toContain('本地 API 服务端口')
+    expect(wrapper.text()).toContain('外部 API 与桌面 UI 共用')
+    expect(wrapper.text()).toContain('端口修改将在重启后生效')
     expect(wrapper.text()).toContain('加密参数解锁策略')
     const tokenField = wrapper.findAll('.pref-field').find((item) => item.text().includes('外部 API Token'))
     const token = tokenField?.find('input')
@@ -307,14 +311,18 @@ describe('PreferencesPanel', () => {
       enabled: true,
       token: 'visible-external-token',
       token_configured: true,
-      external_api_port: 0,
+      local_api_port: 0,
+      active_listener: { host: '127.0.0.1', port: 2233 },
+      restart_required: false,
       project_allowed_roots: [],
     })
     apiMocks.postExternalApiPreferences.mockResolvedValue({
       enabled: false,
       token: null,
       token_configured: false,
-      external_api_port: 0,
+      local_api_port: 0,
+      active_listener: { host: '127.0.0.1', port: 2233 },
+      restart_required: false,
       project_allowed_roots: [],
     })
     apiMocks.postPreferences.mockResolvedValue({ preferences: { security_settings: {} } })

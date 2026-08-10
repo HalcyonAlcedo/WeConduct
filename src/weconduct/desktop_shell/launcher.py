@@ -20,6 +20,16 @@ class DesktopShellDependencyError(RuntimeError):
     pass
 
 
+class _DesktopUiApi:
+    """仅向当前 pywebview 窗口公开进程内 UI Token。"""
+
+    def __init__(self, ui_token: str) -> None:
+        self._ui_token = ui_token
+
+    def get_ui_token(self) -> str:
+        return self._ui_token
+
+
 @dataclass(frozen=True)
 class DesktopShellOptions:
     host: str = "127.0.0.1"
@@ -209,7 +219,6 @@ def launch_desktop_shell(
     server.ui_mode = "desktop_shell"
     runtime_host, runtime_port = server.server_address
     base_url = f"http://{runtime_host}:{runtime_port}"
-    ui_url = _build_ui_url(base_url, ui_token)
     window_ref: dict[str, Any] = {}
     server.file_dialog_provider = _build_file_dialog_provider(webview, window_ref)
     server.open_path_provider = _build_open_path_provider(window_ref)
@@ -218,9 +227,10 @@ def launch_desktop_shell(
     try:
         window_ref["window"] = webview.create_window(
             options.title,
-            ui_url,
+            base_url,
             width=preferred_width,
             height=preferred_height,
+            js_api=_DesktopUiApi(ui_token),
         )
         webview.start()
     finally:

@@ -140,6 +140,7 @@ describe('configuration API', () => {
 describe('startup diagnostics API', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    delete (window as any).pywebview
     window.history.replaceState(window.history.state, document.title, window.location.pathname)
   })
 
@@ -152,7 +153,8 @@ describe('startup diagnostics API', () => {
     window.location.hash = '#weconduct_token=startup-ui-token'
     vi.resetModules()
 
-    const { fetchStartupDiagnostics } = await import('./api')
+    const { fetchStartupDiagnostics, initializeUiToken } = await import('./api')
+    await initializeUiToken()
     await fetchStartupDiagnostics()
 
     expect(fetchMock).toHaveBeenCalledWith('/api/startup/diagnostics', {
@@ -161,6 +163,56 @@ describe('startup diagnostics API', () => {
         'X-WeConduct-Token': 'startup-ui-token',
       },
     })
+  })
+
+  it('pywebview bridge 存在时使用桥接 Token 而不读取 fragment', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ overall_severity: 'ok' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    window.location.hash = '#weconduct_token=fallback-token'
+    ;(window as any).pywebview = {
+      api: { get_ui_token: vi.fn().mockResolvedValue('bridge-ui-token') },
+    }
+    vi.resetModules()
+
+    const { fetchStartupDiagnostics, initializeUiToken } = await import('./api')
+    await initializeUiToken()
+    await fetchStartupDiagnostics()
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/startup/diagnostics', {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-WeConduct-Token': 'bridge-ui-token',
+      },
+    })
+    expect(window.location.hash).toBe('#weconduct_token=fallback-token')
+  })
+
+  it('pywebview bridge 返回空 Token 时拒绝启动', async () => {
+    ;(window as any).pywebview = {
+      api: { get_ui_token: vi.fn().mockResolvedValue('') },
+    }
+    vi.resetModules()
+
+    const { initializeUiToken } = await import('./api')
+    await expect(initializeUiToken()).rejects.toThrow('desktop UI token bridge returned an empty token')
+  })
+
+  it('等待 pywebviewready 后再获取桌面 Token', async () => {
+    window.history.replaceState(window.history.state, document.title, window.location.pathname)
+    vi.resetModules()
+    const { getUiToken, initializeUiToken } = await import('./api')
+    const initialization = initializeUiToken()
+    window.setTimeout(() => {
+      ;(window as any).pywebview = {
+        api: { get_ui_token: vi.fn().mockResolvedValue('late-bridge-token') },
+      }
+      window.dispatchEvent(new Event('pywebviewready'))
+    }, 0)
+    await initialization
+    expect(getUiToken()).toBe('late-bridge-token')
   })
 })
 
@@ -176,7 +228,9 @@ describe('external API preferences', () => {
         enabled: true,
         token: 'visible-external-token',
         token_configured: true,
-        external_api_port: 2233,
+        local_api_port: 2233,
+        active_listener: { host: '127.0.0.1', port: 2233 },
+        restart_required: false,
         project_allowed_roots: ['C:\\projects'],
       }),
     })
@@ -197,7 +251,9 @@ describe('external API preferences', () => {
         enabled: true,
         token: 'updated-external-token',
         token_configured: true,
-        external_api_port: 2233,
+        local_api_port: 2233,
+        active_listener: { host: '127.0.0.1', port: 2233 },
+        restart_required: false,
         project_allowed_roots: [],
       }),
     })
@@ -207,7 +263,7 @@ describe('external API preferences', () => {
       enabled: true,
       token: 'updated-external-token',
       clear_token: false,
-      external_api_port: 2233,
+      local_api_port: 2233,
       project_allowed_roots: [],
       confirm_high_risk: true,
     })
@@ -219,7 +275,7 @@ describe('external API preferences', () => {
         enabled: true,
         token: 'updated-external-token',
         clear_token: false,
-        external_api_port: 2233,
+        local_api_port: 2233,
         project_allowed_roots: [],
         confirm_high_risk: true,
       }),

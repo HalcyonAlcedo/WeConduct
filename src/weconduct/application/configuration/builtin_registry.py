@@ -125,7 +125,7 @@ def _register_program_fields(registry: ConfigurationRegistry) -> None:
         fields=(
             ("external_api_enabled", "boolean", False),
             ("external_api_token", "nullable_string", None),
-            ("external_api_port", "integer", 0),
+            ("local_api_port", "integer", 0),
             ("external_api_project_allowed_roots", "string_list", []),
             ("encrypted_parameter_unlock_policy", "enum", "always_prompt", ("always_prompt",)),
         ),

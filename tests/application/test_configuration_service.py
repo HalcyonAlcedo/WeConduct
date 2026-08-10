@@ -451,7 +451,7 @@ def test_program_configuration_migration_converts_legacy_file_once(tmp_path: Pat
                 "file_access_blocked_extensions": [],
                         "external_api_enabled": False,
                         "external_api_token": None,
-                        "external_api_port": 0,
+                        "local_api_port": 0,
                         "external_api_project_allowed_roots": [],
                     "encrypted_parameter_unlock_policy": "always_prompt",
                 },

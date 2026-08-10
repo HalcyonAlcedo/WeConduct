@@ -1,4 +1,5 @@
 import json
+from http import HTTPStatus
 from pathlib import Path
 from threading import Event, Thread
 from time import monotonic, sleep
@@ -369,6 +370,7 @@ def test_api_exposes_workbench_event_stream_with_initial_snapshot(tmp_path: Path
             timeout=2,
         )
         assert response.headers["Content-Type"].startswith("text/event-stream")
+        assert response.headers.get("Server") is None
         body = response.read(2048).decode("utf-8")
         assert "event: workbench.snapshot" in body
     finally:
@@ -3040,7 +3042,7 @@ def test_api_external_api_preferences_returns_token_to_internal_client(tmp_path:
             {
             "enabled": True,
             "token": secret,
-            "external_api_port": 0,
+            "local_api_port": 0,
             "project_allowed_roots": [str(tmp_path / "projects")],
             "confirm_high_risk": True,
             },
@@ -3052,7 +3054,12 @@ def test_api_external_api_preferences_returns_token_to_internal_client(tmp_path:
             "enabled": True,
             "token": secret,
             "token_configured": True,
-            "external_api_port": 0,
+            "local_api_port": 0,
+            "active_listener": {
+                "host": "127.0.0.1",
+                "port": server.server_address[1],
+            },
+            "restart_required": False,
             "project_allowed_roots": [str((tmp_path / "projects").resolve())],
         }
         assert server.external_api_enabled is True
@@ -3064,7 +3071,7 @@ def test_api_external_api_preferences_returns_token_to_internal_client(tmp_path:
             {
                 "enabled": False,
                 "clear_token": True,
-                "external_api_port": 0,
+                "local_api_port": 0,
                 "project_allowed_roots": [str(tmp_path / "projects")],
                 "confirm_high_risk": True,
             },
@@ -3101,7 +3108,7 @@ def test_api_external_api_preferences_token_requires_internal_ui_token(tmp_path:
                 {
                     "enabled": True,
                     "token": "configured-external-token",
-                    "external_api_port": 0,
+                    "local_api_port": 0,
                     "project_allowed_roots": [],
                     "confirm_high_risk": True,
                 }
@@ -3437,3 +3444,75 @@ def _put_json(url: str, payload: dict) -> dict:
     except urllib.error.HTTPError as exc:  # pragma: no cover - keep response body visible in test failure
         body = exc.read().decode("utf-8", errors="replace")
         raise AssertionError(f"HTTP {exc.code} for {url}: {body}") from exc
+
+
+def test_http_hardening_removes_server_header_and_rejects_unknown_spa_paths(
+    tmp_path: Path,
+) -> None:
+    ui_dist_path = tmp_path / "ui-dist"
+    ui_dist_path.mkdir()
+    index_body = b"<html><body>WeConduct</body></html>"
+    (ui_dist_path / "index.html").write_bytes(index_body)
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=ui_dist_path,
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        head_request = urllib.request.Request(f"{base_url}/", method="HEAD")
+        with urllib.request.urlopen(head_request) as response:
+            assert response.status == HTTPStatus.OK
+            assert response.headers.get("Content-Length") == str(len(index_body))
+            assert response.headers.get("Server") is None
+            assert response.read() == b""
+
+        missing_token = urllib.request.Request(f"{base_url}/api/health", method="HEAD")
+        with pytest.raises(urllib.error.HTTPError) as unauthorized:
+            urllib.request.urlopen(missing_token)
+        assert unauthorized.value.code == HTTPStatus.UNAUTHORIZED
+        assert unauthorized.value.headers.get("Server") is None
+
+        options_request = urllib.request.Request(f"{base_url}/", method="OPTIONS")
+        with urllib.request.urlopen(options_request) as response:
+            assert response.status == HTTPStatus.NO_CONTENT
+            assert response.headers["Allow"] == "GET, HEAD, OPTIONS"
+            assert response.headers.get("Server") is None
+            assert response.read() == b""
+
+        preferences_options = urllib.request.Request(
+            f"{base_url}/api/workbench/preferences/external-api",
+            method="OPTIONS",
+        )
+        with urllib.request.urlopen(preferences_options) as response:
+            assert response.status == HTTPStatus.NO_CONTENT
+            assert response.headers["Allow"] == "GET, HEAD, POST, OPTIONS"
+
+        static_post = urllib.request.Request(f"{base_url}/", data=b"{}", method="POST")
+        with pytest.raises(urllib.error.HTTPError) as static_method_not_allowed:
+            urllib.request.urlopen(static_post)
+        assert static_method_not_allowed.value.code == HTTPStatus.METHOD_NOT_ALLOWED
+        assert static_method_not_allowed.value.headers["Allow"] == "GET, HEAD, OPTIONS"
+
+        reset_get = urllib.request.Request(
+            f"{base_url}/api/workbench/config/reset",
+            headers=_request_headers(f"{base_url}/api/workbench/config/reset"),
+            method="GET",
+        )
+        with pytest.raises(urllib.error.HTTPError) as api_method_not_allowed:
+            urllib.request.urlopen(reset_get)
+        assert api_method_not_allowed.value.code == HTTPStatus.METHOD_NOT_ALLOWED
+        assert api_method_not_allowed.value.headers["Allow"] == "POST, OPTIONS"
+
+        with pytest.raises(urllib.error.HTTPError) as unknown:
+            urllib.request.urlopen(f"{base_url}/random-path")
+        assert unknown.value.code == HTTPStatus.NOT_FOUND
+        assert unknown.value.read() != index_body
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()

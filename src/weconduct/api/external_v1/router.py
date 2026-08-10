@@ -82,6 +82,17 @@ class ExternalV1Router:
     def __init__(self, handler: object) -> None:
         self._handler = handler
 
+    @staticmethod
+    def allowed_methods(request_path: str) -> tuple[str, ...]:
+        methods: list[str] = []
+        for method in ("GET", "POST", "PUT"):
+            try:
+                resolve_external_operation(method=method, request_path=request_path)
+            except OperationRegistryError:
+                continue
+            methods.append(method)
+        return tuple(methods)
+
     def handle(self, *, method: str) -> bool:
         handler = self._handler
         request_path = urlparse(handler.path).path
@@ -98,6 +109,13 @@ class ExternalV1Router:
         authenticator = ExternalApiAuthenticator(getattr(handler.server, "external_api_token", None))
         if not authenticator.accepts(handler.headers.get("Authorization", "")):
             handler._write_json(HTTPStatus.UNAUTHORIZED, {"error_code": "external_api.unauthorized", "message": "valid bearer token is required", "request_id": request_id})
+            return True
+        allowed_methods = self.allowed_methods(request_path)
+        if allowed_methods and method not in allowed_methods:
+            handler._write_empty_response(
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                allow=", ".join([*allowed_methods, "OPTIONS"]),
+            )
             return True
 
         payload: dict[str, object] = {}

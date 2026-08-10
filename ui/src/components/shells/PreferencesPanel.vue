@@ -89,7 +89,7 @@ const FIELD_DEFS = computed<Record<string, FieldDef[]>>(() => ({
     { key: 'external_api_enabled', label: t('framework.preferences.security.externalApiEnabled', '启用外部 API'), type: 'bool' },
     { key: 'external_api_token', label: t('framework.preferences.security.externalApiToken', '外部 API Token'), type: 'password', hint: t('framework.preferences.security.externalApiTokenHint', '外部 API 调用的认证令牌。') },
     { key: 'external_api_clear_token', label: t('framework.preferences.security.externalApiClearToken', '清除外部 API Token'), type: 'bool' },
-    { key: 'external_api_port', label: t('framework.preferences.security.externalApiPort', '外部 API 端口'), type: 'number', hint: t('framework.preferences.security.externalApiPortHint', '外部 API 服务监听端口，设为 0 自动分配。') },
+    { key: 'local_api_port', label: t('framework.preferences.security.localApiPort', '本地 API 服务端口'), type: 'number', hint: t('framework.preferences.security.localApiPortHint', '外部 API 与桌面 UI 共用；端口修改将在重启后生效。设为 0 自动分配。') },
     { key: 'external_api_project_allowed_roots', label: t('framework.preferences.security.externalApiProjectRoots', '外部 API 项目目录'), type: 'directory_list' },
     { key: 'encrypted_parameter_unlock_policy', label: t('framework.preferences.security.encryptedParameterUnlockPolicy', '加密参数解锁策略'), type: 'select', options: ['always_prompt'], hint: t('framework.preferences.security.encryptedParameterUnlockPolicyHint', '每次运行均要求输入密码。') },
     { key: 'allow_file_access', label: t('framework.preferences.security.allowFileAccess', '允许文件访问'), type: 'bool' }, { key: 'file_access_scope', label: t('framework.preferences.security.fileAccessScope', '文件访问范围'), type: 'select', options: ['restricted', 'custom_roots', 'allow_all'] },
@@ -199,7 +199,9 @@ async function loadExternalApiPreferences() {
       external_api_enabled: externalApi.enabled,
       external_api_token: externalApi.token ?? '',
       external_api_token_configured: externalApi.token_configured,
-      external_api_port: externalApi.external_api_port,
+      local_api_port: externalApi.local_api_port,
+      local_api_active_listener: externalApi.active_listener,
+      local_api_restart_required: externalApi.restart_required,
       external_api_clear_token: false,
       external_api_project_allowed_roots: normalizeRoots(externalApi.project_allowed_roots),
     }
@@ -312,7 +314,7 @@ async function confirmHighRiskSave() {
 function flattenForSave(section: string, vals: Record<string, any>): Record<string, unknown> {
   const r: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(vals)) {
-    if (section === 'security_settings' && ['external_api_enabled', 'external_api_token', 'external_api_token_configured', 'external_api_clear_token', 'external_api_port', 'external_api_project_allowed_roots'].includes(k)) continue
+    if (section === 'security_settings' && ['external_api_enabled', 'external_api_token', 'external_api_token_configured', 'external_api_clear_token', 'local_api_port', 'local_api_active_listener', 'local_api_restart_required', 'external_api_project_allowed_roots'].includes(k)) continue
     if (k === 'default_window_size') { r[k] = { width: (v as any)?.width ?? 800, height: (v as any)?.height ?? 600 }; continue }
     if (section === 'security_settings' && k === 'file_access_allowed_roots') { r[k] = normalizeRoots(v); continue }
     if (section === 'security_settings' && k === 'file_access_blocked_roots') { r[k] = normalizeRoots(v); continue }
@@ -331,7 +333,7 @@ async function saveExternalApiPreferences(confirmHighRisk: boolean) {
     enabled: !!settings.external_api_enabled,
     token,
     clear_token: !!settings.external_api_clear_token,
-    external_api_port: Number.isInteger(settings.external_api_port) ? settings.external_api_port : Number(settings.external_api_port || 0),
+    local_api_port: Number.isInteger(settings.local_api_port) ? settings.local_api_port : Number(settings.local_api_port || 0),
     project_allowed_roots: normalizeRoots(settings.external_api_project_allowed_roots),
     confirm_high_risk: confirmHighRisk,
   })
@@ -340,10 +342,17 @@ async function saveExternalApiPreferences(confirmHighRisk: boolean) {
     external_api_enabled: result.enabled,
     external_api_token: result.token ?? '',
     external_api_token_configured: result.token_configured,
-    external_api_port: result.external_api_port,
+    local_api_port: result.local_api_port,
+    local_api_active_listener: result.active_listener,
+    local_api_restart_required: result.restart_required,
     external_api_clear_token: false,
     external_api_project_allowed_roots: normalizeRoots(result.project_allowed_roots),
   }
+  const listener = result.active_listener
+  const address = `${listener.host}:${listener.port}`
+  toast.info('本地 API 服务端口已保存', result.restart_required
+    ? `当前监听 ${address}；端口修改将在重启后生效。`
+    : `当前监听 ${address}。`)
 }
 function normalizeGraphPreferences(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
@@ -446,7 +455,7 @@ const currentFields = computed(() => {
   const fields = FIELD_DEFS.value[active.value] || []
   const sectionState = (prefsState.value as any)?.[currentSection.value]
   if (!sectionState || typeof sectionState !== 'object') return fields
-  return fields.filter(field => field.key.startsWith('external_api_') || field.key === 'encrypted_parameter_unlock_policy' || sectionState[field.key] === 'active')
+  return fields.filter(field => field.key.startsWith('external_api_') || field.key === 'local_api_port' || field.key === 'encrypted_parameter_unlock_policy' || sectionState[field.key] === 'active')
 })
 </script>
 <template>

@@ -68,6 +68,60 @@ def test_external_router_keeps_bearer_semantics_and_maps_the_fixed_host_route() 
     )
 
 
+def test_external_api_head_keeps_bearer_authentication_and_options_resolves_routes(
+    tmp_path: Path,
+) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        endpoint = f"{base_url}/api/ext/v1/host"
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                endpoint,
+                method="HEAD",
+                headers={"Authorization": "Bearer external-secret"},
+            )
+        ) as response:
+            assert response.status == 200
+            assert response.headers["Content-Length"] != "0"
+            assert response.read() == b""
+
+        with pytest.raises(urllib.error.HTTPError) as unauthorized:
+            urllib.request.urlopen(urllib.request.Request(endpoint, method="HEAD"))
+        assert unauthorized.value.code == 401
+
+        with urllib.request.urlopen(
+            urllib.request.Request(endpoint, method="OPTIONS")
+        ) as response:
+            assert response.status == 204
+            assert response.headers["Allow"] == "GET, OPTIONS"
+            assert response.read() == b""
+
+        with pytest.raises(urllib.error.HTTPError) as unknown:
+            urllib.request.urlopen(
+                urllib.request.Request(f"{base_url}/api/ext/v1/unknown", method="OPTIONS")
+            )
+        assert unknown.value.code == 404
+
+        with pytest.raises(urllib.error.HTTPError) as method_not_allowed:
+            urllib.request.urlopen(
+                urllib.request.Request(
+                    endpoint,
+                    data=b"{}",
+                    method="PUT",
+                    headers={"Authorization": "Bearer external-secret"},
+                )
+            )
+        assert method_not_allowed.value.code == 405
+        assert method_not_allowed.value.headers["Allow"] == "GET, OPTIONS"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
 def test_external_api_host_capabilities_preserve_boolean_protocol_flags(tmp_path: Path) -> None:
     server = _build_server(tmp_path, enabled=True, token="external-secret")
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -133,7 +187,7 @@ def test_build_api_server_loads_external_api_settings_from_program_configuration
         server.server_close()
 
 
-def test_build_api_server_uses_configured_external_api_port_when_port_is_zero(
+def test_build_api_server_uses_configured_local_api_port_when_port_is_zero(
     tmp_path: Path,
 ) -> None:
     with socket.socket() as probe:
@@ -141,7 +195,7 @@ def test_build_api_server_uses_configured_external_api_port_when_port_is_zero(
         configured_port = probe.getsockname()[1]
     preferences_path = tmp_path / "runtime" / "preferences.json"
     FileProgramConfigurationRepository(preferences_path).save(
-        {"security": {"external_api_port": configured_port}}
+        {"security": {"local_api_port": configured_port}}
     )
 
     server = build_api_server(
@@ -155,8 +209,6 @@ def test_build_api_server_uses_configured_external_api_port_when_port_is_zero(
         assert server.server_address[1] == configured_port
     finally:
         server.server_close()
-
-
 def test_build_api_server_reports_fixed_port_conflict_without_dynamic_fallback(
     tmp_path: Path,
 ) -> None:
@@ -168,7 +220,7 @@ def test_build_api_server_reports_fixed_port_conflict_without_dynamic_fallback(
         configured_port = probe.getsockname()[1]
         preferences_path = tmp_path / "runtime" / "preferences.json"
         FileProgramConfigurationRepository(preferences_path).save(
-            {"security": {"external_api_port": configured_port}}
+            {"security": {"local_api_port": configured_port}}
         )
 
         with pytest.raises(ExternalApiBindError, match="external_api.port_in_use") as failure:
@@ -280,14 +332,19 @@ def test_external_api_preferences_reject_invalid_port_and_keep_previous_value(
             payload={
                 "enabled": False,
                 "clear_token": False,
-                "external_api_port": valid_port,
+                "local_api_port": valid_port,
                 "project_allowed_roots": [],
                 "confirm_high_risk": True,
             },
             extra_headers={"X-WeConduct-Token": "internal-ui-token"},
         )
         assert status == 200
-        assert saved["external_api_port"] == valid_port
+        assert saved["local_api_port"] == valid_port
+        assert saved["active_listener"] == {
+            "host": "127.0.0.1",
+            "port": server.server_address[1],
+        }
+        assert saved["restart_required"] is True
 
         status, rejected = _request_json(
             f"{base_url}/api/workbench/preferences/external-api",
@@ -295,7 +352,7 @@ def test_external_api_preferences_reject_invalid_port_and_keep_previous_value(
             payload={
                 "enabled": False,
                 "clear_token": False,
-                "external_api_port": invalid_port,
+                "local_api_port": invalid_port,
                 "project_allowed_roots": [],
                 "confirm_high_risk": True,
             },
@@ -309,7 +366,7 @@ def test_external_api_preferences_reject_invalid_port_and_keep_previous_value(
             extra_headers={"X-WeConduct-Token": "internal-ui-token"},
         )
         assert status == 200
-        assert current["external_api_port"] == valid_port
+        assert current["local_api_port"] == valid_port
     finally:
         server.shutdown()
         thread.join(timeout=2)
@@ -429,7 +486,7 @@ def test_external_api_enabled_state_persists_across_server_rebuilds(
                 "enabled": True,
                 "token": "external-secret",
                 "clear_token": False,
-                "external_api_port": 0,
+                "local_api_port": 0,
                 "project_allowed_roots": [],
                 "confirm_high_risk": True,
             },
@@ -460,7 +517,7 @@ def test_external_api_enabled_state_persists_across_server_rebuilds(
             payload={
                 "enabled": False,
                 "clear_token": False,
-                "external_api_port": 0,
+                "local_api_port": 0,
                 "project_allowed_roots": [],
                 "confirm_high_risk": True,
             },

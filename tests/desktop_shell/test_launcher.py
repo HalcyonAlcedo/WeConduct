@@ -23,9 +23,9 @@ class FakeWebView:
         self.started = False
         self.window = FakeWindow()
 
-    def create_window(self, title: str, url: str, width: int, height: int):
+    def create_window(self, title: str, url: str, width: int, height: int, js_api=None):
         self.created_windows.append(
-            {"title": title, "url": url, "width": width, "height": height}
+            {"title": title, "url": url, "width": width, "height": height, "js_api": js_api}
         )
         return self.window
 
@@ -57,9 +57,9 @@ def _build_ui_dist(tmp_path: Path) -> Path:
     return ui_dist_path
 
 
-def _ui_api_request(ui_url: str, path: str) -> urllib.request.Request:
+def _ui_api_request(ui_url: str, path: str, ui_token: str = "") -> urllib.request.Request:
     parsed = urlsplit(ui_url)
-    token = parse_qs(parsed.fragment).get("weconduct_token", [""])[0]
+    token = ui_token or parse_qs(parsed.fragment).get("weconduct_token", [""])[0]
     return urllib.request.Request(
         f"{parsed.scheme}://{parsed.netloc}{path}",
         headers={"Content-Type": "application/json", "X-WeConduct-Token": token},
@@ -94,7 +94,10 @@ def test_launch_desktop_shell_starts_api_and_opens_window(tmp_path: Path) -> Non
     assert fake_webview.started is True
     created = fake_webview.created_windows[0]
     assert created["title"] == "WeConduct"
-    assert created["url"].startswith(result["base_url"] + "#weconduct_token=")
+    assert created["url"] == result["base_url"]
+    assert created["js_api"] is not None
+    assert isinstance(created["js_api"].get_ui_token(), str)
+    assert created["js_api"].get_ui_token()
     assert created["width"] == 1280
     assert created["height"] == 800
 
@@ -116,12 +119,8 @@ def test_launch_desktop_shell_generates_a_new_internal_token_each_start(
     launch_desktop_shell(options, webview_module=first_webview)
     launch_desktop_shell(options, webview_module=second_webview)
 
-    first_token = parse_qs(urlsplit(first_webview.created_windows[0]["url"]).fragment).get(
-        "weconduct_token", [None]
-    )[0]
-    second_token = parse_qs(urlsplit(second_webview.created_windows[0]["url"]).fragment).get(
-        "weconduct_token", [None]
-    )[0]
+    first_token = first_webview.created_windows[0]["js_api"].get_ui_token()
+    second_token = second_webview.created_windows[0]["js_api"].get_ui_token()
     assert isinstance(first_token, str) and first_token
     assert isinstance(second_token, str) and second_token
     assert first_token != second_token
@@ -215,6 +214,7 @@ def test_launch_desktop_shell_exposes_host_file_dialog_provider(tmp_path: Path) 
         request = _ui_api_request(
             ui_url,
             "/api/host/file-dialog",
+            fake_webview.created_windows[0]["js_api"].get_ui_token(),
         )
         request.data = json.dumps(
             {
@@ -277,7 +277,11 @@ def test_launch_desktop_shell_exposes_host_open_path_provider(
 
     def post_open_path_during_window_lifetime() -> None:
         fake_webview.started = True
-        request = _ui_api_request(fake_webview.created_windows[0]["url"], "/api/host/open-path")
+        request = _ui_api_request(
+            fake_webview.created_windows[0]["url"],
+            "/api/host/open-path",
+            fake_webview.created_windows[0]["js_api"].get_ui_token(),
+        )
         request.data = json.dumps({"path": str(project_dir)}).encode("utf-8")
         request.method = "POST"
         with urllib.request.urlopen(request) as response:

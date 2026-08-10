@@ -207,7 +207,7 @@ def _load_external_api_program_configuration(preferences_path: Path) -> dict[str
             "port": 0,
             "project_allowed_roots": (),
         }
-    configured_port = security.get("external_api_port", 0)
+    configured_port = security.get("local_api_port", 0)
     if (
         not isinstance(configured_port, int)
         or isinstance(configured_port, bool)
@@ -780,6 +780,12 @@ class WeConductApiServer(ThreadingHTTPServer):
 
 
 class WeConductApiHandler(BaseHTTPRequestHandler):
+    def send_response(self, code: int, message: str | None = None) -> None:
+        """发送响应但不暴露 BaseHTTPServer/Python 版本指纹。"""
+        self.log_request(code)
+        self.send_response_only(code, message)
+        self.send_header("Date", self.date_time_string())
+
     def _handle_external_api(self, *, method: str) -> bool:
         """将外部 v1 请求交给独立 adapter，内部 UI API 保持在本 handler。"""
         return ExternalV1Router(self).handle(method=method)
@@ -889,6 +895,24 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         )
         return False
 
+    def _allowed_methods_for_path(self, request_path: str) -> tuple[str, ...]:
+        if request_path.startswith("/api/"):
+            return self._internal_allowed_methods(request_path)
+        return ("GET", "HEAD") if self._is_ui_asset_request(request_path) else ()
+
+    def _is_ui_asset_request(self, request_path: str) -> bool:
+        if request_path.startswith("/api/"):
+            return False
+        ui_dist_path = self._resolve_ui_dist_path().resolve()
+        if request_path in {"", "/"}:
+            return (ui_dist_path / "index.html").is_file()
+        requested_file = (ui_dist_path / unquote(request_path).lstrip("/")).resolve()
+        try:
+            requested_file.relative_to(ui_dist_path)
+        except ValueError:
+            return False
+        return requested_file.is_file()
+
     def do_GET(self) -> None:  # noqa: N802
         if not self._require_host_header():
             return
@@ -898,6 +922,11 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         query_params = parse_qs(parsed_url.query)
         request_path = parsed_url.path
 
+        allowed_methods = self._allowed_methods_for_path(request_path)
+        if allowed_methods and "GET" not in allowed_methods:
+            self._write_method_not_allowed(", ".join([*allowed_methods, "OPTIONS"]))
+            return
+
         # Static UI assets (index.html, JS, CSS) must be served WITHOUT the
         # workbench service. Otherwise a corrupt workspace-state/preferences file
         # makes _get_service() throw for "/" too, the SPA never boots, and the
@@ -906,6 +935,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         if not request_path.startswith("/api/"):
             if self._try_serve_ui_asset():
                 return
+            self._write_not_found_error()
+            return
 
         # Startup diagnostics must stay independent from the workbench service,
         # but it is still an internal API and therefore uses the UI session token.
@@ -1351,14 +1382,135 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
 
         self._write_not_found_error()
 
+    def do_HEAD(self) -> None:  # noqa: N802
+        request_path = urlparse(self.path).path
+        if request_path == "/api/workbench/events" or (
+            request_path.startswith("/api/ext/v1/executions/")
+            and request_path.endswith("/events")
+        ):
+            if self._require_host_header():
+                self._write_method_not_allowed("GET, OPTIONS")
+            return
+        self._head_only = True
+        try:
+            self.do_GET()
+        finally:
+            self._head_only = False
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        if not self._require_host_header():
+            return
+        request_path = urlparse(self.path).path
+        if request_path.startswith("/api/ext/v1"):
+            allowed = ExternalV1Router.allowed_methods(request_path)
+        else:
+            allowed = self._allowed_methods_for_path(request_path)
+        if not allowed:
+            self._write_not_found_error()
+            return
+        self._write_empty_response(
+            HTTPStatus.NO_CONTENT,
+            allow=", ".join([*allowed, "OPTIONS"]),
+        )
+
+    def _internal_allowed_methods(self, request_path: str) -> tuple[str, ...]:
+        if request_path in {"", "/"}:
+            return ("GET", "HEAD")
+        get_paths = {
+            "/api/startup/diagnostics", "/api/health", "/api/workbench/config/schema",
+            "/api/workbench/config/values", "/api/workbench/preferences/external-api",
+            "/api/workbench/snapshot", "/api/workbench/graph",
+            "/api/workbench/graph/node-draft", "/api/workbench/graph/source-projection",
+            "/api/workbench/project", "/api/workbench/project/encrypted-parameters",
+            "/api/workbench/project/python-runtime", "/api/workbench/project/package/preflight",
+            "/api/workbench/project/package/inspect", "/api/workbench/update/status",
+            "/api/workbench/recent-projects", "/api/workbench/languages",
+            "/api/workbench/resources", "/api/workbench/project/documents",
+            "/api/workbench/project/resource-audit", "/api/workbench/component-library",
+            "/api/workbench/editor/history", "/api/workbench/execution-history",
+            "/api/workbench/runtime/sessions", "/api/workbench/events",
+            "/api/workbench/debug/sessions", "/api/workbench/debug/history", "/api/host/info",
+        }
+        post_paths = {
+            "/api/host/file-dialog", "/api/host/open-path", "/api/host/read-file",
+            "/api/startup/recover", "/api/workbench/compile", "/api/workbench/graph/validate",
+            "/api/workbench/graph/compile", "/api/workbench/graph/normalize",
+            "/api/workbench/runtime/prepare", "/api/workbench/runtime/start",
+            "/api/workbench/config/preview", "/api/workbench/config/reset",
+            "/api/workbench/preferences/external-api", "/api/workbench/debug/prepare",
+            "/api/workbench/debug/start", "/api/workbench/project/new",
+            "/api/workbench/project/encrypted-parameters",
+            "/api/workbench/project/encrypted-parameters/rekey",
+            "/api/workbench/project/encrypted-parameters/delete",
+            "/api/workbench/project/python-runtime/health-check",
+            "/api/workbench/project/python-runtime/prepare",
+            "/api/workbench/project/python-runtime/rebuild",
+            "/api/workbench/project/python-runtime/clear",
+            "/api/workbench/project/python-runtime/export-bundle",
+            "/api/workbench/project/package/preflight",
+            "/api/workbench/project/package/build", "/api/workbench/project/package/load",
+            "/api/workbench/project/package/unload",
+            "/api/workbench/project/package/external-resources/bind",
+            "/api/workbench/project/security/enable-required", "/api/workbench/update/check",
+            "/api/workbench/project/open", "/api/workbench/project/graph-upgrade/apply",
+            "/api/workbench/project/graph-upgrade/recheck",
+            "/api/workbench/project/convert-webcontrol", "/api/workbench/project/save",
+            "/api/workbench/project/save-as", "/api/workbench/recent-projects/remove",
+            "/api/workbench/resources/user-components", "/api/workbench/resources/subgraphs",
+            "/api/workbench/resources/custom-node-graphs", "/api/workbench/resources/export",
+            "/api/workbench/resources/import", "/api/workbench/graph/source-projection",
+            "/api/workbench/editor/history/record",
+            "/api/workbench/resources/custom-node-graphs/create-empty",
+            "/api/workbench/resources/delete", "/api/workbench/resources/metadata",
+            "/api/workbench/resources/rename",
+        }
+        methods: list[str] = []
+        if request_path in get_paths:
+            methods.extend(("GET", "HEAD"))
+        if request_path in post_paths:
+            methods.append("POST")
+        if request_path == "/api/workbench/config/values":
+            methods.append("PATCH")
+        if request_path == "/api/workbench/graph":
+            methods.append("PUT")
+        if request_path.startswith("/api/workbench/languages/"):
+            methods.extend(("GET", "HEAD"))
+        if request_path.startswith("/api/workbench/debug/history/"):
+            methods.extend(("GET", "HEAD"))
+        if request_path.startswith("/api/workbench/debug/projection/"):
+            methods.extend(("GET", "HEAD"))
+        if request_path.startswith("/api/workbench/runtime/"):
+            if request_path.endswith("/run") or request_path.endswith("/pending-input") or request_path.endswith("/unlock") or request_path.endswith("/abort"):
+                methods.append("POST")
+            else:
+                methods.extend(("GET", "HEAD"))
+        if request_path.startswith("/api/workbench/debug/"):
+            if request_path.endswith("/events"):
+                methods.extend(("GET", "HEAD"))
+            elif request_path.endswith(("/unlock", "/sensitive-values/reveal", "/continue", "/pause", "/variables/apply", "/debugger-config/apply", "/step-over", "/step-into", "/step-out", "/abort")):
+                methods.append("POST")
+            else:
+                methods.extend(("GET", "HEAD"))
+        if request_path.startswith("/api/workbench/resources/") and request_path.endswith(("/enabled", "/tags")):
+            methods.append("POST")
+        return tuple(dict.fromkeys(methods))
+
     def do_PATCH(self) -> None:  # noqa: N802
         if not self._require_host_header():
+            return
+        request_path = urlparse(self.path).path
+        allowed_methods = self._allowed_methods_for_path(request_path)
+        if allowed_methods and "PATCH" not in allowed_methods:
+            self._write_method_not_allowed(", ".join([*allowed_methods, "OPTIONS"]))
+            return
+        if not allowed_methods:
+            self._write_not_found_error()
             return
         if not self._require_origin_header():
             return
         if not self._require_api_token():
             return
-        if urlparse(self.path).path != "/api/workbench/config/values":
+        if request_path != "/api/workbench/config/values":
             self._write_not_found_error()
             return
         try:
@@ -1395,7 +1547,22 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         if not self._require_host_header():
             return
+        request_path = urlparse(self.path).path
+        if not request_path.startswith("/api/"):
+            allowed_methods = self._allowed_methods_for_path(request_path)
+            if allowed_methods:
+                self._write_method_not_allowed(", ".join([*allowed_methods, "OPTIONS"]))
+            else:
+                self._write_not_found_error()
+            return
         if self._handle_external_api(method="POST"):
+            return
+        allowed_methods = self._allowed_methods_for_path(request_path)
+        if allowed_methods and "POST" not in allowed_methods:
+            self._write_method_not_allowed(", ".join([*allowed_methods, "OPTIONS"]))
+            return
+        if not allowed_methods:
+            self._write_not_found_error()
             return
         if not self._require_origin_header():
             return
@@ -2826,7 +2993,22 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802
         if not self._require_host_header():
             return
+        request_path = urlparse(self.path).path
+        if not request_path.startswith("/api/"):
+            allowed_methods = self._allowed_methods_for_path(request_path)
+            if allowed_methods:
+                self._write_method_not_allowed(", ".join([*allowed_methods, "OPTIONS"]))
+            else:
+                self._write_not_found_error()
+            return
         if self._handle_external_api(method="PUT"):
+            return
+        allowed_methods = self._allowed_methods_for_path(request_path)
+        if allowed_methods and "PUT" not in allowed_methods:
+            self._write_method_not_allowed(", ".join([*allowed_methods, "OPTIONS"]))
+            return
+        if not allowed_methods:
+            self._write_not_found_error()
             return
         if not self._require_origin_header():
             return
@@ -2892,7 +3074,23 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         for name, value in (extra_headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(body)
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(body)
+
+    def _write_empty_response(
+        self,
+        status: HTTPStatus,
+        *,
+        allow: str | None = None,
+    ) -> None:
+        self.send_response(status.value)
+        self.send_header("Content-Length", "0")
+        if allow is not None:
+            self.send_header("Allow", allow)
+        self.end_headers()
+
+    def _write_method_not_allowed(self, allow: str) -> None:
+        self._write_empty_response(HTTPStatus.METHOD_NOT_ALLOWED, allow=allow)
 
     def _write_not_found_error(self) -> None:
         sanitized_path = _sanitize_path_for_error(self.path)
@@ -3345,9 +3543,6 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 content_type=content_type or "application/octet-stream",
             )
 
-        if "." not in Path(relative_path).name:
-            return self._write_file_response(index_path, content_type="text/html; charset=utf-8")
-
         return False
 
     def _write_file_response(
@@ -3363,7 +3558,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", cache_control)
         self.end_headers()
-        self.wfile.write(body)
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(body)
         return True
 
     def _write_runtime_stream(
@@ -3834,9 +4030,19 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             "enabled": bool(security.get("external_api_enabled", False)),
             "token": visible_token,
             "token_configured": visible_token is not None,
-            "external_api_port": int(security.get("external_api_port", 0) or 0),
+            "local_api_port": int(security.get("local_api_port", 0) or 0),
+            "active_listener": {
+                "host": self.server.server_address[0],
+                "port": self.server.server_address[1],
+            },
+            "restart_required": self._is_local_api_port_restart_required(security),
             "project_allowed_roots": list(roots),
         }
+
+    def _is_local_api_port_restart_required(self, security: dict) -> bool:
+        configured_port = int(security.get("local_api_port", 0) or 0)
+        active_port = self.server.server_address[1]
+        return configured_port != 0 and configured_port != active_port
 
     def _sync_external_api_runtime_state(self, values: object) -> None:
         """同步通用程序配置变更到当前 API Server 的鉴权内存态。"""
@@ -3853,7 +4059,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             security.get("external_api_enabled", False)
         )
         self.server.external_api_token = token if isinstance(token, str) else None
-        self.server.external_api_port = int(security.get("external_api_port", 0) or 0)
+        self.server.local_api_port = int(security.get("local_api_port", 0) or 0)
         self.server.external_api_project_allowed_roots = tuple(
             Path(root) for root in roots if isinstance(root, str) and root.strip()
         )
@@ -3862,7 +4068,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         enabled = payload.get("enabled")
         token = payload.get("token")
         clear_token = payload.get("clear_token", False)
-        external_api_port = payload.get("external_api_port")
+        local_api_port = payload.get("local_api_port")
         project_allowed_roots = payload.get("project_allowed_roots")
         confirm_high_risk = payload.get("confirm_high_risk", False)
         if not isinstance(enabled, bool):
@@ -3871,12 +4077,12 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             raise ValueError("field must be a non-empty string when provided: token")
         if not isinstance(clear_token, bool):
             raise ValueError("field must be a boolean: clear_token")
-        if external_api_port is not None and (
-            not isinstance(external_api_port, int)
-            or isinstance(external_api_port, bool)
-            or not 0 <= external_api_port <= 65535
+        if local_api_port is not None and (
+            not isinstance(local_api_port, int)
+            or isinstance(local_api_port, bool)
+            or not 0 <= local_api_port <= 65535
         ):
-            raise ValueError("field must be an integer from 0 to 65535: external_api_port")
+            raise ValueError("field must be an integer from 0 to 65535: local_api_port")
         if token is not None and clear_token:
             raise ValueError("token and clear_token cannot be provided together")
         if not isinstance(project_allowed_roots, list) or any(
@@ -3897,8 +4103,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         if not isinstance(security, dict):
             raise ValueError("program security configuration is invalid")
         current_token = security.get("external_api_token")
-        current_port = security.get("external_api_port", 0)
-        effective_port = external_api_port if external_api_port is not None else current_port
+        current_port = security.get("local_api_port", 0)
+        effective_port = local_api_port if local_api_port is not None else current_port
         effective_token = (
             token.strip()
             if isinstance(token, str)
@@ -3912,7 +4118,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         requested_values = {
             "external_api_enabled": enabled,
             "external_api_token": effective_token,
-            "external_api_port": effective_port,
+            "local_api_port": effective_port,
             "external_api_project_allowed_roots": normalized_roots,
         }
         operations = [
@@ -3927,7 +4133,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         )
         self.server.external_api_enabled = enabled
         self.server.external_api_token = effective_token if isinstance(effective_token, str) else None
-        self.server.external_api_port = effective_port
+        self.server.local_api_port = effective_port
         self.server.external_api_project_allowed_roots = tuple(
             Path(root) for root in normalized_roots
         )
@@ -4063,7 +4269,7 @@ def build_api_server(
         if external_api_token is None
         else external_api_token
     )
-    server.external_api_port = effective_port
+    server.local_api_port = effective_port
     configured_roots = external_api_configuration["project_allowed_roots"]
     server.external_api_project_allowed_roots = tuple(
         Path(root).expanduser().resolve()
