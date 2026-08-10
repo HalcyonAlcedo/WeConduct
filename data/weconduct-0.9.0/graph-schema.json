@@ -1,0 +1,321 @@
+{
+  "$defs": {
+    "GraphEdge": {
+      "properties": {
+        "edge_id": {
+          "title": "Edge Id",
+          "type": "string"
+        },
+        "relation_layer": {
+          "enum": [
+            "control",
+            "data",
+            "observe"
+          ],
+          "title": "Relation Layer",
+          "type": "string"
+        },
+        "from_node_id": {
+          "title": "From Node Id",
+          "type": "string"
+        },
+        "to_node_id": {
+          "title": "To Node Id",
+          "type": "string"
+        },
+        "from_port_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "From Port Id"
+        },
+        "to_port_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "To Port Id"
+        },
+        "edge_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Edge State"
+        }
+      },
+      "required": [
+        "edge_id",
+        "relation_layer",
+        "from_node_id",
+        "to_node_id"
+      ],
+      "title": "GraphEdge",
+      "type": "object"
+    },
+    "GraphNode": {
+      "properties": {
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "lowered_kind": {
+          "enum": [
+            "execution",
+            "control",
+            "observe",
+            "bridge"
+          ],
+          "title": "Lowered Kind",
+          "type": "string"
+        },
+        "source_anchor_ref": {
+          "title": "Source Anchor Ref",
+          "type": "string"
+        },
+        "expansion_role": {
+          "title": "Expansion Role",
+          "type": "string"
+        },
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        },
+        "node_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Node Kind"
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GraphPosition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ports": {
+          "items": {
+            "$ref": "#/$defs/GraphPort"
+          },
+          "title": "Ports",
+          "type": "array"
+        },
+        "node_config": {
+          "additionalProperties": true,
+          "title": "Node Config",
+          "type": "object"
+        }
+      },
+      "required": [
+        "node_id",
+        "lowered_kind",
+        "source_anchor_ref",
+        "expansion_role"
+      ],
+      "title": "GraphNode",
+      "type": "object"
+    },
+    "GraphPort": {
+      "properties": {
+        "port_id": {
+          "title": "Port Id",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "input",
+            "output"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "relation_layer": {
+          "enum": [
+            "control",
+            "data",
+            "observe"
+          ],
+          "title": "Relation Layer",
+          "type": "string"
+        },
+        "semantic_slot": {
+          "title": "Semantic Slot",
+          "type": "string"
+        },
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        },
+        "max_connections": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Connections"
+        }
+      },
+      "required": [
+        "port_id",
+        "direction",
+        "relation_layer",
+        "semantic_slot"
+      ],
+      "title": "GraphPort",
+      "type": "object"
+    },
+    "GraphPosition": {
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "title": "GraphPosition",
+      "type": "object"
+    },
+    "GraphViewport": {
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        },
+        "zoom": {
+          "title": "Zoom",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "zoom"
+      ],
+      "title": "GraphViewport",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "graph_model_id": {
+      "title": "Graph Model Id",
+      "type": "string"
+    },
+    "compilation_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Compilation Id"
+    },
+    "graph_schema_version": {
+      "const": "graph-v1"
+    },
+    "nodes": {
+      "items": {
+        "$ref": "#/$defs/GraphNode"
+      },
+      "title": "Nodes",
+      "type": "array"
+    },
+    "edges": {
+      "items": {
+        "$ref": "#/$defs/GraphEdge"
+      },
+      "title": "Edges",
+      "type": "array"
+    },
+    "viewport": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GraphViewport"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "root_metadata": {
+      "additionalProperties": true,
+      "title": "Root Metadata",
+      "type": "object"
+    },
+    "graph_effective_diagnostic_anchor_refs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Graph Effective Diagnostic Anchor Refs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "graph_model_id",
+    "compilation_id"
+  ],
+  "title": "GraphModel",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "WeConduct 0.9.0 graph-v1 schema derived from src/weconduct/contracts/graph.py."
+}
