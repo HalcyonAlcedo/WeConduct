@@ -24,6 +24,26 @@ class _AliveThread:
         return True
 
 
+def _wait_for_debug_status(
+    service: CompilationWorkbenchService,
+    session_id: str,
+    expected_status: str,
+    *,
+    timeout_seconds: float = 5.0,
+) -> None:
+    deadline = monotonic() + timeout_seconds
+    while monotonic() < deadline:
+        session_document = service.get_debug_session(session_id=session_id)
+        if session_document["debug_session"]["status"] == expected_status:
+            return
+        sleep(0.01)
+    session_document = service.get_debug_session(session_id=session_id)
+    raise AssertionError(
+        f"debug session did not reach {expected_status!r}: "
+        f"{session_document['debug_session']['status']!r}"
+    )
+
+
 def _build_debug_pause_resume_workspace_graph() -> dict:
     graph = _build_debug_execution_workspace_graph(start_breakpoint_before=False)
     graph["nodes"][1]["ports"].append(
@@ -308,6 +328,7 @@ def test_debug_regression_runtime_can_start_after_debug_completion() -> None:
 
     start_result = service.start_debug_session_async(graph_document_payload=None)
     session_id = start_result["debug_session"]["session_id"]
+    _wait_for_debug_status(service, session_id, "paused")
     # Wait deterministically for the worker to settle. _await_debug_execution_settle
     # returns as soon as the session reaches a terminal status, so a generous
     # timeout adds no latency to the normal case but removes flakiness when the
@@ -330,6 +351,7 @@ def test_debug_regression_completed_session_rejects_stale_pause_request() -> Non
 
     start_result = service.start_debug_session_async(graph_document_payload=None)
     session_id = start_result["debug_session"]["session_id"]
+    _wait_for_debug_status(service, session_id, "paused")
     # Generous settle window: returns immediately on terminal status, so this
     # only widens tolerance under CPU-starved parallel runs (see companion test).
     continue_result = service.continue_debug_session_async(

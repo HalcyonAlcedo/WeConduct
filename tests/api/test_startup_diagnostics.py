@@ -11,16 +11,21 @@ from weconduct.api.server import (
 )
 
 
-def _get_json(url: str) -> dict:
-    with urllib.request.urlopen(url) as response:
+def _get_json(url: str, *, api_token: str | None = None) -> dict:
+    headers = {"X-WeConduct-Token": api_token} if api_token else {}
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _post_json(url: str, payload: dict) -> dict:
+def _post_json(url: str, payload: dict, *, api_token: str | None = None) -> dict:
+    headers = {"Content-Type": "application/json"}
+    if api_token:
+        headers["X-WeConduct-Token"] = api_token
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(request) as response:
@@ -123,27 +128,27 @@ def test_startup_diagnostics_endpoint_reachable_when_service_is_dead(tmp_path: P
 
         # Sanity: the normal snapshot endpoint fails because the service can't build.
         try:
-            _get_json(f"{base_url}/api/workbench/snapshot")
+            _get_json(f"{base_url}/api/workbench/snapshot", api_token=server.api_token)
             raise AssertionError("snapshot should have failed with invalid workspace state")
         except urllib.error.HTTPError as exc:
             assert exc.code == 500
 
         # But diagnostics stays reachable and explains the fault.
-        report = _get_json(f"{base_url}/api/startup/diagnostics")
+        report = _get_json(f"{base_url}/api/startup/diagnostics", api_token=server.api_token)
         assert report["overall_severity"] == "fault"
         assert "workspace_state" in report["recoverable_targets"]
 
         # /api/health degrades gracefully (HTTP 200) instead of a bare error.
-        health = _get_json(f"{base_url}/api/health")
+        health = _get_json(f"{base_url}/api/health", api_token=server.api_token)
         assert health["status"] == "degraded"
         assert health["startup_diagnostics"]["overall_severity"] == "fault"
 
         # Recover, then the service can build and snapshot succeeds.
-        recover = _post_json(f"{base_url}/api/startup/recover", {})
+        recover = _post_json(f"{base_url}/api/startup/recover", {}, api_token=server.api_token)
         assert recover["status"] == "recovered"
         assert any(r["target"] == "workspace_state" for r in recover["results"])
 
-        snapshot = _get_json(f"{base_url}/api/workbench/snapshot")
+        snapshot = _get_json(f"{base_url}/api/workbench/snapshot", api_token=server.api_token)
         assert "workbench" in snapshot
     finally:
         server.shutdown()

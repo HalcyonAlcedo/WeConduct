@@ -28,26 +28,39 @@ def run_preview_smoke(
     base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
     sample_graph = _build_sample_graph_payload()
 
+    def request_json(
+        url: str,
+        *,
+        method: str = "GET",
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return _json_request(
+            url,
+            method=method,
+            payload=payload,
+            api_token=server.api_token,
+        )
+
     try:
-        health = _json_request(f"{base_url}/api/health")
+        health = request_json(f"{base_url}/api/health")
         checks["health"] = _build_check(
             ok=health["host_mode"] == "python_core",
             detail=f"host_mode={health['host_mode']}",
         )
 
-        snapshot = _json_request(f"{base_url}/api/workbench/snapshot")
+        snapshot = request_json(f"{base_url}/api/workbench/snapshot")
         checks["snapshot"] = _build_check(
             ok=snapshot["entrypoints"]["graph_document"] == "/api/workbench/graph",
             detail=f"snapshot={snapshot['entrypoints']['graph_document']}",
         )
 
-        graph_document = _json_request(f"{base_url}/api/workbench/graph")
+        graph_document = request_json(f"{base_url}/api/workbench/graph")
         checks["graph_loaded"] = _build_check(
             ok=graph_document["graph_model"]["graph_model_id"] == "graph:workspace",
             detail=f"graph_model_id={graph_document['graph_model']['graph_model_id']}",
         )
 
-        saved_graph = _json_request(
+        saved_graph = request_json(
             f"{base_url}/api/workbench/graph",
             method="PUT",
             payload=sample_graph,
@@ -63,7 +76,7 @@ def run_preview_smoke(
             ),
         )
 
-        validation = _json_request(
+        validation = request_json(
             f"{base_url}/api/workbench/graph/validate",
             method="POST",
             payload=sample_graph,
@@ -76,7 +89,7 @@ def run_preview_smoke(
             ),
         )
 
-        compile_result = _json_request(
+        compile_result = request_json(
             f"{base_url}/api/workbench/graph/compile",
             method="POST",
             payload=sample_graph,
@@ -90,7 +103,7 @@ def run_preview_smoke(
             ),
         )
 
-        runtime_result = _json_request(
+        runtime_result = request_json(
             f"{base_url}/api/workbench/runtime/prepare",
             method="POST",
             payload=sample_graph,
@@ -104,7 +117,7 @@ def run_preview_smoke(
             ),
         )
 
-        debug_result = _json_request(
+        debug_result = request_json(
             f"{base_url}/api/workbench/debug/prepare",
             method="POST",
             payload=sample_graph,
@@ -118,7 +131,7 @@ def run_preview_smoke(
             ),
         )
 
-        host_info = _json_request(f"{base_url}/api/host/info")
+        host_info = request_json(f"{base_url}/api/host/info")
         checks["host_info"] = _build_check(
             ok=host_info["release_manifest"]["manifest_version"] == "phase3-host-baseline",
             detail=(
@@ -159,12 +172,21 @@ def run_preview_smoke(
     }
 
 
-def _json_request(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def _json_request(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    api_token: str | None = None,
+) -> dict[str, Any]:
     body = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"} if payload is not None or method != "GET" else {}
+    if api_token:
+        headers["X-WeConduct-Token"] = api_token
     request = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json"} if payload is not None or method != "GET" else {},
+        headers=headers,
         method=method,
     )
     with urllib.request.urlopen(request) as response:

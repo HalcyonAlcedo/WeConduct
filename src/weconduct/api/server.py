@@ -1480,16 +1480,19 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         if request_path.startswith("/api/workbench/debug/projection/"):
             methods.extend(("GET", "HEAD"))
         if request_path.startswith("/api/workbench/runtime/"):
-            if request_path.endswith("/run") or request_path.endswith("/pending-input") or request_path.endswith("/unlock") or request_path.endswith("/abort"):
+            if request_path.endswith("/run") or request_path.endswith("/unlock") or request_path.endswith("/abort"):
                 methods.append("POST")
+            elif request_path.endswith("/pending-input"):
+                methods.extend(("GET", "HEAD", "POST"))
             else:
                 methods.extend(("GET", "HEAD"))
         if request_path.startswith("/api/workbench/debug/"):
+            debug_suffix = request_path.removeprefix("/api/workbench/debug/")
             if request_path.endswith("/events"):
                 methods.extend(("GET", "HEAD"))
             elif request_path.endswith(("/unlock", "/sensitive-values/reveal", "/continue", "/pause", "/variables/apply", "/debugger-config/apply", "/step-over", "/step-into", "/step-out", "/abort")):
                 methods.append("POST")
-            else:
+            elif debug_suffix and "/" not in debug_suffix:
                 methods.extend(("GET", "HEAD"))
         if request_path.startswith("/api/workbench/resources/") and request_path.endswith(("/enabled", "/tags")):
             methods.append("POST")

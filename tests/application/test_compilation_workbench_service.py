@@ -127,7 +127,7 @@ def test_default_graph_workspace_template_uses_http_request_draft_ports() -> Non
     assert {port["port_id"] for port in http_request["ports"]} >= {
         "in:url",
         "out:response",
-        "out:network_context",
+        "out:network_context_id",
     }
     assert graph["edges"][0]["from_port_id"] == "out:response"
 
