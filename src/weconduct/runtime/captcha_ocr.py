@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,8 @@ class OcrConfig(ctypes.Structure):
         ("input_width", ctypes.c_uint32),
         ("input_height", ctypes.c_uint32),
         ("confidence_threshold", ctypes.c_float),
+        ("enable_char_meta", ctypes.c_bool),
+        ("candidate_count", ctypes.c_uint8),
     ]
 
 
@@ -29,8 +33,16 @@ class OcrResult(ctypes.Structure):
     _fields_ = [
         ("text", ctypes.c_char_p),
         ("confidence", ctypes.c_float),
+        ("metadata_json", ctypes.c_char_p),
         ("error_code", ctypes.c_int32),
     ]
+
+
+@dataclass(frozen=True)
+class CaptchaOcrDetailedResult:
+    text: str
+    confidence: float
+    character_metadata: list[dict[str, Any]]
 
 
 class CaptchaOcrRecognizer:
@@ -39,6 +51,8 @@ class CaptchaOcrRecognizer:
         *,
         model_name: str = DEFAULT_CAPTCHA_OCR_MODEL,
         runtime_root: str | Path | None = None,
+        enable_char_meta: bool = False,
+        candidate_count: int = 3,
     ) -> None:
         self.runtime_root = _resolve_captcha_ocr_runtime(runtime_root)
         self.model_name = model_name or DEFAULT_CAPTCHA_OCR_MODEL
@@ -63,6 +77,7 @@ class CaptchaOcrRecognizer:
         self._lib.ocr_shutdown.restype = None
 
         input_width, input_height = _suggest_input_size(self.model_name)
+        normalized_candidate_count = max(0, min(int(candidate_count), 255))
         cfg = OcrConfig(
             1,
             False,
@@ -70,21 +85,29 @@ class CaptchaOcrRecognizer:
             int(os.environ.get("CAPTCHA_OCR_INPUT_WIDTH", str(input_width))),
             int(os.environ.get("CAPTCHA_OCR_INPUT_HEIGHT", str(input_height))),
             0.5,
+            bool(enable_char_meta),
+            normalized_candidate_count,
         )
         self._handle = self._lib.ocr_init(str(self.model_path).encode("utf-8"), ctypes.byref(cfg))
         if not self._handle:
             raise CaptchaOcrRuntimeUnavailable("captcha_ocr init failed: empty handle")
 
     def recognize_from_bytes(self, image_bytes: bytes) -> str:
+        return self.recognize_detailed_from_bytes(image_bytes).text
+
+    def recognize_detailed_from_bytes(self, image_bytes: bytes) -> CaptchaOcrDetailedResult:
         if not image_bytes:
-            return ""
+            return CaptchaOcrDetailedResult("", 0.0, [])
         buf = (ctypes.c_uint8 * len(image_bytes)).from_buffer_copy(image_bytes)
         result_ptr = self._lib.ocr_predict(self._handle, buf, ctypes.c_size_t(len(image_bytes)))
         if not result_ptr:
-            return ""
+            return CaptchaOcrDetailedResult("", 0.0, [])
         try:
-            raw_text = result_ptr.contents.text
-            return raw_text.decode("utf-8", errors="ignore").strip() if raw_text else ""
+            result = result_ptr.contents
+            raw_text = result.text
+            text = raw_text.decode("utf-8", errors="ignore").strip() if raw_text else ""
+            metadata = _decode_character_metadata(result.metadata_json)
+            return CaptchaOcrDetailedResult(text, float(result.confidence), metadata)
         finally:
             self._lib.ocr_free_result(result_ptr)
 
@@ -102,6 +125,18 @@ class CaptchaOcrRecognizer:
 
 def create_captcha_ocr_recognizer(**kwargs: Any) -> CaptchaOcrRecognizer:
     return CaptchaOcrRecognizer(**kwargs)
+
+
+def _decode_character_metadata(raw_metadata: bytes | None) -> list[dict[str, Any]]:
+    if not raw_metadata:
+        return []
+    try:
+        decoded = json.loads(raw_metadata.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CaptchaOcrRuntimeUnavailable("captcha_ocr returned invalid character metadata") from exc
+    if not isinstance(decoded, list) or any(not isinstance(item, dict) for item in decoded):
+        raise CaptchaOcrRuntimeUnavailable("captcha_ocr returned invalid character metadata")
+    return decoded
 
 
 def _resolve_captcha_ocr_runtime(runtime_root: str | Path | None) -> Path:

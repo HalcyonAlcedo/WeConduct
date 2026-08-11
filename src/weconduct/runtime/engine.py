@@ -3029,6 +3029,12 @@ class RuntimeExecutorRegistry:
         )
         if not isinstance(model_name, str) or not model_name.strip():
             model_name = DEFAULT_CAPTCHA_OCR_MODEL
+        enable_char_meta = bool(node_config.get("enable_char_meta", True))
+        candidate_count = node_config.get("candidate_count", 3)
+        if not isinstance(candidate_count, int):
+            candidate_count = 3
+        metadata_variable = node_config.get("metadata_variable")
+        confidence_variable = node_config.get("confidence_variable")
 
         try:
             image_bytes = self._resolve_captcha_image_bytes(node, context)
@@ -3040,9 +3046,11 @@ class RuntimeExecutorRegistry:
             recognizer = create_captcha_ocr_recognizer(
                 model_name=model_name.strip(),
                 runtime_root=runtime_root,
+                enable_char_meta=enable_char_meta,
+                candidate_count=candidate_count,
             )
             try:
-                text = recognizer.recognize_from_bytes(image_bytes)
+                detailed_result = recognizer.recognize_detailed_from_bytes(image_bytes)
             finally:
                 close = getattr(recognizer, "close", None)
                 if callable(close):
@@ -3050,7 +3058,7 @@ class RuntimeExecutorRegistry:
         except (CaptchaOcrRuntimeUnavailable, RuntimeError) as exc:
             return _failed_result(node, "browser.captcha_ocr_unavailable", str(exc))
 
-        if not text:
+        if not detailed_result.text:
             return _failed_result(
                 node,
                 "browser.captcha_empty_result",
@@ -3058,15 +3066,22 @@ class RuntimeExecutorRegistry:
             )
 
         target_variable = target_variable.strip()
-        context.variables[target_variable] = text
-        return {
+        context.variables[target_variable] = detailed_result.text
+        result = {
             "status": "succeeded",
             "node_id": node["node_id"],
-            "text": text,
+            "text": detailed_result.text,
+            "confidence": detailed_result.confidence,
+            "character_metadata": detailed_result.character_metadata,
             "target_variable": target_variable,
             "model_name": model_name.strip(),
             "backend": "captcha_ocr",
         }
+        if isinstance(confidence_variable, str) and confidence_variable.strip():
+            context.variables[confidence_variable.strip()] = detailed_result.confidence
+        if isinstance(metadata_variable, str) and metadata_variable.strip():
+            context.variables[metadata_variable.strip()] = detailed_result.character_metadata
+        return result
 
     def _resolve_captcha_image_bytes(self, node: dict, context: RuntimeContext) -> bytes:
         node_config = _node_config(node)
