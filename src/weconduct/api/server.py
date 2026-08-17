@@ -1461,6 +1461,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             "/api/workbench/resources/import", "/api/workbench/graph/source-projection",
             "/api/workbench/subgraph-assets/export",
             "/api/workbench/subgraph-assets/import/preflight",
+            "/api/workbench/subgraph-assets/import/commit",
             "/api/workbench/editor/history/record",
             "/api/workbench/resources/custom-node-graphs/create-empty",
             "/api/workbench/resources/delete", "/api/workbench/resources/metadata",
@@ -2773,6 +2774,25 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     raise ValueError("field must be a non-empty string: import_path")
                 result = service.preflight_subgraph_asset_import(
                     import_path=import_path.strip(),
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
+            return
+
+        if self.path == "/api/workbench/subgraph-assets/import/commit":
+            try:
+                payload = self._read_json_request_body()
+                import_path = payload.get("import_path")
+                conflict_policy = payload.get("conflict_policy", "abort")
+                if not isinstance(import_path, str) or not import_path.strip():
+                    raise ValueError("field must be a non-empty string: import_path")
+                if not isinstance(conflict_policy, str):
+                    raise ValueError("field must be a string when provided: conflict_policy")
+                result = service.commit_subgraph_asset_import(
+                    import_path=import_path.strip(),
+                    conflict_policy=conflict_policy,
                 )
             except ValueError as exc:
                 self._write_invalid_request_error(exc)
