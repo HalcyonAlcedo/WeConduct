@@ -2983,6 +2983,52 @@ def test_workbench_subgraph_asset_export_writes_single_file_package(tmp_path: Pa
         server.server_close()
 
 
+def test_workbench_subgraph_asset_import_preflight_reports_package_without_mutation(
+    tmp_path: Path,
+) -> None:
+    source = CompilationWorkbenchService()
+    source.save_project_as(project_path=tmp_path / "source.weconduct.json")
+    exported_resource = source.create_empty_custom_node_graph_resource(
+        resource_name="待预检子图"
+    )["resource"]
+    package_path = tmp_path / "shareable.wcsubgraph"
+    source.export_subgraph_asset_package(
+        resource_id=exported_resource["resource_id"],
+        output_path=package_path,
+    )
+
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        _post_json(
+            f"{base_url}/api/workbench/project/save-as",
+            {"project_path": str(tmp_path / "target.weconduct.json")},
+        )
+
+        preflight = _post_json(
+            f"{base_url}/api/workbench/subgraph-assets/import/preflight",
+            {"import_path": str(package_path)},
+        )
+
+        assert preflight["status"] == "preflight"
+        assert preflight["can_import"] is True
+        assert preflight["root_resource"]["resource_id"] == exported_resource["resource_id"]
+        assert preflight["conflicts"] == []
+        assert preflight["diagnostics"] == []
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_api_exposes_program_configuration_schema_and_patch(tmp_path: Path) -> None:
     server = build_api_server(
         host="127.0.0.1",

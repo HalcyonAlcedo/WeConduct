@@ -1460,6 +1460,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             "/api/workbench/resources/custom-node-graphs", "/api/workbench/resources/export",
             "/api/workbench/resources/import", "/api/workbench/graph/source-projection",
             "/api/workbench/subgraph-assets/export",
+            "/api/workbench/subgraph-assets/import/preflight",
             "/api/workbench/editor/history/record",
             "/api/workbench/resources/custom-node-graphs/create-empty",
             "/api/workbench/resources/delete", "/api/workbench/resources/metadata",
@@ -2762,6 +2763,21 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     "output_path": result["output_path"],
                 },
             )
+            return
+
+        if self.path == "/api/workbench/subgraph-assets/import/preflight":
+            try:
+                payload = self._read_json_request_body()
+                import_path = payload.get("import_path")
+                if not isinstance(import_path, str) or not import_path.strip():
+                    raise ValueError("field must be a non-empty string: import_path")
+                result = service.preflight_subgraph_asset_import(
+                    import_path=import_path.strip(),
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
             return
 
         if self.path == "/api/workbench/resources/import":
