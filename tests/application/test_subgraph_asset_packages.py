@@ -555,6 +555,51 @@ def test_preflight_subgraph_asset_rejects_unavailable_builtin_component_without_
     assert target.get_resource_registry_document()["registry_revision"] == before
 
 
+def test_preflight_subgraph_asset_rejects_graph_compile_diagnostics_without_mutation(
+    tmp_path,
+) -> None:
+    source = CompilationWorkbenchService()
+    source.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
+    exported_resource = source.create_empty_custom_node_graph_resource(
+        resource_name="编译预检子图"
+    )["resource"]
+    graph_document = source.get_graph_document(document_id=exported_resource["resource_id"])
+    graph = graph_document["graph_model"].model_dump(mode="json")
+    graph["document_id"] = exported_resource["resource_id"]
+    flow_start = {
+        "node_id": "flow-start-1",
+        "lowered_kind": "control",
+        "source_anchor_ref": "flow-start-1-anchor",
+        "expansion_role": "flow.start",
+        "display_name": "流程入口",
+        "node_kind": "flow.start",
+        "position": {"x": 0, "y": 0},
+        "ports": [],
+        "node_config": {},
+    }
+    graph["nodes"] = [flow_start, {**flow_start, "node_id": "flow-start-2"}]
+    source.save_graph_document(graph)
+    package_path = tmp_path / "compile-invalid.wcsubgraph"
+    source.export_subgraph_asset_package(
+        resource_id=exported_resource["resource_id"],
+        output_path=package_path,
+    )
+
+    target = CompilationWorkbenchService()
+    target.save_project_as(project_path=tmp_path / "target-project.weconduct.json")
+    before = target.get_resource_registry_document()["registry_revision"]
+
+    preflight = target.preflight_subgraph_asset_import(import_path=package_path)
+
+    assert preflight["can_import"] is False
+    assert preflight["diagnostics"]
+    assert any(
+        diagnostic.get("stage") == "compile"
+        for diagnostic in preflight["diagnostics"]
+    )
+    assert target.get_resource_registry_document()["registry_revision"] == before
+
+
 def test_commit_subgraph_asset_import_registers_root_graph_in_one_revision(tmp_path) -> None:
     source = CompilationWorkbenchService()
     source.save_project_as(project_path=tmp_path / "source-project.weconduct.json")

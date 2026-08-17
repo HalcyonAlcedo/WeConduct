@@ -4621,7 +4621,7 @@ class CompilationWorkbenchService:
                 if not isinstance(root_graph, dict):
                     raise ValueError("subgraph asset root resource graph must be a JSON object")
                 try:
-                    GraphModel.model_validate(root_graph)
+                    root_graph_model = GraphModel.model_validate(root_graph)
                 except ValidationError as exc:
                     raise ValueError(
                         "subgraph asset graph is invalid: "
@@ -4632,6 +4632,7 @@ class CompilationWorkbenchService:
                     raise ValueError("subgraph asset dependencies must be an array")
                 package_resources = [root_resource]
                 package_resource_ids = {root_resource_id}
+                package_graph_models = {root_resource_id: root_graph_model}
                 for dependency in dependency_items:
                     if not isinstance(dependency, dict):
                         raise ValueError("subgraph asset dependency must be an object")
@@ -4665,7 +4666,7 @@ class CompilationWorkbenchService:
                     ):
                         raise ValueError("subgraph asset dependency resource payload is invalid")
                     try:
-                        GraphModel.model_validate(dependency_graph)
+                        dependency_graph_model = GraphModel.model_validate(dependency_graph)
                     except ValidationError as exc:
                         raise ValueError(
                             "subgraph asset graph is invalid: "
@@ -4673,6 +4674,7 @@ class CompilationWorkbenchService:
                         ) from exc
                     package_resource_ids.add(dependency_resource_id)
                     package_resources.append(dependency_resource)
+                    package_graph_models[dependency_resource_id] = dependency_graph_model
                 checksums = json.loads(archive.read("meta/checksums.json").decode("utf-8"))
                 if not isinstance(checksums, dict) or checksums.get("algorithm") != "sha256":
                     raise ValueError("subgraph asset checksums must use sha256")
@@ -4714,6 +4716,93 @@ class CompilationWorkbenchService:
         except json.JSONDecodeError as exc:
             raise ValueError("subgraph asset package contains invalid JSON") from exc
 
+        staged_resources: list[dict] = []
+        for package_resource in package_resources:
+            package_resource_id = package_resource["resource_id"]
+            normalized_resource = self._normalize_resource_record(
+                {
+                    **package_resource,
+                    "resource_type": "custom_node_graph",
+                    "source_graph_document": package_graph_models[
+                        package_resource_id
+                    ].model_dump(mode="python"),
+                }
+            )
+            if normalized_resource is None:
+                raise ValueError("subgraph asset resource payload is invalid")
+            staged_resources.append(normalized_resource)
+
+        original_resource_registry = self._state.get("resource_registry")
+        if not isinstance(original_resource_registry, list):
+            original_resource_registry = []
+        preflight_diagnostics: list[dict] = []
+        self._state["resource_registry"] = [
+            *deepcopy(original_resource_registry),
+            *deepcopy(staged_resources),
+        ]
+        try:
+            for package_resource_id, graph_model in package_graph_models.items():
+                if not graph_model.nodes:
+                    continue
+                if not any(
+                    node.node_kind in {"flow.start", "component.input", "component.output"}
+                    for node in graph_model.nodes
+                ):
+                    continue
+                validation_diagnostics = self._collect_graph_validation_diagnostics(graph_model)
+                blocking_diagnostics = [
+                    item
+                    for item in validation_diagnostics
+                    if self._resolve_graph_validation_diagnostic_severity(item)
+                    in {"error", "fatal"}
+                ]
+                if blocking_diagnostics:
+                    for diagnostic in blocking_diagnostics:
+                        preflight_diagnostics.append(
+                            {
+                                "stage": "compile",
+                                "severity": "error",
+                                "category": diagnostic.get(
+                                    "category", "subgraph.graph_validation_failed"
+                                ),
+                                "message": diagnostic.get(
+                                    "message", "subgraph graph validation failed"
+                                ),
+                                "resource_id": package_resource_id,
+                            }
+                        )
+                    continue
+                request = CompilationRequest(
+                    compilation_id=f"subgraph-preflight-{uuid.uuid4().hex[:12]}",
+                    source=CompilationSource(
+                        kind="graph_workspace",
+                        entry_document=graph_model.graph_model_id,
+                        source_text=json.dumps(
+                            graph_model.model_dump(),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    ),
+                )
+                try:
+                    outcome = self._compiler.compile(request)
+                except CompilationAbortedError as exc:
+                    outcome = exc.outcome
+                for diagnostic in outcome.diagnostic_catalog.entries:
+                    if diagnostic.severity not in {"error", "fatal"}:
+                        continue
+                    preflight_diagnostics.append(
+                        {
+                            "stage": "compile",
+                            "severity": diagnostic.severity,
+                            "category": diagnostic.category,
+                            "message": diagnostic.message,
+                            "resource_id": package_resource_id,
+                        }
+                    )
+        finally:
+            self._state["resource_registry"] = original_resource_registry
+
         existing_ids = {item["resource_id"] for item in self._get_resource_registry()}
         conflicts = [
             {
@@ -4730,12 +4819,12 @@ class CompilationWorkbenchService:
         ]
         return {
             "status": "preflight",
-            "can_import": not conflicts,
+            "can_import": not conflicts and not preflight_diagnostics,
             "root_resource": root_resource,
             "dependency_count": len(package_resources) - 1,
             "builtin_component_dependencies": builtin_component_dependencies,
             "conflicts": conflicts,
-            "diagnostics": [],
+            "diagnostics": preflight_diagnostics,
         }
 
     def commit_subgraph_asset_import(
