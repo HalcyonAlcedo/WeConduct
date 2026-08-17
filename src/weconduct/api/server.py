@@ -1459,6 +1459,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             "/api/workbench/resources/user-components", "/api/workbench/resources/subgraphs",
             "/api/workbench/resources/custom-node-graphs", "/api/workbench/resources/export",
             "/api/workbench/resources/import", "/api/workbench/graph/source-projection",
+            "/api/workbench/subgraph-assets/export",
             "/api/workbench/editor/history/record",
             "/api/workbench/resources/custom-node-graphs/create-empty",
             "/api/workbench/resources/delete", "/api/workbench/resources/metadata",
@@ -2733,6 +2734,32 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                     "status": result["status"],
                     "resource": result["resource"],
                     "export_path": result["export_path"],
+                },
+            )
+            return
+
+        if self.path == "/api/workbench/subgraph-assets/export":
+            try:
+                payload = self._read_json_request_body()
+                resource_id = payload.get("resource_id")
+                output_path = payload.get("output_path")
+                if not isinstance(resource_id, str) or not resource_id.strip():
+                    raise ValueError("field must be a non-empty string: resource_id")
+                if not isinstance(output_path, str) or not output_path.strip():
+                    raise ValueError("field must be a non-empty string: output_path")
+                result = service.export_subgraph_asset_package(
+                    resource_id=resource_id.strip(),
+                    output_path=output_path.strip(),
+                )
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "status": result["status"],
+                    "resource": result["resource"],
+                    "output_path": result["output_path"],
                 },
             )
             return

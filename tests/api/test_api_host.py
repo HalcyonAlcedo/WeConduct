@@ -2943,6 +2943,46 @@ def _get_json(url: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def test_workbench_subgraph_asset_export_writes_single_file_package(tmp_path: Path) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        saved = _post_json(
+            f"{base_url}/api/workbench/project/save-as",
+            {"project_path": str(tmp_path / "project.weconduct.json")},
+        )
+        created = _post_json(
+            f"{base_url}/api/workbench/resources/custom-node-graphs/create-empty",
+            {"resource_name": "可导出子图"},
+        )
+        output_path = tmp_path / "runtime" / "exported.wcsubgraph"
+
+        exported = _post_json(
+            f"{base_url}/api/workbench/subgraph-assets/export",
+            {
+                "resource_id": created["resource"]["resource_id"],
+                "output_path": str(output_path),
+            },
+        )
+
+        assert saved["status"] == "saved"
+        assert exported["status"] == "exported"
+        assert exported["output_path"] == str(output_path)
+        assert output_path.is_file()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_api_exposes_program_configuration_schema_and_patch(tmp_path: Path) -> None:
     server = build_api_server(
         host="127.0.0.1",
