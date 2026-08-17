@@ -181,6 +181,60 @@ def test_preflight_subgraph_asset_rejects_checksum_mismatch_without_mutation(tmp
     assert target.get_resource_registry_document()["registry_revision"] == before
 
 
+def test_preflight_subgraph_asset_rejects_invalid_graph_document_without_mutation(
+    tmp_path,
+) -> None:
+    source = CompilationWorkbenchService()
+    source.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
+    exported_resource = source.create_empty_custom_node_graph_resource(
+        resource_name="图校验子图"
+    )["resource"]
+    package_path = tmp_path / "original.wcsubgraph"
+    source.export_subgraph_asset_package(
+        resource_id=exported_resource["resource_id"],
+        output_path=package_path,
+    )
+
+    with ZipFile(package_path) as archive:
+        entries = {
+            name: archive.read(name)
+            for name in archive.namelist()
+            if name != "meta/checksums.json"
+        }
+    graph_path = f"resources/{exported_resource['resource_id']}/graph.json"
+    invalid_graph = json.loads(entries[graph_path])
+    invalid_graph["nodes"] = "not-an-array"
+    entries[graph_path] = json.dumps(invalid_graph, ensure_ascii=False).encode("utf-8")
+    entries["meta/checksums.json"] = json.dumps(
+        {
+            "checksum_schema_version": 1,
+            "algorithm": "sha256",
+            "entries": [
+                {
+                    "path": name,
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "size": len(payload),
+                }
+                for name, payload in sorted(entries.items())
+            ],
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    invalid_path = tmp_path / "invalid-graph.wcsubgraph"
+    with ZipFile(invalid_path, mode="w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
+
+    target = CompilationWorkbenchService()
+    target.save_project_as(project_path=tmp_path / "target-project.weconduct.json")
+    before = target.get_resource_registry_document()["registry_revision"]
+
+    with pytest.raises(ValueError, match="subgraph asset graph is invalid"):
+        target.preflight_subgraph_asset_import(import_path=invalid_path)
+
+    assert target.get_resource_registry_document()["registry_revision"] == before
+
+
 def test_preflight_subgraph_asset_rejects_archive_path_traversal(tmp_path) -> None:
     source = CompilationWorkbenchService()
     source.save_project_as(project_path=tmp_path / "source-project.weconduct.json")

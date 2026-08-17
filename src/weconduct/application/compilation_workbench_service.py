@@ -4543,6 +4543,16 @@ class CompilationWorkbenchService:
                 root_resource = json.loads(archive.read(root_manifest_path).decode("utf-8"))
                 if not isinstance(root_resource, dict):
                     raise ValueError("subgraph asset root resource manifest must be a JSON object")
+                root_graph = json.loads(archive.read(root_graph_path).decode("utf-8"))
+                if not isinstance(root_graph, dict):
+                    raise ValueError("subgraph asset root resource graph must be a JSON object")
+                try:
+                    GraphModel.model_validate(root_graph)
+                except ValidationError as exc:
+                    raise ValueError(
+                        "subgraph asset graph is invalid: "
+                        f"{root_resource_id}"
+                    ) from exc
                 dependency_items = manifest.get("custom_node_graph_dependencies", [])
                 if not isinstance(dependency_items, list):
                     raise ValueError("subgraph asset dependencies must be an array")
@@ -4580,6 +4590,13 @@ class CompilationWorkbenchService:
                         dependency_graph, dict
                     ):
                         raise ValueError("subgraph asset dependency resource payload is invalid")
+                    try:
+                        GraphModel.model_validate(dependency_graph)
+                    except ValidationError as exc:
+                        raise ValueError(
+                            "subgraph asset graph is invalid: "
+                            f"{dependency_resource_id}"
+                        ) from exc
                     package_resource_ids.add(dependency_resource_id)
                     package_resources.append(dependency_resource)
                 checksums = json.loads(archive.read("meta/checksums.json").decode("utf-8"))
