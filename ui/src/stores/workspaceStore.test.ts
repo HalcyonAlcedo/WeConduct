@@ -28,6 +28,9 @@ const runtimeState = vi.hoisted(() => ({
   recoverActiveSession: vi.fn(),
 }))
 
+const resourceState = vi.hoisted(() => ({ refreshAll: vi.fn() }))
+const debugState = vi.hoisted(() => ({ refreshSessions: vi.fn() }))
+
 const toastState = vi.hoisted(() => ({
   warning: vi.fn(),
 }))
@@ -49,6 +52,9 @@ vi.mock('./graphWorkspaceStore', () => ({
 vi.mock('./runtimeStore', () => ({
   useRuntimeStore: () => runtimeState,
 }))
+
+vi.mock('./resourceStore', () => ({ useResourceStore: () => resourceState }))
+vi.mock('./debugStore', () => ({ useDebugStore: () => debugState }))
 
 vi.mock('./toastStore', () => ({
   useToastStore: () => toastState,
@@ -180,6 +186,20 @@ describe('workspaceStore external event synchronization', () => {
     expect(runtimeState.handleWorkbenchSessionEvent).toHaveBeenCalledWith({
       session_id: 'external-runtime-1', status: 'running', reason: 'execution_started',
     })
+  })
+
+  it('外部资源和 Debug 事件刷新对应权威 store', async () => {
+    const { useWorkspaceStore } = await import('./workspaceStore')
+    const store = useWorkspaceStore()
+    await store.handleWorkbenchEvent({
+      event: 'workspace.resources_changed', id: '20', data: JSON.stringify({ reason: 'resource_created' }),
+    })
+    await store.handleWorkbenchEvent({
+      event: 'debug.session_changed', id: '21', data: JSON.stringify({ session_id: 'debug-external-1', status: 'paused' }),
+    })
+
+    expect(resourceState.refreshAll).toHaveBeenCalledTimes(1)
+    expect(debugState.refreshSessions).toHaveBeenCalledWith('debug-external-1')
   })
 
   it('工作台事件游标过期时清零游标并重新从全量快照收敛', async () => {

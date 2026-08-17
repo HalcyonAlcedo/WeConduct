@@ -15,10 +15,25 @@ from .models import (
     OperationAuditRecord,
     OperationCaller,
     OperationDescriptor,
+    OperationExposure,
     OperationInvocationResult,
     OperationRegistryError,
 )
 from .registry import OperationRegistry
+
+
+_NOT_FOUND_DISPATCH_VALUE_ERROR_PREFIXES = (
+    "debug session not found:",
+    "debug history session not found:",
+    "debug history event not found:",
+    "debug history keyframe not found:",
+    "runtime session not found:",
+    "resource not found:",
+    "resource not found for graph node draft:",
+    "custom node graph resource not found:",
+    "graph document not found:",
+    "project file not found:",
+)
 
 
 class HostOperationService:
@@ -208,6 +223,25 @@ class HostOperationService:
 
     def _dispatch(self, operation_id: str, payload: dict[str, object]) -> object:
         service = self._service
+        if operation_id == "operation.list":
+            descriptors = self._registry.list_descriptors(
+                exposure=OperationExposure.STABLE_PUBLIC.value,
+            )
+            return {
+                "operations": [
+                    descriptor.to_dict()
+                    for descriptor in sorted(descriptors, key=lambda item: item.operation_id)
+                ]
+            }
+        if operation_id == "operation.get":
+            descriptor = self._registry.describe(payload["operation_id"])
+            if descriptor.exposure is not OperationExposure.STABLE_PUBLIC:
+                raise OperationRegistryError(
+                    "operation.not_found",
+                    f"operation not found: {payload['operation_id']}",
+                    operation_id=payload["operation_id"],
+                )
+            return {"operation": descriptor.to_dict()}
         if operation_id == "host.describe":
             health = service.get_runtime_health()
             return {
@@ -223,8 +257,142 @@ class HostOperationService:
             }
         if operation_id == "host.capabilities":
             return {"capabilities": service.get_runtime_health().get("capabilities", {})}
+        if operation_id == "configuration.schema.get":
+            return service.get_configuration_schema(scope=payload["scope"])
+        if operation_id == "configuration.values.get":
+            return service.get_configuration_values(scope=payload["scope"])
+        if operation_id == "configuration.preview":
+            return service.preview_configuration(scope=payload["scope"], operations=payload["operations"])
+        if operation_id == "configuration.apply":
+            if payload["scope"] == "program":
+                raise OperationRegistryError(
+                    "operation.not_available",
+                    "program configuration cannot be applied through external API",
+                    operation_id=operation_id,
+                )
+            return service.apply_configuration(
+                scope=payload["scope"],
+                operations=payload["operations"],
+                confirm_high_risk=payload["confirm_high_risk"],
+            )
+        if operation_id == "configuration.reset":
+            if payload["scope"] == "program":
+                raise OperationRegistryError(
+                    "operation.not_available",
+                    "program configuration cannot be reset through external API",
+                    operation_id=operation_id,
+                )
+            return service.reset_configuration(scope=payload["scope"])
+        if operation_id == "debug.prepare":
+            return service.prepare_debug_session(payload.get("graph_document"))
+        if operation_id == "debug.start":
+            return service.start_debug_session_async(payload.get("graph_document"))
+        if operation_id == "debug.list":
+            return service.list_debug_sessions()
+        if operation_id == "debug.history.list":
+            return service.list_debug_history_sessions()
+        if operation_id == "debug.history.get":
+            return service.open_debug_history_session(session_id=payload["session_id"])
+        if operation_id == "debug.history.events":
+            return service.list_debug_session_events(session_id=payload["session_id"])
+        if operation_id == "debug.history.projection":
+            return service.get_debug_history_projection(
+                session_id=payload["session_id"],
+                event_index=payload.get("event_index"),
+                keyframe_id=payload.get("keyframe_id"),
+            )
+        if operation_id == "debug.live_projection":
+            return service.get_debug_live_projection(session_id=payload["session_id"])
+        if operation_id == "debug.get":
+            return service.get_debug_session(session_id=payload["session_id"])
+        if operation_id == "debug.continue":
+            return service.continue_debug_session_async(session_id=payload["session_id"])
+        if operation_id == "debug.pause":
+            return service.request_debug_pause(session_id=payload["session_id"], node_id=payload.get("node_id"), reason=payload["reason"])
+        if operation_id == "debug.step_over":
+            return service.step_over_debug_session_async(session_id=payload["session_id"])
+        if operation_id == "debug.step_into":
+            return service.step_into_debug_session_async(session_id=payload["session_id"])
+        if operation_id == "debug.step_out":
+            return service.step_out_debug_session_async(session_id=payload["session_id"])
+        if operation_id == "debug.abort":
+            return service.abort_debug_session(session_id=payload["session_id"], reason=payload["reason"])
+        if operation_id == "debug.variables.apply":
+            return service.apply_debug_session_variables(session_id=payload["session_id"], updates=payload["updates"], apply_mode=payload["apply_mode"])
+        if operation_id == "debug.node_debugger.apply":
+            return service.update_debug_session_node_debugger(session_id=payload["session_id"], node_id=payload["node_id"], debugger_config=payload["debugger"])
+        if operation_id == "debug.parameters.unlock":
+            return service.unlock_debug_session_parameters(session_id=payload["session_id"], password=payload["password"])
+        if operation_id == "resource.list":
+            return service.get_resource_registry_document(**_catalogue_filter_payload(payload))
+        if operation_id == "component.list":
+            return service.get_component_library_document(**_catalogue_filter_payload(payload))
+        if operation_id in {
+            "resource.user_component.save",
+            "resource.subgraph.save",
+            "resource.custom_node_graph.save",
+        }:
+            save_resource = {
+                "resource.user_component.save": service.save_user_component_resource,
+                "resource.subgraph.save": service.save_subgraph_resource,
+                "resource.custom_node_graph.save": service.save_custom_node_graph_resource,
+            }[operation_id]
+            saved = save_resource(
+                resource_name=payload["resource_name"],
+                replace_existing_resource_id=payload.get("replace_existing_resource_id"),
+            )
+            tags = payload.get("tags")
+            result = saved if tags is None else service.update_resource_tags(
+                resource_id=saved["resource"]["resource_id"],
+                tags=tags,
+            )
+            service.publish_resource_registry_changed(reason="external_resource_saved")
+            return result
+        if operation_id == "resource.custom_node_graph.create":
+            result = service.create_empty_custom_node_graph_resource(
+                resource_name=payload["resource_name"],
+            )
+            service.publish_resource_registry_changed(reason="resource_created")
+            return result
+        if operation_id == "resource.enabled.set":
+            result = service.set_resource_enabled(
+                resource_id=payload["resource_id"],
+                enabled=payload["enabled"],
+            )
+            service.publish_resource_registry_changed(reason="external_resource_enabled")
+            return result
+        if operation_id == "resource.tags.set":
+            result = service.update_resource_tags(
+                resource_id=payload["resource_id"],
+                tags=payload["tags"],
+            )
+            service.publish_resource_registry_changed(reason="external_resource_tags")
+            return result
+        if operation_id == "resource.metadata.update":
+            result = service.update_resource_metadata(
+                resource_id=payload["resource_id"],
+                display_name=payload["display_name"],
+                description=payload.get("description"),
+                display_name_i18n=payload.get("display_name_i18n"),
+                description_i18n=payload.get("description_i18n"),
+            )
+            service.publish_resource_registry_changed(reason="external_resource_metadata")
+            return result
+        if operation_id == "resource.rename":
+            result = service.rename_resource(
+                resource_id=payload["resource_id"],
+                display_name=payload["display_name"],
+            )
+            service.publish_resource_registry_changed(reason="external_resource_renamed")
+            return result
+        if operation_id == "resource.delete":
+            result = service.delete_resource(resource_id=payload["resource_id"])
+            service.publish_resource_registry_changed(reason="external_resource_deleted")
+            return result
         if operation_id == "project.current.get":
             return _public_project_document(service.get_project_document())
+        if operation_id == "project.resource_audit.get":
+            return service.get_project_resource_audit_document()
         if operation_id == "project.create":
             project_directory = payload.get("project_directory")
             if project_directory is not None:
@@ -247,20 +415,54 @@ class HostOperationService:
             if not callable(close_method):
                 raise OperationRegistryError("operation.not_available", "project.close is not available")
             return close_method()
+        if operation_id == "project.documents.list":
+            return service.get_project_documents_document()
         if operation_id == "graph.get":
             return service.get_graph_document(document_id=payload.get("document_id"))
+        if operation_id == "graph.context":
+            return service.get_graph_context(**payload)
+        if operation_id == "graph.document.get":
+            return service.get_graph_document(document_id=payload["document_id"])
+        if operation_id == "graph.document.replace":
+            return service.save_graph_document(
+                payload["graph_document"],
+                expected_graph_document_save_revision=payload["expected_revision"],
+                require_expected_revision=True,
+            )
         if operation_id == "graph.replace":
             return service.save_graph_document(
                 payload["graph_document"],
                 expected_graph_document_save_revision=payload["expected_revision"],
                 require_expected_revision=True,
             )
+        if operation_id == "graph.patch.preview":
+            return service.preview_graph_patch(
+                expected_revision=payload["expected_revision"],
+                operations=payload["operations"],
+            )
+        if operation_id == "graph.patch.apply":
+            return service.apply_graph_patch(
+                expected_revision=payload["expected_revision"],
+                operations=payload["operations"],
+            )
         if operation_id == "graph.validate":
             return service.validate_graph_document(payload["graph_document"])
+        if operation_id == "graph.normalize":
+            return service.normalize_graph_document(payload["graph_document"])
         if operation_id == "graph.compile":
             return service.compile_graph_document(payload.get("graph_document"))
         if operation_id == "graph.node_draft.build":
             return service.build_graph_node_draft(resource_key=payload["resource_key"], node_id=payload.get("node_id"), position=payload.get("position"))
+        if operation_id == "graph.source_projection":
+            return service.get_graph_source_projection_document(
+                target_source_kind=payload["target_source_kind"],
+            )
+        if operation_id == "runtime.list":
+            return service.list_runtime_sessions()
+        if operation_id == "execution.history.get":
+            return service.get_execution_history_document()
+        if operation_id == "execution.prepare":
+            return service.prepare_runtime_session(payload.get("graph_document"))
         if operation_id == "execution.start":
             started = service.start_runtime_session(payload.get("graph_document"))
             if started.get("status") == "started":
@@ -339,12 +541,22 @@ def _normalize_value(value: object) -> object:
     return value
 
 
+def _catalogue_filter_payload(payload: Mapping[str, object]) -> dict[str, object]:
+    return {
+        field: payload[field]
+        for field in ("query", "tags", "enabled", "origin", "resource_type", "limit")
+        if payload.get(field) is not None
+    }
+
+
 def _normalize_dispatch_value_error(error: ValueError, *, operation_id: str) -> OperationRegistryError:
     message = str(error)
     explicit_code = getattr(error, "error_code", None)
     if isinstance(explicit_code, str) and explicit_code.strip():
         error_code = explicit_code.strip()
     elif message == "pending input request was not found":
+        error_code = "operation.not_found"
+    elif message.startswith(_NOT_FOUND_DISPATCH_VALUE_ERROR_PREFIXES):
         error_code = "operation.not_found"
     elif message == "pending input request is not waiting":
         error_code = "operation.state_conflict"

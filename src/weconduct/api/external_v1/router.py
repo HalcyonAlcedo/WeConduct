@@ -3,7 +3,7 @@ from __future__ import annotations
 from hashlib import sha256
 from http import HTTPStatus
 from typing import Callable, Mapping
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 import uuid
 
 from weconduct.application.operations import (
@@ -22,35 +22,143 @@ def resolve_external_operation(
     method: str,
     request_path: str,
     read_payload: Callable[[], dict[str, object]] | None = None,
+    query_params: Mapping[str, list[str]] | None = None,
 ) -> tuple[str, dict[str, object]]:
     """将固定 v1 HTTP 路径映射到唯一的稳定 operation_id。"""
 
     read = read_payload or (lambda: {})
     if method == "GET":
         static_routes = {
+            "/api/ext/v1/operations": ("operation.list", {}),
             "/api/ext/v1/host": ("host.describe", {}),
             "/api/ext/v1/host/capabilities": ("host.capabilities", {}),
-            "/api/ext/v1/project/current": ("project.current.get", {}),
+                "/api/ext/v1/project/current": ("project.current.get", {}),
+                "/api/ext/v1/project/resource-audit": ("project.resource_audit.get", {}),
             "/api/ext/v1/graph": ("graph.get", {}),
+            "/api/ext/v1/graph/documents": ("project.documents.list", {}),
+                "/api/ext/v1/resources": ("resource.list", {}),
+                "/api/ext/v1/components": ("component.list", {}),
+                "/api/ext/v1/debug": ("debug.list", {}),
+                "/api/ext/v1/runtimes": ("runtime.list", {}),
+                "/api/ext/v1/execution-history": ("execution.history.get", {}),
+                "/api/ext/v1/debug/history": ("debug.history.list", {}),
+                "/api/ext/v1/graph/source-projection": ("graph.source_projection", {}),
         }
         if request_path in static_routes:
-            return static_routes[request_path]
+            operation_id, static_payload = static_routes[request_path]
+            if request_path in {"/api/ext/v1/resources", "/api/ext/v1/components"}:
+                catalogue_payload: dict[str, object] = {}
+                if query_params is not None:
+                    for field in ("query", "enabled", "origin", "resource_type", "limit"):
+                        values = query_params.get(field)
+                        if values:
+                            catalogue_payload[field] = values[0]
+                    tags = query_params.get("tags")
+                    if tags:
+                        catalogue_payload["tags"] = list(tags)
+                return operation_id, catalogue_payload
+            return operation_id, static_payload
+        operation_prefix = "/api/ext/v1/operations/"
+        if request_path.startswith(operation_prefix):
+            operation_id = request_path.removeprefix(operation_prefix)
+            if operation_id and "/" not in operation_id:
+                return "operation.get", {"operation_id": operation_id}
     if method == "POST":
         operation_by_path = {
             "/api/ext/v1/projects": "project.create",
             "/api/ext/v1/project/open": "project.open",
             "/api/ext/v1/project/save": "project.save",
             "/api/ext/v1/project/close": "project.close",
-            "/api/ext/v1/graph/validate": "graph.validate",
+                "/api/ext/v1/graph/validate": "graph.validate",
+                "/api/ext/v1/graph/normalize": "graph.normalize",
+                "/api/ext/v1/graph/context": "graph.context",
+                "/api/ext/v1/graph/patch/preview": "graph.patch.preview",
+                "/api/ext/v1/graph/patch": "graph.patch.apply",
             "/api/ext/v1/graph/compile": "graph.compile",
-            "/api/ext/v1/graph/node-drafts": "graph.node_draft.build",
-            "/api/ext/v1/executions": "execution.start",
+                    "/api/ext/v1/graph/node-drafts": "graph.node_draft.build",
+                    "/api/ext/v1/executions/prepare": "execution.prepare",
+                    "/api/ext/v1/executions": "execution.start",
+                "/api/ext/v1/resources/user-components": "resource.user_component.save",
+                "/api/ext/v1/resources/subgraphs": "resource.subgraph.save",
+                "/api/ext/v1/resources/custom-node-graphs": "resource.custom_node_graph.save",
+                "/api/ext/v1/resources/custom-node-graphs/empty": "resource.custom_node_graph.create",
+                "/api/ext/v1/resources/delete": "resource.delete",
+                "/api/ext/v1/resources/metadata": "resource.metadata.update",
+                "/api/ext/v1/resources/rename": "resource.rename",
+                "/api/ext/v1/debug/prepare": "debug.prepare",
+                "/api/ext/v1/debug": "debug.start",
         }
         operation_id = operation_by_path.get(request_path)
         if operation_id is not None:
             return operation_id, dict(read())
+    document_prefix = "/api/ext/v1/graph/documents/"
+    if request_path.startswith(document_prefix):
+        document_id = request_path.removeprefix(document_prefix)
+        if document_id and "/" not in document_id:
+            if method == "GET":
+                return "graph.document.get", {"document_id": document_id}
+            if method == "PUT":
+                payload = dict(read())
+                payload["document_id"] = document_id
+                return "graph.document.replace", payload
     if method == "PUT" and request_path == "/api/ext/v1/graph":
         return "graph.replace", dict(read())
+    configuration_prefix = "/api/ext/v1/configuration/"
+    if request_path.startswith(configuration_prefix):
+        parts = [item for item in request_path.removeprefix(configuration_prefix).split("/") if item]
+        if len(parts) == 2 and parts[0] in {"program", "project", "graph"}:
+            scope, action = parts
+            if method == "GET" and action in {"schema", "values"}:
+                operation_id = {"schema": "configuration.schema.get", "values": "configuration.values.get"}[action]
+                return operation_id, {"scope": scope}
+            if method == "POST" and action in {"preview", "apply", "reset"}:
+                payload = dict(read())
+                payload["scope"] = scope
+                return f"configuration.{action}", payload
+    debug_prefix = "/api/ext/v1/debug/"
+    if request_path.startswith(debug_prefix):
+        parts = [item for item in request_path.removeprefix(debug_prefix).split("/") if item]
+        if len(parts) == 3 and parts[0] == "history" and method == "GET":
+            operation_id = {
+                "events": "debug.history.events",
+                "projection": "debug.history.projection",
+            }.get(parts[2])
+            if operation_id is not None:
+                payload: dict[str, object] = {"session_id": parts[1]}
+                if operation_id == "debug.history.projection" and query_params is not None:
+                    for key in ("event_index", "keyframe_id"):
+                        values = query_params.get(key)
+                        if values:
+                            payload[key] = values[0] if len(values) == 1 else values
+                return operation_id, payload
+        if len(parts) == 2 and parts[0] == "history" and method == "GET":
+            return "debug.history.get", {"session_id": parts[1]}
+        if len(parts) == 2 and parts[1] == "projection" and method == "GET":
+            return "debug.live_projection", {"session_id": parts[0]}
+        if len(parts) == 1 and method == "GET":
+            return "debug.get", {"session_id": parts[0]}
+        if len(parts) == 2 and method == "POST":
+            payload = dict(read())
+            payload["session_id"] = parts[0]
+            operation_id = {
+                "continue": "debug.continue", "pause": "debug.pause", "step-over": "debug.step_over",
+                "step-into": "debug.step_into", "step-out": "debug.step_out", "abort": "debug.abort",
+                "variables": "debug.variables.apply", "node-debugger": "debug.node_debugger.apply",
+                "unlock": "debug.parameters.unlock",
+            }.get(parts[1])
+            if operation_id is not None:
+                return operation_id, payload
+    resource_prefix = "/api/ext/v1/resources/"
+    if method == "POST" and request_path.startswith(resource_prefix):
+        parts = [item for item in request_path.removeprefix(resource_prefix).split("/") if item]
+        if len(parts) == 2 and parts[1] in {"enabled", "tags"}:
+            payload = dict(read())
+            payload["resource_id"] = parts[0]
+            operation_id = {
+                "enabled": "resource.enabled.set",
+                "tags": "resource.tags.set",
+            }[parts[1]]
+            return operation_id, payload
     prefix = "/api/ext/v1/executions/"
     if request_path.startswith(prefix):
         parts = [item for item in request_path[len(prefix):].split("/") if item]
@@ -95,7 +203,9 @@ class ExternalV1Router:
 
     def handle(self, *, method: str) -> bool:
         handler = self._handler
-        request_path = urlparse(handler.path).path
+        parsed_request_url = urlparse(handler.path)
+        request_path = parsed_request_url.path
+        query_params = parse_qs(parsed_request_url.query, keep_blank_values=True)
         if not request_path.startswith("/api/ext/v1"):
             return False
         request_id = handler.headers.get("X-Request-ID")
@@ -143,6 +253,7 @@ class ExternalV1Router:
                 method=method,
                 request_path=request_path,
                 read_payload=self._read_optional_json_body_or_empty,
+                query_params=query_params,
             )
             if operation_id == "execution.events.subscribe":
                 operation_service.invoke(operation_id, payload, caller=caller)

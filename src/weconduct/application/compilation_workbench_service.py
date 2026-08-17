@@ -475,6 +475,31 @@ class CompilationWorkbenchService:
             },
         )
 
+    def publish_resource_registry_changed(self, *, reason: str) -> None:
+        """通知 UI 重新读取资源目录，事件不携带资源正文。"""
+        self._publish_workbench_event(
+            "workspace.resources_changed",
+            {
+                "registry_revision": self._get_resource_registry_revision(),
+                "reason": reason,
+            },
+        )
+
+    def _publish_debug_session_changed(self, *, session_document: dict) -> None:
+        debug_session = session_document.get("debug_session")
+        if not isinstance(debug_session, dict):
+            return
+        session_id = debug_session.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            return
+        self._publish_workbench_event(
+            "debug.session_changed",
+            {
+                "session_id": session_id,
+                "status": debug_session.get("status"),
+            },
+        )
+
     def _publish_runtime_session_changed(
         self,
         *,
@@ -555,6 +580,35 @@ class CompilationWorkbenchService:
             "entrypoints": self._build_entrypoints_metadata(),
         }
 
+    def get_configuration_schema(self, *, scope: str) -> dict:
+        return self._configuration_service.get_schema(scope=scope)
+
+    def get_configuration_values(self, *, scope: str) -> dict:
+        return self._configuration_service.get_values(scope=scope)
+
+    def preview_configuration(self, *, scope: str, operations: list[dict]) -> dict:
+        return self._configuration_service.preview(scope=scope, operations=operations)
+
+    def apply_configuration(
+        self,
+        *,
+        scope: str,
+        operations: list[dict],
+        confirm_high_risk: bool = False,
+    ) -> dict:
+        if scope == "program":
+            raise ValueError("program configuration cannot be applied through external API")
+        return self._configuration_service.apply(
+            scope=scope,
+            operations=operations,
+            confirm_high_risk=confirm_high_risk,
+        )
+
+    def reset_configuration(self, *, scope: str) -> dict:
+        if scope == "program":
+            raise ValueError("program configuration cannot be reset through external API")
+        return self._configuration_service.reset(scope=scope)
+
     def get_graph_document(self, *, document_id: str | None = None) -> dict:
         self._refresh_state_from_store()
         graph_model = self._resolve_graph_document_by_document_id(document_id)
@@ -566,6 +620,303 @@ class CompilationWorkbenchService:
             "graph_model": graph_model,
             "view": self._build_graph_document_view(graph_model),
             "revision": graph_document_meta["save_revision"],
+        }
+
+    def get_graph_context(
+        self,
+        *,
+        node_id: str,
+        depth: int = 1,
+        include_config: bool = False,
+        include_ports: bool = True,
+        max_nodes: int = 40,
+        max_edges: int = 80,
+    ) -> dict:
+        self._refresh_state_from_store()
+        if not isinstance(node_id, str) or not node_id.strip():
+            raise ValueError("node_id is required")
+        if not isinstance(depth, int) or isinstance(depth, bool) or not 0 <= depth <= 3:
+            raise ValueError("depth must be an integer from 0 to 3")
+        if not isinstance(max_nodes, int) or isinstance(max_nodes, bool) or not 1 <= max_nodes <= 200:
+            raise ValueError("max_nodes must be an integer from 1 to 200")
+        if not isinstance(max_edges, int) or isinstance(max_edges, bool) or not 1 <= max_edges <= 400:
+            raise ValueError("max_edges must be an integer from 1 to 400")
+
+        graph_model = self._get_graph_document_model()
+        nodes_by_id = {node.node_id: node for node in graph_model.nodes}
+        focus_node = nodes_by_id.get(node_id.strip())
+        if focus_node is None:
+            raise ValueError(f"graph node not found: {node_id.strip()}")
+
+        adjacency: dict[str, set[str]] = {}
+        for edge in graph_model.edges:
+            adjacency.setdefault(edge.from_node_id, set()).add(edge.to_node_id)
+            adjacency.setdefault(edge.to_node_id, set()).add(edge.from_node_id)
+        distances = {focus_node.node_id: 0}
+        queue = [focus_node.node_id]
+        while queue:
+            current_id = queue.pop(0)
+            current_depth = distances[current_id]
+            if current_depth >= depth:
+                continue
+            for neighbor_id in adjacency.get(current_id, set()):
+                if neighbor_id not in distances:
+                    distances[neighbor_id] = current_depth + 1
+                    queue.append(neighbor_id)
+
+        ordered_ids = [
+            node.node_id
+            for node in graph_model.nodes
+            if node.node_id in distances
+        ]
+        truncated = len(ordered_ids) > max_nodes
+        selected_ids = ordered_ids[:max_nodes]
+        selected = set(selected_ids)
+        related_edges = [
+            edge
+            for edge in graph_model.edges
+            if edge.from_node_id in selected and edge.to_node_id in selected
+        ]
+        truncated = truncated or len(related_edges) > max_edges
+        related_edges = related_edges[:max_edges]
+
+        def port_payload(port) -> dict:
+            return {
+                "port_id": port.port_id,
+                "direction": port.direction,
+                "relation_layer": port.relation_layer,
+                "semantic_slot": port.semantic_slot,
+                "display_name": port.display_name,
+                "max_connections": port.max_connections,
+            }
+
+        def node_payload(node) -> dict:
+            result = {
+                "node_id": node.node_id,
+                "node_kind": node.node_kind,
+                "display_name": node.display_name,
+                "lowered_kind": node.lowered_kind,
+            }
+            if node.position is not None:
+                result["position"] = node.position.model_dump(mode="json")
+            if include_ports:
+                result["ports"] = [port_payload(port) for port in node.ports]
+            if include_config:
+                result["node_config"] = deepcopy(node.node_config)
+            return result
+
+        def edge_payload(edge) -> dict:
+            result = {
+                "edge_id": edge.edge_id,
+                "relation_layer": edge.relation_layer,
+                "from_node_id": edge.from_node_id,
+                "to_node_id": edge.to_node_id,
+                "from_port_id": edge.from_port_id,
+                "to_port_id": edge.to_port_id,
+                "edge_state": edge.edge_state,
+            }
+            if include_ports:
+                source_node = nodes_by_id.get(edge.from_node_id)
+                target_node = nodes_by_id.get(edge.to_node_id)
+                source_port = next((port for port in (source_node.ports if source_node else []) if port.port_id == edge.from_port_id), None)
+                target_port = next((port for port in (target_node.ports if target_node else []) if port.port_id == edge.to_port_id), None)
+                if source_port is not None:
+                    result["from_port"] = port_payload(source_port)
+                if target_port is not None:
+                    result["to_port"] = port_payload(target_port)
+            return result
+
+        incoming = [edge for edge in related_edges if edge.to_node_id == focus_node.node_id]
+        outgoing = [edge for edge in related_edges if edge.from_node_id == focus_node.node_id]
+        graph_document_meta = self._get_graph_document_meta(document_id=graph_model.graph_model_id)
+        return {
+            "revision": graph_document_meta["save_revision"],
+            "focus_node": node_payload(focus_node),
+            "neighbors": [node_payload(node) for node in graph_model.nodes if node.node_id in selected and node.node_id != focus_node.node_id],
+            "incoming_edges": [edge_payload(edge) for edge in incoming],
+            "outgoing_edges": [edge_payload(edge) for edge in outgoing],
+            "context_nodes": [node_payload(node) for node in graph_model.nodes if node.node_id in selected],
+            "truncated": truncated,
+            "limits": {"depth": depth, "max_nodes": max_nodes, "max_edges": max_edges},
+        }
+
+    def preview_graph_patch(
+        self,
+        *,
+        expected_revision: int,
+        operations: list[dict],
+    ) -> dict:
+        candidate, affected_node_ids, affected_edge_ids = self._build_graph_patch_candidate(
+            expected_revision=expected_revision,
+            operations=operations,
+        )
+        return self._build_graph_patch_result(
+            status="preview",
+            base_revision=expected_revision,
+            new_revision=None,
+            graph_model=candidate,
+            operations=operations,
+            affected_node_ids=affected_node_ids,
+            affected_edge_ids=affected_edge_ids,
+        )
+
+    def apply_graph_patch(
+        self,
+        *,
+        expected_revision: int,
+        operations: list[dict],
+    ) -> dict:
+        candidate, affected_node_ids, affected_edge_ids = self._build_graph_patch_candidate(
+            expected_revision=expected_revision,
+            operations=operations,
+        )
+        self.save_graph_document(
+            candidate,
+            expected_graph_document_save_revision=expected_revision,
+            require_expected_revision=True,
+        )
+        new_revision = self._get_graph_document_meta()["save_revision"]
+        return self._build_graph_patch_result(
+            status="applied",
+            base_revision=expected_revision,
+            new_revision=new_revision,
+            graph_model=GraphModel.model_validate(candidate),
+            operations=operations,
+            affected_node_ids=affected_node_ids,
+            affected_edge_ids=affected_edge_ids,
+        )
+
+    def _build_graph_patch_candidate(
+        self,
+        *,
+        expected_revision: int,
+        operations: list[dict],
+    ) -> tuple[dict, list[str], list[str]]:
+        self._refresh_state_from_store()
+        current_revision = self._get_graph_document_meta()["save_revision"]
+        if expected_revision != current_revision:
+            raise GraphDocumentRevisionConflictError(
+                expected_revision=expected_revision,
+                current_revision=current_revision,
+            )
+        self._assert_project_package_allows_mutation("graph.patch")
+        self._assert_no_active_debug_session_mutation("graph.patch")
+        if not isinstance(operations, list) or not operations:
+            raise ValueError("graph patch operations must not be empty")
+
+        graph_payload = self._get_graph_document_model().model_dump(mode="json")
+        node_by_id = {node["node_id"]: node for node in graph_payload["nodes"]}
+        edge_by_id = {edge["edge_id"]: edge for edge in graph_payload["edges"]}
+        affected_node_ids: list[str] = []
+        affected_edge_ids: list[str] = []
+
+        for operation in operations:
+            if not isinstance(operation, dict) or not isinstance(operation.get("op"), str):
+                raise ValueError("graph patch operation must be an object with op")
+            op = operation["op"]
+            if op == "node.add":
+                node_id = operation.get("node_id")
+                resource_key = operation.get("resource_key")
+                if not isinstance(node_id, str) or not node_id.strip() or not isinstance(resource_key, str) or not resource_key.strip():
+                    raise ValueError("node.add requires resource_key and node_id")
+                if node_id in node_by_id:
+                    raise ValueError(f"graph patch duplicate node_id: {node_id}")
+                draft = self.build_graph_node_draft(
+                    resource_key=resource_key,
+                    node_id=node_id,
+                    position=operation.get("position"),
+                )
+                node = deepcopy(draft["node"])
+                config_changes = operation.get("config_changes")
+                if config_changes is not None:
+                    if not isinstance(config_changes, dict):
+                        raise ValueError("node.add config_changes must be an object")
+                    node["node_config"].update(deepcopy(config_changes))
+                graph_payload["nodes"].append(node)
+                node_by_id[node_id] = node
+                affected_node_ids.append(node_id)
+            elif op == "node.update":
+                node_id = operation.get("node_id")
+                changes = operation.get("changes")
+                if not isinstance(node_id, str) or node_id not in node_by_id or not isinstance(changes, dict):
+                    raise ValueError("node.update requires an existing node_id and changes object")
+                unsupported = set(changes) - {"display_name", "position", "node_config"}
+                if unsupported:
+                    raise ValueError(f"node.update contains unsupported fields: {sorted(unsupported)}")
+                node = node_by_id[node_id]
+                if "display_name" in changes:
+                    node["display_name"] = changes["display_name"]
+                if "position" in changes:
+                    node["position"] = changes["position"]
+                if "node_config" in changes:
+                    if not isinstance(changes["node_config"], dict):
+                        raise ValueError("node.update node_config must be an object")
+                    node.setdefault("node_config", {}).update(deepcopy(changes["node_config"]))
+                affected_node_ids.append(node_id)
+            elif op == "node.remove":
+                node_id = operation.get("node_id")
+                if not isinstance(node_id, str) or node_id not in node_by_id:
+                    raise ValueError(f"graph patch node not found: {node_id}")
+                if any(edge["from_node_id"] == node_id or edge["to_node_id"] == node_id for edge in graph_payload["edges"]):
+                    raise ValueError(f"node.remove requires connected edges to be removed first: {node_id}")
+                graph_payload["nodes"] = [node for node in graph_payload["nodes"] if node["node_id"] != node_id]
+                node_by_id.pop(node_id)
+                affected_node_ids.append(node_id)
+            elif op == "edge.add":
+                edge = operation.get("edge")
+                if not isinstance(edge, dict):
+                    raise ValueError("edge.add requires edge object")
+                edge_id = edge.get("edge_id")
+                if not isinstance(edge_id, str) or not edge_id.strip() or edge_id in edge_by_id:
+                    raise ValueError(f"graph patch duplicate or missing edge_id: {edge_id}")
+                graph_payload["edges"].append(deepcopy(edge))
+                edge_by_id[edge_id] = edge
+                affected_edge_ids.append(edge_id)
+            elif op == "edge.remove":
+                edge_id = operation.get("edge_id")
+                if not isinstance(edge_id, str) or edge_id not in edge_by_id:
+                    raise ValueError(f"graph patch edge not found: {edge_id}")
+                graph_payload["edges"] = [edge for edge in graph_payload["edges"] if edge["edge_id"] != edge_id]
+                edge_by_id.pop(edge_id)
+                affected_edge_ids.append(edge_id)
+            else:
+                raise ValueError(f"unsupported graph patch operation: {op}")
+
+        validation = self.validate_graph_document(graph_payload)
+        if validation["status"] != "valid":
+            raise ValueError(f"graph patch validation failed: {validation['diagnostics']}")
+        return graph_payload, sorted(set(affected_node_ids)), sorted(set(affected_edge_ids))
+
+    def _build_graph_patch_result(
+        self,
+        *,
+        status: str,
+        base_revision: int,
+        new_revision: int | None,
+        graph_model: dict,
+        operations: list[dict],
+        affected_node_ids: list[str],
+        affected_edge_ids: list[str],
+    ) -> dict:
+        validated_graph = graph_model if isinstance(graph_model, GraphModel) else GraphModel.model_validate(graph_model)
+        return {
+            "status": status,
+            "base_revision": base_revision,
+            "new_revision": new_revision,
+            "affected_node_ids": affected_node_ids,
+            "affected_edge_ids": affected_edge_ids,
+            "diagnostics": [],
+            "patch_summary": {
+                "operation_count": len(operations),
+                "node_count": len(validated_graph.nodes),
+                "edge_count": len(validated_graph.edges),
+            },
+            "graph_summary": {
+                "graph_model_id": validated_graph.graph_model_id,
+                "node_count": len(validated_graph.nodes),
+                "edge_count": len(validated_graph.edges),
+            },
+            "operations": deepcopy(operations),
         }
 
     def get_project_document(self) -> dict:
@@ -771,6 +1122,7 @@ class CompilationWorkbenchService:
         project_file_path = self._get_project_runtime().get("project_file_path")
         if isinstance(project_file_path, str) and project_file_path.strip():
             self._save_project_to_path(Path(project_file_path))
+        self._publish_graph_changed(reason="runtime_defaults_updated")
         graph_projection_refresh = {
             "node_id": "node-start",
             "node_config": {
@@ -1312,6 +1664,7 @@ class CompilationWorkbenchService:
         enabled: bool | None = None,
         origin: str | None = None,
         resource_type: str | None = None,
+        limit: int | None = None,
     ) -> dict:
         self._refresh_state_from_store()
         resources = self._filter_resources(
@@ -1325,18 +1678,24 @@ class CompilationWorkbenchService:
             origin=origin,
             resource_type=resource_type,
         )
+        if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 1):
+            raise ValueError("resource catalogue limit must be a positive integer")
+        total_matched_count = len(resources)
+        visible_resources = resources if limit is None else resources[:limit]
         return {
             "registry_revision": self._get_resource_registry_revision(),
             "resource_types": list(RESOURCE_TYPES),
-            "summary": self._build_resource_registry_summary(resources),
+            "summary": self._build_resource_registry_summary(visible_resources),
             "facets": self._build_resource_facets(resources),
+            "total_matched_count": total_matched_count,
+            "truncated": len(visible_resources) < total_matched_count,
             "resources": [
                 {
                     **item,
                     "category_group_path": list(item.get("category_group_path", [])),
                     "category_group_label": item.get("category_group_label"),
                 }
-                for item in resources
+                for item in visible_resources
             ],
         }
 
@@ -1454,6 +1813,7 @@ class CompilationWorkbenchService:
         enabled: bool | None = None,
         origin: str | None = None,
         resource_type: str | None = None,
+        limit: int | None = None,
     ) -> dict:
         self._refresh_state_from_store()
         resources = self._filter_resources(
@@ -1467,6 +1827,10 @@ class CompilationWorkbenchService:
             origin=origin,
             resource_type=resource_type,
         )
+        if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 1):
+            raise ValueError("component catalogue limit must be a positive integer")
+        total_matched_count = len(resources)
+        visible_resources = resources if limit is None else resources[:limit]
         items = [
             {
                 "resource_id": item["resource_id"],
@@ -1490,7 +1854,7 @@ class CompilationWorkbenchService:
                 "category_group_label": item.get("category_group_label"),
                 "search_tokens": list(item.get("search_tokens", [])),
             }
-            for item in resources
+            for item in visible_resources
         ]
         return {
             "summary": {
@@ -1498,6 +1862,8 @@ class CompilationWorkbenchService:
             },
             "facets": self._build_resource_facets(resources),
             "items": items,
+            "total_matched_count": total_matched_count,
+            "truncated": len(items) < total_matched_count,
         }
 
     def build_graph_node_draft(
@@ -20682,6 +21048,7 @@ class CompilationWorkbenchService:
             return current_state
 
         self._state = self._state_store.mutate(mutation)
+        self._publish_debug_session_changed(session_document=persisted_session_document)
 
     def _replace_debug_session_document(
         self,
@@ -20734,6 +21101,7 @@ class CompilationWorkbenchService:
         self._state = self._state_store.mutate(mutation)
         if persist_history:
             self._persist_debug_history_session_document(persisted_session_document)
+        self._publish_debug_session_changed(session_document=persisted_session_document)
 
     def _normalize_debug_event(
         self,

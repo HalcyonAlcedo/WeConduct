@@ -9,6 +9,8 @@ import type { HealthResponse, SnapshotResponse } from '@/types/domains/api'
 import { useProjectDiagnosticsStore } from './projectDiagnosticsStore'
 import { useGraphWorkspaceStore } from './graphWorkspaceStore'
 import { useRuntimeStore } from './runtimeStore'
+import { useResourceStore } from './resourceStore'
+import { useDebugStore } from './debugStore'
 import { useToastStore } from './toastStore'
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -164,6 +166,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     if (event.event === 'runtime.session_changed') {
       await useRuntimeStore().handleWorkbenchSessionEvent(payload)
+      return
+    }
+    if (event.event === 'workspace.resources_changed') {
+      await useResourceStore().refreshAll()
+      return
+    }
+    if (event.event === 'debug.session_changed') {
+      const sessionId = typeof payload.session_id === 'string' ? payload.session_id : undefined
+      await useDebugStore().refreshSessions(sessionId)
     }
   }
 

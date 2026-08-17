@@ -4,6 +4,7 @@ import pytest
 from threading import Event, Lock, Thread
 
 from weconduct.application.compilation_workbench_service import CompilationWorkbenchService
+from weconduct.application.operations import HostOperationService, OperationCaller
 from weconduct.application.workbench_event_stream import (
     HEARTBEAT_EVENT_NAME,
     WorkbenchEventStreamBroker,
@@ -153,6 +154,38 @@ def test_workbench_snapshot_factory_does_not_hold_broker_lock_while_reading_stat
     broker.unsubscribe(subscriber_id)
 
 
+def test_service_publishes_resource_and_debug_changes_for_external_discovery() -> None:
+    broker = WorkbenchEventStreamBroker()
+    service = CompilationWorkbenchService(workbench_event_broker=broker)
+    _, queue = broker.subscribe(snapshot=service.get_workbench_snapshot())
+
+    HostOperationService(service=service).invoke(
+        "resource.custom_node_graph.create",
+        {"resource_name": "外部组件"},
+        caller=OperationCaller(
+            caller_id="test:event-stream",
+            permissions=frozenset({"operation.invoke"}),
+        ),
+    )
+    queue.get(timeout=0.2)  # initial workbench.snapshot
+    resource_event = queue.get(timeout=0.2)
+    assert resource_event["event_name"] == "workspace.resources_changed"
+    assert resource_event["payload"]["reason"] == "resource_created"
+
+    session_document = {
+        "debug_session": {
+            "session_id": "debug-event-1",
+            "status": "preparing",
+            "started_at": "2026-08-11T00:00:00+00:00",
+        },
+        "object_index": {"graph_model_id": "graph:workspace"},
+    }
+    service._remember_debug_session(session_document)  # type: ignore[attr-defined]
+    debug_event = queue.get(timeout=0.2)
+    assert debug_event["event_name"] == "debug.session_changed"
+    assert debug_event["payload"]["session_id"] == session_document["debug_session"]["session_id"]
+
+
 def test_service_publishes_runtime_session_change_for_external_discovery() -> None:
     broker = WorkbenchEventStreamBroker()
     service = CompilationWorkbenchService(workbench_event_broker=broker)
@@ -212,6 +245,35 @@ def test_service_publishes_workbench_change_after_external_graph_compile() -> No
     assert event["event_name"] == "workspace.project_changed"
     assert event["payload"]["reason"] == "compiled"
     broker.unsubscribe(subscriber_id)
+
+
+def test_external_graph_configuration_change_publishes_graph_refresh_event() -> None:
+    broker = WorkbenchEventStreamBroker()
+    service = CompilationWorkbenchService(workbench_event_broker=broker)
+    _, queue = broker.subscribe(snapshot=service.get_workbench_snapshot())
+
+    HostOperationService(service=service).invoke(
+        "configuration.apply",
+        {
+            "scope": "graph",
+            "operations": [
+                {
+                    "op": "replace",
+                    "path": "/entrypoint_runtime/browser_config",
+                    "value": {"headless": False, "slow_mo_ms": 10},
+                }
+            ],
+        },
+        caller=OperationCaller(
+            caller_id="test:external-graph-configuration",
+            permissions=frozenset({"operation.invoke"}),
+        ),
+    )
+
+    queue.get(timeout=0.2)  # initial workbench.snapshot
+    event = queue.get(timeout=0.2)
+    assert event["event_name"] == "workspace.graph_changed"
+    assert event["payload"]["reason"] == "runtime_defaults_updated"
 
 
 def test_service_publishes_runtime_session_change_after_abort_without_worker() -> None:

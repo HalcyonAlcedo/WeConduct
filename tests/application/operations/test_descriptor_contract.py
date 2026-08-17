@@ -14,7 +14,7 @@ def test_stable_public_descriptors_use_pydantic_input_and_output_models() -> Non
     registry = OperationRegistry.build_stable_public()
     descriptors = registry.list_descriptors(exposure="stable_public")
 
-    assert len(descriptors) == 19
+    assert len(descriptors) == 67
     for descriptor in descriptors:
         assert issubclass(descriptor.input_model, BaseModel)
         assert issubclass(descriptor.output_model, BaseModel)

@@ -6,7 +6,7 @@ from enum import StrEnum
 from threading import RLock
 from typing import Any, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator
+from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator, model_validator
 
 
 class OperationRegistryError(ValueError):
@@ -54,6 +54,10 @@ class EmptyOperationInput(OperationInputModel):
     pass
 
 
+class OperationGetInput(OperationInputModel):
+    operation_id: str = Field(min_length=1)
+
+
 class ProjectCreateInput(OperationInputModel):
     project_name: str = Field(min_length=1)
     project_directory: str | None = None
@@ -69,6 +73,10 @@ class ProjectSaveInput(OperationInputModel):
 
 class GraphGetInput(OperationInputModel):
     document_id: str | None = None
+
+
+class GraphDocumentGetInput(OperationInputModel):
+    document_id: str = Field(min_length=1)
 
 
 class GraphDocumentInput(OperationInputModel):
@@ -87,10 +95,153 @@ class GraphReplaceInput(GraphDocumentInput):
         return graph_document
 
 
+class GraphDocumentReplaceInput(GraphDocumentInput):
+    document_id: str = Field(min_length=1)
+    expected_revision: int = Field(ge=0, strict=True)
+
+    @model_validator(mode="after")
+    def require_matching_document_id(self) -> "GraphDocumentReplaceInput":
+        if self.graph_document.get("document_id") != self.document_id:
+            raise ValueError("graph_document.document_id must match document_id")
+        return self
+
+
 class GraphNodeDraftBuildInput(OperationInputModel):
     resource_key: str = Field(min_length=1)
     node_id: str | None = None
     position: dict[str, Any] | None = None
+
+
+class GraphContextInput(OperationInputModel):
+    node_id: str = Field(min_length=1)
+    depth: int = Field(default=1, ge=0, le=3)
+    include_config: bool = False
+    include_ports: bool = True
+    max_nodes: int = Field(default=40, ge=1, le=200)
+    max_edges: int = Field(default=80, ge=1, le=400)
+
+
+class GraphPatchOperationInput(OperationInputModel):
+    op: Literal["node.add", "node.update", "node.remove", "edge.add", "edge.remove"]
+    resource_key: str | None = None
+    node_id: str | None = None
+    position: dict[str, Any] | None = None
+    config_changes: dict[str, Any] | None = None
+    changes: dict[str, Any] | None = None
+    edge_id: str | None = None
+    edge: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def require_operation_payload(self) -> "GraphPatchOperationInput":
+        if self.op == "node.add":
+            if not self.resource_key or not self.node_id:
+                raise ValueError("node.add requires resource_key and node_id")
+        elif self.op == "node.update":
+            if not self.node_id or self.changes is None:
+                raise ValueError("node.update requires node_id and changes")
+        elif self.op == "node.remove":
+            if not self.node_id:
+                raise ValueError("node.remove requires node_id")
+        elif self.op == "edge.add":
+            if self.edge is None:
+                raise ValueError("edge.add requires edge")
+        elif self.op == "edge.remove" and not self.edge_id:
+            raise ValueError("edge.remove requires edge_id")
+        return self
+
+
+class GraphPatchInput(OperationInputModel):
+    expected_revision: int = Field(ge=0, strict=True)
+    operations: list[GraphPatchOperationInput] = Field(min_length=1, max_length=100)
+
+
+class ResourceCatalogueListInput(OperationInputModel):
+    query: str | None = None
+    tags: list[str] | None = None
+    enabled: bool | None = None
+    origin: str | None = None
+    resource_type: str | None = None
+    limit: int | None = Field(default=None, ge=1, le=200)
+
+
+class GraphSourceProjectionInput(OperationInputModel):
+    target_source_kind: Literal["native_flow"] = "native_flow"
+
+
+class ResourceReferenceInput(OperationInputModel):
+    resource_id: str = Field(min_length=1)
+
+
+class ResourceSaveInput(OperationInputModel):
+    resource_name: str = Field(min_length=1)
+    replace_existing_resource_id: str | None = None
+    tags: list[str] | None = None
+
+
+class ResourceEnabledSetInput(ResourceReferenceInput):
+    enabled: bool
+
+
+class ResourceTagsSetInput(ResourceReferenceInput):
+    tags: list[str]
+
+
+class ResourceMetadataUpdateInput(ResourceReferenceInput):
+    display_name: str = Field(min_length=1)
+    description: str | None = None
+    display_name_i18n: dict[str, str] | None = None
+    description_i18n: dict[str, str] | None = None
+
+
+class ResourceRenameInput(ResourceReferenceInput):
+    display_name: str = Field(min_length=1)
+
+
+class DebugSessionInput(OperationInputModel):
+    session_id: str = Field(min_length=1)
+
+
+class DebugHistoryProjectionInput(DebugSessionInput):
+    event_index: int | None = Field(default=None, ge=0)
+    keyframe_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def require_at_most_one_replay_selector(self) -> "DebugHistoryProjectionInput":
+        if self.event_index is not None and self.keyframe_id is not None:
+            raise ValueError("event_index and keyframe_id cannot be used together")
+        return self
+
+
+class DebugPauseInput(DebugSessionInput):
+    reason: str = Field(min_length=1)
+    node_id: str | None = None
+
+
+class DebugAbortInput(DebugSessionInput):
+    reason: str = Field(min_length=1)
+
+
+class DebugVariablesApplyInput(DebugSessionInput):
+    updates: dict[str, Any]
+    apply_mode: str = "staged"
+
+
+class DebugNodeDebuggerApplyInput(DebugSessionInput):
+    node_id: str = Field(min_length=1)
+    debugger: dict[str, Any]
+
+
+class DebugParameterUnlockInput(DebugSessionInput):
+    password: str = Field(min_length=1)
+
+
+class ConfigurationScopeInput(OperationInputModel):
+    scope: Literal["program", "project", "graph"]
+
+
+class ConfigurationOperationsInput(ConfigurationScopeInput):
+    operations: list[dict[str, Any]]
+    confirm_high_risk: bool = False
 
 
 class ExecutionStartInput(OperationInputModel):

@@ -3,6 +3,8 @@ from __future__ import annotations
 from http import HTTPStatus
 from types import SimpleNamespace
 
+import pytest
+
 from weconduct.api.external_v1 import router
 from weconduct.api.server import build_api_server
 from weconduct.application.operations.models import (
@@ -104,6 +106,237 @@ def test_external_route_maps_execution_parameter_unlock() -> None:
         "execution_id": "execution-1",
         "password": "test-password",
     }
+
+
+@pytest.mark.parametrize(
+    ("method", "request_path", "expected_operation_id"),
+    [
+        ("GET", "/api/ext/v1/operations", "operation.list"),
+        ("GET", "/api/ext/v1/operations/graph.replace", "operation.get"),
+        ("GET", "/api/ext/v1/resources", "resource.list"),
+        ("GET", "/api/ext/v1/components", "component.list"),
+        ("GET", "/api/ext/v1/graph/documents", "project.documents.list"),
+        ("GET", "/api/ext/v1/graph/documents/resource:custom-node-graph", "graph.document.get"),
+        ("POST", "/api/ext/v1/resources/user-components", "resource.user_component.save"),
+        ("POST", "/api/ext/v1/resources/subgraphs", "resource.subgraph.save"),
+        ("POST", "/api/ext/v1/resources/custom-node-graphs", "resource.custom_node_graph.save"),
+    ],
+)
+def test_external_routes_map_discovery_endpoints_to_explicit_operations(
+    method: str,
+    request_path: str,
+    expected_operation_id: str,
+) -> None:
+    operation_id, payload = router.resolve_external_operation(
+        method=method,
+        request_path=request_path,
+    )
+
+    assert operation_id == expected_operation_id
+    assert payload == (
+        {"operation_id": "graph.replace"}
+        if expected_operation_id == "operation.get"
+        else {"document_id": "resource:custom-node-graph"}
+        if expected_operation_id == "graph.document.get"
+        else {}
+    )
+
+
+def test_external_route_maps_custom_graph_document_replace() -> None:
+    operation_id, payload = router.resolve_external_operation(
+        method="PUT",
+        request_path="/api/ext/v1/graph/documents/resource:custom-node-graph",
+        read_payload=lambda: {
+            "graph_document": {"document_id": "resource:custom-node-graph", "nodes": []},
+            "expected_revision": 5,
+        },
+    )
+
+    assert operation_id == "graph.document.replace"
+    assert payload == {
+        "document_id": "resource:custom-node-graph",
+        "graph_document": {"document_id": "resource:custom-node-graph", "nodes": []},
+        "expected_revision": 5,
+    }
+
+
+@pytest.mark.parametrize(
+    ("method", "request_path", "expected_operation_id"),
+    [
+        ("POST", "/api/ext/v1/debug/prepare", "debug.prepare"),
+        ("POST", "/api/ext/v1/debug", "debug.start"),
+        ("GET", "/api/ext/v1/debug", "debug.list"),
+        ("GET", "/api/ext/v1/debug/debug-1", "debug.get"),
+        ("POST", "/api/ext/v1/debug/debug-1/continue", "debug.continue"),
+        ("POST", "/api/ext/v1/debug/debug-1/pause", "debug.pause"),
+        ("POST", "/api/ext/v1/debug/debug-1/step-over", "debug.step_over"),
+        ("POST", "/api/ext/v1/debug/debug-1/step-into", "debug.step_into"),
+        ("POST", "/api/ext/v1/debug/debug-1/step-out", "debug.step_out"),
+        ("POST", "/api/ext/v1/debug/debug-1/abort", "debug.abort"),
+        ("POST", "/api/ext/v1/debug/debug-1/variables", "debug.variables.apply"),
+        ("POST", "/api/ext/v1/debug/debug-1/node-debugger", "debug.node_debugger.apply"),
+        ("POST", "/api/ext/v1/debug/debug-1/unlock", "debug.parameters.unlock"),
+    ],
+)
+def test_external_routes_map_debug_controls_to_explicit_operations(
+    method: str,
+    request_path: str,
+    expected_operation_id: str,
+) -> None:
+    operation_id, payload = router.resolve_external_operation(
+        method=method,
+        request_path=request_path,
+        read_payload=lambda: {},
+    )
+
+    assert operation_id == expected_operation_id
+    assert payload.get("session_id") == "debug-1" or expected_operation_id in {"debug.prepare", "debug.start", "debug.list"}
+
+
+@pytest.mark.parametrize(
+    ("method", "request_path", "expected_operation_id", "expected_payload"),
+    [
+        ("GET", "/api/ext/v1/configuration/program/schema", "configuration.schema.get", {"scope": "program"}),
+        ("GET", "/api/ext/v1/configuration/graph/values", "configuration.values.get", {"scope": "graph"}),
+        ("POST", "/api/ext/v1/configuration/project/preview", "configuration.preview", {"scope": "project"}),
+        ("POST", "/api/ext/v1/configuration/graph/apply", "configuration.apply", {"scope": "graph"}),
+        ("POST", "/api/ext/v1/configuration/project/reset", "configuration.reset", {"scope": "project"}),
+    ],
+)
+def test_external_routes_map_configuration_scopes_to_explicit_operations(
+    method: str,
+    request_path: str,
+    expected_operation_id: str,
+    expected_payload: dict[str, object],
+) -> None:
+    operation_id, payload = router.resolve_external_operation(
+        method=method,
+        request_path=request_path,
+        read_payload=lambda: {},
+    )
+    assert operation_id == expected_operation_id
+    assert payload == expected_payload
+
+
+@pytest.mark.parametrize(
+    ("request_path", "expected_operation_id", "expected_payload"),
+    [
+        ("/api/ext/v1/runtimes", "runtime.list", {}),
+        ("/api/ext/v1/execution-history", "execution.history.get", {}),
+        ("/api/ext/v1/debug/history", "debug.history.list", {}),
+        ("/api/ext/v1/debug/history/debug-1", "debug.history.get", {"session_id": "debug-1"}),
+        ("/api/ext/v1/debug/history/debug-1/events", "debug.history.events", {"session_id": "debug-1"}),
+        ("/api/ext/v1/debug/history/debug-1/projection", "debug.history.projection", {"session_id": "debug-1"}),
+        ("/api/ext/v1/debug/debug-1/projection", "debug.live_projection", {"session_id": "debug-1"}),
+        ("/api/ext/v1/graph/source-projection", "graph.source_projection", {}),
+    ],
+)
+def test_external_routes_map_observability_endpoints_to_explicit_operations(
+    request_path: str,
+    expected_operation_id: str,
+    expected_payload: dict[str, object],
+) -> None:
+    operation_id, payload = router.resolve_external_operation(method="GET", request_path=request_path)
+    assert operation_id == expected_operation_id
+    assert payload == expected_payload
+
+
+def test_external_debug_history_projection_route_forwards_one_replay_selector() -> None:
+    operation_id, payload = router.resolve_external_operation(
+        method="GET",
+        request_path="/api/ext/v1/debug/history/debug-1/projection",
+        query_params={"event_index": ["3"]},
+    )
+
+    assert operation_id == "debug.history.projection"
+    assert payload == {"session_id": "debug-1", "event_index": "3"}
+
+
+def test_external_catalogue_routes_forward_search_filters_and_limit() -> None:
+    operation_id, payload = router.resolve_external_operation(
+        method="GET",
+        request_path="/api/ext/v1/components",
+        query_params={"query": ["while"], "tags": ["control", "builtin"], "limit": ["5"]},
+    )
+
+    assert operation_id == "component.list"
+    assert payload == {"query": "while", "tags": ["control", "builtin"], "limit": "5"}
+
+
+@pytest.mark.parametrize(
+    ("request_path", "expected_operation_id"),
+    [
+        ("/api/ext/v1/graph/context", "graph.context"),
+        ("/api/ext/v1/graph/patch/preview", "graph.patch.preview"),
+        ("/api/ext/v1/graph/patch", "graph.patch.apply"),
+    ],
+)
+def test_external_graph_context_and_patch_routes_map_to_stable_operations(
+    request_path: str,
+    expected_operation_id: str,
+) -> None:
+    operation_id, payload = router.resolve_external_operation(
+        method="POST",
+        request_path=request_path,
+        read_payload=lambda: {"expected_revision": 4, "operations": []},
+    )
+
+    assert operation_id == expected_operation_id
+    assert payload == {"expected_revision": 4, "operations": []}
+
+
+@pytest.mark.parametrize(
+    ("method", "request_path", "expected_operation_id", "expected_payload"),
+    [
+        ("GET", "/api/ext/v1/project/resource-audit", "project.resource_audit.get", {}),
+        ("POST", "/api/ext/v1/graph/normalize", "graph.normalize", {"graph_document": {"document_id": "graph:workspace"}}),
+        ("POST", "/api/ext/v1/executions/prepare", "execution.prepare", {}),
+    ],
+)
+def test_external_routes_map_read_only_assistance_endpoints_to_explicit_operations(
+    method: str,
+    request_path: str,
+    expected_operation_id: str,
+    expected_payload: dict[str, object],
+) -> None:
+    operation_id, payload = router.resolve_external_operation(
+        method=method,
+        request_path=request_path,
+        read_payload=lambda: expected_payload,
+    )
+
+    assert operation_id == expected_operation_id
+    assert payload == expected_payload
+
+
+@pytest.mark.parametrize(
+    ("request_path", "expected_operation_id", "expected_payload"),
+    [
+        ("/api/ext/v1/resources/user-1/enabled", "resource.enabled.set", {"resource_id": "user-1", "enabled": False}),
+        ("/api/ext/v1/resources/user-1/tags", "resource.tags.set", {"resource_id": "user-1", "tags": ["team:ops"]}),
+        ("/api/ext/v1/resources/delete", "resource.delete", {"resource_id": "user-1"}),
+        ("/api/ext/v1/resources/rename", "resource.rename", {"resource_id": "user-1", "display_name": "新名称"}),
+    ],
+)
+def test_external_routes_map_resource_mutations_to_explicit_operations(
+    request_path: str,
+    expected_operation_id: str,
+    expected_payload: dict[str, object],
+) -> None:
+    operation_id, payload = router.resolve_external_operation(
+        method="POST",
+        request_path=request_path,
+        read_payload=lambda: (
+            {
+                key: value for key, value in expected_payload.items() if key != "resource_id"
+            }
+            if request_path.endswith(("/enabled", "/tags"))
+            else expected_payload
+        ),
+    )
+
+    assert operation_id == expected_operation_id
+    assert payload == expected_payload
 
 
 def test_external_router_replays_idempotent_result_across_requests() -> None:
