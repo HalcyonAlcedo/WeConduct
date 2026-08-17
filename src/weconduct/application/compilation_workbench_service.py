@@ -4,7 +4,7 @@ from copy import deepcopy
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import shutil
 import sys
@@ -4331,6 +4331,484 @@ class CompilationWorkbenchService:
             "status": "exported",
             "resource": resource,
             "target_directory": str(target),
+        }
+
+    def export_subgraph_asset_package(
+        self,
+        *,
+        resource_id: str,
+        output_path: str | Path,
+    ) -> dict:
+        self._refresh_state_from_store()
+        resolved_path = self._resolve_export_path(output_path)
+        if resolved_path.suffix.lower() != ".wcsubgraph":
+            raise ValueError("subgraph asset output path must use .wcsubgraph extension")
+        resource = self._require_resource(resource_id)
+        if resource.get("resource_type") != "custom_node_graph":
+            raise ValueError(f"custom node graph resource not found: {resource_id}")
+        if not resource.get("enabled", True):
+            raise ValueError(f"custom node graph resource is disabled: {resource_id}")
+
+        resources_by_reference: dict[str, dict] = {}
+        for candidate in self._get_resource_registry():
+            if candidate.get("resource_type") != "custom_node_graph":
+                continue
+            for reference in (candidate.get("resource_id"), candidate.get("resource_key")):
+                if isinstance(reference, str) and reference:
+                    resources_by_reference[reference] = candidate
+
+        exported_resources: list[dict] = []
+        resource_graphs: dict[str, dict] = {}
+        pending_resources = [resource]
+        exported_resource_ids: set[str] = set()
+        while pending_resources:
+            current_resource = pending_resources.pop(0)
+            current_resource_id = current_resource["resource_id"]
+            if current_resource_id in exported_resource_ids:
+                continue
+            if not current_resource.get("enabled", True):
+                raise ValueError(
+                    f"custom node graph resource is disabled: {current_resource_id}"
+                )
+            exported_resource_ids.add(current_resource_id)
+            exported_resources.append(current_resource)
+            current_graph = self._build_project_resource_graph_document(current_resource)
+            resource_graphs[current_resource_id] = current_graph
+            raw_nodes = current_graph.get("nodes")
+            if not isinstance(raw_nodes, list):
+                continue
+            for node in raw_nodes:
+                if not isinstance(node, dict):
+                    continue
+                references = (
+                    node.get("resource_id"),
+                    node.get("resource_key"),
+                    node.get("node_kind"),
+                )
+                dependency = None
+                for reference in references:
+                    if not isinstance(reference, str) or not reference:
+                        continue
+                    dependency = resources_by_reference.get(reference)
+                    if dependency is not None:
+                        break
+                if dependency is not None:
+                    pending_resources.append(dependency)
+                elif node.get("expansion_role") == "action:custom_node_graph":
+                    missing_reference = next(
+                        (
+                            reference
+                            for reference in references
+                            if isinstance(reference, str) and reference
+                        ),
+                        "<unknown>",
+                    )
+                    raise ValueError(
+                        "custom node graph dependency not found: "
+                        f"{missing_reference}"
+                    )
+
+        resource_graph = resource_graphs[resource_id]
+        custom_node_graph_dependencies = [
+            {
+                "resource_id": item["resource_id"],
+                "resource_key": item["resource_key"],
+                "resource_type": "custom_node_graph",
+            }
+            for item in exported_resources
+            if item["resource_id"] != resource_id
+        ]
+        package_contents = {
+            "manifest.json": self._encode_json_bytes(
+                {
+                    "asset_schema_version": 1,
+                    "asset_file_extension": ".wcsubgraph",
+                    "asset_id": resource["resource_id"],
+                    "asset_version": 1,
+                    "display_name": resource["display_name"],
+                    "created_with_app_version": APP_VERSION,
+                    "minimum_host_version": APP_VERSION,
+                    "maximum_host_version": None,
+                    "root_resource_id": resource["resource_id"],
+                    "graph_schema_version": resource_graph.get("graph_schema_version"),
+                    "builtin_component_dependencies": [],
+                    "custom_node_graph_dependencies": custom_node_graph_dependencies,
+                    "embedded_resources": [],
+                }
+            ),
+            "graphs/root.graph.json": self._encode_json_bytes(resource_graph),
+        }
+        for exported_resource in exported_resources:
+            exported_resource_id = exported_resource["resource_id"]
+            package_contents[
+                f"resources/{exported_resource_id}/manifest.json"
+            ] = self._encode_json_bytes(
+                self._build_project_resource_manifest(exported_resource)
+            )
+            package_contents[
+                f"resources/{exported_resource_id}/graph.json"
+            ] = self._encode_json_bytes(resource_graphs[exported_resource_id])
+        package_contents["meta/checksums.json"] = self._encode_json_bytes(
+            self._build_package_checksums_document(package_contents)
+        )
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_zip_archive(resolved_path, package_contents)
+        return {
+            "status": "exported",
+            "resource": resource,
+            "output_path": str(resolved_path),
+        }
+
+    def preflight_subgraph_asset_import(self, *, import_path: str | Path) -> dict:
+        self._refresh_state_from_store()
+        resolved_path = self._resolve_export_path(import_path)
+        if resolved_path.suffix.lower() != ".wcsubgraph":
+            raise ValueError("subgraph asset import path must use .wcsubgraph extension")
+        try:
+            with zipfile.ZipFile(resolved_path, mode="r") as archive:
+                archive_names: set[str] = set()
+                for archive_info in archive.infolist():
+                    archive_path = archive_info.filename
+                    normalized_path = PurePosixPath(archive_path)
+                    normalized_name = normalized_path.as_posix()
+                    file_type = (archive_info.external_attr >> 16) & 0o170000
+                    if (
+                        not archive_path
+                        or "\\" in archive_path
+                        or archive_path.startswith(("/", "\\"))
+                        or normalized_path.is_absolute()
+                        or ".." in normalized_path.parts
+                        or archive_path != normalized_name
+                        or archive_info.is_dir()
+                        or file_type == 0o120000
+                        or (normalized_path.parts and ":" in normalized_path.parts[0])
+                    ):
+                        raise ValueError(f"unsafe archive path: {archive_path!r}")
+                    if normalized_name in archive_names:
+                        raise ValueError(f"unsafe archive path is duplicated: {archive_path!r}")
+                    archive_names.add(normalized_name)
+                if "manifest.json" not in archive_names:
+                    raise ValueError("subgraph asset package missing manifest.json")
+                if "meta/checksums.json" not in archive_names:
+                    raise ValueError("subgraph asset package missing meta/checksums.json")
+                manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+                if not isinstance(manifest, dict):
+                    raise ValueError("subgraph asset manifest must be a JSON object")
+                if manifest.get("asset_schema_version") != 1:
+                    raise ValueError(
+                        "unsupported subgraph asset schema version: "
+                        f"{manifest.get('asset_schema_version')!r}"
+                    )
+                minimum_host_version = manifest.get("minimum_host_version")
+                if not isinstance(minimum_host_version, str) or not minimum_host_version:
+                    raise ValueError("subgraph asset manifest missing minimum_host_version")
+                if self._compare_version_strings(APP_VERSION, minimum_host_version) < 0:
+                    raise ValueError(
+                        "subgraph asset minimum host version is not supported: "
+                        f"{minimum_host_version}"
+                    )
+                maximum_host_version = manifest.get("maximum_host_version")
+                if maximum_host_version is not None:
+                    if not isinstance(maximum_host_version, str) or not maximum_host_version:
+                        raise ValueError("subgraph asset maximum_host_version must be a string or null")
+                    if self._compare_version_strings(APP_VERSION, maximum_host_version) > 0:
+                        raise ValueError(
+                            "subgraph asset maximum host version is not supported: "
+                            f"{maximum_host_version}"
+                        )
+                root_resource_id = manifest.get("root_resource_id")
+                if not isinstance(root_resource_id, str) or not root_resource_id:
+                    raise ValueError("subgraph asset manifest missing root_resource_id")
+                root_manifest_path = f"resources/{root_resource_id}/manifest.json"
+                root_graph_path = f"resources/{root_resource_id}/graph.json"
+                if root_manifest_path not in archive_names or root_graph_path not in archive_names:
+                    raise ValueError("subgraph asset package missing root resource files")
+                root_resource = json.loads(archive.read(root_manifest_path).decode("utf-8"))
+                if not isinstance(root_resource, dict):
+                    raise ValueError("subgraph asset root resource manifest must be a JSON object")
+                dependency_items = manifest.get("custom_node_graph_dependencies", [])
+                if not isinstance(dependency_items, list):
+                    raise ValueError("subgraph asset dependencies must be an array")
+                package_resources = [root_resource]
+                package_resource_ids = {root_resource_id}
+                for dependency in dependency_items:
+                    if not isinstance(dependency, dict):
+                        raise ValueError("subgraph asset dependency must be an object")
+                    dependency_resource_id = dependency.get("resource_id")
+                    if (
+                        not isinstance(dependency_resource_id, str)
+                        or not dependency_resource_id
+                        or dependency_resource_id in package_resource_ids
+                    ):
+                        raise ValueError("subgraph asset dependency resource_id is invalid")
+                    dependency_manifest_path = (
+                        f"resources/{dependency_resource_id}/manifest.json"
+                    )
+                    dependency_graph_path = f"resources/{dependency_resource_id}/graph.json"
+                    if (
+                        dependency_manifest_path not in archive_names
+                        or dependency_graph_path not in archive_names
+                    ):
+                        raise ValueError(
+                            "subgraph asset package missing dependency resource files: "
+                            f"{dependency_resource_id}"
+                        )
+                    dependency_resource = json.loads(
+                        archive.read(dependency_manifest_path).decode("utf-8")
+                    )
+                    dependency_graph = json.loads(
+                        archive.read(dependency_graph_path).decode("utf-8")
+                    )
+                    if not isinstance(dependency_resource, dict) or not isinstance(
+                        dependency_graph, dict
+                    ):
+                        raise ValueError("subgraph asset dependency resource payload is invalid")
+                    package_resource_ids.add(dependency_resource_id)
+                    package_resources.append(dependency_resource)
+                checksums = json.loads(archive.read("meta/checksums.json").decode("utf-8"))
+                if not isinstance(checksums, dict) or checksums.get("algorithm") != "sha256":
+                    raise ValueError("subgraph asset checksums must use sha256")
+                checksum_entries = checksums.get("entries")
+                if not isinstance(checksum_entries, list):
+                    raise ValueError("subgraph asset checksums entries must be an array")
+                expected_checksum_paths: set[str] = set()
+                for entry in checksum_entries:
+                    if not isinstance(entry, dict):
+                        raise ValueError("subgraph asset checksum entry must be an object")
+                    entry_path = entry.get("path")
+                    entry_sha256 = entry.get("sha256")
+                    entry_size = entry.get("size")
+                    if (
+                        not isinstance(entry_path, str)
+                        or not entry_path
+                        or not isinstance(entry_sha256, str)
+                        or not isinstance(entry_size, int)
+                    ):
+                        raise ValueError("subgraph asset checksum entry is invalid")
+                    if entry_path in expected_checksum_paths:
+                        raise ValueError(f"subgraph asset checksum path is duplicated: {entry_path}")
+                    expected_checksum_paths.add(entry_path)
+                    if entry_path not in archive_names:
+                        raise ValueError(f"subgraph asset checksum entry is missing: {entry_path}")
+                    entry_bytes = archive.read(entry_path)
+                    if (
+                        entry_size != len(entry_bytes)
+                        or entry_sha256 != hashlib.sha256(entry_bytes).hexdigest()
+                    ):
+                        raise ValueError(f"subgraph asset checksum mismatch: {entry_path}")
+                payload_paths = archive_names - {"meta/checksums.json"}
+                if expected_checksum_paths != payload_paths:
+                    raise ValueError("subgraph asset checksums do not cover all package files")
+        except zipfile.BadZipFile as exc:
+            raise ValueError("subgraph asset package must be a valid ZIP file") from exc
+        except UnicodeDecodeError as exc:
+            raise ValueError("subgraph asset package JSON files must use UTF-8") from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError("subgraph asset package contains invalid JSON") from exc
+
+        existing_ids = {item["resource_id"] for item in self._get_resource_registry()}
+        conflicts = [
+            {
+                "resource_id": package_resource["resource_id"],
+                "resource_key": package_resource.get(
+                    "resource_key", package_resource["resource_id"]
+                ),
+                "resource_type": package_resource.get(
+                    "resource_type", "custom_node_graph"
+                ),
+            }
+            for package_resource in package_resources
+            if package_resource.get("resource_id") in existing_ids
+        ]
+        return {
+            "status": "preflight",
+            "can_import": not conflicts,
+            "root_resource": root_resource,
+            "dependency_count": len(package_resources) - 1,
+            "conflicts": conflicts,
+            "diagnostics": [],
+        }
+
+    def commit_subgraph_asset_import(
+        self,
+        *,
+        import_path: str | Path,
+        conflict_policy: str = "abort",
+    ) -> dict:
+        normalized_policy = conflict_policy.strip().lower()
+        if normalized_policy not in {"abort", "rename", "replace"}:
+            raise ValueError(
+                "unsupported subgraph asset conflict policy: "
+                f"{conflict_policy}"
+            )
+        preflight = self.preflight_subgraph_asset_import(import_path=import_path)
+        if not preflight["can_import"] and normalized_policy == "abort":
+            raise ValueError("subgraph asset import conflicts require an explicit resolution")
+
+        resolved_path = self._resolve_export_path(import_path)
+        with zipfile.ZipFile(resolved_path, mode="r") as archive:
+            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+            root_resource_id = manifest["root_resource_id"]
+            dependency_items = manifest.get("custom_node_graph_dependencies", [])
+            if not isinstance(dependency_items, list):
+                raise ValueError("subgraph asset dependencies must be an array")
+            imported_resource_ids = [root_resource_id]
+            for item in dependency_items:
+                if not isinstance(item, dict):
+                    raise ValueError("subgraph asset dependency must be an object")
+                dependency_resource_id = item.get("resource_id")
+                if not isinstance(dependency_resource_id, str) or not dependency_resource_id:
+                    raise ValueError("subgraph asset dependency missing resource_id")
+                if dependency_resource_id in imported_resource_ids:
+                    raise ValueError(
+                        "subgraph asset dependency resource_id is duplicated: "
+                        f"{dependency_resource_id}"
+                    )
+                imported_resource_ids.append(dependency_resource_id)
+            raw_resources: list[dict] = []
+            for imported_resource_id in imported_resource_ids:
+                resource_manifest = json.loads(
+                    archive.read(
+                        f"resources/{imported_resource_id}/manifest.json"
+                    ).decode("utf-8")
+                )
+                resource_graph = json.loads(
+                    archive.read(
+                        f"resources/{imported_resource_id}/graph.json"
+                    ).decode("utf-8")
+                )
+                if not isinstance(resource_manifest, dict) or not isinstance(resource_graph, dict):
+                    raise ValueError("subgraph asset resource payload is invalid")
+                raw_resources.append(
+                    {
+                        **resource_manifest,
+                        "resource_type": "custom_node_graph",
+                        "source_graph_document": resource_graph,
+                    }
+                )
+
+        imported_resource_holder: dict[str, dict] = {}
+        renamed_resource_ids: dict[str, str] = {}
+
+        def mutation(state: dict | None) -> dict:
+            current_state, _ = self._normalize_workspace_state(state)
+            resources = self._extract_resource_registry(current_state)
+            normalized_resources: list[dict] = []
+            for raw_resource in raw_resources:
+                normalized_resource = self._normalize_resource_record(raw_resource)
+                if normalized_resource is None:
+                    raise ValueError("subgraph asset resource payload is invalid")
+                normalized_resources.append(normalized_resource)
+            existing_ids = {item["resource_id"] for item in resources}
+            existing_resources_by_id = {
+                item["resource_id"]: item
+                for item in resources
+            }
+            conflicting_ids = {
+                item["resource_id"]
+                for item in normalized_resources
+                if item["resource_id"] in existing_ids
+            }
+            if conflicting_ids and normalized_policy == "abort":
+                raise ValueError(
+                    "subgraph asset import conflicts require an explicit resolution: "
+                    + ", ".join(sorted(conflicting_ids))
+                )
+            if normalized_policy == "replace":
+                for item in normalized_resources:
+                    existing_resource = existing_resources_by_id.get(item["resource_id"])
+                    if existing_resource is None:
+                        continue
+                    if (
+                        existing_resource.get("resource_type") != "custom_node_graph"
+                        or existing_resource.get("input_schema", {}) != item.get("input_schema", {})
+                        or existing_resource.get("output_schema", {}) != item.get("output_schema", {})
+                    ):
+                        raise ValueError(
+                            "subgraph asset replace requires compatible input/output schemas: "
+                            f"{item['resource_id']}"
+                        )
+            reserved_ids = existing_ids | {item["resource_id"] for item in normalized_resources}
+            reference_rewrites: dict[str, str] = {}
+            if normalized_policy == "rename":
+                for item in normalized_resources:
+                    original_resource_id = item["resource_id"]
+                    if original_resource_id not in conflicting_ids:
+                        continue
+                    replacement_resource_id = (
+                        f"{CUSTOM_NODE_GRAPH_RESOURCE_PREFIX}{uuid.uuid4().hex[:12]}"
+                    )
+                    while replacement_resource_id in reserved_ids:
+                        replacement_resource_id = (
+                            f"{CUSTOM_NODE_GRAPH_RESOURCE_PREFIX}{uuid.uuid4().hex[:12]}"
+                        )
+                    reserved_ids.add(replacement_resource_id)
+                    renamed_resource_ids[original_resource_id] = replacement_resource_id
+                    reference_rewrites[original_resource_id] = replacement_resource_id
+                    original_resource_key = item.get("resource_key")
+                    if isinstance(original_resource_key, str) and original_resource_key:
+                        reference_rewrites[original_resource_key] = replacement_resource_id
+
+            rewritten_resources: list[dict] = []
+            for item in normalized_resources:
+                rewritten_item = deepcopy(item)
+                original_resource_id = rewritten_item["resource_id"]
+                replacement_resource_id = reference_rewrites.get(original_resource_id)
+                if replacement_resource_id is not None:
+                    rewritten_item["resource_id"] = replacement_resource_id
+                    rewritten_item["resource_key"] = replacement_resource_id
+                source_graph_document_id = rewritten_item.get("source_graph_document_id")
+                if isinstance(source_graph_document_id, str):
+                    rewritten_item["source_graph_document_id"] = reference_rewrites.get(
+                        source_graph_document_id,
+                        source_graph_document_id,
+                    )
+                source_graph_document = rewritten_item.get("source_graph_document")
+                if isinstance(source_graph_document, dict):
+                    rewritten_graph = deepcopy(source_graph_document)
+                    graph_model_id = rewritten_graph.get("graph_model_id")
+                    if isinstance(graph_model_id, str):
+                        rewritten_graph["graph_model_id"] = reference_rewrites.get(
+                            graph_model_id,
+                            graph_model_id,
+                        )
+                    raw_nodes = rewritten_graph.get("nodes")
+                    if isinstance(raw_nodes, list):
+                        for node in raw_nodes:
+                            if not isinstance(node, dict):
+                                continue
+                            for field in ("resource_id", "resource_key", "node_kind"):
+                                value = node.get(field)
+                                if isinstance(value, str) and value in reference_rewrites:
+                                    node[field] = reference_rewrites[value]
+                    rewritten_item["source_graph_document"] = rewritten_graph
+                rewritten_resources.append(rewritten_item)
+
+            retained_resources = (
+                [
+                    item
+                    for item in resources
+                    if item["resource_id"] not in conflicting_ids
+                ]
+                if normalized_policy == "replace"
+                else resources
+            )
+            current_state["resource_registry"] = rewritten_resources + retained_resources
+            current_state["project"]["resource_registry_revision"] += 1
+            current_state["project_runtime"] = {
+                **self._extract_project_runtime(current_state),
+                "is_dirty": True,
+            }
+            imported_resource_holder["value"] = rewritten_resources[0]
+            return current_state
+
+        self._state = self._state_store.mutate(mutation)
+        return {
+            "status": "imported",
+            "resource": imported_resource_holder["value"],
+            "registry_revision": self._get_resource_registry_revision(),
+            "conflict_policy": normalized_policy,
+            "resource_id_map": renamed_resource_ids,
         }
 
     def import_resource(
