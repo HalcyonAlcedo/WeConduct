@@ -4420,6 +4420,43 @@ class CompilationWorkbenchService:
             for item in exported_resources
             if item["resource_id"] != resource_id
         ]
+        builtin_components_by_reference: dict[str, dict] = {}
+        for builtin_component in build_builtin_resource_registry():
+            for reference in (
+                builtin_component.get("resource_id"),
+                builtin_component.get("resource_key"),
+                *builtin_component.get("compatibility_aliases", []),
+            ):
+                if isinstance(reference, str) and reference:
+                    builtin_components_by_reference[reference] = builtin_component
+        builtin_dependencies_by_id: dict[str, dict] = {}
+        for graph in resource_graphs.values():
+            nodes = graph.get("nodes")
+            if not isinstance(nodes, list):
+                continue
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                for reference in (
+                    node.get("resource_id"),
+                    node.get("resource_key"),
+                    node.get("node_kind"),
+                ):
+                    if not isinstance(reference, str) or not reference:
+                        continue
+                    builtin_component = builtin_components_by_reference.get(reference)
+                    if builtin_component is None:
+                        continue
+                    builtin_dependencies_by_id[builtin_component["resource_id"]] = {
+                        "resource_id": builtin_component["resource_id"],
+                        "resource_key": builtin_component["resource_key"],
+                        "resource_type": "builtin_component",
+                    }
+                    break
+        builtin_component_dependencies = [
+            builtin_dependencies_by_id[resource_id]
+            for resource_id in sorted(builtin_dependencies_by_id)
+        ]
         package_contents = {
             "manifest.json": self._encode_json_bytes(
                 {
@@ -4433,7 +4470,7 @@ class CompilationWorkbenchService:
                     "maximum_host_version": None,
                     "root_resource_id": resource["resource_id"],
                     "graph_schema_version": resource_graph.get("graph_schema_version"),
-                    "builtin_component_dependencies": [],
+                    "builtin_component_dependencies": builtin_component_dependencies,
                     "custom_node_graph_dependencies": custom_node_graph_dependencies,
                     "embedded_resources": [],
                 }
@@ -4532,6 +4569,43 @@ class CompilationWorkbenchService:
                         raise ValueError(
                             "subgraph asset maximum host version is not supported: "
                             f"{maximum_host_version}"
+                        )
+                builtin_component_dependencies = manifest.get(
+                    "builtin_component_dependencies", []
+                )
+                if not isinstance(builtin_component_dependencies, list):
+                    raise ValueError("subgraph asset builtin component dependencies must be an array")
+                builtin_components_by_reference: dict[str, dict] = {}
+                for builtin_component in build_builtin_resource_registry():
+                    for reference in (
+                        builtin_component.get("resource_id"),
+                        builtin_component.get("resource_key"),
+                    ):
+                        if isinstance(reference, str) and reference:
+                            builtin_components_by_reference[reference] = builtin_component
+                for dependency in builtin_component_dependencies:
+                    if not isinstance(dependency, dict):
+                        raise ValueError("subgraph asset builtin component dependency must be an object")
+                    dependency_resource_id = dependency.get("resource_id")
+                    dependency_resource_key = dependency.get("resource_key")
+                    if (
+                        dependency.get("resource_type") != "builtin_component"
+                        or not isinstance(dependency_resource_id, str)
+                        or not dependency_resource_id
+                        or not isinstance(dependency_resource_key, str)
+                        or not dependency_resource_key
+                    ):
+                        raise ValueError("subgraph asset builtin component dependency is invalid")
+                    builtin_component = builtin_components_by_reference.get(
+                        dependency_resource_id
+                    )
+                    if (
+                        builtin_component is None
+                        or builtin_component.get("resource_key") != dependency_resource_key
+                    ):
+                        raise ValueError(
+                            "subgraph asset builtin component dependency unavailable: "
+                            f"{dependency_resource_id}"
                         )
                 root_resource_id = manifest.get("root_resource_id")
                 if not isinstance(root_resource_id, str) or not root_resource_id:
@@ -4659,6 +4733,7 @@ class CompilationWorkbenchService:
             "can_import": not conflicts,
             "root_resource": root_resource,
             "dependency_count": len(package_resources) - 1,
+            "builtin_component_dependencies": builtin_component_dependencies,
             "conflicts": conflicts,
             "diagnostics": [],
         }

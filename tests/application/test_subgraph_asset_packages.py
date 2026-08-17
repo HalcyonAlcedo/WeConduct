@@ -96,6 +96,48 @@ def test_export_subgraph_asset_collects_referenced_custom_node_graphs(tmp_path) 
         assert f"resources/{inner['resource_id']}/graph.json" in archive.namelist()
 
 
+def test_export_subgraph_asset_collects_referenced_builtin_components(tmp_path) -> None:
+    service = CompilationWorkbenchService()
+    service.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
+    component = service.create_empty_custom_node_graph_resource(
+        resource_name="含内置组件子图"
+    )["resource"]
+    component_document = service.get_graph_document(document_id=component["resource_id"])
+    component_graph = component_document["graph_model"].model_dump(mode="json")
+    component_graph["document_id"] = component["resource_id"]
+    component_graph["nodes"].append(
+        {
+            "node_id": "map-data",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "map-data-anchor",
+            "expansion_role": "transform:map",
+            "display_name": "映射数据",
+            "node_kind": "data.map",
+            "position": {"x": 180, "y": 120},
+            "ports": [],
+            "node_config": {"mode": "map"},
+        }
+    )
+    service.save_graph_document(component_graph)
+
+    output_path = tmp_path / "builtin-dependency.wcsubgraph"
+    service.export_subgraph_asset_package(
+        resource_id=component["resource_id"],
+        output_path=output_path,
+    )
+
+    with ZipFile(output_path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+
+    assert manifest["builtin_component_dependencies"] == [
+        {
+            "resource_id": "builtin:data.map",
+            "resource_key": "data.map",
+            "resource_type": "builtin_component",
+        }
+    ]
+
+
 def test_export_subgraph_asset_rejects_missing_custom_node_graph_dependency(tmp_path) -> None:
     service = CompilationWorkbenchService()
     service.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
@@ -149,6 +191,49 @@ def test_preflight_subgraph_asset_reports_importable_package_without_mutation(tm
     assert preflight["conflicts"] == []
     assert preflight["diagnostics"] == []
     assert target.get_resource_registry_document()["registry_revision"] == before
+
+
+def test_preflight_subgraph_asset_reports_builtin_component_dependencies(tmp_path) -> None:
+    source = CompilationWorkbenchService()
+    source.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
+    component = source.create_empty_custom_node_graph_resource(
+        resource_name="预检内置组件子图"
+    )["resource"]
+    component_document = source.get_graph_document(document_id=component["resource_id"])
+    component_graph = component_document["graph_model"].model_dump(mode="json")
+    component_graph["document_id"] = component["resource_id"]
+    component_graph["nodes"].append(
+        {
+            "node_id": "map-data",
+            "lowered_kind": "execution",
+            "source_anchor_ref": "map-data-anchor",
+            "expansion_role": "transform:map",
+            "display_name": "映射数据",
+            "node_kind": "data.map",
+            "position": {"x": 180, "y": 120},
+            "ports": [],
+            "node_config": {"mode": "map"},
+        }
+    )
+    source.save_graph_document(component_graph)
+    package_path = tmp_path / "shareable.wcsubgraph"
+    source.export_subgraph_asset_package(
+        resource_id=component["resource_id"],
+        output_path=package_path,
+    )
+
+    target = CompilationWorkbenchService()
+    target.save_project_as(project_path=tmp_path / "target-project.weconduct.json")
+
+    preflight = target.preflight_subgraph_asset_import(import_path=package_path)
+
+    assert preflight["builtin_component_dependencies"] == [
+        {
+            "resource_id": "builtin:data.map",
+            "resource_key": "data.map",
+            "resource_type": "builtin_component",
+        }
+    ]
 
 
 def test_preflight_subgraph_asset_rejects_checksum_mismatch_without_mutation(tmp_path) -> None:
@@ -409,6 +494,65 @@ def test_preflight_subgraph_asset_rejects_incompatible_minimum_host_version(tmp_
 
     with pytest.raises(ValueError, match="minimum host version"):
         target.preflight_subgraph_asset_import(import_path=incompatible_path)
+
+
+def test_preflight_subgraph_asset_rejects_unavailable_builtin_component_without_mutation(
+    tmp_path,
+) -> None:
+    source = CompilationWorkbenchService()
+    source.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
+    exported_resource = source.create_empty_custom_node_graph_resource(
+        resource_name="内置组件门禁子图"
+    )["resource"]
+    package_path = tmp_path / "original.wcsubgraph"
+    source.export_subgraph_asset_package(
+        resource_id=exported_resource["resource_id"],
+        output_path=package_path,
+    )
+
+    with ZipFile(package_path) as archive:
+        entries = {
+            name: archive.read(name)
+            for name in archive.namelist()
+            if name != "meta/checksums.json"
+        }
+    manifest = json.loads(entries["manifest.json"])
+    manifest["builtin_component_dependencies"] = [
+        {
+            "resource_id": "builtin:not_available",
+            "resource_key": "not_available",
+            "resource_type": "builtin_component",
+        }
+    ]
+    entries["manifest.json"] = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+    entries["meta/checksums.json"] = json.dumps(
+        {
+            "checksum_schema_version": 1,
+            "algorithm": "sha256",
+            "entries": [
+                {
+                    "path": name,
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "size": len(payload),
+                }
+                for name, payload in sorted(entries.items())
+            ],
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    invalid_path = tmp_path / "missing-builtin.wcsubgraph"
+    with ZipFile(invalid_path, mode="w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
+
+    target = CompilationWorkbenchService()
+    target.save_project_as(project_path=tmp_path / "target-project.weconduct.json")
+    before = target.get_resource_registry_document()["registry_revision"]
+
+    with pytest.raises(ValueError, match="builtin component dependency unavailable"):
+        target.preflight_subgraph_asset_import(import_path=invalid_path)
+
+    assert target.get_resource_registry_document()["registry_revision"] == before
 
 
 def test_commit_subgraph_asset_import_registers_root_graph_in_one_revision(tmp_path) -> None:
