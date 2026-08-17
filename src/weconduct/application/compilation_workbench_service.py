@@ -145,6 +145,8 @@ PROJECT_FILE_SCHEMA_VERSION = 2
 LEGACY_PROJECT_FILE_SCHEMA_VERSION = 1
 PROJECT_SETTINGS_SCHEMA_VERSION = 2
 RESOURCE_EXPORT_SCHEMA_VERSION = 1
+MAX_SUBGRAPH_ASSET_ARCHIVE_FILES = 256
+MAX_SUBGRAPH_ASSET_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_EDITOR_HISTORY_DEPTH = 100
 MAX_RUNTIME_SESSION_HISTORY = 20
 MAX_RUNTIME_LIVE_SESSION_DOCUMENTS = 5
@@ -4466,8 +4468,23 @@ class CompilationWorkbenchService:
             raise ValueError("subgraph asset import path must use .wcsubgraph extension")
         try:
             with zipfile.ZipFile(resolved_path, mode="r") as archive:
+                archive_infos = archive.infolist()
+                if len(archive_infos) > MAX_SUBGRAPH_ASSET_ARCHIVE_FILES:
+                    raise ValueError(
+                        "subgraph asset package contains too many files: "
+                        f"{len(archive_infos)} (maximum {MAX_SUBGRAPH_ASSET_ARCHIVE_FILES})"
+                    )
+                total_uncompressed_size = sum(
+                    archive_info.file_size for archive_info in archive_infos
+                )
+                if total_uncompressed_size > MAX_SUBGRAPH_ASSET_UNCOMPRESSED_BYTES:
+                    raise ValueError(
+                        "subgraph asset package uncompressed size exceeds limit: "
+                        f"{total_uncompressed_size} bytes "
+                        f"(maximum {MAX_SUBGRAPH_ASSET_UNCOMPRESSED_BYTES})"
+                    )
                 archive_names: set[str] = set()
-                for archive_info in archive.infolist():
+                for archive_info in archive_infos:
                     archive_path = archive_info.filename
                     normalized_path = PurePosixPath(archive_path)
                     normalized_name = normalized_path.as_posix()

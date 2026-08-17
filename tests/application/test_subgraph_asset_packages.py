@@ -206,6 +206,109 @@ def test_preflight_subgraph_asset_rejects_archive_path_traversal(tmp_path) -> No
         target.preflight_subgraph_asset_import(import_path=unsafe_path)
 
 
+def test_preflight_subgraph_asset_rejects_too_many_archive_entries_without_mutation(
+    tmp_path,
+) -> None:
+    source = CompilationWorkbenchService()
+    source.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
+    exported_resource = source.create_empty_custom_node_graph_resource(
+        resource_name="归档大小限制子图"
+    )["resource"]
+    package_path = tmp_path / "original.wcsubgraph"
+    source.export_subgraph_asset_package(
+        resource_id=exported_resource["resource_id"],
+        output_path=package_path,
+    )
+
+    with ZipFile(package_path) as archive:
+        entries = {
+            name: archive.read(name)
+            for name in archive.namelist()
+            if name != "meta/checksums.json"
+        }
+    for index in range(257):
+        entries[f"payload/{index:03d}.bin"] = b""
+    entries["meta/checksums.json"] = json.dumps(
+        {
+            "checksum_schema_version": 1,
+            "algorithm": "sha256",
+            "entries": [
+                {
+                    "path": name,
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "size": len(payload),
+                }
+                for name, payload in sorted(entries.items())
+            ],
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    oversized_path = tmp_path / "too-many-files.wcsubgraph"
+    with ZipFile(oversized_path, mode="w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
+
+    target = CompilationWorkbenchService()
+    target.save_project_as(project_path=tmp_path / "target-project.weconduct.json")
+    before = target.get_resource_registry_document()["registry_revision"]
+
+    with pytest.raises(ValueError, match="too many files"):
+        target.preflight_subgraph_asset_import(import_path=oversized_path)
+
+    assert target.get_resource_registry_document()["registry_revision"] == before
+
+
+def test_preflight_subgraph_asset_rejects_excessive_uncompressed_size_without_mutation(
+    tmp_path,
+) -> None:
+    source = CompilationWorkbenchService()
+    source.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
+    exported_resource = source.create_empty_custom_node_graph_resource(
+        resource_name="归档解压大小限制子图"
+    )["resource"]
+    package_path = tmp_path / "original.wcsubgraph"
+    source.export_subgraph_asset_package(
+        resource_id=exported_resource["resource_id"],
+        output_path=package_path,
+    )
+
+    with ZipFile(package_path) as archive:
+        entries = {
+            name: archive.read(name)
+            for name in archive.namelist()
+            if name != "meta/checksums.json"
+        }
+    entries["payload/large.bin"] = b"x" * (64 * 1024 * 1024 + 1)
+    entries["meta/checksums.json"] = json.dumps(
+        {
+            "checksum_schema_version": 1,
+            "algorithm": "sha256",
+            "entries": [
+                {
+                    "path": name,
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "size": len(payload),
+                }
+                for name, payload in sorted(entries.items())
+            ],
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    oversized_path = tmp_path / "too-large.wcsubgraph"
+    with ZipFile(oversized_path, mode="w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
+
+    target = CompilationWorkbenchService()
+    target.save_project_as(project_path=tmp_path / "target-project.weconduct.json")
+    before = target.get_resource_registry_document()["registry_revision"]
+
+    with pytest.raises(ValueError, match="uncompressed size exceeds"):
+        target.preflight_subgraph_asset_import(import_path=oversized_path)
+
+    assert target.get_resource_registry_document()["registry_revision"] == before
+
+
 def test_preflight_subgraph_asset_rejects_incompatible_minimum_host_version(tmp_path) -> None:
     source = CompilationWorkbenchService()
     source.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
