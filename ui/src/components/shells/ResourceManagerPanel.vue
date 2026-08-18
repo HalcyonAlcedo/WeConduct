@@ -1,11 +1,25 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { postResourceEnabled, postResourceTags, postCreateEmptyCustomComponent, postResourceDelete, postResourceMetadata } from '@/services/api'
+import {
+  postResourceEnabled,
+  postResourceTags,
+  postCreateEmptyCustomComponent,
+  postResourceDelete,
+  postResourceMetadata,
+  postFileDialog,
+  postSubgraphAssetExport,
+  postSubgraphAssetImportPreflight,
+  postSubgraphAssetImportCommit,
+} from '@/services/api'
 import { useResourceStore } from '@/stores/resourceStore'
 import { useGraphWorkspaceStore } from '@/stores/graphWorkspaceStore'
 import { useToastStore } from '@/stores/toastStore'
 import { t } from '@/i18n'
-import type { ResourceItem } from '@/types/domains/api'
+import type {
+  ResourceItem,
+  SubgraphAssetConflictPolicy,
+  SubgraphAssetImportPreflightResponse,
+} from '@/types/domains/api'
 
 const resource = useResourceStore()
 const graphWs = useGraphWorkspaceStore()
@@ -19,6 +33,10 @@ const editDialogId = ref<string | null>(null)
 const editDialogName = ref('')
 const filterCategory = ref<string[] | null>(null)
 const filterTag = ref('')
+const subgraphImportPath = ref('')
+const subgraphImportPreflight = ref<SubgraphAssetImportPreflightResponse | null>(null)
+const subgraphConflictPolicy = ref<SubgraphAssetConflictPolicy | ''>('')
+const subgraphImportLoading = ref(false)
 
 onMounted(async () => { await resource.refreshAll(); loading.value = false })
 
@@ -94,11 +112,106 @@ async function confirmEdit() {
   try { await postResourceMetadata(editDialogId.value, { display_name: editDialogName.value.trim() }); await resource.refreshAll(); editDialogId.value = null; toast.info(t('framework.resourceManager.toast.updated', '已更新')) }
   catch (e: any) { toast.error(t('framework.resourceManager.toast.updateFailed', '更新失败'), e?.message) }
 }
+
+function closeSubgraphImport() {
+  subgraphImportPath.value = ''
+  subgraphImportPreflight.value = null
+  subgraphConflictPolicy.value = ''
+}
+
+const subgraphCommitPolicy = computed<SubgraphAssetConflictPolicy | null>(() => {
+  const preflight = subgraphImportPreflight.value
+  if (!preflight || preflight.diagnostics.length) return null
+  return preflight.conflicts.length ? subgraphConflictPolicy.value || null : 'abort'
+})
+
+function subgraphDiagnosticMessage(diagnostic: Record<string, unknown>) {
+  const message = diagnostic.message
+  return typeof message === 'string' && message.trim()
+    ? message
+    : t('framework.resourceManager.subgraphImport.invalidPackage', '资源包未通过导入检查')
+}
+
+async function exportSubgraphAsset(resourceItem: ResourceItem) {
+  try {
+    const selected = await postFileDialog({
+      mode: 'save_file',
+      title: t('framework.resourceManager.subgraphExport.pickPath', '导出子图资源包'),
+      default_path: `${resourceItem.display_name}.wcsubgraph`,
+      file_types: ['WeConduct 子图资源包 (*.wcsubgraph)'],
+    })
+    if (selected.status !== 'selected' || !selected.paths.length) return
+    const exported = await postSubgraphAssetExport({
+      resource_id: resourceItem.resource_id,
+      output_path: selected.paths[0],
+    })
+    toast.success(
+      t('framework.resourceManager.subgraphExport.done', '子图资源包已导出'),
+      exported.output_path,
+    )
+  } catch (error: any) {
+    if (error?.status === 503) {
+      toast.info('', t('framework.resourceManager.fileDialogUnsupported', '当前运行环境不支持系统文件选择器'))
+      return
+    }
+    toast.error(t('framework.resourceManager.subgraphExport.failed', '导出子图资源包失败'), error?.message)
+  }
+}
+
+async function startSubgraphImport() {
+  try {
+    const selected = await postFileDialog({
+      mode: 'open_file',
+      title: t('framework.resourceManager.subgraphImport.pickPath', '选择子图资源包'),
+      file_types: ['WeConduct 子图资源包 (*.wcsubgraph)'],
+    })
+    if (selected.status !== 'selected' || !selected.paths.length) return
+    subgraphImportLoading.value = true
+    const preflight = await postSubgraphAssetImportPreflight({
+      import_path: selected.paths[0],
+    })
+    subgraphImportPath.value = selected.paths[0]
+    subgraphImportPreflight.value = preflight
+    subgraphConflictPolicy.value = ''
+  } catch (error: any) {
+    if (error?.status === 503) {
+      toast.info('', t('framework.resourceManager.fileDialogUnsupported', '当前运行环境不支持系统文件选择器'))
+      return
+    }
+    toast.error(t('framework.resourceManager.subgraphImport.preflightFailed', '子图资源包预检失败'), error?.message)
+  } finally {
+    subgraphImportLoading.value = false
+  }
+}
+
+async function commitSubgraphImport() {
+  const conflictPolicy = subgraphCommitPolicy.value
+  if (!subgraphImportPreflight.value || !subgraphImportPath.value || !conflictPolicy) return
+  subgraphImportLoading.value = true
+  try {
+    const imported = await postSubgraphAssetImportCommit({
+      import_path: subgraphImportPath.value,
+      conflict_policy: conflictPolicy,
+    })
+    await resource.refreshAll()
+    await graphWs.refreshGraphDocuments()
+    toast.success(
+      t('framework.resourceManager.subgraphImport.done', '子图资源包已导入'),
+      imported.resource.display_name,
+    )
+    closeSubgraphImport()
+  } catch (error: any) {
+    toast.error(t('framework.resourceManager.subgraphImport.commitFailed', '子图资源包导入失败'), error?.message)
+  } finally {
+    subgraphImportLoading.value = false
+  }
+}
 </script>
 <template>
   <div class="rmp">
     <div class="rmp-toolbar">
       <button class="rmp-btn" @click="showNewDlg = true">{{ t('framework.resourceManager.toolbar.new', '新建') }}</button>
+      <button class="rmp-btn" :disabled="subgraphImportLoading" @click="startSubgraphImport">{{ t('framework.resourceManager.toolbar.importSubgraph', '导入子图') }}</button>
     </div>
     <div v-if="loading" class="rmp-load">{{ t('framework.resourceManager.loading', '加载中…') }}</div>
     <template v-else>
@@ -164,6 +277,7 @@ async function confirmEdit() {
               <button class="rmp-toggle" @click="toggleEnabled(r)">{{ r.enabled ? t('framework.resourceManager.action.disable', '禁用') : t('framework.resourceManager.action.enable', '启用') }}</button>
               <button v-if="r.resource_type === 'custom_node_graph'" class="rmp-toggle" style="margin-left:4px" @click="startEdit(r)">{{ t('framework.resourceManager.action.edit', '编辑') }}</button>
               <button v-if="r.resource_type === 'custom_node_graph'" class="rmp-toggle" style="margin-left:4px" @click="openComponentGraph(r)">{{ t('framework.resourceManager.action.open', '打开') }}</button>
+              <button v-if="r.resource_type === 'custom_node_graph'" class="rmp-toggle" style="margin-left:4px" @click="exportSubgraphAsset(r)">{{ t('framework.resourceManager.action.export', '导出') }}</button>
               <button v-if="r.resource_type === 'custom_node_graph'" class="rmp-toggle" style="margin-left:4px" @click="startDelete(r)">{{ t('framework.resourceManager.action.delete', '删除') }}</button>
               <button v-if="r.resource_type === 'custom_node_graph'" class="rmp-toggle" style="margin-left:4px" @click="expandedRes = expandedRes === r.resource_id ? null : r.resource_id">Schema</button>
             </td>
@@ -201,6 +315,53 @@ async function confirmEdit() {
           <div class="rmp-dlg-hd">{{ t('framework.resourceManager.newDialog.title', '新建用户组件') }}<span class="rmp-dlg-close" @click="showNewDlg = false">✕</span></div>
           <div class="rmp-dlg-body"><input v-model="newCompName" class="rmp-dlg-input" :placeholder="t('framework.resourceManager.componentNamePlaceholder', '组件名称')" @keyup.enter="createNewComponent" /></div>
           <div class="rmp-dlg-ft"><button class="rmp-dlg-btn" @click="createNewComponent" :disabled="!newCompName.trim()">{{ t('framework.resourceManager.action.create', '创建') }}</button></div>
+        </div>
+      </div>
+      <div v-if="subgraphImportPreflight" class="rmp-dlg-overlay" @click.self="!subgraphImportLoading && closeSubgraphImport()">
+        <div class="rmp-dlg-box rmp-subgraph-dlg">
+          <div class="rmp-dlg-hd">
+            {{ t('framework.resourceManager.subgraphImport.title', '子图导入预检') }}
+            <span v-if="!subgraphImportLoading" class="rmp-dlg-close" @click="closeSubgraphImport">✕</span>
+          </div>
+          <div class="rmp-dlg-body">
+            <dl class="rmp-subgraph-summary">
+              <dt>{{ t('framework.resourceManager.subgraphImport.resource', '资源') }}</dt>
+              <dd>{{ subgraphImportPreflight.root_resource.display_name }}</dd>
+              <dt>{{ t('framework.resourceManager.subgraphImport.dependencies', '递归依赖') }}</dt>
+              <dd>{{ subgraphImportPreflight.dependency_count }}</dd>
+              <dt>{{ t('framework.resourceManager.subgraphImport.embeddedResources', '嵌入资源') }}</dt>
+              <dd>{{ subgraphImportPreflight.embedded_resources.length }}</dd>
+              <dt>{{ t('framework.resourceManager.subgraphImport.builtinDependencies', '内置依赖') }}</dt>
+              <dd>{{ subgraphImportPreflight.builtin_component_dependencies.length }}</dd>
+              <dt>{{ t('framework.resourceManager.subgraphImport.upgradedGraphs', '已升级图') }}</dt>
+              <dd>{{ subgraphImportPreflight.graph_compatibility.filter(item => item.upgraded).length }}</dd>
+            </dl>
+            <div v-if="subgraphImportPreflight.diagnostics.length" class="rmp-subgraph-errors">
+              <strong>{{ t('framework.resourceManager.subgraphImport.blocked', '此资源包不能导入') }}</strong>
+              <ul>
+                <li v-for="(diagnostic, index) in subgraphImportPreflight.diagnostics" :key="index">{{ subgraphDiagnosticMessage(diagnostic) }}</li>
+              </ul>
+            </div>
+            <div v-else-if="subgraphImportPreflight.conflicts.length" class="rmp-subgraph-conflicts">
+              <strong>{{ t('framework.resourceManager.subgraphImport.conflicts', '检测到同 ID 资源冲突') }}</strong>
+              <ul>
+                <li v-for="conflict in subgraphImportPreflight.conflicts" :key="conflict.resource_id">{{ conflict.resource_key }}</li>
+              </ul>
+              <label class="rmp-subgraph-policy-label">
+                {{ t('framework.resourceManager.subgraphImport.conflictPolicy', '处理方式') }}
+                <select v-model="subgraphConflictPolicy" class="rmp-subgraph-policy" :disabled="subgraphImportLoading">
+                  <option value="">{{ t('framework.resourceManager.subgraphImport.choosePolicy', '请选择') }}</option>
+                  <option value="rename">{{ t('framework.resourceManager.subgraphImport.rename', '重命名导入') }}</option>
+                  <option value="replace">{{ t('framework.resourceManager.subgraphImport.replace', '替换兼容资源') }}</option>
+                </select>
+              </label>
+            </div>
+            <div v-else class="rmp-subgraph-ok">{{ t('framework.resourceManager.subgraphImport.ready', '预检通过，可以导入。') }}</div>
+          </div>
+          <div class="rmp-dlg-ft">
+            <button class="rmp-dlg-btn rmp-subgraph-commit" :disabled="!subgraphCommitPolicy || subgraphImportLoading" @click="commitSubgraphImport">{{ t('framework.resourceManager.subgraphImport.commit', '确认导入') }}</button>
+            <button class="rmp-dlg-btn rmp-dlg-btn-secondary" :disabled="subgraphImportLoading" @click="closeSubgraphImport">{{ t('framework.resourceManager.action.cancel', '取消') }}</button>
+          </div>
         </div>
       </div>
     </Teleport>
@@ -250,4 +411,15 @@ async function confirmEdit() {
 .rmp-dlg-ft { padding: 8px 12px; border-top: 1px solid var(--border-subtle); display: flex; justify-content: flex-end; }
 .rmp-dlg-btn { padding: 4px 14px; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--accent); color: #fff; cursor: pointer; font-size: var(--text-small); }
 .rmp-dlg-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.rmp-dlg-btn-secondary { background: transparent; color: var(--text-secondary); border-color: var(--border-default); margin-left: 8px; }
+.rmp-subgraph-dlg { width: min(440px, calc(100vw - 32px)); }
+.rmp-subgraph-summary { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
+.rmp-subgraph-summary dt { color: var(--text-disabled); }
+.rmp-subgraph-summary dd { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; }
+.rmp-subgraph-errors, .rmp-subgraph-conflicts { margin-top: var(--space-sm); padding: var(--space-sm); border-left: 3px solid var(--state-error); background: var(--bg-input); }
+.rmp-subgraph-conflicts { border-left-color: var(--state-warning); }
+.rmp-subgraph-errors ul, .rmp-subgraph-conflicts ul { margin: 4px 0 0; padding-left: 18px; }
+.rmp-subgraph-ok { margin-top: var(--space-sm); color: var(--state-success); }
+.rmp-subgraph-policy-label { display: grid; gap: 4px; margin-top: var(--space-sm); color: var(--text-secondary); }
+.rmp-subgraph-policy { min-height: 26px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text-primary); }
 </style>

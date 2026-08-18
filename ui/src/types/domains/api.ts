@@ -490,6 +490,53 @@ export interface ResourceTagsResponse { status: string; registry_revision: numbe
 export interface ResourceImportResponse { status: string; registry_revision: number; resource: ResourceItem }
 export interface ResourceExportRequest { resource_id: string; export_path: string }
 export interface ResourceImportRequest { import_path: string; replace_existing?: boolean }
+export type SubgraphAssetConflictPolicy = 'abort' | 'rename' | 'replace'
+export interface SubgraphAssetExportRequest { resource_id: string; output_path: string }
+export interface SubgraphAssetExportResponse {
+  status: string
+  resource: ResourceItem
+  output_path: string
+}
+export interface SubgraphAssetConflict {
+  resource_id: string
+  resource_key: string
+  resource_type: string
+}
+export interface SubgraphAssetEmbeddedResource {
+  relative_path: string
+  archive_path?: string
+  size: number
+}
+export interface SubgraphAssetGraphCompatibility {
+  resource_id: string
+  from_version: string
+  to_version: string
+  status: string
+  upgraded: boolean
+}
+export interface SubgraphAssetImportPreflightResponse {
+  status: string
+  can_import: boolean
+  root_resource: ResourceItem
+  dependency_count: number
+  builtin_component_dependencies: Array<Record<string, string>>
+  embedded_resources: SubgraphAssetEmbeddedResource[]
+  graph_compatibility: SubgraphAssetGraphCompatibility[]
+  conflicts: SubgraphAssetConflict[]
+  diagnostics: Array<Record<string, unknown>>
+}
+export interface SubgraphAssetImportCommitRequest {
+  import_path: string
+  conflict_policy?: SubgraphAssetConflictPolicy
+}
+export interface SubgraphAssetImportCommitResponse {
+  status: string
+  resource: ResourceItem
+  registry_revision: number
+  conflict_policy: SubgraphAssetConflictPolicy
+  resource_id_map: Record<string, string>
+  embedded_resources: Array<Pick<SubgraphAssetEmbeddedResource, 'relative_path' | 'size'>>
+}
 
 // ===== P6: Component Library =====
 

@@ -21,6 +21,8 @@ import type {
   RecentProjectRemoveRequest, RecentProjectsResponse,
   ProjectDocumentsResponse,
   ResourceEnabledResponse, ResourceTagsResponse, ResourceImportResponse, ResourcesResponse, ResourceExportRequest, ResourceImportRequest,
+  SubgraphAssetExportRequest, SubgraphAssetExportResponse,
+  SubgraphAssetImportCommitRequest, SubgraphAssetImportCommitResponse, SubgraphAssetImportPreflightResponse,
   ComponentLibraryResponse,
   RuntimeSessionsResponse, RuntimeSessionDetailResponse,
   RuntimeProgress,
@@ -328,6 +330,9 @@ export function postResourceImport(body: ResourceImportRequest): Promise<Resourc
 export function postResourceTags(resourceId: string, tags: string[]): Promise<ResourceTagsResponse> { return request(`/workbench/resources/${resourceId}/tags`, { method: 'POST', body: JSON.stringify({ tags }) }) }
 export function postResourceMetadata(resourceId: string, metadata: { display_name?: string; description?: string; display_name_i18n?: Record<string, string>; description_i18n?: Record<string, string> }): Promise<ResourceTagsResponse> { return request('/workbench/resources/metadata', { method: 'POST', body: JSON.stringify({ resource_id: resourceId, ...metadata }) }) }
 export function postResourceDelete(resourceId: string): Promise<{ status: string }> { return request('/workbench/resources/delete', { method: 'POST', body: JSON.stringify({ resource_id: resourceId }) }) }
+export function postSubgraphAssetExport(body: SubgraphAssetExportRequest): Promise<SubgraphAssetExportResponse> { return request('/workbench/subgraph-assets/export', { method: 'POST', body: JSON.stringify(body) }) }
+export function postSubgraphAssetImportPreflight(body: { import_path: string }): Promise<SubgraphAssetImportPreflightResponse> { return request('/workbench/subgraph-assets/import/preflight', { method: 'POST', body: JSON.stringify(body) }) }
+export function postSubgraphAssetImportCommit(body: SubgraphAssetImportCommitRequest): Promise<SubgraphAssetImportCommitResponse> { return request('/workbench/subgraph-assets/import/commit', { method: 'POST', body: JSON.stringify(body) }) }
 
 // ===== P6: Component Library =====
 export function fetchComponentLibrary(params?: { query?: string; tags?: string; enabled?: boolean; origin?: string; resource_type?: string }): Promise<ComponentLibraryResponse> {

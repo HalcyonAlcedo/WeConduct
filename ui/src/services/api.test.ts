@@ -7,6 +7,9 @@ import {
   postExternalApiPreferences,
   resetConfigValues,
   postPreferences,
+  postSubgraphAssetExport,
+  postSubgraphAssetImportCommit,
+  postSubgraphAssetImportPreflight,
 } from './api'
 
 describe('ApiError', () => {
@@ -281,5 +284,66 @@ describe('external API preferences', () => {
       }),
     })
     expect(result.token).toBe('updated-external-token')
+  })
+})
+
+describe('subgraph asset API', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('导出子图资源包时发送资源 ID 与输出路径', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 'exported', output_path: 'C:\\exports\\component.wcsubgraph' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await postSubgraphAssetExport({
+      resource_id: 'custom_node_graph:demo',
+      output_path: 'C:\\exports\\component.wcsubgraph',
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/workbench/subgraph-assets/export', {
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      body: JSON.stringify({
+        resource_id: 'custom_node_graph:demo',
+        output_path: 'C:\\exports\\component.wcsubgraph',
+      }),
+    })
+  })
+
+  it('预检与提交子图资源包使用独立端点和冲突策略', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ status: 'preflight', can_import: true, conflicts: [], diagnostics: [] }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ status: 'imported', conflict_policy: 'rename' }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await postSubgraphAssetImportPreflight({ import_path: 'C:\\imports\\component.wcsubgraph' })
+    await postSubgraphAssetImportCommit({
+      import_path: 'C:\\imports\\component.wcsubgraph',
+      conflict_policy: 'rename',
+    })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/workbench/subgraph-assets/import/preflight', {
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      body: JSON.stringify({ import_path: 'C:\\imports\\component.wcsubgraph' }),
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/workbench/subgraph-assets/import/commit', {
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      body: JSON.stringify({
+        import_path: 'C:\\imports\\component.wcsubgraph',
+        conflict_policy: 'rename',
+      }),
+    })
   })
 })
