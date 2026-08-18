@@ -329,8 +329,6 @@ async function commitSubgraphImport() {
               <dd>{{ subgraphImportPreflight.root_resource.display_name }}</dd>
               <dt>{{ t('framework.resourceManager.subgraphImport.dependencies', '递归依赖') }}</dt>
               <dd>{{ subgraphImportPreflight.dependency_count }}</dd>
-              <dt>{{ t('framework.resourceManager.subgraphImport.embeddedResources', '嵌入资源') }}</dt>
-              <dd>{{ subgraphImportPreflight.embedded_resources.length }}</dd>
               <dt>{{ t('framework.resourceManager.subgraphImport.builtinDependencies', '内置依赖') }}</dt>
               <dd>{{ subgraphImportPreflight.builtin_component_dependencies.length }}</dd>
               <dt>{{ t('framework.resourceManager.subgraphImport.upgradedGraphs', '已升级图') }}</dt>

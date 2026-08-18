@@ -190,7 +190,7 @@ def test_export_subgraph_asset_collects_referenced_builtin_components(tmp_path) 
     ]
 
 
-def test_export_subgraph_asset_includes_project_embedded_resources(tmp_path) -> None:
+def test_export_subgraph_asset_excludes_project_embedded_resources(tmp_path) -> None:
     service = CompilationWorkbenchService()
     service.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
     embedded_path = tmp_path / "assets" / "instructions.txt"
@@ -211,20 +211,11 @@ def test_export_subgraph_asset_includes_project_embedded_resources(tmp_path) -> 
 
     with ZipFile(output_path) as archive:
         manifest = json.loads(archive.read("manifest.json"))
-        assert archive.read("resources/embedded/assets/instructions.txt") == "可共享资源".encode(
-            "utf-8"
-        )
-
-    assert manifest["embedded_resources"] == [
-        {
-            "relative_path": "assets/instructions.txt",
-            "archive_path": "resources/embedded/assets/instructions.txt",
-            "size": len("可共享资源".encode("utf-8")),
-        }
-    ]
+        assert "embedded_resources" not in manifest
+        assert not any(name.startswith("resources/embedded/") for name in archive.namelist())
 
 
-def test_preflight_subgraph_asset_reports_embedded_resources_without_mutation(tmp_path) -> None:
+def test_preflight_subgraph_asset_excludes_project_embedded_resources(tmp_path) -> None:
     source = CompilationWorkbenchService()
     source_root = tmp_path / "source"
     source_root.mkdir()
@@ -254,27 +245,21 @@ def test_preflight_subgraph_asset_reports_embedded_resources_without_mutation(tm
 
     preflight = target.preflight_subgraph_asset_import(import_path=target_package_path)
 
-    assert preflight["embedded_resources"] == [
-        {
-            "relative_path": "assets/instructions.txt",
-            "archive_path": "resources/embedded/assets/instructions.txt",
-            "size": len("可共享资源".encode("utf-8")),
-        }
-    ]
+    assert "embedded_resources" not in preflight
     assert target.get_resource_registry_document()["registry_revision"] == before
     assert not (target_root / "resources" / "embedded" / "assets" / "instructions.txt").exists()
 
 
-def test_commit_subgraph_asset_import_materializes_embedded_resources(tmp_path) -> None:
+def test_commit_subgraph_asset_import_ignores_project_embedded_resources(tmp_path) -> None:
     source = CompilationWorkbenchService()
     source_root = tmp_path / "source"
     source_root.mkdir()
     source.save_project_as(project_path=source_root / "source-project.weconduct.json")
-    embedded_path = source_root / "assets" / "instructions.txt"
+    embedded_path = source_root / "input" / "upload-sample.txt"
     embedded_path.parent.mkdir()
     embedded_path.write_text("可共享资源", encoding="utf-8")
     source_settings = source.get_project_settings_document()["project_settings"]
-    source_settings["resource_policy"]["embedded_resources"] = ["assets/instructions.txt"]
+    source_settings["resource_policy"]["embedded_resources"] = ["input/upload-sample.txt"]
     source.update_project_settings(project_settings=source_settings)
     component = source.create_empty_custom_node_graph_resource(
         resource_name="导入嵌入资源子图"
@@ -291,127 +276,108 @@ def test_commit_subgraph_asset_import_materializes_embedded_resources(tmp_path) 
     target.save_project_as(project_path=target_root / "target-project.weconduct.json")
     target_package_path = target_root / source_package_path.name
     shutil.copy2(source_package_path, target_package_path)
+    target_resource_path = target_root / "resources" / "embedded" / "input" / "upload-sample.txt"
+    target_resource_path.parent.mkdir(parents=True)
+    target_resource_path.write_text("目标项目文件", encoding="utf-8")
 
     imported = target.commit_subgraph_asset_import(import_path=target_package_path)
 
-    target_resource_path = target_root / "resources" / "embedded" / "assets" / "instructions.txt"
-    assert imported["embedded_resources"] == [
-        {
-            "relative_path": "resources/embedded/assets/instructions.txt",
-            "size": len("可共享资源".encode("utf-8")),
-        }
-    ]
-    assert target_resource_path.read_text(encoding="utf-8") == "可共享资源"
+    assert "embedded_resources" not in imported
+    assert target_resource_path.read_text(encoding="utf-8") == "目标项目文件"
     target_settings = target.get_project_settings_document()["project_settings"]
-    assert target_settings["resource_policy"]["embedded_resources"] == [
-        "resources/embedded/assets/instructions.txt"
-    ]
+    assert target_settings["resource_policy"]["embedded_resources"] == []
 
 
-def test_commit_subgraph_asset_import_rolls_back_when_embedded_resource_staging_fails(
-    tmp_path,
-    monkeypatch,
-) -> None:
+def test_preflight_subgraph_asset_rejects_project_embedded_resource_manifest_field(tmp_path) -> None:
     source = CompilationWorkbenchService()
-    source_root = tmp_path / "source"
-    source_root.mkdir()
-    source.save_project_as(project_path=source_root / "source-project.weconduct.json")
-    embedded_path = source_root / "assets" / "instructions.txt"
-    embedded_path.parent.mkdir()
-    embedded_path.write_text("可共享资源", encoding="utf-8")
-    source_settings = source.get_project_settings_document()["project_settings"]
-    source_settings["resource_policy"]["embedded_resources"] = ["assets/instructions.txt"]
-    source.update_project_settings(project_settings=source_settings)
-    component = source.create_empty_custom_node_graph_resource(
-        resource_name="嵌入资源回滚子图"
+    source.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
+    resource = source.create_empty_custom_node_graph_resource(
+        resource_name="子图包边界校验"
     )["resource"]
-    source_package_path = source_root / "embedded-resource.wcsubgraph"
+    package_path = tmp_path / "original.wcsubgraph"
     source.export_subgraph_asset_package(
-        resource_id=component["resource_id"],
-        output_path=source_package_path,
+        resource_id=resource["resource_id"],
+        output_path=package_path,
     )
+
+    with ZipFile(package_path) as archive:
+        entries = {
+            name: archive.read(name)
+            for name in archive.namelist()
+            if name != "meta/checksums.json"
+        }
+    manifest = json.loads(entries["manifest.json"])
+    manifest["embedded_resources"] = []
+    entries["manifest.json"] = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+    entries["meta/checksums.json"] = json.dumps(
+        {
+            "checksum_schema_version": 1,
+            "algorithm": "sha256",
+            "entries": [
+                {"path": name, "sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+                for name, payload in sorted(entries.items())
+            ],
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    invalid_path = tmp_path / "legacy-embedded-manifest.wcsubgraph"
+    with ZipFile(invalid_path, mode="w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
 
     target = CompilationWorkbenchService()
-    target_root = tmp_path / "target"
-    target_root.mkdir()
-    target.save_project_as(project_path=target_root / "target-project.weconduct.json")
-    target_package_path = target_root / source_package_path.name
-    shutil.copy2(source_package_path, target_package_path)
-    before_revision = target.get_resource_registry_document()["registry_revision"]
-    before_settings = target.get_project_settings_document()["project_settings"]
-    original_write_bytes = type(embedded_path).write_bytes
+    target.save_project_as(project_path=tmp_path / "target-project.weconduct.json")
 
-    def fail_staging_write(path, data):
-        if path.name == "instructions.txt":
-            raise OSError("embedded resource staging write failed")
-        return original_write_bytes(path, data)
-
-    monkeypatch.setattr(type(embedded_path), "write_bytes", fail_staging_write)
-
-    with pytest.raises(OSError, match="staging write failed"):
-        target.commit_subgraph_asset_import(import_path=target_package_path)
-
-    assert target.get_resource_registry_document()["registry_revision"] == before_revision
-    assert target.get_project_settings_document()["project_settings"] == before_settings
-    assert not (
-        target_root / "resources" / "embedded" / "assets" / "instructions.txt"
-    ).exists()
+    with pytest.raises(
+        ValueError,
+        match="manifest contains unsupported fields: embedded_resources",
+    ):
+        target.preflight_subgraph_asset_import(import_path=invalid_path)
 
 
-def test_commit_subgraph_asset_import_rolls_back_when_settings_persistence_fails(
-    tmp_path,
-    monkeypatch,
-) -> None:
+def test_preflight_subgraph_asset_rejects_non_graph_archive_entries(tmp_path) -> None:
     source = CompilationWorkbenchService()
-    source_root = tmp_path / "source"
-    source_root.mkdir()
-    source.save_project_as(project_path=source_root / "source-project.weconduct.json")
-    embedded_path = source_root / "assets" / "instructions.txt"
-    embedded_path.parent.mkdir()
-    embedded_path.write_text("可共享资源", encoding="utf-8")
-    source_settings = source.get_project_settings_document()["project_settings"]
-    source_settings["resource_policy"]["embedded_resources"] = ["assets/instructions.txt"]
-    source.update_project_settings(project_settings=source_settings)
-    component = source.create_empty_custom_node_graph_resource(
-        resource_name="设置回滚子图"
+    source.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
+    resource = source.create_empty_custom_node_graph_resource(
+        resource_name="子图包归档范围校验"
     )["resource"]
-    source_package_path = source_root / "embedded-resource.wcsubgraph"
+    package_path = tmp_path / "original.wcsubgraph"
     source.export_subgraph_asset_package(
-        resource_id=component["resource_id"],
-        output_path=source_package_path,
+        resource_id=resource["resource_id"],
+        output_path=package_path,
     )
+
+    with ZipFile(package_path) as archive:
+        entries = {
+            name: archive.read(name)
+            for name in archive.namelist()
+            if name != "meta/checksums.json"
+        }
+    entries["resources/embedded/input/upload-sample.txt"] = b"project resource"
+    entries["meta/checksums.json"] = json.dumps(
+        {
+            "checksum_schema_version": 1,
+            "algorithm": "sha256",
+            "entries": [
+                {"path": name, "sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+                for name, payload in sorted(entries.items())
+            ],
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    invalid_path = tmp_path / "extra-embedded-file.wcsubgraph"
+    with ZipFile(invalid_path, mode="w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
 
     target = CompilationWorkbenchService()
-    target_root = tmp_path / "target"
-    target_root.mkdir()
-    target.save_project_as(project_path=target_root / "target-project.weconduct.json")
-    target_package_path = target_root / source_package_path.name
-    shutil.copy2(source_package_path, target_package_path)
-    target.update_project_settings(
-        project_settings=target.get_project_settings_document()["project_settings"]
-    )
-    before_revision = target.get_resource_registry_document()["registry_revision"]
-    before_settings = target.get_project_settings_document()["project_settings"]
-    target_settings_path = (
-        target._resolve_project_storage_root(target_root / "target-project.weconduct.json")
-        / "project-settings.json"
-    )
-    before_settings_file = target_settings_path.read_bytes()
+    target.save_project_as(project_path=tmp_path / "target-project.weconduct.json")
 
-    def fail_settings_persistence() -> None:
-        raise OSError("project settings persistence failed")
-
-    monkeypatch.setattr(target, "_persist_project_settings_file_if_bound", fail_settings_persistence)
-
-    with pytest.raises(OSError, match="settings persistence failed"):
-        target.commit_subgraph_asset_import(import_path=target_package_path)
-
-    assert target.get_resource_registry_document()["registry_revision"] == before_revision
-    assert target.get_project_settings_document()["project_settings"] == before_settings
-    assert target_settings_path.read_bytes() == before_settings_file
-    assert not (
-        target_root / "resources" / "embedded" / "assets" / "instructions.txt"
-    ).exists()
+    with pytest.raises(
+        ValueError,
+        match="contains files outside graph data and declared dependencies",
+    ):
+        target.preflight_subgraph_asset_import(import_path=invalid_path)
 
 
 def test_export_subgraph_asset_rejects_missing_custom_node_graph_dependency(tmp_path) -> None:

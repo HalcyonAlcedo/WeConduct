@@ -3021,6 +3021,7 @@ def test_workbench_subgraph_asset_import_preflight_reports_package_without_mutat
         assert preflight["status"] == "preflight"
         assert preflight["can_import"] is True
         assert preflight["root_resource"]["resource_id"] == exported_resource["resource_id"]
+        assert "embedded_resources" not in preflight
         assert preflight["conflicts"] == []
         assert preflight["diagnostics"] == []
     finally:
@@ -3072,6 +3073,7 @@ def test_workbench_subgraph_asset_import_commit_uses_default_abort_policy(
         assert committed["conflict_policy"] == "abort"
         assert committed["resource"]["resource_id"] == exported_resource["resource_id"]
         assert committed["resource_id_map"] == {}
+        assert "embedded_resources" not in committed
         assert isinstance(committed["registry_revision"], int)
         assert after_preflight["can_import"] is False
         assert after_preflight["conflicts"] == [

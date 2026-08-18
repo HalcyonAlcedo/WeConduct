@@ -502,11 +502,6 @@ export interface SubgraphAssetConflict {
   resource_key: string
   resource_type: string
 }
-export interface SubgraphAssetEmbeddedResource {
-  relative_path: string
-  archive_path?: string
-  size: number
-}
 export interface SubgraphAssetGraphCompatibility {
   resource_id: string
   from_version: string
@@ -520,7 +515,6 @@ export interface SubgraphAssetImportPreflightResponse {
   root_resource: ResourceItem
   dependency_count: number
   builtin_component_dependencies: Array<Record<string, string>>
-  embedded_resources: SubgraphAssetEmbeddedResource[]
   graph_compatibility: SubgraphAssetGraphCompatibility[]
   conflicts: SubgraphAssetConflict[]
   diagnostics: Array<Record<string, unknown>>
@@ -535,7 +529,6 @@ export interface SubgraphAssetImportCommitResponse {
   registry_revision: number
   conflict_policy: SubgraphAssetConflictPolicy
   resource_id_map: Record<string, string>
-  embedded_resources: Array<Pick<SubgraphAssetEmbeddedResource, 'relative_path' | 'size'>>
 }
 
 // ===== P6: Component Library =====

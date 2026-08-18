@@ -57,7 +57,6 @@ function preflight(overrides: Record<string, unknown> = {}) {
     root_resource: customResource,
     dependency_count: 0,
     builtin_component_dependencies: [],
-    embedded_resources: [],
     graph_compatibility: [],
     conflicts: [],
     diagnostics: [],
@@ -144,7 +143,6 @@ describe('ResourceManagerPanel subgraph assets', () => {
       registry_revision: 3,
       conflict_policy: 'abort',
       resource_id_map: {},
-      embedded_resources: [],
     })
     const wrapper = mountPanel()
     await flushPromises()
@@ -189,7 +187,6 @@ describe('ResourceManagerPanel subgraph assets', () => {
       registry_revision: 3,
       conflict_policy: 'rename',
       resource_id_map: {},
-      embedded_resources: [],
     })
     const wrapper = mountPanel()
     await flushPromises()
