@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from zipfile import ZipFile
 
 import pytest
@@ -136,6 +137,81 @@ def test_export_subgraph_asset_collects_referenced_builtin_components(tmp_path) 
             "resource_type": "builtin_component",
         }
     ]
+
+
+def test_export_subgraph_asset_includes_project_embedded_resources(tmp_path) -> None:
+    service = CompilationWorkbenchService()
+    service.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
+    embedded_path = tmp_path / "assets" / "instructions.txt"
+    embedded_path.parent.mkdir()
+    embedded_path.write_text("可共享资源", encoding="utf-8")
+    project_settings = service.get_project_settings_document()["project_settings"]
+    project_settings["resource_policy"]["embedded_resources"] = ["assets/instructions.txt"]
+    service.update_project_settings(project_settings=project_settings)
+    component = service.create_empty_custom_node_graph_resource(
+        resource_name="含嵌入资源子图"
+    )["resource"]
+    output_path = tmp_path / "embedded-resource.wcsubgraph"
+
+    service.export_subgraph_asset_package(
+        resource_id=component["resource_id"],
+        output_path=output_path,
+    )
+
+    with ZipFile(output_path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        assert archive.read("resources/embedded/assets/instructions.txt") == "可共享资源".encode(
+            "utf-8"
+        )
+
+    assert manifest["embedded_resources"] == [
+        {
+            "relative_path": "assets/instructions.txt",
+            "archive_path": "resources/embedded/assets/instructions.txt",
+            "size": len("可共享资源".encode("utf-8")),
+        }
+    ]
+
+
+def test_preflight_subgraph_asset_reports_embedded_resources_without_mutation(tmp_path) -> None:
+    source = CompilationWorkbenchService()
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source.save_project_as(project_path=source_root / "source-project.weconduct.json")
+    embedded_path = source_root / "assets" / "instructions.txt"
+    embedded_path.parent.mkdir()
+    embedded_path.write_text("可共享资源", encoding="utf-8")
+    project_settings = source.get_project_settings_document()["project_settings"]
+    project_settings["resource_policy"]["embedded_resources"] = ["assets/instructions.txt"]
+    source.update_project_settings(project_settings=project_settings)
+    component = source.create_empty_custom_node_graph_resource(
+        resource_name="预检嵌入资源子图"
+    )["resource"]
+    package_path = source_root / "embedded-resource.wcsubgraph"
+    source.export_subgraph_asset_package(
+        resource_id=component["resource_id"],
+        output_path=package_path,
+    )
+
+    target = CompilationWorkbenchService()
+    target_root = tmp_path / "target"
+    target_root.mkdir()
+    target.save_project_as(project_path=target_root / "target-project.weconduct.json")
+    target_package_path = target_root / package_path.name
+    shutil.copy2(package_path, target_package_path)
+    before = target.get_resource_registry_document()["registry_revision"]
+
+    preflight = target.preflight_subgraph_asset_import(import_path=target_package_path)
+
+    assert preflight["embedded_resources"] == [
+        {
+            "relative_path": "assets/instructions.txt",
+            "archive_path": "resources/embedded/assets/instructions.txt",
+            "size": len("可共享资源".encode("utf-8")),
+        }
+    ]
+    assert target.get_resource_registry_document()["registry_revision"] == before
+    assert not (target_root / "resources" / "embedded" / "assets" / "instructions.txt").exists()
 
 
 def test_export_subgraph_asset_rejects_missing_custom_node_graph_dependency(tmp_path) -> None:

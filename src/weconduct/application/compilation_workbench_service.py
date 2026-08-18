@@ -4457,6 +4457,9 @@ class CompilationWorkbenchService:
             builtin_dependencies_by_id[resource_id]
             for resource_id in sorted(builtin_dependencies_by_id)
         ]
+        embedded_resources, embedded_resource_contents = (
+            self._collect_subgraph_asset_embedded_resources()
+        )
         package_contents = {
             "manifest.json": self._encode_json_bytes(
                 {
@@ -4472,7 +4475,7 @@ class CompilationWorkbenchService:
                     "graph_schema_version": resource_graph.get("graph_schema_version"),
                     "builtin_component_dependencies": builtin_component_dependencies,
                     "custom_node_graph_dependencies": custom_node_graph_dependencies,
-                    "embedded_resources": [],
+                    "embedded_resources": embedded_resources,
                 }
             ),
             "graphs/root.graph.json": self._encode_json_bytes(resource_graph),
@@ -4487,6 +4490,7 @@ class CompilationWorkbenchService:
             package_contents[
                 f"resources/{exported_resource_id}/graph.json"
             ] = self._encode_json_bytes(resource_graphs[exported_resource_id])
+        package_contents.update(embedded_resource_contents)
         package_contents["meta/checksums.json"] = self._encode_json_bytes(
             self._build_package_checksums_document(package_contents)
         )
@@ -4606,6 +4610,48 @@ class CompilationWorkbenchService:
                         raise ValueError(
                             "subgraph asset builtin component dependency unavailable: "
                             f"{dependency_resource_id}"
+                        )
+                embedded_resources = manifest.get("embedded_resources", [])
+                if not isinstance(embedded_resources, list):
+                    raise ValueError("subgraph asset embedded resources must be an array")
+                embedded_archive_paths: set[str] = set()
+                for embedded_resource in embedded_resources:
+                    if not isinstance(embedded_resource, dict):
+                        raise ValueError("subgraph asset embedded resource must be an object")
+                    relative_path = embedded_resource.get("relative_path")
+                    archive_path = embedded_resource.get("archive_path")
+                    size = embedded_resource.get("size")
+                    normalized_relative_path = (
+                        PurePosixPath(relative_path)
+                        if isinstance(relative_path, str) and relative_path
+                        else None
+                    )
+                    if (
+                        normalized_relative_path is None
+                        or "\\" in relative_path
+                        or normalized_relative_path.is_absolute()
+                        or ".." in normalized_relative_path.parts
+                        or not isinstance(archive_path, str)
+                        or archive_path != f"resources/embedded/{normalized_relative_path.as_posix()}"
+                        or not isinstance(size, int)
+                        or size < 0
+                    ):
+                        raise ValueError("subgraph asset embedded resource is invalid")
+                    if archive_path in embedded_archive_paths:
+                        raise ValueError(
+                            "subgraph asset embedded resource archive path is duplicated: "
+                            f"{archive_path}"
+                        )
+                    embedded_archive_paths.add(archive_path)
+                    if archive_path not in archive_names:
+                        raise ValueError(
+                            "subgraph asset embedded resource is missing: "
+                            f"{archive_path}"
+                        )
+                    if archive.getinfo(archive_path).file_size != size:
+                        raise ValueError(
+                            "subgraph asset embedded resource size mismatch: "
+                            f"{archive_path}"
                         )
                 root_resource_id = manifest.get("root_resource_id")
                 if not isinstance(root_resource_id, str) or not root_resource_id:
@@ -4861,6 +4907,7 @@ class CompilationWorkbenchService:
             "root_resource": root_resource,
             "dependency_count": len(package_resources) - 1,
             "builtin_component_dependencies": builtin_component_dependencies,
+            "embedded_resources": embedded_resources,
             "graph_compatibility": graph_compatibility,
             "conflicts": conflicts,
             "diagnostics": preflight_diagnostics,
@@ -21336,6 +21383,55 @@ class CompilationWorkbenchService:
         if node_taxonomy == "compat_action":
             return resource_key
         return "action"
+
+    def _collect_subgraph_asset_embedded_resources(self) -> tuple[list[dict], dict[str, bytes]]:
+        project_runtime = self._get_project_runtime()
+        project_file_path = project_runtime.get("project_file_path")
+        project_settings = self._extract_project_settings(self._state)
+        resource_policy = (
+            project_settings.get("resource_policy")
+            if isinstance(project_settings.get("resource_policy"), dict)
+            else {}
+        )
+        configured_sources = resource_policy.get("embedded_resources")
+        if not isinstance(configured_sources, list) or not configured_sources:
+            return [], {}
+        if not isinstance(project_file_path, str) or not project_file_path.strip():
+            raise ValueError("project must be saved before exporting embedded subgraph resources")
+        project_root = Path(project_file_path).resolve().parent
+        embedded_resources: list[dict] = []
+        package_contents: dict[str, bytes] = {}
+        for raw_source in configured_sources:
+            if not isinstance(raw_source, str) or not raw_source.strip():
+                continue
+            source_path = Path(raw_source.strip())
+            if source_path.is_absolute():
+                raise ValueError("subgraph embedded resource path must be relative")
+            resolved_source_path = (project_root / source_path).resolve()
+            if not self._is_path_under_root(resolved_source_path, project_root):
+                raise ValueError("subgraph embedded resource path must be within project directory")
+            if not resolved_source_path.is_file():
+                raise ValueError(
+                    "subgraph embedded resource file was not found: "
+                    f"{resolved_source_path.relative_to(project_root).as_posix()}"
+                )
+            relative_path = resolved_source_path.relative_to(project_root).as_posix()
+            archive_path = f"resources/embedded/{relative_path}"
+            if archive_path in package_contents:
+                raise ValueError(
+                    "subgraph embedded resource path is duplicated: "
+                    f"{relative_path}"
+                )
+            content = resolved_source_path.read_bytes()
+            package_contents[archive_path] = content
+            embedded_resources.append(
+                {
+                    "relative_path": relative_path,
+                    "archive_path": archive_path,
+                    "size": len(content),
+                }
+            )
+        return embedded_resources, package_contents
 
     def _resolve_export_path(self, target_path: str | Path) -> Path:
         if isinstance(target_path, Path):
