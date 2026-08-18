@@ -4342,7 +4342,7 @@ class CompilationWorkbenchService:
         output_path: str | Path,
     ) -> dict:
         self._refresh_state_from_store()
-        resolved_path = self._resolve_export_path(output_path)
+        resolved_path = self._resolve_global_user_asset_path(output_path)
         if resolved_path.suffix.lower() != ".wcsubgraph":
             raise ValueError("subgraph asset output path must use .wcsubgraph extension")
         resource = self._require_resource(resource_id)
@@ -4504,7 +4504,7 @@ class CompilationWorkbenchService:
 
     def preflight_subgraph_asset_import(self, *, import_path: str | Path) -> dict:
         self._refresh_state_from_store()
-        resolved_path = self._resolve_export_path(import_path)
+        resolved_path = self._resolve_global_user_asset_path(import_path)
         if resolved_path.suffix.lower() != ".wcsubgraph":
             raise ValueError("subgraph asset import path must use .wcsubgraph extension")
         try:
@@ -4934,7 +4934,7 @@ class CompilationWorkbenchService:
             if item.get("upgraded") is True
         }
 
-        resolved_path = self._resolve_export_path(import_path)
+        resolved_path = self._resolve_global_user_asset_path(import_path)
         embedded_resource_payloads: list[tuple[Path, str, bytes]] = []
         embedded_resource_staging_root: Path | None = None
         staged_embedded_resource_payloads: list[tuple[Path, Path, str, bytes]] = []
@@ -21606,6 +21606,17 @@ class CompilationWorkbenchService:
                 f"{resolved}; allowed roots: {[str(root) for root in allowed_roots]}"
             )
         return resolved
+
+    @staticmethod
+    def _resolve_global_user_asset_path(target_path: str | Path) -> Path:
+        """解析用户主动选择的可携带子图资产路径，不施加项目根限制。"""
+        if isinstance(target_path, Path):
+            candidate = target_path
+        elif isinstance(target_path, str) and target_path.strip():
+            candidate = Path(target_path.strip())
+        else:
+            raise ValueError("path must be a non-empty path")
+        return candidate.expanduser().resolve()
 
     def _collect_resource_path_roots(self) -> tuple[Path, ...]:
         roots: list[Path] = []

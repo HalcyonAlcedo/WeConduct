@@ -55,6 +55,56 @@ def test_export_subgraph_asset_writes_root_resource_and_checksums(tmp_path) -> N
             }
 
 
+def test_export_subgraph_asset_allows_global_user_output_path(tmp_path) -> None:
+    service = CompilationWorkbenchService()
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    service.save_project_as(project_path=project_root / "source-project.weconduct.json")
+    resource = service.create_empty_custom_node_graph_resource(
+        resource_name="全局导出子图"
+    )["resource"]
+    output_path = tmp_path / "user-assets" / "shared-component.wcsubgraph"
+
+    exported = service.export_subgraph_asset_package(
+        resource_id=resource["resource_id"],
+        output_path=output_path,
+    )
+
+    assert exported["status"] == "exported"
+    assert output_path.is_file()
+
+
+def test_subgraph_asset_import_allows_global_user_input_path(tmp_path) -> None:
+    source = CompilationWorkbenchService()
+    source_root = tmp_path / "source-project"
+    source_root.mkdir()
+    source.save_project_as(project_path=source_root / "source.weconduct.json")
+    resource = source.create_empty_custom_node_graph_resource(
+        resource_name="全局导入子图"
+    )["resource"]
+    source_package_path = source_root / "shared-component.wcsubgraph"
+    source.export_subgraph_asset_package(
+        resource_id=resource["resource_id"],
+        output_path=source_package_path,
+    )
+
+    global_package_path = tmp_path / "user-assets" / "shared-component.wcsubgraph"
+    global_package_path.parent.mkdir()
+    shutil.copy2(source_package_path, global_package_path)
+
+    target = CompilationWorkbenchService()
+    target_root = tmp_path / "target-project"
+    target_root.mkdir()
+    target.save_project_as(project_path=target_root / "target.weconduct.json")
+
+    preflight = target.preflight_subgraph_asset_import(import_path=global_package_path)
+    imported = target.commit_subgraph_asset_import(import_path=global_package_path)
+
+    assert preflight["can_import"] is True
+    assert imported["status"] == "imported"
+    assert imported["resource"]["resource_id"] == resource["resource_id"]
+
+
 def test_export_subgraph_asset_collects_referenced_custom_node_graphs(tmp_path) -> None:
     service = CompilationWorkbenchService()
     service.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
