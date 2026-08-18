@@ -3087,6 +3087,179 @@ def test_workbench_subgraph_asset_import_commit_uses_default_abort_policy(
         server.server_close()
 
 
+@pytest.mark.parametrize(
+    ("path", "payload", "expected_message"),
+    [
+        (
+            "/api/workbench/subgraph-assets/export",
+            {"resource_id": [], "output_path": "C:/exports/component.wcsubgraph"},
+            "field must be a non-empty string: resource_id",
+        ),
+        (
+            "/api/workbench/subgraph-assets/import/preflight",
+            {"import_path": []},
+            "field must be a non-empty string: import_path",
+        ),
+        (
+            "/api/workbench/subgraph-assets/import/commit",
+            {"import_path": "C:/imports/component.wcsubgraph", "conflict_policy": []},
+            "field must be a string when provided: conflict_policy",
+        ),
+    ],
+)
+def test_workbench_subgraph_asset_routes_reject_invalid_fields(
+    tmp_path: Path,
+    path: str,
+    payload: dict,
+    expected_message: str,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        url = f"{base_url}{path}"
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=_request_headers(url, {"Content-Type": "application/json"}),
+            method="POST",
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(request)
+
+        body = json.loads(exc_info.value.read().decode("utf-8"))
+        assert exc_info.value.code == 400
+        assert body == {"error": "invalid_request", "message": expected_message}
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_workbench_subgraph_asset_import_commit_supports_http_rename_and_replace(
+    tmp_path: Path,
+) -> None:
+    source = CompilationWorkbenchService()
+    source.save_project_as(project_path=tmp_path / "source.weconduct.json")
+    exported_resource = source.create_empty_custom_node_graph_resource(
+        resource_name="HTTP 冲突策略子图"
+    )["resource"]
+    package_path = tmp_path / "shareable.wcsubgraph"
+    source.export_subgraph_asset_package(
+        resource_id=exported_resource["resource_id"],
+        output_path=package_path,
+    )
+
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        _post_json(
+            f"{base_url}/api/workbench/project/save-as",
+            {"project_path": str(tmp_path / "target.weconduct.json")},
+        )
+        _post_json(
+            f"{base_url}/api/workbench/subgraph-assets/import/commit",
+            {"import_path": str(package_path)},
+        )
+
+        renamed = _post_json(
+            f"{base_url}/api/workbench/subgraph-assets/import/commit",
+            {"import_path": str(package_path), "conflict_policy": "rename"},
+        )
+        replaced = _post_json(
+            f"{base_url}/api/workbench/subgraph-assets/import/commit",
+            {"import_path": str(package_path), "conflict_policy": "replace"},
+        )
+
+        assert renamed["conflict_policy"] == "rename"
+        assert renamed["resource_id_map"][exported_resource["resource_id"]] != exported_resource["resource_id"]
+        assert replaced["conflict_policy"] == "replace"
+        assert replaced["resource"]["resource_id"] == exported_resource["resource_id"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_workbench_subgraph_asset_http_replace_rejects_incompatible_schema(
+    tmp_path: Path,
+) -> None:
+    source = CompilationWorkbenchService()
+    source.save_project_as(project_path=tmp_path / "source.weconduct.json")
+    exported_resource = source.create_empty_custom_node_graph_resource(
+        resource_name="HTTP 不兼容替换子图"
+    )["resource"]
+    package_path = tmp_path / "shareable.wcsubgraph"
+    source.export_subgraph_asset_package(
+        resource_id=exported_resource["resource_id"],
+        output_path=package_path,
+    )
+
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    target_service = CompilationWorkbenchService()
+    target_service.import_resource_from_record(
+        {
+            **exported_resource,
+            "input_schema": {"required_input": {"type": "string"}},
+        }
+    )
+    server.workbench_service = target_service
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        _post_json(
+            f"{base_url}/api/workbench/project/save-as",
+            {"project_path": str(tmp_path / "target.weconduct.json")},
+        )
+        url = f"{base_url}/api/workbench/subgraph-assets/import/commit"
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(
+                {"import_path": str(package_path), "conflict_policy": "replace"}
+            ).encode("utf-8"),
+            headers=_request_headers(url, {"Content-Type": "application/json"}),
+            method="POST",
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(request)
+
+        body = json.loads(exc_info.value.read().decode("utf-8"))
+        assert exc_info.value.code == 400
+        assert body["error"] == "invalid_request"
+        assert body["message"] == (
+            "subgraph asset replace requires compatible input/output schemas: "
+            f"{exported_resource['resource_id']}"
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_api_exposes_program_configuration_schema_and_patch(tmp_path: Path) -> None:
     server = build_api_server(
         host="127.0.0.1",
