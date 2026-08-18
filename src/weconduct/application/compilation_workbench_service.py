@@ -4716,6 +4716,44 @@ class CompilationWorkbenchService:
         except json.JSONDecodeError as exc:
             raise ValueError("subgraph asset package contains invalid JSON") from exc
 
+        graph_compatibility: list[dict] = []
+        for package_resource_id, graph_model in list(package_graph_models.items()):
+            compatibility = self._evaluate_graph_document_compatibility(
+                graph_model=graph_model,
+                document_id=graph_model.graph_model_id,
+                document_role="custom_node_graph",
+                display_name=package_resource_id,
+            )["compatibility"]
+            graph_data_version = compatibility["graph_data_version"]
+            status = compatibility["status"]
+            if status == "loader_older_than_graph":
+                raise ValueError(
+                    "subgraph asset graph requires a newer host version: "
+                    f"{package_resource_id}"
+                )
+            upgraded = False
+            if status == "upgrade_available":
+                try:
+                    graph_model = self._upgrade_graph_model_to_current_data_version(
+                        graph_model
+                    )
+                except (ValidationError, ValueError) as exc:
+                    raise ValueError(
+                        "subgraph asset graph upgrade failed: "
+                        f"{package_resource_id}"
+                    ) from exc
+                package_graph_models[package_resource_id] = graph_model
+                upgraded = True
+            graph_compatibility.append(
+                {
+                    "resource_id": package_resource_id,
+                    "from_version": graph_data_version,
+                    "to_version": GRAPH_COMPATIBILITY_CURRENT_DATA_VERSION,
+                    "status": status,
+                    "upgraded": upgraded,
+                }
+            )
+
         staged_resources: list[dict] = []
         for package_resource in package_resources:
             package_resource_id = package_resource["resource_id"]
@@ -4823,6 +4861,7 @@ class CompilationWorkbenchService:
             "root_resource": root_resource,
             "dependency_count": len(package_resources) - 1,
             "builtin_component_dependencies": builtin_component_dependencies,
+            "graph_compatibility": graph_compatibility,
             "conflicts": conflicts,
             "diagnostics": preflight_diagnostics,
         }

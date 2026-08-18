@@ -600,6 +600,41 @@ def test_preflight_subgraph_asset_rejects_graph_compile_diagnostics_without_muta
     assert target.get_resource_registry_document()["registry_revision"] == before
 
 
+def test_preflight_subgraph_asset_upgrades_legacy_graph_in_staging_only(tmp_path) -> None:
+    source = CompilationWorkbenchService()
+    source.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
+    exported_resource = source.create_empty_custom_node_graph_resource(
+        resource_name="旧版本图子图"
+    )["resource"]
+    graph_document = source.get_graph_document(document_id=exported_resource["resource_id"])
+    graph = graph_document["graph_model"].model_dump(mode="json")
+    graph["document_id"] = exported_resource["resource_id"]
+    graph["root_metadata"]["graph_compatibility"] = {
+        "graph_data_version": "0.5.2",
+        "built_with_app_version": "0.5.2",
+        "minimum_loader_app_version": "0.5.2",
+        "last_upgraded_by_app_version": "0.5.2",
+        "upgrade_history": [],
+    }
+    source.save_graph_document(graph)
+    package_path = tmp_path / "legacy-graph.wcsubgraph"
+    source.export_subgraph_asset_package(
+        resource_id=exported_resource["resource_id"],
+        output_path=package_path,
+    )
+
+    target = CompilationWorkbenchService()
+    target.save_project_as(project_path=tmp_path / "target-project.weconduct.json")
+    before = target.get_resource_registry_document()["registry_revision"]
+
+    preflight = target.preflight_subgraph_asset_import(import_path=package_path)
+
+    assert preflight["can_import"] is True
+    assert preflight["graph_compatibility"][0]["upgraded"] is True
+    assert preflight["graph_compatibility"][0]["from_version"] == "0.5.2"
+    assert target.get_resource_registry_document()["registry_revision"] == before
+
+
 def test_commit_subgraph_asset_import_registers_root_graph_in_one_revision(tmp_path) -> None:
     source = CompilationWorkbenchService()
     source.save_project_as(project_path=tmp_path / "source-project.weconduct.json")
