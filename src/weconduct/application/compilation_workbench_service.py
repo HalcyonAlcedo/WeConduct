@@ -4928,8 +4928,31 @@ class CompilationWorkbenchService:
         preflight = self.preflight_subgraph_asset_import(import_path=import_path)
         if not preflight["can_import"] and normalized_policy == "abort":
             raise ValueError("subgraph asset import conflicts require an explicit resolution")
+        upgraded_resource_ids = {
+            item["resource_id"]
+            for item in preflight["graph_compatibility"]
+            if item.get("upgraded") is True
+        }
 
         resolved_path = self._resolve_export_path(import_path)
+        embedded_resource_payloads: list[tuple[Path, str, bytes]] = []
+        embedded_resource_staging_root: Path | None = None
+        staged_embedded_resource_payloads: list[tuple[Path, Path, str, bytes]] = []
+        project_settings_path: Path | None = None
+        project_settings_snapshot: bytes | None = None
+        project_file_path = self._get_project_runtime().get("project_file_path")
+        if preflight["embedded_resources"]:
+            if not isinstance(project_file_path, str) or not project_file_path.strip():
+                raise ValueError("project must be saved before importing embedded subgraph resources")
+            project_root = Path(project_file_path).resolve().parent
+            project_settings_path = (
+                self._resolve_project_storage_root(Path(project_file_path))
+                / "project-settings.json"
+            )
+            if project_settings_path.exists():
+                project_settings_snapshot = project_settings_path.read_bytes()
+        else:
+            project_root = None
         with zipfile.ZipFile(resolved_path, mode="r") as archive:
             manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
             root_resource_id = manifest["root_resource_id"]
@@ -4963,6 +4986,16 @@ class CompilationWorkbenchService:
                 )
                 if not isinstance(resource_manifest, dict) or not isinstance(resource_graph, dict):
                     raise ValueError("subgraph asset resource payload is invalid")
+                if imported_resource_id in upgraded_resource_ids:
+                    try:
+                        resource_graph = self._upgrade_graph_model_to_current_data_version(
+                            GraphModel.model_validate(resource_graph)
+                        ).model_dump(mode="python")
+                    except (ValidationError, ValueError) as exc:
+                        raise ValueError(
+                            "subgraph asset graph upgrade failed during import: "
+                            f"{imported_resource_id}"
+                        ) from exc
                 raw_resources.append(
                     {
                         **resource_manifest,
@@ -4970,6 +5003,58 @@ class CompilationWorkbenchService:
                         "source_graph_document": resource_graph,
                     }
                 )
+            for embedded_resource in preflight["embedded_resources"]:
+                relative_path = embedded_resource["relative_path"]
+                archive_path = embedded_resource["archive_path"]
+                if project_root is None:
+                    raise ValueError("subgraph asset embedded resource project root is unavailable")
+                target_relative_path = (
+                    Path("resources") / "embedded" / Path(relative_path)
+                )
+                target_path = (project_root / target_relative_path).resolve()
+                if not self._is_path_under_root(target_path, project_root):
+                    raise ValueError("subgraph embedded resource target path is invalid")
+                if target_path.exists():
+                    raise ValueError(
+                        "subgraph embedded resource target already exists: "
+                        f"{target_relative_path.as_posix()}"
+                    )
+                embedded_resource_payloads.append(
+                    (
+                        target_path,
+                        target_relative_path.as_posix(),
+                        archive.read(archive_path),
+                    )
+                )
+
+        if embedded_resource_payloads:
+            if project_root is None:
+                raise ValueError("subgraph asset embedded resource project root is unavailable")
+            embedded_resource_staging_root = Path(
+                tempfile.mkdtemp(
+                    prefix=".weconduct-subgraph-import-",
+                    dir=project_root,
+                )
+            )
+            try:
+                for target_path, relative_path, content in embedded_resource_payloads:
+                    staged_path = (
+                        embedded_resource_staging_root
+                        / Path(relative_path)
+                    )
+                    staged_path.parent.mkdir(parents=True, exist_ok=True)
+                    staged_path.write_bytes(content)
+                    if staged_path.stat().st_size != len(content):
+                        raise OSError(
+                            "subgraph embedded resource staging size mismatch: "
+                            f"{relative_path}"
+                        )
+                    staged_embedded_resource_payloads.append(
+                        (staged_path, target_path, relative_path, content)
+                    )
+            except Exception:
+                shutil.rmtree(embedded_resource_staging_root, ignore_errors=True)
+                raise
 
         imported_resource_holder: dict[str, dict] = {}
         renamed_resource_ids: dict[str, str] = {}
@@ -5079,6 +5164,30 @@ class CompilationWorkbenchService:
             )
             current_state["resource_registry"] = rewritten_resources + retained_resources
             current_state["project"]["resource_registry_revision"] += 1
+            if embedded_resource_payloads:
+                project_settings = self._extract_project_settings(current_state)
+                resource_policy = (
+                    project_settings.get("resource_policy")
+                    if isinstance(project_settings.get("resource_policy"), dict)
+                    else {}
+                )
+                embedded_paths = resource_policy.get("embedded_resources")
+                if not isinstance(embedded_paths, list):
+                    embedded_paths = []
+                project_settings["resource_policy"] = {
+                    **resource_policy,
+                    "embedded_resources": [
+                        *embedded_paths,
+                        *[
+                            relative_path
+                            for _, relative_path, _ in embedded_resource_payloads
+                            if relative_path not in embedded_paths
+                        ],
+                    ],
+                }
+                current_state["project_settings"] = self._normalize_project_settings_document(
+                    project_settings
+                )
             current_state["project_runtime"] = {
                 **self._extract_project_runtime(current_state),
                 "is_dirty": True,
@@ -5086,13 +5195,62 @@ class CompilationWorkbenchService:
             imported_resource_holder["value"] = rewritten_resources[0]
             return current_state
 
-        self._state = self._state_store.mutate(mutation)
+        previous_state = self._state_store.load()
+        state_mutated = False
+        materialized_embedded_resource_paths: list[Path] = []
+        try:
+            self._state = self._state_store.mutate(mutation)
+            state_mutated = True
+            for staged_path, target_path, relative_path, _ in staged_embedded_resource_payloads:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                if target_path.exists():
+                    raise ValueError(
+                        "subgraph embedded resource target already exists: "
+                        f"{relative_path}"
+                    )
+                os.replace(staged_path, target_path)
+                materialized_embedded_resource_paths.append(target_path)
+            if embedded_resource_payloads:
+                self._persist_project_settings_file_if_bound()
+        except Exception:
+            for target_path in reversed(materialized_embedded_resource_paths):
+                try:
+                    target_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if project_settings_path is not None:
+                try:
+                    if project_settings_snapshot is None:
+                        project_settings_path.unlink(missing_ok=True)
+                    else:
+                        restoration_path = project_settings_path.with_name(
+                            f"{project_settings_path.name}.{uuid.uuid4().hex}.restore"
+                        )
+                        restoration_path.write_bytes(project_settings_snapshot)
+                        os.replace(restoration_path, project_settings_path)
+                except OSError:
+                    pass
+            if state_mutated:
+                if previous_state is None:
+                    raise RuntimeError(
+                        "subgraph asset import rollback requires a previous workspace state"
+                    )
+                self._state_store.save(previous_state)
+                self._state = previous_state
+            raise
+        finally:
+            if embedded_resource_staging_root is not None:
+                shutil.rmtree(embedded_resource_staging_root, ignore_errors=True)
         return {
             "status": "imported",
             "resource": imported_resource_holder["value"],
             "registry_revision": self._get_resource_registry_revision(),
             "conflict_policy": normalized_policy,
             "resource_id_map": renamed_resource_ids,
+            "embedded_resources": [
+                {"relative_path": relative_path, "size": len(content)}
+                for _, relative_path, content in embedded_resource_payloads
+            ],
         }
 
     def import_resource(
