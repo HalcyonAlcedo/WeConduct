@@ -11299,7 +11299,13 @@ class CompilationWorkbenchService:
             "diagnostics": [entry.model_dump(mode="json") for entry in diagnostic_entries],
         }
 
-    def compile_graph_document(self, graph_document_payload: dict | None) -> dict:
+    def compile_graph_document(
+        self,
+        graph_document_payload: dict | None,
+        *,
+        expected_graph_document_save_revision: int | None = None,
+        require_expected_revision: bool = False,
+    ) -> dict:
         started_at = perf_counter()
         self._refresh_state_from_store()
         graph_document_was_persisted = graph_document_payload is not None
@@ -11312,7 +11318,11 @@ class CompilationWorkbenchService:
             except ValidationError as exc:
                 raise ValueError(f"graph document payload is invalid: {exc.errors()[0]['loc']}") from exc
             graph_model, _ = self._normalize_graph_model(graph_model)
-            self._persist_graph_document(graph_model)
+            self._persist_graph_document(
+                graph_model,
+                expected_graph_document_save_revision=expected_graph_document_save_revision,
+                require_expected_revision=require_expected_revision,
+            )
         graph_document_meta = self._get_graph_document_meta()
 
         diagnostics = self._collect_graph_validation_diagnostics(graph_model)

@@ -452,6 +452,81 @@ def test_workbench_event_stream_pushes_external_project_change_to_ui_client(
         server.server_close()
 
 
+def test_workbench_event_stream_pushes_external_resource_metadata_change_to_ui_client(
+    tmp_path: Path,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="ui-session-token",
+        external_api_enabled=True,
+        external_api_token="external-session-token",
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    response = None
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        response = urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/events",
+                headers={"X-WeConduct-Token": "ui-session-token"},
+            ),
+            timeout=2,
+        )
+        while response.readline().decode("utf-8") != "\n":
+            pass
+
+        create_request = urllib.request.Request(
+            f"{base_url}/api/ext/v1/resources/custom-node-graphs/empty",
+            method="POST",
+            headers={
+                "Authorization": "Bearer external-session-token",
+                "Content-Type": "application/json",
+            },
+            data=json.dumps({"resource_name": "event-resource"}).encode("utf-8"),
+        )
+        with urllib.request.urlopen(create_request, timeout=2) as create_response:
+            created = json.loads(create_response.read().decode("utf-8"))
+        resource_id = created["result"]["resource"]["resource_id"]
+
+        update_request = urllib.request.Request(
+            f"{base_url}/api/ext/v1/resources/metadata",
+            method="POST",
+            headers={
+                "Authorization": "Bearer external-session-token",
+                "Content-Type": "application/json",
+            },
+            data=json.dumps(
+                {"resource_id": resource_id, "display_name": "event-resource-updated"}
+            ).encode("utf-8"),
+        )
+        with urllib.request.urlopen(update_request, timeout=2) as update_response:
+            assert update_response.status == 200
+
+        event_lines: list[str] = []
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            line = response.readline().decode("utf-8")
+            assert line, "workbench event stream closed after external resource change"
+            event_lines.append(line)
+            if line == "\n" and '"reason": "external_resource_metadata"' in "".join(
+                event_lines
+            ):
+                break
+        assert any(line.startswith("event: workspace.resources_changed") for line in event_lines)
+        assert '"reason": "external_resource_metadata"' in "".join(event_lines)
+    finally:
+        if response is not None:
+            response.close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_workbench_event_stream_ignores_client_connection_abort() -> None:
     class _Broker:
         def __init__(self) -> None:

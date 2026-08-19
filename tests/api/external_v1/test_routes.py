@@ -7,6 +7,7 @@ import pytest
 
 from weconduct.api.external_v1 import router
 from weconduct.api.server import build_api_server
+from weconduct.application.operations.registry import OperationRegistry
 from weconduct.application.operations.models import (
     IdempotencyCapability,
     InMemoryOperationAuditTrail,
@@ -262,6 +263,40 @@ def test_external_catalogue_routes_forward_search_filters_and_limit() -> None:
     assert operation_id == "component.list"
     assert payload == {"query": "while", "tags": ["control", "builtin"], "limit": "5"}
 
+
+def test_external_operation_discovery_lists_every_stable_descriptor_and_resolves_each_detail() -> None:
+    registry_ids = {
+        descriptor.operation_id
+        for descriptor in OperationRegistry.build_stable_public().list_descriptors()
+    }
+    assert len(registry_ids) == 67
+
+    class _DiscoveryService:
+        def get_runtime_health(self) -> dict[str, object]:
+            return {"api_version": "0.9", "host_mode": "test", "capabilities": {}}
+
+    service = _DiscoveryService()
+    operation_service = router.HostOperationService(service=service)
+    discovered = operation_service.invoke(
+        "operation.list",
+        {},
+        caller=router.OperationCaller(
+            caller_id="test:discovery",
+            permissions=frozenset({"operation.invoke"}),
+        ),
+    )
+    discovered_ids = {item["operation_id"] for item in discovered["operations"]}
+    assert discovered_ids == registry_ids
+    for operation_id in registry_ids:
+        detail = operation_service.invoke(
+            "operation.get",
+            {"operation_id": operation_id},
+            caller=router.OperationCaller(
+                caller_id="test:discovery",
+                permissions=frozenset({"operation.invoke"}),
+            ),
+        )
+        assert detail["operation"]["operation_id"] == operation_id
 
 @pytest.mark.parametrize(
     ("request_path", "expected_operation_id"),

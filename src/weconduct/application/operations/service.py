@@ -450,7 +450,12 @@ class HostOperationService:
         if operation_id == "graph.normalize":
             return service.normalize_graph_document(payload["graph_document"])
         if operation_id == "graph.compile":
-            return service.compile_graph_document(payload.get("graph_document"))
+            graph_document = payload.get("graph_document")
+            return service.compile_graph_document(
+                graph_document,
+                expected_graph_document_save_revision=payload.get("expected_revision"),
+                require_expected_revision=graph_document is not None,
+            )
         if operation_id == "graph.node_draft.build":
             return service.build_graph_node_draft(resource_key=payload["resource_key"], node_id=payload.get("node_id"), position=payload.get("position"))
         if operation_id == "graph.source_projection":

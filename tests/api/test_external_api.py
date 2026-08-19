@@ -14,6 +14,7 @@ from weconduct.api import build_api_server
 from weconduct.application.configuration.program_repository import (
     FileProgramConfigurationRepository,
 )
+from weconduct.application.operations import OperationRegistry
 from weconduct.application.pending_input.models import PendingInputField, PendingInputRequest
 from weconduct.application.sensitive_values.encryption import SensitiveUnlockError
 from weconduct.runtime.engine import CancellationContext
@@ -722,6 +723,262 @@ def test_external_api_dispatches_graph_get_and_graph_validate(tmp_path: Path) ->
         assert status == 422
         assert rejected["error_code"] == "operation.input_invalid"
         assert rejected["operation_id"] == "graph.replace"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_operation_discovery_matches_every_stable_public_descriptor(
+    tmp_path: Path,
+) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, response = _request_json(
+            f"{base_url}/api/ext/v1/operations",
+            token="external-secret",
+        )
+        assert status == 200
+        expected_ids = {
+            descriptor.operation_id
+            for descriptor in OperationRegistry.build_stable_public().list_descriptors()
+        }
+        discovered_ids = {
+            item["operation_id"] for item in response["result"]["operations"]
+        }
+        assert discovered_ids == expected_ids
+        assert len(discovered_ids) == 67
+
+        for operation_id in discovered_ids:
+            status, detail = _request_json(
+                f"{base_url}/api/ext/v1/operations/{operation_id}",
+                token="external-secret",
+            )
+            assert status == 200
+            assert detail["result"]["operation"]["operation_id"] == operation_id
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_graph_compile_requires_revision_for_payload_and_rejects_stale_revision(
+    tmp_path: Path,
+) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, graph = _request_json(
+            f"{base_url}/api/ext/v1/graph",
+            token="external-secret",
+        )
+        assert status == 200
+        graph_document = graph["result"]["graph_model"]
+
+        status, missing_revision = _request_json(
+            f"{base_url}/api/ext/v1/graph/compile",
+            method="POST",
+            payload={"graph_document": graph_document},
+            token="external-secret",
+        )
+        assert status == 422
+        assert missing_revision["error_code"] == "operation.input_invalid"
+
+        payload = {
+            "graph_document": graph_document,
+            "expected_revision": graph["result"]["revision"],
+        }
+        status, compiled = _request_json(
+            f"{base_url}/api/ext/v1/graph/compile",
+            method="POST",
+            payload=payload,
+            token="external-secret",
+        )
+        assert status == 200
+        assert compiled["operation_id"] == "graph.compile"
+
+        status, stale = _request_json(
+            f"{base_url}/api/ext/v1/graph/compile",
+            method="POST",
+            payload=payload,
+            token="external-secret",
+        )
+        assert status == 409
+        assert stale["error_code"] == "graph.revision_conflict"
+        assert stale["details"] == {"expected_revision": 0, "current_revision": 1}
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_graph_compile_replays_idempotent_result_without_second_write(
+    tmp_path: Path,
+) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        _, graph = _request_json(f"{base_url}/api/ext/v1/graph", token="external-secret")
+        payload = {
+            "graph_document": graph["result"]["graph_model"],
+            "expected_revision": graph["result"]["revision"],
+        }
+        headers = {"Idempotency-Key": "compile-once"}
+        first_status, first = _request_json(
+            f"{base_url}/api/ext/v1/graph/compile",
+            method="POST",
+            payload=payload,
+            token="external-secret",
+            extra_headers=headers,
+        )
+        second_status, second = _request_json(
+            f"{base_url}/api/ext/v1/graph/compile",
+            method="POST",
+            payload=payload,
+            token="external-secret",
+            extra_headers=headers,
+        )
+        assert first_status == second_status == 200
+        assert first["idempotency_replayed"] is False
+        assert second["idempotency_replayed"] is True
+        _, current = _request_json(f"{base_url}/api/ext/v1/graph", token="external-secret")
+        assert current["result"]["revision"] == 1
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_missing_operation_http_paths_have_success_or_stable_not_found_contract(
+    tmp_path: Path,
+) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, draft = _request_json(
+            f"{base_url}/api/ext/v1/graph/node-drafts",
+            method="POST",
+            payload={"resource_key": "flow.start"},
+            token="external-secret",
+        )
+        assert status == 200
+        assert draft["operation_id"] == "graph.node_draft.build"
+        assert draft["result"]["node"]["node_kind"] == "flow.start"
+
+        status, metadata = _request_json(
+            f"{base_url}/api/ext/v1/resources/custom-node-graphs/empty",
+            method="POST",
+            payload={"resource_name": "metadata-test"},
+            token="external-secret",
+        )
+        assert status == 200
+        resource_id = metadata["result"]["resource"]["resource_id"]
+        status, updated = _request_json(
+            f"{base_url}/api/ext/v1/resources/metadata",
+            method="POST",
+            payload={
+                "resource_id": resource_id,
+                "display_name": "metadata-updated",
+                "description": "external update",
+            },
+            token="external-secret",
+        )
+        assert status == 200
+        assert updated["operation_id"] == "resource.metadata.update"
+        assert updated["result"]["resource"]["display_name"] == "metadata-updated"
+
+        status, execution = _request_json(
+            f"{base_url}/api/ext/v1/executions/missing-execution",
+            token="external-secret",
+        )
+        assert status == 404
+        assert execution["error_code"] == "operation.not_found"
+        assert execution["operation_id"] == "execution.get"
+
+        status, cancelled = _request_json(
+            f"{base_url}/api/ext/v1/executions/missing-execution/cancel",
+            method="POST",
+            payload={},
+            token="external-secret",
+        )
+        assert status == 404
+        assert cancelled["error_code"] == "operation.not_found"
+        assert cancelled["operation_id"] == "execution.cancel"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_external_api_execution_get_and_cancel_follow_live_session_state(
+    tmp_path: Path,
+) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        status, _ = _request_json(f"{base_url}/api/ext/v1/host", token="external-secret")
+        assert status == 200
+        started = server.workbench_service.start_runtime_session(
+            {
+                "graph_model_id": "graph:workspace",
+                "compilation_id": None,
+                "graph_schema_version": "graph-v1",
+                "nodes": [
+                    {
+                        "node_id": "node-start",
+                        "lowered_kind": "control",
+                        "source_anchor_ref": "start",
+                        "expansion_role": "flow.start",
+                        "display_name": "Start",
+                        "node_kind": "flow.start",
+                        "position": {"x": 0, "y": 0},
+                        "ports": [
+                            {
+                                "port_id": "next",
+                                "direction": "output",
+                                "relation_layer": "control",
+                                "semantic_slot": "control.next",
+                            }
+                        ],
+                        "node_config": {"initial_variables": {}},
+                    }
+                ],
+                "edges": [],
+                "graph_effective_diagnostic_anchor_refs": [],
+            }
+        )
+        execution_id = started["runtime_session"]["session_id"]
+
+        status, execution = _request_json(
+            f"{base_url}/api/ext/v1/executions/{execution_id}",
+            token="external-secret",
+        )
+        assert status == 200
+        assert execution["operation_id"] == "execution.get"
+        assert execution["result"]["runtime_session"]["status"] == "running"
+
+        status, cancelled = _request_json(
+            f"{base_url}/api/ext/v1/executions/{execution_id}/cancel",
+            method="POST",
+            payload={"reason": "test cancellation"},
+            token="external-secret",
+            extra_headers={"Idempotency-Key": "cancel-once"},
+        )
+        assert status == 200
+        assert cancelled["operation_id"] == "execution.cancel"
+        assert cancelled["result"]["status"] == "aborted"
+        assert cancelled["result"]["runtime_session"]["status"] == "aborted"
     finally:
         server.shutdown()
         thread.join(timeout=2)

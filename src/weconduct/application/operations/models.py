@@ -71,6 +71,17 @@ class ProjectSaveInput(OperationInputModel):
     graph_document: dict[str, Any] | None = None
 
 
+class GraphCompileInput(OperationInputModel):
+    graph_document: dict[str, Any] | None = None
+    expected_revision: int | None = Field(default=None, ge=0, strict=True)
+
+    @model_validator(mode="after")
+    def require_revision_for_external_graph_write(self) -> "GraphCompileInput":
+        if self.graph_document is not None and self.expected_revision is None:
+            raise ValueError("expected_revision is required when graph_document is provided")
+        return self
+
+
 class GraphGetInput(OperationInputModel):
     document_id: str | None = None
 

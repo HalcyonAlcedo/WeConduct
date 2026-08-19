@@ -78,8 +78,19 @@ class _FakeService:
     def normalize_graph_document(self, graph_document_payload: dict) -> dict:
         return {"status": "normalized", "changed": False, "graph_model": graph_document_payload, "view": {}}
 
-    def compile_graph_document(self, graph_document_payload: dict | None) -> dict:
-        return {"status": "compiled", "graph_document": graph_document_payload}
+    def compile_graph_document(
+        self,
+        graph_document_payload: dict | None,
+        *,
+        expected_graph_document_save_revision: int | None = None,
+        require_expected_revision: bool = False,
+    ) -> dict:
+        return {
+            "status": "compiled",
+            "graph_document": graph_document_payload,
+            "expected_revision": expected_graph_document_save_revision,
+            "require_expected_revision": require_expected_revision,
+        }
 
     def build_graph_node_draft(self, *, resource_key: str, node_id=None, position=None) -> dict:
         return {"resource_key": resource_key, "node_id": node_id, "position": position}
