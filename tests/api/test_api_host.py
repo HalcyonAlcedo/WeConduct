@@ -527,6 +527,297 @@ def test_workbench_event_stream_pushes_external_resource_metadata_change_to_ui_c
         server.server_close()
 
 
+def test_workbench_event_stream_pushes_external_graph_change_to_ui_client(
+    tmp_path: Path,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="ui-session-token",
+        external_api_enabled=True,
+        external_api_token="external-session-token",
+        external_api_project_allowed_roots=(tmp_path / "projects",),
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    response = None
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        response = urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/events",
+                headers={"X-WeConduct-Token": "ui-session-token"},
+            ),
+            timeout=2,
+        )
+        while response.readline().decode("utf-8") != "\n":
+            pass
+
+        status, created = _external_request_json(
+            f"{base_url}/api/ext/v1/projects",
+            payload={
+                "project_name": "external-graph-event-project",
+                "project_directory": str(tmp_path / "projects"),
+            },
+        )
+        assert status == HTTPStatus.OK
+        graph_document = json.loads(json.dumps(created["result"]["graph_document"]))
+        graph_document.setdefault("root_metadata", {})["external_event_marker"] = "graph-write"
+        revision = created["result"]["revision"]
+
+        creation_event_lines: list[str] = []
+        while True:
+            line = response.readline().decode("utf-8")
+            assert line, "workbench event stream closed after external project creation"
+            creation_event_lines.append(line)
+            if line == "\n" and any(
+                item.startswith("event: workspace.graph_changed") for item in creation_event_lines
+            ):
+                break
+
+        status, saved = _external_request_json(
+            f"{base_url}/api/ext/v1/graph",
+            method="PUT",
+            payload={
+                "graph_document": graph_document,
+                "expected_revision": revision,
+            },
+        )
+        assert status == HTTPStatus.OK
+        assert saved["operation_id"] == "graph.replace"
+
+        event_lines: list[str] = []
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            line = response.readline().decode("utf-8")
+            assert line, "workbench event stream closed after external graph change"
+            event_lines.append(line)
+            if line == "\n" and any(
+                item.startswith("event: workspace.graph_changed") for item in event_lines
+            ):
+                break
+        event_text = "".join(event_lines)
+        assert "event: workspace.graph_changed" in event_text
+        assert '"document_id": "graph:workspace"' in event_text
+        assert '"reason": "saved"' in event_text
+        assert f'"revision": {revision + 1}' in event_text
+    finally:
+        if response is not None:
+            response.close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_workbench_event_stream_pushes_external_execution_change_to_ui_client(
+    tmp_path: Path,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="ui-session-token",
+        external_api_enabled=True,
+        external_api_token="external-session-token",
+        external_api_project_allowed_roots=(tmp_path / "projects",),
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    response = None
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        response = urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/events",
+                headers={"X-WeConduct-Token": "ui-session-token"},
+            ),
+            timeout=2,
+        )
+        while response.readline().decode("utf-8") != "\n":
+            pass
+
+        graph_document = _external_flow_start_graph()
+        status, started = _external_request_json(
+            f"{base_url}/api/ext/v1/executions",
+            payload={"graph_document": graph_document},
+        )
+        assert status == HTTPStatus.ACCEPTED
+        session_id = started["result"]["runtime_session"]["session_id"]
+
+        event_lines: list[str] = []
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            line = response.readline().decode("utf-8")
+            assert line, "workbench event stream closed after external execution"
+            event_lines.append(line)
+            if line == "\n" and any(
+                item.startswith("event: runtime.session_changed") for item in event_lines
+            ):
+                break
+        event_text = "".join(event_lines)
+        assert "event: runtime.session_changed" in event_text
+        assert f'"session_id": "{session_id}"' in event_text
+        assert '"reason": "started"' in event_text
+    finally:
+        if response is not None:
+            response.close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_workbench_event_stream_pushes_external_execution_cancel_to_ui_client(
+    tmp_path: Path,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="ui-session-token",
+        external_api_enabled=True,
+        external_api_token="external-session-token",
+        external_api_project_allowed_roots=(tmp_path / "projects",),
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    response = None
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        # 首个请求惰性初始化工作台服务，再创建尚未启动 worker 的运行会话。
+        status, _ = _external_request_json(f"{base_url}/api/ext/v1/host", method="GET")
+        assert status == HTTPStatus.OK
+        started = server.workbench_service.start_runtime_session(_external_flow_start_graph())
+        session_id = started["runtime_session"]["session_id"]
+        response = urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/events",
+                headers={"X-WeConduct-Token": "ui-session-token"},
+            ),
+            timeout=2,
+        )
+        while response.readline().decode("utf-8") != "\n":
+            pass
+
+        status, cancelled = _external_request_json(
+            f"{base_url}/api/ext/v1/executions/{session_id}/cancel",
+            payload={"reason": "api05_test_cancel"},
+        )
+        assert status == HTTPStatus.OK
+        assert cancelled["operation_id"] == "execution.cancel"
+        assert cancelled["result"]["runtime_session"]["status"] == "aborted"
+
+        event_lines: list[str] = []
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            line = response.readline().decode("utf-8")
+            assert line, "workbench event stream closed after external execution cancellation"
+            event_lines.append(line)
+            if line == "\n" and any(
+                item.startswith("event: runtime.session_changed") for item in event_lines
+            ):
+                break
+        event_text = "".join(event_lines)
+        assert "event: runtime.session_changed" in event_text
+        assert f'"session_id": "{session_id}"' in event_text
+        assert '"status": "aborted"' in event_text
+        assert '"reason": "execution_aborted"' in event_text
+    finally:
+        if response is not None:
+            response.close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_workbench_event_stream_pushes_external_debug_change_to_ui_client(
+    tmp_path: Path,
+) -> None:
+    server = build_api_server(
+        host="127.0.0.1",
+        port=0,
+        api_token="ui-session-token",
+        external_api_enabled=True,
+        external_api_token="external-session-token",
+        external_api_project_allowed_roots=(tmp_path / "projects",),
+        workspace_state_path=tmp_path / "runtime" / "workspace-state.json",
+        preferences_path=tmp_path / "runtime" / "preferences.json",
+        ui_dist_path=tmp_path / "ui-dist",
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    response = None
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        response = urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base_url}/api/workbench/events",
+                headers={"X-WeConduct-Token": "ui-session-token"},
+            ),
+            timeout=2,
+        )
+        while response.readline().decode("utf-8") != "\n":
+            pass
+
+        graph_document = _external_flow_start_graph()
+        graph_document["nodes"][0]["node_config"]["debugger"] = {
+            "breakpoint": {"enabled": True, "pause_timing": "before"}
+        }
+        status, started = _external_request_json(
+            f"{base_url}/api/ext/v1/debug",
+            payload={"graph_document": graph_document},
+        )
+        assert status == HTTPStatus.OK
+        session_id = started["result"]["debug_session"]["session_id"]
+
+        event_lines: list[str] = []
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            line = response.readline().decode("utf-8")
+            assert line, "workbench event stream closed after external debug start"
+            event_lines.append(line)
+            if line == "\n" and any(
+                item.startswith("event: debug.session_changed") for item in event_lines
+            ):
+                break
+        event_text = "".join(event_lines)
+        assert "event: debug.session_changed" in event_text
+        assert f'"session_id": "{session_id}"' in event_text
+
+        abort_status, aborted = _external_request_json(
+            f"{base_url}/api/ext/v1/debug/{session_id}/abort",
+            payload={"reason": "api05_test_cleanup"},
+        )
+        assert abort_status == HTTPStatus.OK
+        assert aborted["result"]["debug_session"]["session_id"] == session_id
+
+        abort_event_lines: list[str] = []
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            line = response.readline().decode("utf-8")
+            assert line, "workbench event stream closed after external debug abort"
+            abort_event_lines.append(line)
+            abort_event_text = "".join(abort_event_lines)
+            if line == "\n" and '"status": "aborted"' in abort_event_text:
+                break
+        abort_event_text = "".join(abort_event_lines)
+        assert "event: debug.session_changed" in abort_event_text
+        assert f'"session_id": "{session_id}"' in abort_event_text
+        assert '"status": "aborted"' in abort_event_text
+    finally:
+        if response is not None:
+            response.close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_workbench_event_stream_ignores_client_connection_abort() -> None:
     class _Broker:
         def __init__(self) -> None:
@@ -3016,6 +3307,58 @@ def _get_json(url: str) -> dict:
     request = urllib.request.Request(url, headers=_request_headers(url))
     with urllib.request.urlopen(request) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _external_request_json(
+    url: str,
+    *,
+    method: str = "POST",
+    payload: dict | None = None,
+) -> tuple[int, dict]:
+    request = urllib.request.Request(
+        url,
+        method=method,
+        headers={
+            "Authorization": "Bearer external-session-token",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+def _external_flow_start_graph() -> dict:
+    return {
+        "graph_model_id": "graph:workspace",
+        "compilation_id": None,
+        "graph_schema_version": "graph-v1",
+        "nodes": [
+            {
+                "node_id": "node-start",
+                "lowered_kind": "control",
+                "source_anchor_ref": "n-node-start",
+                "expansion_role": "flow.start",
+                "display_name": "流程入口",
+                "node_kind": "flow.start",
+                "position": {"x": 0, "y": 0},
+                "ports": [
+                    {
+                        "port_id": "control-out",
+                        "direction": "output",
+                        "relation_layer": "control",
+                        "semantic_slot": "control.next",
+                    }
+                ],
+                "node_config": {"initial_variables": {}},
+            }
+        ],
+        "edges": [],
+        "graph_effective_diagnostic_anchor_refs": [],
+    }
 
 
 def test_workbench_subgraph_asset_export_writes_single_file_package(tmp_path: Path) -> None:

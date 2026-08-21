@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import ast
 from http import HTTPStatus
+import inspect
 from types import SimpleNamespace
+import textwrap
 
 import pytest
 
 from weconduct.api.external_v1 import router
 from weconduct.api.server import build_api_server
 from weconduct.application.operations.registry import OperationRegistry
+from weconduct.application.operations.service import HostOperationService
 from weconduct.application.operations.models import (
     IdempotencyCapability,
     InMemoryOperationAuditTrail,
@@ -33,6 +37,102 @@ class _Handler:
 
     def _write_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
         self.responses.append((status, payload))
+
+
+_STABLE_OPERATION_ROUTE_CASES: dict[str, tuple[str, str, dict[str, object]]] = {
+    "configuration.schema.get": ("GET", "/api/ext/v1/configuration/project/schema", {}),
+    "configuration.values.get": ("GET", "/api/ext/v1/configuration/project/values", {}),
+    "configuration.preview": ("POST", "/api/ext/v1/configuration/project/preview", {}),
+    "configuration.apply": ("POST", "/api/ext/v1/configuration/project/apply", {}),
+    "configuration.reset": ("POST", "/api/ext/v1/configuration/project/reset", {}),
+    "operation.list": ("GET", "/api/ext/v1/operations", {}),
+    "operation.get": ("GET", "/api/ext/v1/operations/host.describe", {}),
+    "host.describe": ("GET", "/api/ext/v1/host", {}),
+    "host.capabilities": ("GET", "/api/ext/v1/host/capabilities", {}),
+    "debug.prepare": ("POST", "/api/ext/v1/debug/prepare", {}),
+    "debug.start": ("POST", "/api/ext/v1/debug", {}),
+    "debug.list": ("GET", "/api/ext/v1/debug", {}),
+    "debug.history.list": ("GET", "/api/ext/v1/debug/history", {}),
+    "debug.history.get": ("GET", "/api/ext/v1/debug/history/debug-1", {}),
+    "debug.history.events": ("GET", "/api/ext/v1/debug/history/debug-1/events", {}),
+    "debug.history.projection": ("GET", "/api/ext/v1/debug/history/debug-1/projection", {}),
+    "debug.live_projection": ("GET", "/api/ext/v1/debug/debug-1/projection", {}),
+    "debug.get": ("GET", "/api/ext/v1/debug/debug-1", {}),
+    "debug.continue": ("POST", "/api/ext/v1/debug/debug-1/continue", {}),
+    "debug.pause": ("POST", "/api/ext/v1/debug/debug-1/pause", {}),
+    "debug.step_over": ("POST", "/api/ext/v1/debug/debug-1/step-over", {}),
+    "debug.step_into": ("POST", "/api/ext/v1/debug/debug-1/step-into", {}),
+    "debug.step_out": ("POST", "/api/ext/v1/debug/debug-1/step-out", {}),
+    "debug.abort": ("POST", "/api/ext/v1/debug/debug-1/abort", {}),
+    "debug.variables.apply": ("POST", "/api/ext/v1/debug/debug-1/variables", {}),
+    "debug.node_debugger.apply": ("POST", "/api/ext/v1/debug/debug-1/node-debugger", {}),
+    "debug.parameters.unlock": ("POST", "/api/ext/v1/debug/debug-1/unlock", {}),
+    "resource.list": ("GET", "/api/ext/v1/resources", {}),
+    "component.list": ("GET", "/api/ext/v1/components", {}),
+    "resource.user_component.save": ("POST", "/api/ext/v1/resources/user-components", {}),
+    "resource.subgraph.save": ("POST", "/api/ext/v1/resources/subgraphs", {}),
+    "resource.custom_node_graph.save": ("POST", "/api/ext/v1/resources/custom-node-graphs", {}),
+    "resource.custom_node_graph.create": ("POST", "/api/ext/v1/resources/custom-node-graphs/empty", {}),
+    "resource.enabled.set": ("POST", "/api/ext/v1/resources/resource-1/enabled", {}),
+    "resource.tags.set": ("POST", "/api/ext/v1/resources/resource-1/tags", {}),
+    "resource.metadata.update": ("POST", "/api/ext/v1/resources/metadata", {}),
+    "resource.rename": ("POST", "/api/ext/v1/resources/rename", {}),
+    "resource.delete": ("POST", "/api/ext/v1/resources/delete", {}),
+    "project.current.get": ("GET", "/api/ext/v1/project/current", {}),
+    "project.resource_audit.get": ("GET", "/api/ext/v1/project/resource-audit", {}),
+    "project.create": ("POST", "/api/ext/v1/projects", {}),
+    "project.open": ("POST", "/api/ext/v1/project/open", {}),
+    "project.save": ("POST", "/api/ext/v1/project/save", {}),
+    "project.close": ("POST", "/api/ext/v1/project/close", {}),
+    "graph.get": ("GET", "/api/ext/v1/graph", {}),
+    "graph.context": ("POST", "/api/ext/v1/graph/context", {}),
+    "project.documents.list": ("GET", "/api/ext/v1/graph/documents", {}),
+    "graph.document.get": ("GET", "/api/ext/v1/graph/documents/document-1", {}),
+    "graph.document.replace": ("PUT", "/api/ext/v1/graph/documents/document-1", {}),
+    "graph.replace": ("PUT", "/api/ext/v1/graph", {}),
+    "graph.patch.preview": ("POST", "/api/ext/v1/graph/patch/preview", {}),
+    "graph.patch.apply": ("POST", "/api/ext/v1/graph/patch", {}),
+    "graph.validate": ("POST", "/api/ext/v1/graph/validate", {}),
+    "graph.normalize": ("POST", "/api/ext/v1/graph/normalize", {}),
+    "graph.compile": ("POST", "/api/ext/v1/graph/compile", {}),
+    "graph.node_draft.build": ("POST", "/api/ext/v1/graph/node-drafts", {}),
+    "graph.source_projection": ("GET", "/api/ext/v1/graph/source-projection", {}),
+    "runtime.list": ("GET", "/api/ext/v1/runtimes", {}),
+    "execution.history.get": ("GET", "/api/ext/v1/execution-history", {}),
+    "execution.prepare": ("POST", "/api/ext/v1/executions/prepare", {}),
+    "execution.start": ("POST", "/api/ext/v1/executions", {}),
+    "execution.get": ("GET", "/api/ext/v1/executions/execution-1", {}),
+    "execution.cancel": ("POST", "/api/ext/v1/executions/execution-1/cancel", {}),
+    "execution.parameters.unlock": ("POST", "/api/ext/v1/executions/execution-1/unlock", {}),
+    "execution.events.subscribe": ("GET", "/api/ext/v1/executions/execution-1/events", {}),
+    "pending_input.get": ("GET", "/api/ext/v1/executions/execution-1/pending-input", {}),
+    "pending_input.submit": (
+        "POST",
+        "/api/ext/v1/executions/execution-1/pending-input/request-1/submit",
+        {},
+    ),
+}
+
+
+def _dispatch_operation_ids() -> set[str]:
+    source = textwrap.dedent(inspect.getsource(HostOperationService._dispatch))
+    tree = ast.parse(source)
+    operation_ids: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        if not isinstance(node.left, ast.Name) or node.left.id != "operation_id":
+            continue
+        for comparator in node.comparators:
+            if isinstance(comparator, ast.Constant) and isinstance(comparator.value, str):
+                operation_ids.add(comparator.value)
+            elif isinstance(comparator, ast.Set):
+                operation_ids.update(
+                    element.value
+                    for element in comparator.elts
+                    if isinstance(element, ast.Constant) and isinstance(element.value, str)
+                )
+    return operation_ids
 
 
 def test_external_rest_route_invokes_shared_operation_service_with_derived_caller(
@@ -297,6 +397,29 @@ def test_external_operation_discovery_lists_every_stable_descriptor_and_resolves
             ),
         )
         assert detail["operation"]["operation_id"] == operation_id
+
+
+def test_stable_public_operations_have_explicit_handler_and_http_route_coverage() -> None:
+    stable_operation_ids = {
+        descriptor.operation_id
+        for descriptor in OperationRegistry.build_stable_public().list_descriptors()
+    }
+
+    assert set(_STABLE_OPERATION_ROUTE_CASES) == stable_operation_ids
+    assert _dispatch_operation_ids() == stable_operation_ids
+
+    resolved_operation_ids: set[str] = set()
+    for expected_operation_id, (method, request_path, payload) in _STABLE_OPERATION_ROUTE_CASES.items():
+        operation_id, resolved_payload = router.resolve_external_operation(
+            method=method,
+            request_path=request_path,
+            read_payload=lambda payload=payload: payload,
+        )
+        assert operation_id == expected_operation_id
+        assert isinstance(resolved_payload, dict)
+        resolved_operation_ids.add(operation_id)
+
+    assert resolved_operation_ids == stable_operation_ids
 
 @pytest.mark.parametrize(
     ("request_path", "expected_operation_id"),
