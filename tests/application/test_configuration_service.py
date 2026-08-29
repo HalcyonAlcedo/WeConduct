@@ -319,6 +319,7 @@ def test_builtin_registry_exposes_only_active_fields_with_consumers() -> None:
         "confirm_delete_node",
         "show_inline_config_summary",
         "edge_line_style",
+        "auto_layout_on_overlap",
     }
     assert registry.get_field(
         scope="project",

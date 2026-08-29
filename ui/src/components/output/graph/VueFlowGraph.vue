@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, markRaw, onUnmounted } from 'vue'
+import { computed, ref, markRaw, onUnmounted, watch, nextTick } from 'vue'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -22,6 +22,7 @@ import { useProjectDiagnosticsStore } from '@/stores/projectDiagnosticsStore'
 import { t } from '@/i18n'
 import { registerGraphElementNavigator } from '@/services/graphNodeNavigation'
 import { resolveGraphDiagnosticTargets } from '@/services/graphDiagnosticTargets'
+import { resolveNodeCollisions } from '@/services/graphCollisionLayout'
 import type { RelationLayer } from '@/types/domains/graph'
 
 const compilation = useCompilationStore()
@@ -106,7 +107,7 @@ const dock = useDockStore()
 const toast = useToastStore()
 const projectDiagnostics = useProjectDiagnosticsStore()
 
-const { setCenter } = useVueFlow()
+const { setCenter, getNodes, updateNode } = useVueFlow()
 const unregisterGraphElementNavigator = registerGraphElementNavigator(target => {
   const graphModel = workspace.graphModel
   if (!graphModel) return
@@ -274,8 +275,97 @@ const graphPreferences = computed(() => {
     auto_open_node_on_drop: prefs?.auto_open_node_on_drop ?? true,
     confirm_delete_node: prefs?.confirm_delete_node ?? true,
     edge_line_style: prefs?.edge_line_style ?? 'smoothstep',
+    auto_layout_on_overlap: prefs?.auto_layout_on_overlap ?? true,
   }
 })
+
+const autoLayoutPending = ref(true)
+const autoLayoutInProgress = ref(false)
+let autoLayoutScheduleId = 0
+
+watch(() => workspace.loadState, state => {
+  if (state === 'loading') autoLayoutPending.value = true
+})
+watch(() => workspace.currentDocumentId, () => {
+  autoLayoutPending.value = true
+  scheduleAutoLayoutCheck()
+})
+
+watch(
+  () => workspace.graphModel?.nodes.map(node => `${node.node_id}:${node.position?.x ?? 'none'}:${node.position?.y ?? 'none'}`).join('|'),
+  () => {
+    autoLayoutPending.value = true
+    scheduleAutoLayoutCheck()
+  },
+)
+
+function scheduleAutoLayoutCheck() {
+  const scheduleId = ++autoLayoutScheduleId
+  void nextTick(() => {
+    if (scheduleId !== autoLayoutScheduleId) return
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        if (scheduleId === autoLayoutScheduleId) onNodesInitialized()
+      })
+    } else {
+      setTimeout(() => {
+        if (scheduleId === autoLayoutScheduleId) onNodesInitialized()
+      }, 0)
+    }
+  })
+}
+
+function onNodesInitialized() {
+  if (!autoLayoutPending.value || autoLayoutInProgress.value) return
+  autoLayoutPending.value = false
+  if (!graphPreferences.value.auto_layout_on_overlap || !workspace.isGraphEditable || !workspace.graphModel) return
+
+  const measuredNodes = getNodes.value
+    .filter(node => Number.isFinite(node.position.x) && Number.isFinite(node.position.y))
+    .filter(node => Number.isFinite(node.dimensions.width) && Number.isFinite(node.dimensions.height))
+    .map(node => ({
+      id: node.id,
+      position: { x: node.position.x, y: node.position.y },
+      dimensions: { width: node.dimensions.width, height: node.dimensions.height },
+    }))
+  if (measuredNodes.length < 2) return
+
+  const resolvedNodes = resolveNodeCollisions(measuredNodes, 16)
+  const changedNodes = resolvedNodes.filter((resolved, index) => {
+    const current = measuredNodes[index]
+    return resolved.position.x !== current.position.x || resolved.position.y !== current.position.y
+  })
+  if (!changedNodes.length) return
+
+  autoLayoutInProgress.value = true
+  try {
+    workspace.pushUndo?.()
+    const graphNodesById = new Map(workspace.graphModel.nodes.map(node => [node.node_id, node]))
+    for (const resolved of changedNodes) {
+      const current = measuredNodes.find(node => node.id === resolved.id)
+      if (!current) continue
+      updateNode(resolved.id, { position: { ...resolved.position } })
+      const graphNode = graphNodesById.get(resolved.id)
+      if (!graphNode) continue
+      const deltaX = resolved.position.x - current.position.x
+      const deltaY = resolved.position.y - current.position.y
+      if (graphNode.position) {
+        graphNode.position = {
+          x: graphNode.position.x + deltaX,
+          y: graphNode.position.y + deltaY,
+        }
+      } else {
+        graphNode.position = {
+          x: resolved.position.x + current.dimensions.width / 2,
+          y: resolved.position.y + current.dimensions.height / 2,
+        }
+      }
+    }
+    workspace.markChanged?.()
+  } finally {
+    autoLayoutInProgress.value = false
+  }
+}
 
 function onNodeClick({ node }: { node: { id: string } }) {
   graphStore.selectNode(node.id)
@@ -288,9 +378,11 @@ function onNodeDragStart() { workspace.pushUndo?.() }
 function onNodeDragStop(event: any) {
   const node = (event as any).node
   if (!node) return
+  const width = Number.isFinite(node.dimensions?.width) ? node.dimensions.width : 180
+  const height = Number.isFinite(node.dimensions?.height) ? node.dimensions.height : 56
   workspace.updateNodePosition(node.id, {
-    x: node.position.x + 90,  // NODE_WIDTH / 2 = center
-    y: node.position.y + 28,  // NODE_HEIGHT / 2 = center
+    x: node.position.x + width / 2,
+    y: node.position.y + height / 2,
   })
 }
 function resolveConnectionRelationLayer(connection: any): RelationLayer | null {
@@ -399,6 +491,7 @@ const hasCachedViewport = computed(() => cachedRawViewport.value !== null)
       @pane-click="onPaneClick"
       @node-drag-start="onNodeDragStart"
       @node-drag-stop="onNodeDragStop"
+      @nodes-initialized="onNodesInitialized"
       @connect="onConnect"
       @edge-click="onEdgeClick"
       @edge-context-menu="onEdgeContextMenu"

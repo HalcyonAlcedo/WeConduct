@@ -298,6 +298,7 @@ def _register_graph_fields(registry: ConfigurationRegistry) -> None:
             "confirm_delete_node": "VueFlowGraph/App.deleteNode",
             "show_inline_config_summary": "BaseNode.configSections",
             "edge_line_style": "graphStore.toVueFlow.edgeType",
+            "auto_layout_on_overlap": "VueFlowGraph.onNodesInitialized",
         },
         fields=(
             ("save_conflict_policy", "enum", "prefer_current_graph", ("prefer_current_graph", "strict")),
@@ -309,6 +310,7 @@ def _register_graph_fields(registry: ConfigurationRegistry) -> None:
             ("confirm_delete_node", "boolean", True),
             ("show_inline_config_summary", "boolean", True),
             ("edge_line_style", "enum", "smoothstep", ("smoothstep", "straight", "bezier")),
+            ("auto_layout_on_overlap", "boolean", True),
         ),
     )
     _register_fields(

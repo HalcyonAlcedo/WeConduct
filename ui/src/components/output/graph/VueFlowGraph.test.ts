@@ -92,6 +92,9 @@ const diagnosticsState = vi.hoisted(() => ({
 
 const vueFlowState = vi.hoisted(() => ({
   props: null as Record<string, unknown> | null,
+  nodes: [] as any[],
+  updateNode: vi.fn(),
+  emitNodesInitialized: null as (() => void) | null,
 }))
 
 const backgroundState = vi.hoisted(() => ({
@@ -125,9 +128,10 @@ vi.mock('@/stores/projectDiagnosticsStore', () => ({
 vi.mock('@vue-flow/core', () => ({
   VueFlow: defineComponent({
     props: ['snapToGrid', 'snapGrid', 'defaultViewport', 'fitViewOnInit'],
-    emits: ['node-context-menu', 'viewport-change', 'connect'],
+    emits: ['node-context-menu', 'viewport-change', 'connect', 'nodes-initialized', 'node-drag-stop'],
     setup(props, { emit, slots }) {
       vueFlowState.props = props as Record<string, unknown>
+      vueFlowState.emitNodesInitialized = () => emit('nodes-initialized')
       return () => h('div', [
         h('button', {
           class: 'emit-node-context-menu',
@@ -150,6 +154,16 @@ vi.mock('@vue-flow/core', () => ({
           }),
         }),
         h('button', {
+          class: 'emit-nodes-initialized',
+          onClick: () => emit('nodes-initialized'),
+        }),
+        h('button', {
+          class: 'emit-node-drag-stop',
+          onClick: () => emit('node-drag-stop', {
+            node: { id: 'node-a', position: { x: 30, y: 40 }, dimensions: { width: 220, height: 120 } },
+          }),
+        }),
+        h('button', {
           class: 'emit-mismatched-connect',
           onClick: () => emit('connect', {
             source: 'node-a',
@@ -164,7 +178,11 @@ vi.mock('@vue-flow/core', () => ({
   }),
   Handle: defineComponent({ setup() { return () => h('div') } }),
   Position: { Left: 'left', Right: 'right' },
-  useVueFlow: () => ({ setCenter: vi.fn() }),
+  useVueFlow: () => ({
+    setCenter: vi.fn(),
+    getNodes: { value: vueFlowState.nodes },
+    updateNode: vueFlowState.updateNode,
+  }),
 }))
 vi.mock('@vue-flow/background', () => ({
   Background: defineComponent({
@@ -203,6 +221,11 @@ describe('VueFlowGraph', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vueFlowState.props = null
+    vueFlowState.nodes = [{
+      id: 'node-a', position: { x: 0, y: 0 }, dimensions: { width: 180, height: 56 },
+    }]
+    vueFlowState.emitNodesInitialized = null
+    vueFlowState.updateNode.mockClear()
     backgroundState.props = null
     workspaceSnapshotState.snapshot.graph_workspace.graph_preferences = {
       snap_to_grid: false,
@@ -348,4 +371,54 @@ describe('VueFlowGraph', () => {
     const call = graphStoreState.toVueFlow.mock.calls.at(-1) as any[] | undefined
     expect(call?.[2]?.errorEdgeIds).toEqual(new Set(['edge-invalid']))
   })
+
+  it('节点初始化后按动态尺寸局部推开并同步到内存图稿', async () => {
+    graphWorkspaceState.graphModel = {
+      nodes: [
+        { node_id: 'node-a', display_name: '高节点', node_kind: 'x', node_config: {}, position: { x: 100, y: 100 }, ports: [] },
+        { node_id: 'node-b', display_name: '矮节点', node_kind: 'y', node_config: {}, position: { x: 100, y: 160 }, ports: [] },
+      ],
+      edges: [],
+    } as any
+    vueFlowState.nodes = [
+      { id: 'node-a', position: { x: 10, y: 20 }, dimensions: { width: 180, height: 140 } },
+      { id: 'node-b', position: { x: 10, y: 80 }, dimensions: { width: 180, height: 40 } },
+    ]
+    const wrapper = mount(VueFlowGraph)
+    await wrapper.get('.emit-nodes-initialized').trigger('click')
+
+    expect(vueFlowState.updateNode).toHaveBeenCalledWith('node-b', { position: { x: 10, y: 176 } })
+    expect(graphWorkspaceState.graphModel.nodes[1].position).toEqual({ x: 100, y: 256 })
+    expect(graphWorkspaceState.pushUndo).toHaveBeenCalled()
+    expect(graphWorkspaceState.markChanged).toHaveBeenCalled()
+  })
+
+  it('auto_layout_on_overlap=false 时保留碰撞坐标', async () => {
+    workspaceSnapshotState.snapshot.graph_workspace.graph_preferences.auto_layout_on_overlap = false
+    graphWorkspaceState.graphModel = {
+      nodes: [
+        { node_id: 'node-a', position: { x: 100, y: 100 }, ports: [], node_config: {} },
+        { node_id: 'node-b', position: { x: 100, y: 160 }, ports: [], node_config: {} },
+      ],
+      edges: [],
+    } as any
+    vueFlowState.nodes = [
+      { id: 'node-a', position: { x: 10, y: 20 }, dimensions: { width: 180, height: 140 } },
+      { id: 'node-b', position: { x: 10, y: 80 }, dimensions: { width: 180, height: 40 } },
+    ]
+    const wrapper = mount(VueFlowGraph)
+    await wrapper.get('.emit-nodes-initialized').trigger('click')
+
+    expect(vueFlowState.updateNode).not.toHaveBeenCalled()
+    expect(graphWorkspaceState.pushUndo).not.toHaveBeenCalled()
+    expect(graphWorkspaceState.markChanged).not.toHaveBeenCalled()
+  })
+
+  it('手动拖拽回写坐标时使用节点实际动态尺寸', async () => {
+    const wrapper = mount(VueFlowGraph)
+    await wrapper.get('.emit-node-drag-stop').trigger('click')
+
+    expect(graphWorkspaceState.updateNodePosition).toHaveBeenCalledWith('node-a', { x: 140, y: 100 })
+  })
+
 })

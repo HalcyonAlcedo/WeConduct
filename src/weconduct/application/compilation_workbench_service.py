@@ -17088,6 +17088,7 @@ class CompilationWorkbenchService:
                 True,
             ),
             "edge_line_style": graph_settings.get("edge_line_style", "smoothstep"),
+            "auto_layout_on_overlap": graph_settings.get("auto_layout_on_overlap", True),
         }
 
     def _build_runtime_execution_settings(self) -> dict:
