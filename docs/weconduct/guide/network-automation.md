@@ -1,12 +1,12 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:guide:network-automation
 ---
 
 # 网络自动化
 
-0.9.0 将网络请求作为节点图中的标准执行能力。网络节点共享当前执行会话的网络上下文，能够复用基础地址、认证、代理、TLS、Cookie 和响应限制等运行配置，同时保留显式端口让节点覆盖本次执行参数。
+0.9.1 将网络请求作为节点图中的标准执行能力。网络节点共享当前执行会话的网络上下文，能够复用基础地址、认证、代理、TLS、Cookie 和响应限制等运行配置，同时保留显式端口让节点覆盖本次执行参数。
 
 ## 执行上下文
 
@@ -47,9 +47,9 @@ TLS 配置支持系统 CA、自定义 CA、证书固定和 mTLS。代理可以�
 
 ## 限制与协议边界
 
-0.9.0 的 SSE 和 WebSocket 是主动拉取式节点：网络线程不会直接激活新的图分支，也不提供自动重连。`network.graphql_request` 只支持 Query/Mutation，GraphQL Subscription 会稳定返回“不支持”错误。
+0.9.1 的 SSE 和 WebSocket 是主动拉取式节点：网络线程不会直接激活新的图分支，也不提供自动重连。`network.graphql_request` 只支持 Query/Mutation，GraphQL Subscription 会稳定返回“不支持”错误。
 
-Cookie 在 0.9.0 只按名称和值在同一执行上下文中传递，不等同于浏览器级 Cookie Jar；domain、path、secure、SameSite 和同名不同作用域的完整规则属于后续版本。
+Cookie 在 0.9.1 只按名称和值在同一执行上下文中传递，不等同于浏览器级 Cookie Jar；domain、path、secure、SameSite 和同名不同作用域的完整规则属于后续版本。
 
 统一长连接所有权、完整协议状态机、自动重连、统一连接 epoch 和推送式图激活属于方案 C，预计在 0.9.1 或 0.9.2 评估实施，不是当前版本能力。
 

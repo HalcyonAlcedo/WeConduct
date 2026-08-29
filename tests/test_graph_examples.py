@@ -78,9 +78,9 @@ def test_smoke_fixture_matches_graph_v1_contract() -> None:
 
     compatibility = graph["root_metadata"]["graph_compatibility"]
     assert compatibility["graph_data_version"] == "0.9.0"
-    assert compatibility["built_with_app_version"] == "0.9.0"
+    assert compatibility["built_with_app_version"] == "0.9.1"
     assert compatibility["minimum_loader_app_version"] == "0.5.2"
-    assert compatibility["last_upgraded_by_app_version"] == "0.9.0"
+    assert compatibility["last_upgraded_by_app_version"] == "0.9.1"
 
 
 def test_validate_graph_examples_accepts_smoke_fixture() -> None:
@@ -291,7 +291,7 @@ def test_embedded_graph_doc_contains_front_matter_and_live_example() -> None:
     body = parts[2]
 
     assert "product: weconduct" in front_matter
-    assert "version: 0.9.0" in front_matter
+    assert "version: 0.9.1" in front_matter
     assert "doc_id: weconduct:reference:embedded-graphs" in front_matter
     assert "<weconduct-graph" in body
     assert 'src="../../assets/graphs/smoke/flow-start.json"' in body

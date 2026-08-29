@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:guide:project-settings
 ---
 
@@ -14,7 +14,7 @@ doc_id: weconduct:guide:project-settings
 |---|---|---|
 | `name` | `WeConduct Workspace` | 项目的显示名称 |
 
-项目名称保存后立即生效。面板中显示的其他身份字段（如描述、版本号等）在 0.9.0 中暂不会被保存，将在后续版本中完善。
+项目名称保存后立即生效。面板中显示的其他身份字段（如描述、版本号等）在 0.9.1 中暂不会被保存，将在后续版本中完善。
 
 ## Debug 与历史
 

@@ -1,7 +1,7 @@
 site_name: WeConduct 文档
-site_description: WeConduct 0.9.0 与 Weave 0.5.0 用户文档
+site_description: WeConduct 0.9.1 与 Weave 0.5.0 用户文档
 site_author: HalcyonAlcedo
-copyright: "&copy; 2026 WeConduct 用户文档 · 当前版本 0.9.0"
+copyright: "&copy; 2026 WeConduct 用户文档 · 当前版本 0.9.1"
 site_url: https://halcyonalcedo.github.io/WeConduct/
 repo_url: https://github.com/HalcyonAlcedo/WeConduct
 repo_name: HalcyonAlcedo/WeConduct
@@ -62,10 +62,6 @@ plugins:
   - search:
       lang: zh
 
-# 施工计划属于仓库内部资料，不应进入公开用户文档站点。
-exclude_docs: |
-  superpowers/**
-
 # 组件明细页由组件分组页和搜索索引提供入口；不要求每个生成页单独出现在 nav。
 not_in_nav: |
   weconduct/components/**/*.md
@@ -75,7 +71,7 @@ extra_javascript:
 
 extra:
   announce:
-    content: "📢 WeConduct 0.9.0 用户文档已更新；网络自动化和外部 API 以当前能力边界为准。"
+    content: "📢 WeConduct 0.9.1 用户文档已更新；子图资源与外部 API 以当前能力边界为准。"
     dismiss: true
 
 extra_css:
@@ -87,7 +83,7 @@ nav:
   - WeConduct:
       - 总览: weconduct/index.md
       - 快速开始:
-          - 安装 0.9.0: weconduct/getting-started/install.md
+          - 安装 0.9.1: weconduct/getting-started/install.md
           - 创建第一个项目: weconduct/getting-started/first-project.md
           - 第一次运行: weconduct/getting-started/first-run.md
           - 保存和打开: weconduct/getting-started/save-and-open.md

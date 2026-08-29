@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:guide:debug-variables
 ---
 
@@ -23,7 +23,7 @@ Debug 变量面板按行显示变量名、类型、值、作用域和修改状�
 - **立即提交**：回车或失焦后把该变量发送到活动会话。
 - **暂存编辑**：本地保留多项修改，点击 **应用全部** 一次提交，或 **撤销全部** 丢弃。
 
-0.9.0 默认使用 `staged` 暂存模式，可在程序设置中切换为 `immediate`。变量修改只影响当前 Debug 会话；不会改写 `flow.start.initial_variables` 或节点配置。
+0.9.1 默认使用 `staged` 暂存模式，可在程序设置中切换为 `immediate`。变量修改只影响当前 Debug 会话；不会改写 `flow.start.initial_variables` 或节点配置。
 
 已修改行会以颜色和状态标记。对象/数组可用 `Ctrl+Enter` 提交当前编辑。
 

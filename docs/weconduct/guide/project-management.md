@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:guide:project-management
 ---
 
@@ -26,7 +26,7 @@ doc_id: weconduct:guide:project-management
 
 ## 三种项目形态
 
-- **目录化项目**：0.9.0 的正常编辑形态，主清单引用 `.data` 目录中的图、资源和设置。
+- **目录化项目**：0.9.1 的正常编辑形态，主清单引用 `.data` 目录中的图、资源和设置。
 - **旧式单文件项目**：兼容载入旧 `.weconduct.json`，保存时同步生成目录化存储。
 - **`.wcrun` 包**：用于分发运行，加载后只读，仅运行默认值可编辑。要修改节点图，应回到原始项目。
 

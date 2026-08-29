@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:reference:security-permissions
 ---
 
@@ -22,7 +22,7 @@ doc_id: weconduct:reference:security-permissions
 
 ## 文件范围
 
-开启文件访问后，默认 `restricted`。允许根来自项目目录、工作区目录、状态目录、用户 `Downloads` 和 `custom_roots`；0.9.0 不会自动把用户 `Documents` 加入允许根。阻止目录和扩展名规则优先。`allow_all` 会跳过允许根限制，但仍不应绕过阻止规则。
+开启文件访问后，默认 `restricted`。允许根来自项目目录、工作区目录、状态目录、用户 `Downloads` 和 `custom_roots`；0.9.1 不会自动把用户 `Documents` 加入允许根。阻止目录和扩展名规则优先。`allow_all` 会跳过允许根限制，但仍不应绕过阻止规则。
 
 ## 包权限提示
 
@@ -38,4 +38,4 @@ doc_id: weconduct:reference:security-permissions
 
 默认只绑定 loopback。非 loopback 监听属于高风险部署方式，不是普通首选项能力；不要通过 CORS、Origin 或“换一个端口”把端口隔离当成身份认证。项目目录允许根仍由 `external_api_project_allowed_roots` 限制。
 
-外部 API 当前不提供 Debug 控制、插件管理、跨机器安全保证或公网服务能力。GraphQL Subscription、方案 C 的统一长连接内核和插件系统属于后续版本。
+外部 API 当前提供受控的 Debug 控制，但不提供插件管理、跨机器安全保证或公网服务能力。GraphQL Subscription、方案 C 的统一长连接内核和插件系统属于后续版本。

@@ -86,7 +86,7 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
     config = read_yaml("mkdocs.yml", loader=yaml.SafeLoader)
 
     assert config["site_name"] == "WeConduct 文档"
-    assert "WeConduct 0.9.0" in config["site_description"]
+    assert "WeConduct 0.9.1" in config["site_description"]
     assert "Weave 0.5.0" in config["site_description"]
     assert config["site_url"] == "https://halcyonalcedo.github.io/WeConduct/"
     assert config["repo_url"] == "https://github.com/HalcyonAlcedo/WeConduct"
@@ -107,7 +107,6 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
         "navigation.footer",
     ]
     assert config["plugins"] == [{"search": {"lang": "zh"}}]
-    assert config["exclude_docs"] == "superpowers/**\n"
     assert config["not_in_nav"] == "weconduct/components/**/*.md\n"
     assert config["extra_javascript"] == ["assets/graph-runtime/weconduct-graph.js"]
     assert all("mermaid" not in js.lower() for js in config["extra_javascript"])
@@ -123,7 +122,7 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
     nav_targets = dict(collect_nav_targets(nav))
     assert nav_targets["首页"] == "index.md"
     assert nav_targets["总览"] == "weconduct/index.md"
-    assert nav_targets["安装 0.9.0"] == "weconduct/getting-started/install.md"
+    assert nav_targets["安装 0.9.1"] == "weconduct/getting-started/install.md"
     assert nav_targets["项目管理"] == "weconduct/guide/project-management.md"
     assert nav_targets["项目布局"] == "weconduct/guide/project-layout.md"
     assert nav_targets["图编辑器"] == "weconduct/guide/graph-editor.md"
@@ -153,7 +152,7 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
     assert nav_targets["排障总览"] == "weconduct/troubleshooting/index.md"
     assert nav_targets["内嵌节点图"] == "weconduct/reference/embedded-graphs.md"
 
-    group_catalog = read_json("data/weconduct-0.9.0/component-groups.json")
+    group_catalog = read_json("data/weconduct-0.9.1/component-groups.json")
     nav_target_values = set(nav_targets.values())
     for group in group_catalog["groups"]:
         expected_path = group["index_path"].removeprefix("docs/")
@@ -176,69 +175,69 @@ def test_mkdocs_metadata_and_assets_baseline() -> None:
 def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
     expected_pages = {
         "docs/weconduct/guide/program-settings.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:program-settings"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:program-settings"},
             "body_checks": ["default_window_size", "allow_file_access", "variable_apply_mode", "restart_required"],
         },
         "docs/weconduct/guide/project-settings.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:project-settings"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:project-settings"},
             "body_checks": ["history_retention_limit", "default_output_name", "runtime_enabled", ".wcrun"],
         },
         "docs/weconduct/guide/python-runtime.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:python-runtime"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:python-runtime"},
             "body_checks": ["bundled", "requirements_txt", "wheelhouse_rebuild", "健康检查", "重建", "清理", "导出"],
         },
         "docs/weconduct/guide/resource-management.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:resource-management"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:resource-management"},
             "body_checks": ["嵌入资源", "外部资源", "custom_node_graph", "导入", "导出"],
         },
         "docs/weconduct/guide/wcrun-packaging.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:wcrun-packaging"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:wcrun-packaging"},
             "body_checks": ["saved_project_only", "预检", "package_embed_mode", "校验和"],
         },
         "docs/weconduct/guide/wcrun-loading.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:wcrun-loading"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:wcrun-loading"},
             "body_checks": ["检查", "加载", "卸载", "外部绑定", "一键修改并放行权限"],
         },
         "docs/weconduct/reference/security-permissions.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:reference:security-permissions"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:reference:security-permissions"},
             "body_checks": ["allow_file_access", "restricted", "Documents", "Downloads", "一键放行"],
         },
         "docs/weconduct/guide/runtime.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:runtime"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:runtime"},
             "body_checks": ["自动准备", "completed", "succeeded", "failed", "aborted"],
         },
         "docs/weconduct/guide/runtime-abort.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:runtime-abort"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:runtime-abort"},
             "body_checks": ["立即提交", "aborting", "aborted", "cancelled"],
         },
         "docs/weconduct/guide/execution-history.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:execution-history"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:execution-history"},
             "body_checks": ["session_id", "incomplete", "只读"],
         },
         "docs/weconduct/guide/debug-start.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:debug-start"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:debug-start"},
             "body_checks": ["preparing", "running", "paused", "stepping"],
         },
         "docs/weconduct/guide/debug-controls.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:debug-controls"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:debug-controls"},
             "body_checks": ["继续", "暂停", "单步跳过", "单步进入", "单步跳出", "can_step_out"],
         },
         "docs/weconduct/guide/breakpoints-and-record-frames.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:breakpoints-record-frames"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:breakpoints-record-frames"},
             "body_checks": ["breakpoint.hit", "record_frame.hit", "frame_identity", "临时断点"],
         },
         "docs/weconduct/guide/debug-variables.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:debug-variables"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:debug-variables"},
             "body_checks": ["立即提交", "暂存编辑", "历史快照只读", "Ctrl+Enter"],
         },
         "docs/weconduct/guide/debug-snapshots.md": {
-            "front_matter": {"product": "weconduct", "version": "0.9.0", "doc_id": "weconduct:guide:debug-snapshots"},
+            "front_matter": {"product": "weconduct", "version": "0.9.1", "doc_id": "weconduct:guide:debug-snapshots"},
             "body_checks": ["manual_pause", "frame_identity", "变量快照", "只读"],
         },
         "docs/weconduct/guide/project-management.md": {
             "front_matter": {
                 "product": "weconduct",
-                "version": "0.9.0",
+                "version": "0.9.1",
                 "doc_id": "weconduct:guide:project-management",
             },
             "body_checks": [
@@ -252,7 +251,7 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
         "docs/weconduct/guide/project-layout.md": {
             "front_matter": {
                 "product": "weconduct",
-                "version": "0.9.0",
+                "version": "0.9.1",
                 "doc_id": "weconduct:guide:project-layout",
             },
             "body_checks": [
@@ -266,7 +265,7 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
         "docs/weconduct/guide/graph-editor.md": {
             "front_matter": {
                 "product": "weconduct",
-                "version": "0.9.0",
+                "version": "0.9.1",
                 "doc_id": "weconduct:guide:graph-editor",
             },
             "body_checks": [
@@ -283,7 +282,7 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
         "docs/weconduct/guide/component-library.md": {
             "front_matter": {
                 "product": "weconduct",
-                "version": "0.9.0",
+                "version": "0.9.1",
                 "doc_id": "weconduct:guide:component-library",
             },
             "body_checks": [
@@ -297,7 +296,7 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
         "docs/weconduct/guide/node-configuration.md": {
             "front_matter": {
                 "product": "weconduct",
-                "version": "0.9.0",
+                "version": "0.9.1",
                 "doc_id": "weconduct:guide:node-configuration",
             },
             "body_checks": [
@@ -311,7 +310,7 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
         "docs/weconduct/guide/subgraphs-and-custom-components.md": {
             "front_matter": {
                 "product": "weconduct",
-                "version": "0.9.0",
+                "version": "0.9.1",
                 "doc_id": "weconduct:guide:subgraphs-and-custom-components",
             },
             "body_checks": [
@@ -325,7 +324,7 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
         "docs/weconduct/guide/webcontrol-conversion.md": {
             "front_matter": {
                 "product": "weconduct",
-                "version": "0.9.0",
+                "version": "0.9.1",
                 "doc_id": "weconduct:guide:webcontrol-conversion",
             },
             "body_checks": [
@@ -339,7 +338,7 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
         "docs/weconduct/components/index.md": {
             "front_matter": {
                 "product": "weconduct",
-                "version": "0.9.0",
+                "version": "0.9.1",
                 "doc_id": "weconduct:components:index",
             },
             "body_checks": ["135", "129", "6", "embedded-graphs.md", "搜索"],
@@ -347,15 +346,15 @@ def test_dedicated_landing_pages_front_matter_and_real_basics() -> None:
         "docs/weconduct/examples/index.md": {
             "front_matter": {
                 "product": "weconduct",
-                "version": "0.9.0",
+                "version": "0.9.1",
                 "doc_id": "weconduct:examples:index",
             },
-            "body_checks": ["0.9.0", "ZIP", "占位值"],
+            "body_checks": ["0.9.1", "ZIP", "占位值"],
         },
         "docs/weconduct/troubleshooting/index.md": {
             "front_matter": {
                 "product": "weconduct",
-                "version": "0.9.0",
+                "version": "0.9.1",
                 "doc_id": "weconduct:troubleshooting:index",
             },
             "body_checks": ["诊断", "校验"],
@@ -387,6 +386,19 @@ def test_runtime_and_configuration_guides_match_081_ui_contracts() -> None:
 
     resources = Path("docs/weconduct/guide/resource-management.md").read_text(encoding="utf-8")
     assert "当前支持的操作" in resources
+    assert "最多 256 个文件" in resources
+    assert "64 MiB" in resources
+    assert "发现冲突时中止导入" in resources
+
+    subgraphs = Path("docs/weconduct/guide/subgraphs-and-custom-components.md").read_text(encoding="utf-8")
+    assert "宿主版本至少为 0.9.1" in subgraphs
+    assert "图数据格式仍沿用 0.9.0" in subgraphs
+
+    external_api = Path("docs/weconduct/guide/external-api.md").read_text(encoding="utf-8")
+    assert "/api/ext/v1/debug/{session_id}/projection" in external_api
+    assert "/api/ext/v1/debug/{session_id}/live-projection" not in external_api
+    assert "/api/ext/v1/project/resource-audit" in external_api
+    assert ".wcsubgraph" in external_api
 
     packaging = Path("docs/weconduct/guide/wcrun-packaging.md").read_text(encoding="utf-8")
     assert "已保存图的校验诊断" in packaging

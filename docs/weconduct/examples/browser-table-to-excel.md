@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:example:browser-table-to-excel
 ---
 
@@ -43,7 +43,7 @@ doc_id: weconduct:example:browser-table-to-excel
 
 ## 下载项目
 
-- [下载 browser-table-to-excel.zip](../../downloads/weconduct/0.9.0/browser-table-to-excel.zip)
+- [下载 browser-table-to-excel.zip](../../downloads/weconduct/0.9.1/browser-table-to-excel.zip)
 - [查看原始 graph-v1 JSON](../../assets/graphs/examples/browser-table-to-excel.json)
 
-下载包基于 WeConduct 0.9.0 版本。示例中的 URL、选择器和凭据均为占位值，外部站点和网络响应不随示例分发。
+下载包基于 WeConduct 0.9.1 版本。示例中的 URL、选择器和凭据均为占位值，外部站点和网络响应不随示例分发。

@@ -24,8 +24,8 @@ def test_generator_creates_all_group_and_detail_contracts(tmp_path: Path) -> Non
     graphs_root = docs_root / "assets" / "graphs" / "components"
 
     result = generator.generate_component_pages(
-        manifest_path=ROOT / "data" / "weconduct-0.9.0" / "components.json",
-        groups_path=ROOT / "data" / "weconduct-0.9.0" / "component-groups.json",
+        manifest_path=ROOT / "data" / "weconduct-0.9.1" / "components.json",
+        groups_path=ROOT / "data" / "weconduct-0.9.1" / "component-groups.json",
         docs_root=docs_root,
         graphs_root=graphs_root,
         include_groups=True,
@@ -55,8 +55,8 @@ def test_generator_creates_all_group_and_detail_contracts(tmp_path: Path) -> Non
 def test_generator_is_deterministic_and_graphs_use_manifest_ports(tmp_path: Path) -> None:
     generator = load_generator()
     kwargs = {
-        "manifest_path": ROOT / "data" / "weconduct-0.9.0" / "components.json",
-        "groups_path": ROOT / "data" / "weconduct-0.9.0" / "component-groups.json",
+        "manifest_path": ROOT / "data" / "weconduct-0.9.1" / "components.json",
+        "groups_path": ROOT / "data" / "weconduct-0.9.1" / "component-groups.json",
         "include_groups": True,
         "include_details": True,
     }
@@ -109,20 +109,43 @@ def test_generator_is_deterministic_and_graphs_use_manifest_ports(tmp_path: Path
             assert actual == expected
 
 
-def test_parameter_tables_cover_node_config_and_schema_union(tmp_path: Path) -> None:
+def test_generator_keeps_graph_data_version_when_documenting_new_app_version(tmp_path: Path) -> None:
     generator = load_generator()
+    generator.VERSION = "0.9.1"
     docs_root = tmp_path / "docs"
     generator.generate_component_pages(
-        manifest_path=ROOT / "data" / "weconduct-0.9.0" / "components.json",
-        groups_path=ROOT / "data" / "weconduct-0.9.0" / "component-groups.json",
+        manifest_path=ROOT / "data" / "weconduct-0.9.1" / "components.json",
+        groups_path=ROOT / "data" / "weconduct-0.9.1" / "component-groups.json",
         docs_root=docs_root,
         graphs_root=docs_root / "assets" / "graphs" / "components",
         include_groups=False,
         include_details=True,
     )
 
-    manifest = json.loads((ROOT / "data" / "weconduct-0.9.0" / "components.json").read_text(encoding="utf-8"))
-    catalog = json.loads((ROOT / "data" / "weconduct-0.9.0" / "component-groups.json").read_text(encoding="utf-8"))
+    graph = json.loads(
+        (docs_root / "assets" / "graphs" / "components" / "data" / "data-get-variable.json")
+        .read_text(encoding="utf-8")
+    )
+    compatibility = graph["root_metadata"]["graph_compatibility"]
+    assert compatibility["graph_data_version"] == "0.9.0"
+    assert compatibility["built_with_app_version"] == "0.9.1"
+    assert compatibility["last_upgraded_by_app_version"] == "0.9.1"
+
+
+def test_parameter_tables_cover_node_config_and_schema_union(tmp_path: Path) -> None:
+    generator = load_generator()
+    docs_root = tmp_path / "docs"
+    generator.generate_component_pages(
+        manifest_path=ROOT / "data" / "weconduct-0.9.1" / "components.json",
+        groups_path=ROOT / "data" / "weconduct-0.9.1" / "component-groups.json",
+        docs_root=docs_root,
+        graphs_root=docs_root / "assets" / "graphs" / "components",
+        include_groups=False,
+        include_details=True,
+    )
+
+    manifest = json.loads((ROOT / "data" / "weconduct-0.9.1" / "components.json").read_text(encoding="utf-8"))
+    catalog = json.loads((ROOT / "data" / "weconduct-0.9.1" / "component-groups.json").read_text(encoding="utf-8"))
     assignments = catalog["assignments"]
     for component in manifest:
         page_path = assignments[component["resource_key"]]["page_path"].removeprefix("docs/")
@@ -141,14 +164,14 @@ def test_key_families_receive_domain_specific_guidance(tmp_path: Path) -> None:
     generator = load_generator()
     docs_root = tmp_path / "docs"
     generator.generate_component_pages(
-        manifest_path=ROOT / "data" / "weconduct-0.9.0" / "components.json",
-        groups_path=ROOT / "data" / "weconduct-0.9.0" / "component-groups.json",
+        manifest_path=ROOT / "data" / "weconduct-0.9.1" / "components.json",
+        groups_path=ROOT / "data" / "weconduct-0.9.1" / "component-groups.json",
         docs_root=docs_root,
         graphs_root=docs_root / "assets" / "graphs" / "components",
         include_groups=False,
         include_details=True,
     )
-    catalog = json.loads((ROOT / "data" / "weconduct-0.9.0" / "component-groups.json").read_text(encoding="utf-8"))
+    catalog = json.loads((ROOT / "data" / "weconduct-0.9.1" / "component-groups.json").read_text(encoding="utf-8"))
 
     def page(resource_key: str) -> str:
         relative = catalog["assignments"][resource_key]["page_path"].removeprefix("docs/")
@@ -167,14 +190,14 @@ def test_090_network_and_input_examples_follow_runtime_boundaries(tmp_path: Path
     generator = load_generator()
     docs_root = tmp_path / "docs"
     generator.generate_component_pages(
-        manifest_path=ROOT / "data" / "weconduct-0.9.0" / "components.json",
-        groups_path=ROOT / "data" / "weconduct-0.9.0" / "component-groups.json",
+        manifest_path=ROOT / "data" / "weconduct-0.9.1" / "components.json",
+        groups_path=ROOT / "data" / "weconduct-0.9.1" / "component-groups.json",
         docs_root=docs_root,
         graphs_root=docs_root / "assets" / "graphs" / "components",
         include_groups=False,
         include_details=True,
     )
-    catalog = json.loads((ROOT / "data" / "weconduct-0.9.0" / "component-groups.json").read_text(encoding="utf-8"))
+    catalog = json.loads((ROOT / "data" / "weconduct-0.9.1" / "component-groups.json").read_text(encoding="utf-8"))
 
     def page(resource_key: str) -> str:
         relative = catalog["assignments"][resource_key]["page_path"].removeprefix("docs/")

@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: component:browser.get_local_storage
 ---
 
@@ -71,8 +71,8 @@ doc_id: component:browser.get_local_storage
 ## 相关节点
 
 - 返回[存储与 Cookie](index.md)聚合页查看更多同类节点。
+- [读取 Cookie](get-cookie.md) (`browser.get_cookie`)。
+- [写入 Cookie](set-cookie.md) (`browser.set_cookie`)。
+- [删除 Cookie](delete-cookie.md) (`browser.delete_cookie`)。
+- [列出 Cookie](list-cookies.md) (`browser.list_cookies`)。
 - [写入本地存储](set-local-storage.md) (`browser.set_local_storage`)。
-- [删除本地存储](remove-local-storage.md) (`browser.remove_local_storage`)。
-- [清空本地存储](clear-local-storage.md) (`browser.clear_local_storage`)。
-- [读取会话存储](get-session-storage.md) (`browser.get_session_storage`)。
-- [写入会话存储](set-session-storage.md) (`browser.set_session_storage`)。

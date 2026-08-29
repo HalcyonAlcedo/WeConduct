@@ -10,8 +10,8 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST_PATH = ROOT / "data" / "weconduct-0.9.0" / "components.json"
-DEFAULT_GROUPS_PATH = ROOT / "data" / "weconduct-0.9.0" / "component-groups.json"
+DEFAULT_MANIFEST_PATH = ROOT / "data" / "weconduct-0.9.1" / "components.json"
+DEFAULT_GROUPS_PATH = ROOT / "data" / "weconduct-0.9.1" / "component-groups.json"
 EXPECTED_PRODUCT = "weconduct"
 SEMVER_RE = re.compile(r"\d+\.\d+\.\d+")
 

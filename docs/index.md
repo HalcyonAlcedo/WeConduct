@@ -18,7 +18,7 @@ doc_id: site:index
 
 | 产品 | 版本 |
 |------|------|
-| WeConduct | 0.9.0 |
+| WeConduct | 0.9.1 |
 | Weave | 0.5.0 |
 
 ## 从哪里开始

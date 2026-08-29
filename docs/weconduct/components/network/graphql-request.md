@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: component:network.graphql_request
 ---
 
@@ -99,7 +99,7 @@ doc_id: component:network.graphql_request
 
 ## 注意事项
 
-0.9.0 不支持 GraphQL Subscription；运行时会稳定拒绝该操作；示例图只展示了节点的配置结构；要构成完整流程，还需要添加入口节点、控制边和业务输入。
+0.9.1 不支持 GraphQL Subscription；运行时会稳定拒绝该操作；示例图只展示了节点的配置结构；要构成完整流程，还需要添加入口节点、控制边和业务输入。
 
 ## 相关节点
 

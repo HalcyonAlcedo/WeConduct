@@ -1,14 +1,14 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:guide:component-library
 ---
 
 # 组件库
 
-0.9.0 冻结快照包含 135 个内置节点，其中 129 个在组件库可见，6 个仅用于兼容或内部图加载。
+0.9.1 冻结快照包含 135 个内置节点，其中 129 个在组件库可见，6 个仅用于兼容或内部图加载。
 
-网络自动化、输入与消息是 0.9.0 新增的两个能力分组。网络分组包含 HTTP、GraphQL Query/Mutation、SSE、WebSocket、上传、下载、响应断言和批量请求；输入与消息分组包含多字段待输入和运行时消息发布。
+网络自动化、输入与消息是 0.9.1 新增的两个能力分组。网络分组包含 HTTP、GraphQL Query/Mutation、SSE、WebSocket、上传、下载、响应断言和批量请求；输入与消息分组包含多字段待输入和运行时消息发布。
 
 ## 查找组件
 

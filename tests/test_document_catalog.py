@@ -8,8 +8,8 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "data" / "weconduct-0.9.0" / "components.json"
-GROUPS_PATH = ROOT / "data" / "weconduct-0.9.0" / "component-groups.json"
+MANIFEST_PATH = ROOT / "data" / "weconduct-0.9.1" / "components.json"
+GROUPS_PATH = ROOT / "data" / "weconduct-0.9.1" / "component-groups.json"
 SCRIPT_PATH = ROOT / "tools" / "build_document_catalog.py"
 
 EXPECTED_GROUP_IDS = {
@@ -83,7 +83,7 @@ def test_committed_component_group_snapshot_matches_manifest(
     group_payload: dict[str, Any],
 ) -> None:
     assert group_payload["product"] == "weconduct"
-    assert group_payload["version"] == "0.9.0"
+    assert group_payload["version"] == "0.9.1"
 
     groups = group_payload["groups"]
     assignments = group_payload["assignments"]
@@ -198,7 +198,7 @@ def test_catalog_cli_rejects_string_bool_manifest_flags(tmp_path: Path) -> None:
         json.dumps(
             {
                 "product": "weconduct",
-                "version": "0.9.0",
+                "version": "0.9.1",
                 "groups": [
                     {
                         "group_id": "browser-navigation",

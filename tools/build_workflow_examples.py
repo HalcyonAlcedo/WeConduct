@@ -8,9 +8,10 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "data" / "weconduct-0.9.0" / "components.json"
+MANIFEST_PATH = ROOT / "data" / "weconduct-0.9.1" / "components.json"
 DOCS_ROOT = ROOT / "docs"
-VERSION = "0.9.0"
+VERSION = "0.9.1"
+GRAPH_DATA_VERSION = "0.9.0"
 
 
 def parse_args() -> argparse.Namespace:
@@ -205,7 +206,7 @@ def read_manifest() -> dict[str, dict[str, Any]]:
 
 def graph_compatibility() -> dict[str, Any]:
     return {
-        "graph_data_version": VERSION,
+        "graph_data_version": GRAPH_DATA_VERSION,
         "built_with_app_version": VERSION,
         "minimum_loader_app_version": "0.5.2",
         "last_upgraded_by_app_version": VERSION,

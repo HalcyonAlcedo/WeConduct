@@ -1,12 +1,12 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:legacy:http-request
 ---
 
 # 旧 HTTP 请求节点
 
-旧资源键 `http.request` 已在 0.9.0 升级为 `network.http_request`。
+旧资源键 `http.request` 已在 0.9.1 升级为 `network.http_request`。
 
 ## 迁移方式
 

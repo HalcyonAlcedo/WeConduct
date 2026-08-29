@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:example:control-branch-and-loop
 ---
 
@@ -46,7 +46,7 @@ doc_id: weconduct:example:control-branch-and-loop
 
 ## 下载项目
 
-- [下载 control-branch-and-loop.zip](../../downloads/weconduct/0.9.0/control-branch-and-loop.zip)
+- [下载 control-branch-and-loop.zip](../../downloads/weconduct/0.9.1/control-branch-and-loop.zip)
 - [查看原始 graph-v1 JSON](../../assets/graphs/examples/control-branch-and-loop.json)
 
-下载包基于 WeConduct 0.9.0 版本。示例中的 URL、选择器和凭据均为占位值，外部站点和网络响应不随示例分发。
+下载包基于 WeConduct 0.9.1 版本。示例中的 URL、选择器和凭据均为占位值，外部站点和网络响应不随示例分发。

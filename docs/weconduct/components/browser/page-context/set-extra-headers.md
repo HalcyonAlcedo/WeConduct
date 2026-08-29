@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: component:browser.set_extra_headers
 ---
 
@@ -69,4 +69,4 @@ doc_id: component:browser.set_extra_headers
 - [切换到父框架](switch-to-parent-frame.md) (`browser.switch_to_parent_frame`)。
 - [切换到默认内容](switch-to-default-content.md) (`browser.switch_to_default_content`)。
 - [打开框架页面](open-frame-page.md) (`browser.open_frame_page`)。
-- [应用认证会话](apply-auth-session.md) (`session.apply_auth_session`)。
+- [设置 User-Agent](set-user-agent.md) (`browser.set_user_agent`)。

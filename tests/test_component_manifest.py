@@ -11,8 +11,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "tools" / "build_component_manifest.py"
-COMMITTED_OUTPUT_PATH = ROOT / "data" / "weconduct-0.9.0" / "components.json"
-COMMITTED_SCHEMA_PATH = ROOT / "data" / "weconduct-0.9.0" / "graph-schema.json"
+COMMITTED_OUTPUT_PATH = ROOT / "data" / "weconduct-0.9.1" / "components.json"
+COMMITTED_SCHEMA_PATH = ROOT / "data" / "weconduct-0.9.1" / "graph-schema.json"
 
 EXPECTED_DOMAIN_COUNTS = {
     "flow": 1,
@@ -97,7 +97,7 @@ def run_builder(
     source_root: Path,
     output_path: Path,
     schema_path: Path,
-    version: str = "0.9.0",
+    version: str = "0.9.1",
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -156,7 +156,7 @@ def test_committed_component_snapshot_statistics(
     } == EXPECTED_HIDDEN_KEYS
     assert sum(1 for item in committed_components if item["direct_runtime_executor"]) == 123
     assert sum(1 for item in committed_components if item["parameter_schema"]) == 34
-    assert sum(len(item["ports"]) for item in committed_components) == 542
+    assert sum(len(item["ports"]) for item in committed_components) == 544
     assert all(item["display_name_zh"].strip() for item in committed_components)
     assert all(item["description_zh"].strip() for item in committed_components)
 

@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:troubleshooting:project-and-startup
 ---
 
@@ -28,7 +28,7 @@ project file missing required string: project.resource_overrides_path
 
 ## 重启后项目标题存在但节点图为空
 
-0.9.0 会在程序启动时优先恢复上次关闭时留下的脏工作区。如果旧版本曾把图放入 `pending_recovery.workspace_state`，启动时也会自动取回该完整图，而不是创建一个同名空图。恢复后的项目仍可能保持 `is_dirty=true`，这是待保存状态，不代表图文件损坏。
+0.9.1 会在程序启动时优先恢复上次关闭时留下的脏工作区。如果旧版本曾把图放入 `pending_recovery.workspace_state`，启动时也会自动取回该完整图，而不是创建一个同名空图。恢复后的项目仍可能保持 `is_dirty=true`，这是待保存状态，不代表图文件损坏。
 
 如果恢复后仍为空，先保留工作区状态文件和项目 `.data` 目录，不要立即覆盖项目文件；在诊断中记录 `pending_recovery`、项目路径和节点数量，再提交问题。
 

@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: component:browser.recognize_captcha
 ---
 
@@ -28,6 +28,8 @@ doc_id: component:browser.recognize_captcha
 | `in:image_bytes_base64` | input | `data` | `in.image_bytes_base64` |
 | `out` | output | `control` | `out.control` |
 | `out:text` | output | `data` | `out.text` |
+| `out:confidence` | output | `data` | `out.confidence` |
+| `out:character_metadata` | output | `data` | `out.character_metadata` |
 
 ## 配置参数
 
@@ -36,12 +38,16 @@ doc_id: component:browser.recognize_captcha
 | `selector` | `string` | 是 | `""` | `default` |
 | `image_bytes_base64` | `string` | 是 | `""` | `default` |
 | `target_variable` | `string` | 是 | `""` | `default` |
+| `metadata_variable` | `string` | 是 | `""` | `default` |
+| `confidence_variable` | `string` | 是 | `""` | `default` |
 | `model_name` | `string` | 是 | `""` | `default` |
 | `runtime_root` | `string` | 是 | `""` | `default` |
+| `enable_char_meta` | `boolean` | 否 | `true` | `default` |
+| `candidate_count` | `integer` | 否 | `3` | `default` |
 
 ## 输入、输出与副作用
 
-输入端口：`in`、`in:selector`、`in:image_bytes_base64`。输出端口：`out`、`out:text`。对外影响：可能改变页面状态、浏览器上下文、网络记录或本地文件。
+输入端口：`in`、`in:selector`、`in:image_bytes_base64`。输出端口：`out`、`out:text`、`out:confidence`、`out:character_metadata`。对外影响：可能改变页面状态、浏览器上下文、网络记录或本地文件。
 
 ## 使用示例
 
@@ -54,8 +60,12 @@ doc_id: component:browser.recognize_captcha
   "selector": "#example",
   "image_bytes_base64": "example",
   "target_variable": "result",
+  "metadata_variable": "result",
+  "confidence_variable": "result",
   "model_name": "example",
-  "runtime_root": "example"
+  "runtime_root": "example",
+  "enable_char_meta": true,
+  "candidate_count": 3
 }
 ```
 
@@ -63,11 +73,11 @@ doc_id: component:browser.recognize_captcha
 
 ## 预期结果
 
-节点执行成功后，状态为 `succeeded`。你可以从 `out:text` 端口或节点输出字段获取结果。
+节点执行成功后，状态为 `succeeded`。你可以从 `out:text`、`out:confidence`、`out:character_metadata` 端口或节点输出字段获取结果。
 
 ## 常见问题
 
-缺少必填参数：`selector`、`image_bytes_base64`、`target_variable`、`model_name`、`runtime_root`；端口名称写错或关系层不匹配；输入值的类型与参数要求不一致；运行环境、资源路径或安全权限未正确配置。排查问题时，建议记录下节点 ID、资源键和原始错误信息，方便定位原因。
+缺少必填参数：`selector`、`image_bytes_base64`、`target_variable`、`metadata_variable`、`confidence_variable`、`model_name`、`runtime_root`；端口名称写错或关系层不匹配；输入值的类型与参数要求不一致；运行环境、资源路径或安全权限未正确配置。排查问题时，建议记录下节点 ID、资源键和原始错误信息，方便定位原因。
 
 ## 注意事项
 

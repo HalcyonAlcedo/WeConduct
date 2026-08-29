@@ -1,12 +1,12 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:components:index
 ---
 
 # 内置节点参考
 
-WeConduct 0.9.0 提供了 135 个内置节点，涵盖了浏览器自动化、网络自动化、数据处理、文件操作、流程控制等常见任务。
+WeConduct 0.9.1 提供了 135 个内置节点，涵盖了浏览器自动化、网络自动化、数据处理、文件操作、流程控制等常见任务。
 
 其中 129 个节点可直接从组件库拖入画布使用，另有 6 个节点仅用于兼容旧版项目的内部迁移。
 
@@ -39,10 +39,10 @@ WeConduct 0.9.0 提供了 135 个内置节点，涵盖了浏览器自动化、�
 - [文本与 CSV 文件](files/text-and-csv/index.md)：覆盖文本文件和 CSV 读取写入。（5 个节点）
 - [Excel 读取](excel/read/index.md)：覆盖 Excel 单元格、行和表读取。（3 个节点）
 - [Excel 写入与更新](excel/write-and-update/index.md)：覆盖 Excel 写入、整表输出与批量更新。（6 个节点）
-- [网络自动化](network/index.md)：覆盖 HTTP、GraphQL、SSE、WebSocket、上传、下载、断言和批量请求。（8 个节点）
 - [Python 执行](python/index.md)：覆盖 Python 代码执行。（1 个节点）
 - [时间处理](time/index.md)：覆盖当前时间读取。（1 个节点）
 - [兼容与内部节点](internal/compatibility/index.md)：覆盖仅为兼容旧图或内部迁移保留的隐藏节点。（6 个节点）
+- [网络自动化](network/index.md)：覆盖 HTTP、GraphQL、SSE、WebSocket、上传、下载、断言和批量请求。（8 个节点）
 - [输入与消息](input/index.md)：覆盖运行时待输入和运行/Debug 消息发布。（2 个节点）
 
 ## 阅读建议

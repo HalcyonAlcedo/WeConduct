@@ -6,8 +6,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "tools" / "validate_pages.py"
-MANIFEST_PATH = ROOT / "data" / "weconduct-0.9.0" / "components.json"
-GROUPS_PATH = ROOT / "data" / "weconduct-0.9.0" / "component-groups.json"
+MANIFEST_PATH = ROOT / "data" / "weconduct-0.9.1" / "components.json"
+GROUPS_PATH = ROOT / "data" / "weconduct-0.9.1" / "component-groups.json"
 REQUIRED_SECTIONS = [
     "功能说明",
     "什么时候用",
@@ -67,7 +67,7 @@ def build_minimal_fixture(root: Path) -> tuple[Path, Path, Path]:
         groups_path,
         {
             "product": "weconduct",
-            "version": "0.9.0",
+            "version": "0.9.1",
             "groups": [
                 {
                     "group_id": "browser-navigation",
@@ -96,7 +96,7 @@ def build_minimal_fixture(root: Path) -> tuple[Path, Path, Path]:
         docs_root / "weconduct" / "components" / "browser" / "navigation" / "index.md",
         {
             "product": "weconduct",
-            "version": "0.9.0",
+            "version": "0.9.1",
             "doc_id": "component-group:browser-navigation",
         },
         ["# 页面导航"],
@@ -107,7 +107,7 @@ def build_minimal_fixture(root: Path) -> tuple[Path, Path, Path]:
         docs_root / "weconduct" / "components" / "browser" / "navigation" / "navigate.md",
         {
             "product": "weconduct",
-            "version": "0.9.0",
+            "version": "0.9.1",
             "doc_id": "component:browser.navigate",
         },
         component_body,
@@ -188,7 +188,7 @@ def test_validate_pages_rejects_missing_required_sections(tmp_path: Path) -> Non
         docs_root / "weconduct" / "components" / "browser" / "navigation" / "navigate.md",
         {
             "product": "weconduct",
-            "version": "0.9.0",
+            "version": "0.9.1",
             "doc_id": "component:browser.navigate",
         },
         ["# 导航", "## 功能说明"],
@@ -211,7 +211,7 @@ def test_validate_pages_rejects_malformed_frontmatter_duplicate_doc_id_and_wrong
     docs_root, manifest_path, groups_path = build_minimal_fixture(tmp_path)
     write_markdown(
         docs_root / "weconduct" / "duplicate.md",
-        {"product": "weconduct", "version": "0.9.0", "doc_id": "component:browser.navigate"},
+        {"product": "weconduct", "version": "0.9.1", "doc_id": "component:browser.navigate"},
         ["# 重复"],
     )
     malformed = docs_root / "weconduct" / "bad.md"

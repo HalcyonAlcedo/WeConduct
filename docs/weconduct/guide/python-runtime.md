@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:guide:python-runtime
 ---
 
@@ -49,7 +49,7 @@ doc_id: weconduct:guide:python-runtime
 
 保存字段本身不立即重建环境；健康检查、准备、重建、运行或打包时消费新配置。
 
-## `python.run` 的 0.9.0 执行边界
+## `python.run` 的 0.9.1 执行边界
 
 `python.run` 仍是项目级 Python 环境中的单节点代码执行能力，不是节点插件或环境插件。节点配置可以声明动态的
 `input_schema`、`output_schema`、`metadata_schema` 和 `data_fields`，代码通过执行信封访问这些域：

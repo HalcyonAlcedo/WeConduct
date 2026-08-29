@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: component:browser.screenshot
 ---
 
@@ -65,8 +65,8 @@ doc_id: component:browser.screenshot
 ## 相关节点
 
 - 返回[页面状态与内容](index.md)聚合页查看更多同类节点。
-- [元素截图](element-screenshot.md) (`browser.element_screenshot`)。
 - [识别验证码](recognize-captcha.md) (`browser.recognize_captcha`)。
+- [元素截图](element-screenshot.md) (`browser.element_screenshot`)。
 - [元素存在](exists.md) (`browser.exists`)。
 - [元素可见](is-visible.md) (`browser.is_visible`)。
 - [元素可用](is-enabled.md) (`browser.is_enabled`)。

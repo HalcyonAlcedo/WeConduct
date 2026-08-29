@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:troubleshooting:browser-and-network
 ---
 
@@ -38,7 +38,7 @@ browser.selector_required
 
 认证、TLS、代理、`base_url` 和 `response_limits` 都在网络运行时消费。检查 `network.access_denied`、`network.tls_*`、`network.proxy_*` 和 `network.response_too_large` 诊断，同时确认本地/远程网络权限。响应正文较大时使用 `out:body_ref` 和正文读取能力，不要把引用当作 JSON 字符串直接序列化。
 
-0.9.0 的 `network.graphql_request` 只支持 Query/Mutation；GraphQL Subscription 会稳定返回不支持错误。SSE 和 WebSocket 只提供主动连接、接收/发送、ping 和关闭，不自动重连，也不会直接触发新的图分支。Cookie 只传递名称和值，不是完整浏览器 Cookie Jar。
+0.9.1 的 `network.graphql_request` 只支持 Query/Mutation；GraphQL Subscription 会稳定返回不支持错误。SSE 和 WebSocket 只提供主动连接、接收/发送、ping 和关闭，不自动重连，也不会直接触发新的图分支。Cookie 只传递名称和值，不是完整浏览器 Cookie Jar。
 
 ## 需要提交的证据
 

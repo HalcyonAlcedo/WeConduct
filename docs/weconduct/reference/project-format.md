@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:reference:project-format
 ---
 
@@ -8,7 +8,7 @@ doc_id: weconduct:reference:project-format
 
 ## 根项目文件
 
-0.9.0 目录项目的根文件使用 `project_file_schema_version = 2`，项目对象使用 `project_schema_version = project-v2`。三个路径字段不可缺少：
+0.9.1 目录项目的根文件使用 `project_file_schema_version = 2`，项目对象使用 `project_schema_version = project-v2`。三个路径字段不可缺少：
 
 ```json
 {

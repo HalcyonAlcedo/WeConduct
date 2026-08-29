@@ -18,8 +18,8 @@ DEFAULT_DOCS_ROOT = ROOT / "docs"
 # Well-formed semantic version "X.Y.Z" (weconduct pages validate format, not a
 # pinned literal — see version handling in validate_page()).
 _WECONDUCT_VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
-DEFAULT_MANIFEST_PATH = ROOT / "data" / "weconduct-0.9.0" / "components.json"
-DEFAULT_GROUPS_PATH = ROOT / "data" / "weconduct-0.9.0" / "component-groups.json"
+DEFAULT_MANIFEST_PATH = ROOT / "data" / "weconduct-0.9.1" / "components.json"
+DEFAULT_GROUPS_PATH = ROOT / "data" / "weconduct-0.9.1" / "component-groups.json"
 INTERNAL_DOC_PREFIXES = ("superpowers/",)
 REQUIRED_COMPONENT_SECTIONS = [
     "功能说明",

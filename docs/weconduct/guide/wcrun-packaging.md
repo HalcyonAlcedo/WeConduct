@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:guide:wcrun-packaging
 ---
 
@@ -10,7 +10,7 @@ doc_id: weconduct:guide:wcrun-packaging
 
 ## 打包前校验
 
-预检固定使用 `mode = wcrun` 和 `source_of_truth = saved_project_only`，因此先保存项目。0.9.0 的预检检查已保存图的校验诊断，以及必需外部资源是否缺少绑定，并按错误、警告、信息汇总。
+预检固定使用 `mode = wcrun` 和 `source_of_truth = saved_project_only`，因此先保存项目。0.9.1 的预检检查已保存图的校验诊断，以及必需外部资源是否缺少绑定，并按错误、警告、信息汇总。
 
 Python 运行时和安全需求会写入包 manifest，并在检查、加载和运行就绪阶段处理；不要把打包前预检通过理解为目标环境已经满足这些要求。
 

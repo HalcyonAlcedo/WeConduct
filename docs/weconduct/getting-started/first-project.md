@@ -1,6 +1,6 @@
 ---
 product: weconduct
-version: 0.9.0
+version: 0.9.1
 doc_id: weconduct:getting-started:first-project
 ---
 
@@ -38,12 +38,12 @@ doc_id: weconduct:getting-started:first-project
 
 **写入变量节点**：
 - `name` 填 `"message"`
-- `value` 填 `"WeConduct 0.9.0"`
+- `value` 填 `"WeConduct 0.9.1"`
 
 **读取变量节点**：
 - `name` 填 `"message"`
 
-这样，"写入变量"会创建一个名为 `message`、值为 `"WeConduct 0.9.0"` 的变量，"读取变量"会把它读出来。
+这样，"写入变量"会创建一个名为 `message`、值为 `"WeConduct 0.9.1"` 的变量，"读取变量"会把它读出来。
 
 ## 第 4 步：连接节点
 
@@ -69,7 +69,7 @@ doc_id: weconduct:getting-started:first-project
 ```json
 {
   "variable_name": "message",
-  "value": "WeConduct 0.9.0"
+  "value": "WeConduct 0.9.1"
 }
 ```
 

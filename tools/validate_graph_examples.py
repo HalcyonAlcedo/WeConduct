@@ -10,7 +10,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_GRAPHS_ROOT = ROOT / "docs" / "assets" / "graphs"
-DEFAULT_COMPONENTS_PATH = ROOT / "data" / "weconduct-0.9.0" / "components.json"
+DEFAULT_COMPONENTS_PATH = ROOT / "data" / "weconduct-0.9.1" / "components.json"
 SUPPORTED_EDGE_LAYERS = {"control", "data"}
 SUPPORTED_GRAPH_SCHEMA_VERSION = "graph-v1"
 SEMVER_RE = re.compile(r"\d+\.\d+\.\d+")
