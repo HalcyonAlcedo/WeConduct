@@ -212,6 +212,24 @@ class DebugSessionInput(OperationInputModel):
     session_id: str = Field(min_length=1)
 
 
+class DebugNetworkQueryInput(DebugSessionInput):
+    history: bool = False
+    protocol: str | None = None
+    status: str | None = None
+    node_id: str | None = None
+    operation_id: str | None = None
+    connection_id: str | None = None
+    event_kind: str | None = None
+    from_time: str | None = None
+    to_time: str | None = None
+    page: int | None = Field(default=None, ge=1)
+    page_size: int | None = Field(default=None, ge=1, le=500)
+
+
+class DebugNetworkTraceInput(DebugNetworkQueryInput):
+    trace_id: str = Field(min_length=1)
+
+
 class DebugHistoryProjectionInput(DebugSessionInput):
     event_index: int | None = Field(default=None, ge=0)
     keyframe_id: str | None = Field(default=None, min_length=1)
@@ -275,6 +293,31 @@ class PendingInputSubmitInput(ExecutionReferenceInput):
     request_id: str = Field(min_length=1)
     # 结构化类型校验由 PendingInputService 统一处理，保留数组/字符串等
     # 非对象载荷进入领域层，以便返回稳定的 invalid_payload 细节。
+    values: Any
+
+
+class OAuthAuthorizationBeginInput(OperationInputModel):
+    authorization_url: str = Field(min_length=1)
+    token_url: str = Field(min_length=1)
+    client_id: str = Field(min_length=1)
+    redirect_uri: str = Field(min_length=1)
+    scope: str | None = None
+    scope_id: str = Field(min_length=1)
+
+
+class OAuthDeviceBeginInput(OperationInputModel):
+    device_authorization_url: str = Field(min_length=1)
+    token_url: str = Field(min_length=1)
+    client_id: str = Field(min_length=1)
+    scope: str | None = None
+    scope_id: str = Field(min_length=1)
+
+
+class OAuthFlowInput(OperationInputModel):
+    flow_id: str = Field(min_length=1)
+
+
+class OAuthFlowSubmitInput(OAuthFlowInput):
     values: Any
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 import platform
 
 from weconduct.application.sensitive_values.redaction import redact_sensitive_payload
@@ -212,6 +212,10 @@ class HostOperationService:
                 }
             else:
                 audit_payload["values"] = "<redacted>"
+        elif operation_id == "oauth.flow.submit" and "values" in audit_payload:
+            # OAuth callback/device confirmation values are one-time input and
+            # must never enter the operation audit trail.
+            audit_payload["values"] = "<redacted>"
         self._audit_trail.append(
             OperationAuditRecord(
                 operation_id=operation_id,
@@ -303,6 +307,39 @@ class HostOperationService:
             )
         if operation_id == "debug.live_projection":
             return service.get_debug_live_projection(session_id=payload["session_id"])
+        if operation_id == "debug.network.summary":
+            result = service.get_debug_session_network_summary(
+                session_id=payload["session_id"],
+                history=bool(payload.get("history", False)),
+            )
+            return _public_debug_network_summary(result)
+        if operation_id == "debug.network.list":
+            network_kwargs = {
+                "session_id": payload["session_id"],
+                "history": bool(payload.get("history", False)),
+                "protocol": payload.get("protocol"),
+                "status": payload.get("status"),
+                "node_id": payload.get("node_id"),
+                "operation_id": payload.get("operation_id"),
+                "connection_id": payload.get("connection_id"),
+                "include_body": False,
+            }
+            # 兼容轻量宿主适配器：只有调用方实际提供新筛选条件时才
+            # 传入扩展参数，避免破坏旧的测试/集成服务签名。
+            for field_name in ("event_kind", "from_time", "to_time", "page", "page_size"):
+                if payload.get(field_name) is not None:
+                    network_kwargs[field_name] = payload[field_name]
+            result = service.get_debug_session_network(
+                **network_kwargs,
+            )
+            return _public_debug_network_list(result)
+        if operation_id == "debug.network.get":
+            result = service.get_debug_session_network_trace(
+                session_id=payload["session_id"],
+                trace_id=payload["trace_id"],
+                history=bool(payload.get("history", False)),
+            )
+            return _public_debug_network_trace(result)
         if operation_id == "debug.get":
             return service.get_debug_session(session_id=payload["session_id"])
         if operation_id == "debug.continue":
@@ -497,6 +534,32 @@ class HostOperationService:
             return _public_pending_input_snapshot(service.get_pending_input_snapshot(execution_id=payload["execution_id"]))
         if operation_id == "pending_input.submit":
             return _public_pending_input_snapshot(service.submit_pending_input(execution_id=payload["execution_id"], request_id=payload["request_id"], values=payload["values"]))
+        if operation_id == "oauth.authorization.begin":
+            return service.begin_oauth_authorization(
+                authorization_url=payload["authorization_url"],
+                token_url=payload["token_url"],
+                client_id=payload["client_id"],
+                redirect_uri=payload["redirect_uri"],
+                scope=payload.get("scope"),
+                scope_id=payload["scope_id"],
+            )
+        if operation_id == "oauth.device.begin":
+            return service.begin_oauth_device(
+                device_authorization_url=payload["device_authorization_url"],
+                token_url=payload["token_url"],
+                client_id=payload["client_id"],
+                scope=payload.get("scope"),
+                scope_id=payload["scope_id"],
+            )
+        if operation_id == "oauth.flow.get":
+            return service.get_oauth_flow(flow_id=payload["flow_id"])
+        if operation_id == "oauth.flow.submit":
+            return service.submit_oauth_flow(
+                flow_id=payload["flow_id"],
+                values=payload["values"],
+            )
+        if operation_id == "oauth.flow.cancel":
+            return service.cancel_oauth_flow(flow_id=payload["flow_id"])
         raise OperationRegistryError("operation.not_found", f"operation not found: {operation_id}")
 
     def _assert_project_path_allowed(self, raw_path: object, *, operation_id: str) -> None:
@@ -544,6 +607,178 @@ def _normalize_value(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return [_normalize_value(item) for item in value]
     return value
+
+
+def _public_debug_network_summary(payload: object) -> dict[str, object]:
+    normalized = _normalize_value(payload)
+    if not isinstance(normalized, Mapping):
+        return {"session_id": None, "source": None, "summary": _sanitize_debug_network_summary({})}
+    return {
+        "session_id": normalized.get("session_id"),
+        "source": normalized.get("source"),
+        "summary": _sanitize_debug_network_summary(normalized.get("summary")),
+    }
+
+
+def _public_debug_network_list(payload: object) -> dict[str, object]:
+    normalized = _normalize_value(payload)
+    if not isinstance(normalized, Mapping):
+        return {
+            "session_id": None,
+            "source": None,
+            "summary": _sanitize_debug_network_summary({}),
+            "traces": [],
+        }
+    return {
+        "session_id": normalized.get("session_id"),
+        "source": normalized.get("source"),
+        "summary": _sanitize_debug_network_summary(normalized.get("summary")),
+        "traces": _sanitize_debug_network_trace_list(normalized.get("traces")),
+    }
+
+
+def _public_debug_network_trace(payload: object) -> dict[str, object]:
+    normalized = _normalize_value(payload)
+    if not isinstance(normalized, Mapping):
+        return {"session_id": None, "source": None, "trace": _sanitize_debug_network_trace_record({})}
+    return {
+        "session_id": normalized.get("session_id"),
+        "source": normalized.get("source"),
+        "trace": _sanitize_debug_network_trace_record(normalized.get("trace")),
+    }
+
+
+def _sanitize_debug_network_summary(summary: object) -> dict[str, object]:
+    normalized = summary if isinstance(summary, Mapping) else {}
+    return {
+        "total_operations": _int_or_default(normalized.get("total_operations")),
+        "successful_operations": _int_or_default(normalized.get("successful_operations")),
+        "failed_operations": _int_or_default(normalized.get("failed_operations")),
+        "cancelled_operations": _int_or_default(normalized.get("cancelled_operations")),
+        "active_connections": _int_or_default(normalized.get("active_connections")),
+        "queue_depth": _int_or_default(normalized.get("queue_depth")),
+        "reconnect_count": _int_or_default(normalized.get("reconnect_count")),
+        "dropped_count": _int_or_default(normalized.get("dropped_count")),
+        "recent_errors": _sanitize_debug_network_recent_errors(normalized.get("recent_errors")),
+    }
+
+
+def _sanitize_debug_network_recent_errors(recent_errors: object) -> list[dict[str, object]]:
+    if not isinstance(recent_errors, list):
+        return []
+    sanitized: list[dict[str, object]] = []
+    for item in recent_errors:
+        if not isinstance(item, Mapping):
+            continue
+        sanitized.append(
+            {
+                "trace_id": item.get("trace_id"),
+                "operation_id": item.get("operation_id"),
+                "status": item.get("status"),
+                "error_code": item.get("error_code"),
+                "ended_at": item.get("ended_at"),
+            }
+        )
+    return sanitized
+
+
+def _sanitize_debug_network_trace_list(raw_traces: object) -> list[dict[str, object]]:
+    grouped: dict[str, dict[str, object]] = {}
+    if not isinstance(raw_traces, list):
+        return []
+    for item in raw_traces:
+        if not isinstance(item, Mapping):
+            continue
+        if isinstance(item.get("operation"), Mapping):
+            trace = dict(item)
+            trace_id = trace.get("trace_id")
+            if isinstance(trace_id, str) and trace_id:
+                grouped[trace_id] = trace
+            continue
+        trace_id = item.get("trace_id")
+        if not isinstance(trace_id, str) or not trace_id:
+            continue
+        trace = grouped.setdefault(trace_id, {"trace_id": trace_id, "connections": []})
+        if "method" in item:
+            trace["operation"] = dict(item)
+            if isinstance(item.get("connections"), list):
+                trace["connections"] = [
+                    dict(connection)
+                    for connection in item.get("connections", [])
+                    if isinstance(connection, Mapping)
+                ]
+        elif "event_kind" not in item and "protocol" in item:
+            connections = trace.setdefault("connections", [])
+            if isinstance(connections, list):
+                connections.append(dict(item))
+    sanitized: list[dict[str, object]] = []
+    for trace in grouped.values():
+        if not isinstance(trace.get("operation"), Mapping):
+            continue
+        sanitized.append(_sanitize_debug_network_trace_record(trace))
+    return sanitized
+
+
+def _sanitize_debug_network_trace_record(raw_trace: object) -> dict[str, object]:
+    trace = raw_trace if isinstance(raw_trace, Mapping) else {}
+    operation = trace.get("operation")
+    if not isinstance(operation, Mapping):
+        operation = trace if isinstance(trace, Mapping) else {}
+    connections = trace.get("connections")
+    if not isinstance(connections, list):
+        connections = []
+    return {
+        "trace_id": trace.get("trace_id", operation.get("trace_id")),
+        "node_id": trace.get("node_id", operation.get("node_id")),
+        "operation_id": trace.get("operation_id", operation.get("operation_id")),
+        "method": operation.get("method"),
+        "url": operation.get("url"),
+        "started_at": trace.get("started_at", operation.get("started_at")),
+        "ended_at": trace.get("ended_at", operation.get("ended_at")),
+        "duration_ms": operation.get("duration_ms", trace.get("duration_ms")),
+        "status": operation.get("status", trace.get("status")),
+        "error_code": operation.get("error_code", trace.get("error_code")),
+        "response_status": operation.get("response_status"),
+        "connection_summary": _build_debug_network_connection_summary(connections),
+    }
+
+
+def _build_debug_network_connection_summary(connections: list[object]) -> dict[str, object]:
+    normalized_connections = [item for item in connections if isinstance(item, Mapping)]
+    active_count = 0
+    queue_depth = 0
+    reconnect_count = 0
+    dropped_count = 0
+    message_count = 0
+    last_event_id: Any = None
+    protocols: list[str] = []
+    for item in normalized_connections:
+        state = str(item.get("connection_state") or "").lower()
+        if state and state not in {"closed", "failed", "disconnected"}:
+            active_count += 1
+        queue_depth += _int_or_default(item.get("queue_depth"))
+        reconnect_count += _int_or_default(item.get("reconnect_count"))
+        dropped_count += _int_or_default(item.get("dropped_count"))
+        message_count += _int_or_default(item.get("message_count"))
+        if item.get("last_event_id") is not None:
+            last_event_id = item.get("last_event_id")
+        protocol = item.get("protocol")
+        if isinstance(protocol, str) and protocol and protocol not in protocols:
+            protocols.append(protocol)
+    return {
+        "connection_count": len(normalized_connections),
+        "active_connection_count": active_count,
+        "queue_depth": queue_depth,
+        "reconnect_count": reconnect_count,
+        "dropped_count": dropped_count,
+        "message_count": message_count,
+        "last_event_id": last_event_id,
+        "protocols": protocols,
+    }
+
+
+def _int_or_default(value: object, default: int = 0) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 
 def _catalogue_filter_payload(payload: Mapping[str, object]) -> dict[str, object]:

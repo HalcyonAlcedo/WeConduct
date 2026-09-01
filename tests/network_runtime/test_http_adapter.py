@@ -229,6 +229,11 @@ def test_httpx_adapter_drops_credentials_cookies_and_source_query_on_cross_origi
 
     assert result.status == "succeeded"
     assert len(requests) == 2
+    assert result.final_url == "https://target.example.test/next?target=kept"
+    assert len(result.redirects) == 1
+    assert result.redirects[0]["status_code"] == 302
+    assert result.redirects[0]["from_url"] == "https://source.example.test/start?source=url"
+    assert result.redirects[0]["to_url"] == "https://target.example.test/next?target=kept"
     assert requests[0].headers["authorization"] == "Bearer operation-token"
     assert requests[0].headers["cookie"] == "session=context-cookie"
     assert str(requests[1].url) == "https://target.example.test/next?target=kept"

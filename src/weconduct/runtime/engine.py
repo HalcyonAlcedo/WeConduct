@@ -35,6 +35,7 @@ from weconduct.network_runtime import (
     NetworkContextSnapshot,
     NetworkOperation,
     NetworkRuntimeService,
+    NetworkTraceRecorder,
     ResponseBodyRef,
     ResponseBodyTooLargeError,
     SSEClientHandle,
@@ -42,6 +43,10 @@ from weconduct.network_runtime import (
     execute_batch,
 )
 from weconduct.network_runtime.errors import build_network_error
+from weconduct.network_runtime.trace import (
+    TRACE_MESSAGE_BODY_THRESHOLD_BYTES,
+    serialize_trace_message_payload,
+)
 from weconduct.runtime.execution_context import ExecutionSessionContext, ExecutionTokenContext
 from weconduct.runtime.execution_envelope import ExecutionEnvelope, ExecutionEnvelopeError, FieldSchema
 from weconduct.runtime.python_sensitive_broker import PythonSensitiveValueBroker
@@ -338,9 +343,11 @@ class RuntimeExecutorRegistry:
         *,
         runtime_settings: dict | None = None,
         network_runtime_service: NetworkRuntimeService | None = None,
+        debug_event_index_supplier: Callable[[], int | None] | None = None,
     ) -> None:
         self._runtime_settings = runtime_settings or {}
         self._network_runtime_service = network_runtime_service
+        self._debug_event_index_supplier = debug_event_index_supplier
         self._executors = {
             "flow.start": self._execute_flow_start,
             "message.emit": self._execute_message_emit,
@@ -348,6 +355,7 @@ class RuntimeExecutorRegistry:
             "network.download": self._execute_network_download,
             "network.upload": self._execute_network_upload,
             "network.graphql_request": self._execute_network_graphql_request,
+            "network.graphql_subscription": self._execute_network_graphql_subscription,
             "network.sse_connect": self._execute_network_sse_connect,
             "network.websocket_connect": self._execute_network_websocket_connect,
             "network.batch_request": self._execute_network_batch_request,
@@ -696,9 +704,16 @@ class RuntimeExecutorRegistry:
                 request_snapshot,
             ).result(timeout=effective_timeout_seconds + 1)
         except Exception as exc:
-            output = _failed_result(node, "network.request_failed", str(exc))
+            network_error = build_network_error(
+                exc,
+                operation=operation,
+                snapshot=request_snapshot,
+                error_code=getattr(exc, "error_code", None) or "network.request_failed",
+            )
+            output = _failed_result(node, network_error.error_code, network_error.message)
             output["request_id"] = operation.request_id
-            output["transport_error"] = str(exc)
+            output["transport_error"] = network_error.error_code
+            output["network_error"] = network_error.to_dict()
             return output
         finally:
             unregister()
@@ -1273,14 +1288,15 @@ class RuntimeExecutorRegistry:
         node_config = _node_config(node)
         action_value = _resolve_value(node_config.get("action"), context)
         action = action_value.strip().lower() if isinstance(action_value, str) else ""
-        if action in {"connect", "receive", "close"}:
-            return self._failed_network_result(
-                node,
-                context,
-                "network.graphql_subscription_not_supported",
-                "GraphQL Subscription is not supported in 0.9.0",
-                action=action,
-            )
+        if action in {"connect", "next_event", "receive", "unsubscribe", "cancel", "close"}:
+            # 旧 GraphQL 请求节点曾在这里保留一条“Subscription 不支持”半成品
+            # 分支。兼容旧图时统一转入已注册的正式 Subscription 执行器，避免
+            # 同一协议存在两套状态机。
+            subscription_node = dict(node)
+            subscription_config = dict(node_config)
+            subscription_config["action"] = action
+            subscription_node["node_config"] = subscription_config
+            return self._execute_network_graphql_subscription(subscription_node, context)
         endpoint = _resolve_value(node_config.get("endpoint", node_config.get("url")), context)
         query = _resolve_value(node_config.get("query"), context)
         operation_name = _resolve_value(node_config.get("operation_name"), context)
@@ -1313,8 +1329,8 @@ class RuntimeExecutorRegistry:
                 return self._failed_network_result(
                     node,
                     context,
-                    "network.graphql_subscription_not_supported",
-                    "GraphQL Subscription is not supported in 0.9.0",
+                    "network.graphql_subscription_requires_websocket",
+                    "GraphQL Subscription requires the network.graphql_subscription node",
                     action="subscription",
                 )
             return _failed_result(node, "network.graphql_request_invalid", str(exc))
@@ -1390,6 +1406,22 @@ class RuntimeExecutorRegistry:
                 node_config.get("timeout_seconds", node_config.get("timeout", 30)),
                 context,
             )
+            max_queue_size = _resolve_value(node_config.get("max_queue_size", 100), context)
+            max_reconnect_attempts_value = _resolve_value(
+                node_config.get("max_reconnect_attempts", 0),
+                context,
+            )
+            reconnect_delay_seconds_value = _resolve_value(
+                node_config.get("reconnect_delay_seconds", 0.5),
+                context,
+            )
+            reconnect_max_delay_seconds_value = _resolve_value(
+                node_config.get("reconnect_max_delay_seconds", 30.0),
+                context,
+            )
+            backpressure_policy = _resolve_value(
+                node_config.get("backpressure_policy", "fail_stream"), context
+            )
             if not isinstance(endpoint, str) or not endpoint.strip():
                 return self._failed_network_result(
                     node,
@@ -1410,6 +1442,7 @@ class RuntimeExecutorRegistry:
             if (
                 not isinstance(variables, dict)
                 or not isinstance(headers, dict)
+                or not isinstance(backpressure_policy, str)
                 or (proxy_config is not None and not isinstance(proxy_config, dict))
             ):
                 return self._failed_network_result(
@@ -1422,6 +1455,20 @@ class RuntimeExecutorRegistry:
                 )
             try:
                 timeout_seconds = float(timeout_value)
+                queue_size = int(max_queue_size)
+                max_reconnect_attempts = _resolve_long_connection_reconnect_attempts(
+                    max_reconnect_attempts_value,
+                    error_code="network.websocket_reconnect_attempts_invalid",
+                )
+                reconnect_delay_seconds = _resolve_long_connection_reconnect_delay(
+                    reconnect_delay_seconds_value,
+                    error_code="network.websocket_reconnect_delay_invalid",
+                )
+                reconnect_max_delay_seconds = _resolve_long_connection_reconnect_max_delay(
+                    reconnect_max_delay_seconds_value,
+                    reconnect_delay_seconds=reconnect_delay_seconds,
+                    error_code="network.websocket_reconnect_max_delay_invalid",
+                )
                 request = GraphQLProtocolAdapter().build_subscription(
                     endpoint=endpoint.strip(),
                     query=query,
@@ -1455,19 +1502,184 @@ class RuntimeExecutorRegistry:
                     session_id=context.execution_session_context.session_id,
                     snapshot=snapshot,
                     url=request.endpoint,
+                    node_id=node["node_id"],
                     headers=request.headers,
                     timeout_seconds=timeout_seconds,
                     subprotocols=[request.subprotocol],
+                    connection_id=connection_id,
+                    max_queue_size=queue_size,
+                    backpressure_policy=backpressure_policy,
+                    max_reconnect_attempts=max_reconnect_attempts,
+                    reconnect_delay_seconds=reconnect_delay_seconds,
+                    reconnect_max_delay_seconds=reconnect_max_delay_seconds,
+                    trace_operation_id="network.graphql_subscription",
+                    trace_protocol="graphql_subscription",
                 )
-                handle.send(json.dumps(GraphQLSubscriptionProtocol.connection_init(), ensure_ascii=False))
-                handle.send(
-                    json.dumps(
-                        GraphQLSubscriptionProtocol.subscribe(
-                            request_id=connection_id,
-                            request=request,
-                        ),
-                        ensure_ascii=False,
+                set_reconnect_callback = getattr(handle, "set_reconnect_callback", None)
+                if callable(set_reconnect_callback):
+                    async def restore_graphql_subscription(connection: object) -> None:
+                        """传输层重连后重新完成 GraphQL 握手并恢复订阅。"""
+                        session_id = context.execution_session_context.session_id
+                        init_frame = json.dumps(
+                            GraphQLSubscriptionProtocol.connection_init(), ensure_ascii=False
+                        )
+                        await connection.send(init_frame)  # type: ignore[attr-defined]
+                        self._record_network_connection_message(
+                            service,
+                            session_id=session_id,
+                            handle=handle,
+                            connection_id=connection_id,
+                            event_kind="graphql.connection_init",
+                            payload=init_frame,
+                            connection_epoch=getattr(connection, "connection_epoch", None),
+                        )
+                        handshake_deadline = asyncio.get_running_loop().time() + timeout_seconds
+                        for _ in range(32):
+                            remaining_timeout = max(
+                                handshake_deadline - asyncio.get_running_loop().time(),
+                                0.001,
+                            )
+                            raw_frame = await connection.receive(  # type: ignore[attr-defined]
+                                timeout_seconds=remaining_timeout
+                            )
+                            frame = GraphQLSubscriptionProtocol.parse(raw_frame)
+                            self._record_network_connection_message(
+                                service,
+                                session_id=session_id,
+                                handle=handle,
+                                connection_id=connection_id,
+                                event_kind=f"graphql.{frame.type}",
+                                payload=raw_frame,
+                                connection_epoch=getattr(connection, "connection_epoch", None),
+                            )
+                            received_record = getattr(connection, "last_received_record", None)
+                            received_epoch = (
+                                received_record.get("connection_epoch")
+                                if isinstance(received_record, Mapping)
+                                else None
+                            )
+                            current_epoch = getattr(connection, "connection_epoch", None)
+                            if (
+                                isinstance(received_epoch, int)
+                                and not isinstance(received_epoch, bool)
+                                and isinstance(current_epoch, int)
+                                and not isinstance(current_epoch, bool)
+                                and received_epoch != current_epoch
+                            ):
+                                # 执行激活队列与原始消息队列并行保留消息；重连时
+                                # 原连接未消费的帧可能先出现在原始队列，不能用
+                                # 旧 epoch 的业务帧判断当前握手失败。
+                                continue
+                            if frame.type == "connection_ack":
+                                break
+                            if frame.type == "ping":
+                                pong_frame = json.dumps(
+                                    GraphQLSubscriptionProtocol.pong(frame.payload),
+                                    ensure_ascii=False,
+                                )
+                                await connection.send(pong_frame)  # type: ignore[attr-defined]
+                                self._record_network_connection_message(
+                                    service,
+                                    session_id=session_id,
+                                    handle=handle,
+                                    connection_id=connection_id,
+                                    event_kind="graphql.pong",
+                                    payload=pong_frame,
+                                    connection_epoch=getattr(connection, "connection_epoch", None),
+                                )
+                                continue
+                            if frame.type == "pong":
+                                continue
+                            if frame.type == "error":
+                                raise GraphQLAdapterError(
+                                    "graphql.subscription_connection_init_failed"
+                                )
+                            raise GraphQLAdapterError("graphql.subscription_ack_required")
+                        else:
+                            raise GraphQLAdapterError("graphql.subscription_ack_timeout")
+                        subscribe_frame = json.dumps(
+                            GraphQLSubscriptionProtocol.subscribe(
+                                request_id=connection_id,
+                                request=request,
+                            ),
+                            ensure_ascii=False,
+                        )
+                        await connection.send(subscribe_frame)  # type: ignore[attr-defined]
+                        self._record_network_connection_message(
+                            service,
+                            session_id=session_id,
+                            handle=handle,
+                            connection_id=connection_id,
+                            event_kind="graphql.subscribe",
+                            payload=subscribe_frame,
+                            connection_epoch=getattr(connection, "connection_epoch", None),
+                        )
+
+                    set_reconnect_callback(restore_graphql_subscription)
+                init_frame = json.dumps(
+                    GraphQLSubscriptionProtocol.connection_init(), ensure_ascii=False
+                )
+                handle.send(init_frame)
+                self._record_network_connection_message(
+                    service,
+                    session_id=context.execution_session_context.session_id,
+                    handle=handle,
+                    connection_id=connection_id,
+                    event_kind="graphql.connection_init",
+                    payload=init_frame,
+                )
+                handshake_deadline = monotonic() + timeout_seconds
+                for _ in range(32):
+                    remaining_timeout = max(handshake_deadline - monotonic(), 0.001)
+                    raw_handshake_frame = handle.receive(timeout_seconds=remaining_timeout)
+                    handshake_frame = GraphQLSubscriptionProtocol.parse(raw_handshake_frame)
+                    self._record_network_connection_message(
+                        service,
+                        session_id=context.execution_session_context.session_id,
+                        handle=handle,
+                        connection_id=connection_id,
+                        event_kind=f"graphql.{handshake_frame.type}",
+                        payload=raw_handshake_frame,
                     )
+                    if handshake_frame.type == "connection_ack":
+                        break
+                    if handshake_frame.type == "ping":
+                        pong_frame = json.dumps(
+                            GraphQLSubscriptionProtocol.pong(handshake_frame.payload),
+                            ensure_ascii=False,
+                        )
+                        handle.send(pong_frame)
+                        self._record_network_connection_message(
+                            service,
+                            session_id=context.execution_session_context.session_id,
+                            handle=handle,
+                            connection_id=connection_id,
+                            event_kind="graphql.pong",
+                            payload=pong_frame,
+                        )
+                        continue
+                    if handshake_frame.type == "pong":
+                        continue
+                    if handshake_frame.type == "error":
+                        raise GraphQLAdapterError("graphql.subscription_connection_init_failed")
+                    raise GraphQLAdapterError("graphql.subscription_ack_required")
+                else:
+                    raise GraphQLAdapterError("graphql.subscription_ack_timeout")
+                subscribe_frame = json.dumps(
+                    GraphQLSubscriptionProtocol.subscribe(
+                        request_id=connection_id,
+                        request=request,
+                    ),
+                    ensure_ascii=False,
+                )
+                handle.send(subscribe_frame)
+                self._record_network_connection_message(
+                    service,
+                    session_id=context.execution_session_context.session_id,
+                    handle=handle,
+                    connection_id=connection_id,
+                    event_kind="graphql.subscribe",
+                    payload=subscribe_frame,
                 )
             except (GraphQLAdapterError, TypeError, ValueError, TimeoutError, RuntimeError) as exc:
                 try:
@@ -1507,13 +1719,167 @@ class RuntimeExecutorRegistry:
                 "GraphQL subscription connection was not found",
                 action=action,
             )
+        def cleanup_subscription_handle() -> None:
+            # 终态清理是幂等的旁路操作；释放或关闭失败时仍必须移除本地
+            # 连接索引，避免后续取消/会话收尾继续持有悬挂句柄。
+            try:
+                self._release_network_connection(context, handle)
+            except BaseException:
+                pass
+            try:
+                handle.close()
+            except BaseException:
+                pass
+            finally:
+                connections.pop(key, None)
+
         try:
+            if action == "next_event":
+                timeout_value = _resolve_value(node_config.get("timeout_seconds"), context)
+                timeout_seconds = float(timeout_value) if timeout_value is not None else None
+                service = self._resolve_network_runtime_service(context)
+                deadline = monotonic() + timeout_seconds if timeout_seconds is not None else None
+                control_frame_types = {
+                    "connection_ack",
+                    "connection_init",
+                    "pong",
+                    "start",
+                    "subscribe",
+                }
+                while True:
+                    remaining_timeout = (
+                        None
+                        if deadline is None
+                        else max(deadline - monotonic(), 0.001)
+                    )
+                    activation = self._wait_network_connection_activation(
+                        context,
+                        handle,
+                        timeout_seconds=remaining_timeout,
+                    )
+                    activation_payload = activation.get("payload")
+                    message_record = (
+                        activation_payload.get("message")
+                        if isinstance(activation_payload, dict)
+                        else None
+                    )
+                    if not isinstance(message_record, dict) or "payload" not in message_record:
+                        raise GraphQLAdapterError("graphql.subscription_activation_invalid")
+                    raw_frame = message_record["payload"]
+                    frame = GraphQLSubscriptionProtocol.parse(raw_frame)
+                    sequence_id = (
+                        message_record.get("sequence_id")
+                        if isinstance(message_record.get("sequence_id"), int)
+                        else None
+                    )
+                    connection_epoch = (
+                        message_record.get("connection_epoch")
+                        if isinstance(message_record.get("connection_epoch"), int)
+                        else None
+                    )
+                    # 接收线程已经把每个协议帧写入 Trace；这里补充节点消费事件，
+                    # 并用同一序号避免正文重复。控制帧也保留观测记录，但不触发图。
+                    self._record_network_connection_message(
+                        service,
+                        session_id=context.execution_session_context.session_id,
+                        handle=handle,
+                        connection_id=connection_id,
+                        event_kind=(
+                            "graphql.next_event"
+                            if frame.type not in control_frame_types
+                            else f"graphql.{frame.type}"
+                        ),
+                        payload=raw_frame,
+                        sequence_id=sequence_id,
+                        connection_epoch=connection_epoch,
+                    )
+                    if frame.type == "ping":
+                        pong_frame = json.dumps(
+                            GraphQLSubscriptionProtocol.pong(frame.payload),
+                            ensure_ascii=False,
+                        )
+                        handle.send(pong_frame)
+                        self._record_network_connection_message(
+                            service,
+                            session_id=context.execution_session_context.session_id,
+                            handle=handle,
+                            connection_id=connection_id,
+                            event_kind="graphql.pong",
+                            payload=pong_frame,
+                        )
+                    if frame.type in control_frame_types or frame.type == "ping":
+                        continue
+                    break
+                output: dict[str, object] = {
+                    "status": "succeeded",
+                    "node_id": node["node_id"],
+                    "action": "next_event",
+                    "connection_id": connection_id,
+                    "event_kind": (
+                        activation_payload.get("event_kind")
+                        if isinstance(activation_payload, dict)
+                        else None
+                    ),
+                    "event_type": frame.type,
+                    "sequence_id": message_record.get("sequence_id"),
+                    "connection_epoch": message_record.get("connection_epoch"),
+                }
+                try:
+                    output["queue"] = self._describe_network_connection(context, handle)
+                except (RuntimeError, ValueError):
+                    # 轻量注入的测试/适配句柄可能没有队列描述能力。
+                    pass
+                if frame.type in {"next", "data"}:
+                    payload = frame.payload if isinstance(frame.payload, dict) else {}
+                    result = GraphQLProtocolAdapter().parse_response(payload)
+                    output.update(
+                        {
+                            "data": result.data,
+                            "errors": [dict(item) for item in result.errors],
+                            "extensions": dict(result.extensions),
+                        }
+                    )
+                    context.variables["last_graphql_response"] = output
+                    return output
+                if frame.type == "error":
+                    errors = frame.payload if isinstance(frame.payload, list) else [frame.payload]
+                    output["errors"] = [item for item in errors if isinstance(item, dict)]
+                    cleanup_subscription_handle()
+                    return output
+                if frame.type in {"complete", "stop"}:
+                    output["completed"] = True
+                    cleanup_subscription_handle()
+                    return output
+                output["payload"] = frame.payload
+                return output
             if action == "receive":
                 timeout_value = _resolve_value(node_config.get("timeout_seconds"), context)
                 timeout_seconds = float(timeout_value) if timeout_value is not None else None
-                frame = GraphQLSubscriptionProtocol.parse(
-                    handle.receive(timeout_seconds=timeout_seconds)
+                raw_frame = handle.receive(timeout_seconds=timeout_seconds)
+                service = self._resolve_network_runtime_service(context)
+                self._record_network_connection_message(
+                    service,
+                    session_id=context.execution_session_context.session_id,
+                    handle=handle,
+                    connection_id=connection_id,
+                    event_kind="graphql.receive",
+                    payload=raw_frame,
                 )
+                frame = GraphQLSubscriptionProtocol.parse(raw_frame)
+                if frame.type == "ping":
+                    pong_frame = json.dumps(
+                        GraphQLSubscriptionProtocol.pong(frame.payload),
+                        ensure_ascii=False,
+                    )
+                    handle.send(pong_frame)
+                    self._record_network_connection_message(
+                        service,
+                        session_id=context.execution_session_context.session_id,
+                        handle=handle,
+                        connection_id=connection_id,
+                        event_kind="graphql.pong",
+                        payload=pong_frame,
+                    )
                 if frame.type in {"next", "data"}:
                     payload = frame.payload if isinstance(frame.payload, dict) else {}
                     result = GraphQLProtocolAdapter().parse_response(payload)
@@ -1531,7 +1897,7 @@ class RuntimeExecutorRegistry:
                     return output
                 if frame.type == "error":
                     errors = frame.payload if isinstance(frame.payload, list) else [frame.payload]
-                    return {
+                    output = {
                         "status": "succeeded",
                         "node_id": node["node_id"],
                         "action": "receive",
@@ -1539,8 +1905,10 @@ class RuntimeExecutorRegistry:
                         "event_type": frame.type,
                         "errors": [item for item in errors if isinstance(item, dict)],
                     }
+                    cleanup_subscription_handle()
+                    return output
                 if frame.type in {"complete", "stop"}:
-                    return {
+                    output = {
                         "status": "succeeded",
                         "node_id": node["node_id"],
                         "action": "receive",
@@ -1548,6 +1916,8 @@ class RuntimeExecutorRegistry:
                         "event_type": frame.type,
                         "completed": True,
                     }
+                    cleanup_subscription_handle()
+                    return output
                 return {
                     "status": "succeeded",
                     "node_id": node["node_id"],
@@ -1556,14 +1926,39 @@ class RuntimeExecutorRegistry:
                     "event_type": frame.type,
                     "payload": frame.payload,
                 }
-            if action == "close":
-                handle.close()
-                connections.pop(key, None)
+            if action in {"unsubscribe", "cancel", "close"}:
+                subprotocol_value = _resolve_value(
+                    node_config.get("subprotocol", "graphql-transport-ws"),
+                    context,
+                )
+                subprotocol = (
+                    subprotocol_value.strip()
+                    if isinstance(subprotocol_value, str) and subprotocol_value.strip()
+                    else "graphql-transport-ws"
+                )
+                frame = (
+                    GraphQLSubscriptionProtocol.stop(request_id=connection_id)
+                    if subprotocol == "graphql-ws"
+                    else GraphQLSubscriptionProtocol.complete(request_id=connection_id)
+                )
+                frame_text = json.dumps(frame, ensure_ascii=False)
+                handle.send(frame_text)
+                service = self._resolve_network_runtime_service(context)
+                self._record_network_connection_message(
+                    service,
+                    session_id=context.execution_session_context.session_id,
+                    handle=handle,
+                    connection_id=connection_id,
+                    event_kind="graphql.unsubscribe",
+                    payload=frame_text,
+                )
+                cleanup_subscription_handle()
                 return {
                     "status": "succeeded",
                     "node_id": node["node_id"],
-                    "action": "close",
+                    "action": action,
                     "connection_id": connection_id,
+                    "frame_type": frame["type"],
                 }
             return self._failed_network_result(
                 node,
@@ -1602,6 +1997,21 @@ class RuntimeExecutorRegistry:
             proxy_config = _resolve_value(node_config["proxy"], context) if "proxy" in node_config else None
             timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout")), context)
             max_queue_size = _resolve_value(node_config.get("max_queue_size", 100), context)
+            max_reconnect_attempts_value = _resolve_value(
+                node_config.get("max_reconnect_attempts", 0),
+                context,
+            )
+            reconnect_delay_seconds_value = _resolve_value(
+                node_config.get("reconnect_delay_seconds", 0.5),
+                context,
+            )
+            reconnect_max_delay_seconds_value = _resolve_value(
+                node_config.get("reconnect_max_delay_seconds", 30.0),
+                context,
+            )
+            backpressure_policy = _resolve_value(
+                node_config.get("backpressure_policy", "fail_stream"), context
+            )
             if not isinstance(url, str) or not url.strip():
                 return self._failed_network_result(
                     node,
@@ -1610,7 +2020,12 @@ class RuntimeExecutorRegistry:
                     "SSE url is required",
                     action=action,
                 )
-            if not isinstance(headers, dict) or not isinstance(params, dict) or (proxy_config is not None and not isinstance(proxy_config, dict)):
+            if (
+                not isinstance(headers, dict)
+                or not isinstance(params, dict)
+                or not isinstance(backpressure_policy, str)
+                or (proxy_config is not None and not isinstance(proxy_config, dict))
+            ):
                 return self._failed_network_result(
                     node,
                     context,
@@ -1621,6 +2036,19 @@ class RuntimeExecutorRegistry:
                 )
             try:
                 queue_size = int(max_queue_size)
+                max_reconnect_attempts = _resolve_long_connection_reconnect_attempts(
+                    max_reconnect_attempts_value,
+                    error_code="network.sse_reconnect_attempts_invalid",
+                )
+                reconnect_delay_seconds = _resolve_long_connection_reconnect_delay(
+                    reconnect_delay_seconds_value,
+                    error_code="network.sse_reconnect_delay_invalid",
+                )
+                reconnect_max_delay_seconds = _resolve_long_connection_reconnect_max_delay(
+                    reconnect_max_delay_seconds_value,
+                    reconnect_delay_seconds=reconnect_delay_seconds,
+                    error_code="network.sse_reconnect_max_delay_invalid",
+                )
                 snapshot = self._resolve_network_connection_snapshot(
                     context,
                     node_config,
@@ -1642,10 +2070,16 @@ class RuntimeExecutorRegistry:
                     session_id=context.execution_session_context.session_id,
                     snapshot=snapshot,
                     url=url,
+                    node_id=node["node_id"],
                     headers={str(key): str(value) for key, value in headers.items()},
                     params={str(key): str(value) for key, value in params.items()},
                     timeout_seconds=timeout_seconds,
                     max_queue_size=queue_size,
+                    backpressure_policy=backpressure_policy,
+                    connection_id=connection_id,
+                    max_reconnect_attempts=max_reconnect_attempts,
+                    reconnect_delay_seconds=reconnect_delay_seconds,
+                    reconnect_max_delay_seconds=reconnect_max_delay_seconds,
                 )
             except (TypeError, ValueError, TimeoutError, RuntimeError) as exc:
                 try:
@@ -1671,6 +2105,7 @@ class RuntimeExecutorRegistry:
                 "node_id": node["node_id"],
                 "action": "connect",
                 "connection_id": connection_id,
+                "queue": self._describe_network_connection(context, handle),
                 **metadata,
             }
         handle = connections.get(("sse", connection_id))
@@ -1687,13 +2122,54 @@ class RuntimeExecutorRegistry:
                 timeout_value = _resolve_value(node_config.get("timeout_seconds"), context)
                 timeout_seconds = float(timeout_value) if timeout_value is not None else None
                 event = handle.receive(timeout_seconds=timeout_seconds)
+                service = self._resolve_network_runtime_service(context)
+                self._record_network_connection_message(
+                    service,
+                    session_id=context.execution_session_context.session_id,
+                    handle=handle,
+                    connection_id=connection_id,
+                    event_kind="sse.message",
+                    payload=event,
+                )
                 return {
                     "status": "succeeded",
                     "node_id": node["node_id"],
                     "action": "receive",
                     "connection_id": connection_id,
+                    "queue": self._describe_network_connection(context, handle),
                     "event": event,
                     **event,
+                }
+            if action == "next_event":
+                timeout_value = _resolve_value(node_config.get("timeout_seconds"), context)
+                timeout_seconds = float(timeout_value) if timeout_value is not None else None
+                activation = self._wait_network_connection_activation(
+                    context,
+                    handle,
+                    timeout_seconds=timeout_seconds,
+                )
+                payload = activation.get("payload")
+                message = payload.get("message") if isinstance(payload, dict) else None
+                raw_event = message.get("payload") if isinstance(message, dict) else None
+                if all(hasattr(raw_event, name) for name in ("event_id", "event_type", "data", "retry_ms")):
+                    event_payload = {
+                        "event_id": raw_event.event_id,
+                        "event_type": raw_event.event_type,
+                        "data": raw_event.data,
+                        "retry_ms": raw_event.retry_ms,
+                    }
+                else:
+                    event_payload = raw_event
+                return {
+                    "status": "succeeded",
+                    "node_id": node["node_id"],
+                    "action": "next_event",
+                    "connection_id": connection_id,
+                    "event_kind": payload.get("event_kind") if isinstance(payload, dict) else None,
+                    "sequence_id": message.get("sequence_id") if isinstance(message, dict) else None,
+                    "connection_epoch": message.get("connection_epoch") if isinstance(message, dict) else None,
+                    "queue": self._describe_network_connection(context, handle),
+                    "event": event_payload,
                 }
             if action == "close":
                 handle.close()
@@ -1741,6 +2217,22 @@ class RuntimeExecutorRegistry:
             proxy_config = _resolve_value(node_config["proxy"], context) if "proxy" in node_config else None
             timeout_value = _resolve_value(node_config.get("timeout_seconds", node_config.get("timeout")), context)
             subprotocols = _resolve_value(node_config.get("subprotocols", []), context)
+            max_queue_size = _resolve_value(node_config.get("max_queue_size", 100), context)
+            max_reconnect_attempts_value = _resolve_value(
+                node_config.get("max_reconnect_attempts", 0),
+                context,
+            )
+            reconnect_delay_seconds_value = _resolve_value(
+                node_config.get("reconnect_delay_seconds", 0.5),
+                context,
+            )
+            reconnect_max_delay_seconds_value = _resolve_value(
+                node_config.get("reconnect_max_delay_seconds", 30.0),
+                context,
+            )
+            backpressure_policy = _resolve_value(
+                node_config.get("backpressure_policy", "fail_stream"), context
+            )
             if not isinstance(url, str) or not url.strip():
                 return self._failed_network_result(
                     node,
@@ -1749,7 +2241,12 @@ class RuntimeExecutorRegistry:
                     "WebSocket url is required",
                     action=action,
                 )
-            if not isinstance(headers, dict) or not isinstance(subprotocols, list) or (proxy_config is not None and not isinstance(proxy_config, dict)):
+            if (
+                not isinstance(headers, dict)
+                or not isinstance(subprotocols, list)
+                or not isinstance(backpressure_policy, str)
+                or (proxy_config is not None and not isinstance(proxy_config, dict))
+            ):
                 return self._failed_network_result(
                     node,
                     context,
@@ -1774,6 +2271,20 @@ class RuntimeExecutorRegistry:
                     },
                 )
                 timeout_seconds = snapshot.timeout_seconds or 30.0
+                queue_size = int(max_queue_size)
+                max_reconnect_attempts = _resolve_long_connection_reconnect_attempts(
+                    max_reconnect_attempts_value,
+                    error_code="network.websocket_reconnect_attempts_invalid",
+                )
+                reconnect_delay_seconds = _resolve_long_connection_reconnect_delay(
+                    reconnect_delay_seconds_value,
+                    error_code="network.websocket_reconnect_delay_invalid",
+                )
+                reconnect_max_delay_seconds = _resolve_long_connection_reconnect_max_delay(
+                    reconnect_max_delay_seconds_value,
+                    reconnect_delay_seconds=reconnect_delay_seconds,
+                    error_code="network.websocket_reconnect_max_delay_invalid",
+                )
                 url = _resolve_network_request_url(url, snapshot, websocket=True)
                 self._validate_engine_network_url(
                     url,
@@ -1785,9 +2296,16 @@ class RuntimeExecutorRegistry:
                     session_id=context.execution_session_context.session_id,
                     snapshot=snapshot,
                     url=url,
+                    node_id=node["node_id"],
                     headers={str(key): str(value) for key, value in headers.items()},
                     timeout_seconds=timeout_seconds,
                     subprotocols=[str(item) for item in subprotocols],
+                    connection_id=connection_id,
+                    max_queue_size=queue_size,
+                    backpressure_policy=backpressure_policy,
+                    max_reconnect_attempts=max_reconnect_attempts,
+                    reconnect_delay_seconds=reconnect_delay_seconds,
+                    reconnect_max_delay_seconds=reconnect_max_delay_seconds,
                 )
             except (TypeError, ValueError, TimeoutError, RuntimeError) as exc:
                 try:
@@ -1813,6 +2331,7 @@ class RuntimeExecutorRegistry:
                 "node_id": node["node_id"],
                 "action": "connect",
                 "connection_id": connection_id,
+                "queue": self._describe_network_connection(context, handle),
                 "connection_status": metadata.get("status", "connected"),
                 "url": metadata.get("url", url),
             }
@@ -1828,7 +2347,17 @@ class RuntimeExecutorRegistry:
         try:
             if action == "send":
                 message_config = node_config.get("message") if "message" in node_config else node_config.get("value")
-                handle.send(_resolve_value(message_config, context))
+                message = _resolve_value(message_config, context)
+                handle.send(message)
+                service = self._resolve_network_runtime_service(context)
+                self._record_network_connection_message(
+                    service,
+                    session_id=context.execution_session_context.session_id,
+                    handle=handle,
+                    connection_id=connection_id,
+                    event_kind="websocket.send",
+                    payload=message,
+                )
                 return {
                     "status": "succeeded",
                     "node_id": node["node_id"],
@@ -1839,12 +2368,55 @@ class RuntimeExecutorRegistry:
                 timeout_value = _resolve_value(node_config.get("timeout_seconds"), context)
                 timeout_seconds = float(timeout_value) if timeout_value is not None else None
                 message = handle.receive(timeout_seconds=timeout_seconds)
+                service = self._resolve_network_runtime_service(context)
+                self._record_network_connection_message(
+                    service,
+                    session_id=context.execution_session_context.session_id,
+                    handle=handle,
+                    connection_id=connection_id,
+                    event_kind="websocket.receive",
+                    payload=message,
+                )
                 return {
                     "status": "succeeded",
                     "node_id": node["node_id"],
                     "action": "receive",
                     "connection_id": connection_id,
+                    "queue": self._describe_network_connection(context, handle),
                     "message": message,
+                }
+            if action == "next_event":
+                timeout_value = _resolve_value(node_config.get("timeout_seconds"), context)
+                timeout_seconds = float(timeout_value) if timeout_value is not None else None
+                activation = self._wait_network_connection_activation(
+                    context,
+                    handle,
+                    timeout_seconds=timeout_seconds,
+                )
+                payload = activation.get("payload")
+                message_record = payload.get("message") if isinstance(payload, dict) else None
+                return {
+                    "status": "succeeded",
+                    "node_id": node["node_id"],
+                    "action": "next_event",
+                    "connection_id": connection_id,
+                    "event_kind": payload.get("event_kind") if isinstance(payload, dict) else None,
+                    "sequence_id": (
+                        message_record.get("sequence_id")
+                        if isinstance(message_record, dict)
+                        else None
+                    ),
+                    "connection_epoch": (
+                        message_record.get("connection_epoch")
+                        if isinstance(message_record, dict)
+                        else None
+                    ),
+                    "queue": self._describe_network_connection(context, handle),
+                    "message": (
+                        message_record.get("payload")
+                        if isinstance(message_record, dict)
+                        else None
+                    ),
                 }
             if action == "ping":
                 value_config = node_config.get("message") if "message" in node_config else node_config.get("value")
@@ -1860,6 +2432,15 @@ class RuntimeExecutorRegistry:
                         action=action,
                     )
                 handle.ping(value)
+                service = self._resolve_network_runtime_service(context)
+                self._record_network_connection_message(
+                    service,
+                    session_id=context.execution_session_context.session_id,
+                    handle=handle,
+                    connection_id=connection_id,
+                    event_kind="websocket.ping",
+                    payload=value,
+                )
                 return {
                     "status": "succeeded",
                     "node_id": node["node_id"],
@@ -2005,6 +2586,266 @@ class RuntimeExecutorRegistry:
         if callable(release_connection):
             release_connection(context.execution_session_context.session_id, handle)
 
+    def _describe_network_connection(self, context: RuntimeContext, handle: object) -> dict[str, object]:
+        describe_connection = getattr(
+            self._resolve_network_runtime_service(context),
+            "describe_connection",
+            None,
+        )
+        if callable(describe_connection):
+            return describe_connection(
+                session_id=context.execution_session_context.session_id,
+                handle=handle,
+            )
+        queue_status = getattr(handle, "queue_status", None)
+        if isinstance(queue_status, dict):
+            return dict(queue_status)
+        return {}
+
+    def _wait_network_connection_activation(
+        self,
+        context: RuntimeContext,
+        handle: object,
+        *,
+        timeout_seconds: float | None,
+    ) -> dict[str, object]:
+        wait_activation = getattr(
+            self._resolve_network_runtime_service(context),
+            "wait_connection_activation",
+            None,
+        )
+        if callable(wait_activation):
+            return wait_activation(
+                session_id=context.execution_session_context.session_id,
+                handle=handle,
+                timeout_seconds=timeout_seconds,
+            )
+        waiter = getattr(handle, "wait_next_activation", None)
+        if not callable(waiter):
+            raise ValueError("network.connection_activation_unavailable")
+        activation = waiter(timeout_seconds=timeout_seconds)
+        if not isinstance(activation, dict):
+            raise ValueError("network.connection_activation_invalid")
+        return activation
+
+    @staticmethod
+    def _record_network_connection_message(service: object, **payload: object) -> None:
+        """将连接消息交给 Trace 扩展；注入的轻量服务可以不实现该扩展。"""
+        recorder = getattr(service, "record_connection_message", None)
+        if not callable(recorder):
+            return
+        # 自动接收线程已经用同一序号记录过消息时，节点层补充的
+        # receive 事件必须复用该序号，避免 Debug Trace 产生重复正文。
+        if payload.get("sequence_id") is None and payload.get("event_kind") in {
+            "sse.message",
+            "websocket.receive",
+            "graphql.receive",
+        }:
+            last_record = getattr(payload.get("handle"), "last_received_record", None)
+            if isinstance(last_record, dict):
+                sequence_id = last_record.get("sequence_id")
+                connection_epoch = last_record.get("connection_epoch")
+                if isinstance(sequence_id, int) and not isinstance(sequence_id, bool):
+                    payload["sequence_id"] = sequence_id
+                if isinstance(connection_epoch, int) and not isinstance(connection_epoch, bool):
+                    payload["connection_epoch"] = connection_epoch
+        try:
+            recorder(**payload)
+        except Exception:
+            # Trace 属于观测旁路，不能改变网络节点的实际结果。
+            return
+
+    def _record_browser_network_observation(
+        self,
+        node: dict,
+        context: RuntimeContext,
+        *,
+        event_kind: str,
+        method: str,
+        url: str,
+        payload: Mapping[str, Any],
+        request_headers: Mapping[str, Any] | None = None,
+        request_body: Any = None,
+        response_status: int | None = None,
+        response_headers: Mapping[str, Any] | None = None,
+        response_body: Any = None,
+        status: str = "succeeded",
+        error_code: str | None = None,
+    ) -> None:
+        """把浏览器动态监听结果写入 Debug 专用网络 Trace。
+
+        这是观测旁路：录制器不存在、事件索引供应器异常或正文不可序列化时，
+        都不能改变浏览器监听节点的实际结果。正文和请求头不经过普通日志的
+        脱敏投影，保证 Debug 网络窗口可以查看完整数据；弹窗 Page 实例由调用
+        方从 payload 中排除后才会到达这里。
+        """
+        recorder = context.flow_runtime.get("network_trace_recorder")
+        start_operation = getattr(recorder, "start_operation", None)
+        complete_operation = getattr(recorder, "complete_operation", None)
+        append_message = getattr(recorder, "append_message", None)
+        if not all(
+            callable(item)
+            for item in (start_operation, complete_operation, append_message)
+        ):
+            return
+        session_context = context.execution_session_context
+        session_id = (
+            session_context.session_id
+            if session_context is not None
+            else "runtime-context"
+        )
+        debug_event_index: int | None = None
+        supplier = self._debug_event_index_supplier
+        if not callable(supplier):
+            candidate_supplier = context.flow_runtime.get("debug_event_index_supplier")
+            supplier = candidate_supplier if callable(candidate_supplier) else None
+        if callable(supplier):
+            try:
+                candidate_index = supplier()
+                if (
+                    isinstance(candidate_index, int)
+                    and not isinstance(candidate_index, bool)
+                    and candidate_index >= 0
+                ):
+                    debug_event_index = candidate_index
+            except Exception:
+                debug_event_index = None
+        normalized_method = str(method or "OBSERVE").strip().upper() or "OBSERVE"
+        normalized_url = str(url or f"browser://{node.get('node_id', 'observation')}")
+        trace_payload = {
+            str(key): value
+            for key, value in payload.items()
+            if key != "page"
+        }
+        trace_request_body = self._capture_browser_trace_body(
+            context,
+            session_id=session_id,
+            payload=request_body,
+            headers=request_headers,
+        )
+        trace_response_body = self._capture_browser_trace_body(
+            context,
+            session_id=session_id,
+            payload=response_body,
+            headers=response_headers,
+        )
+        try:
+            operation = start_operation(
+                trace_id=None,
+                debug_session_id=session_id,
+                runtime_session_id=session_id,
+                node_id=node.get("node_id"),
+                operation_id=node.get("node_id"),
+                method=normalized_method,
+                url=normalized_url,
+                protocol="browser",
+                request_headers=(
+                    request_headers if isinstance(request_headers, Mapping) else {}
+                ),
+                request_body=trace_request_body,
+                debug_event_index=debug_event_index,
+            )
+            trace_id = (
+                operation.get("trace_id")
+                if isinstance(operation, Mapping)
+                else None
+            )
+            if not isinstance(trace_id, str) or not trace_id:
+                return
+            complete_operation(
+                trace_id=trace_id,
+                status=status,
+                response_status=response_status,
+                response_headers=response_headers,
+                response_body=trace_response_body,
+                error_code=error_code,
+                debug_event_index=debug_event_index,
+            )
+            append_message(
+                trace_id=trace_id,
+                debug_session_id=session_id,
+                runtime_session_id=session_id,
+                node_id=node.get("node_id"),
+                operation_id=node.get("node_id"),
+                connection_id=None,
+                event_kind=event_kind,
+                payload=trace_payload,
+                debug_event_index=debug_event_index,
+            )
+        except Exception:
+            # Debug Trace 属于观测旁路，不能改变浏览器监听结果。
+            return
+
+    def _capture_browser_trace_body(
+        self,
+        context: RuntimeContext,
+        *,
+        session_id: str,
+        payload: Any,
+        headers: Mapping[str, Any] | None,
+    ) -> Any:
+        if payload is None or isinstance(payload, ResponseBodyRef):
+            return payload
+        try:
+            encoded, inferred_content_type = serialize_trace_message_payload(payload)
+        except Exception:
+            return payload
+        if len(encoded) <= TRACE_MESSAGE_BODY_THRESHOLD_BYTES:
+            return payload
+        service = context.flow_runtime.get("network_runtime_service")
+        capture = getattr(service, "capture_trace_body", None)
+        if not callable(capture):
+            try:
+                service = self._resolve_network_runtime_service(context)
+            except Exception:
+                return payload
+            capture = getattr(service, "capture_trace_body", None)
+        if not callable(capture):
+            return payload
+        content_type = None
+        if isinstance(headers, Mapping):
+            for key, value in headers.items():
+                if str(key).lower() == "content-type" and value is not None:
+                    content_type = str(value)
+                    break
+        try:
+            body_ref = capture(
+                session_id,
+                payload,
+                content_type=content_type or inferred_content_type,
+            )
+        except Exception:
+            return payload
+        return body_ref if isinstance(body_ref, ResponseBodyRef) else payload
+
+    def _record_browser_listener_failure(
+        self,
+        node: dict,
+        context: RuntimeContext,
+        *,
+        event_kind: str,
+        method: str,
+        url: str,
+        payload: Mapping[str, Any],
+        error_code: str,
+    ) -> None:
+        failure_payload = {
+            str(key): value
+            for key, value in payload.items()
+            if key != "page"
+        }
+        failure_payload["error_code"] = error_code
+        self._record_browser_network_observation(
+            node,
+            context,
+            event_kind=event_kind,
+            method=method,
+            url=url,
+            payload=failure_payload,
+            status="failed",
+            error_code=error_code,
+        )
+
     def _resolve_network_runtime_service(self, context: RuntimeContext) -> NetworkRuntimeService:
         if self._network_runtime_service is not None:
             return self._network_runtime_service
@@ -2012,6 +2853,13 @@ class RuntimeExecutorRegistry:
         if isinstance(service, NetworkRuntimeService):
             return service
         audit_event_sink = context.flow_runtime.get("network_audit_event_sink")
+        trace_recorder = context.flow_runtime.get("network_trace_recorder")
+        debug_event_index_supplier = self._debug_event_index_supplier
+        if not callable(debug_event_index_supplier):
+            candidate_supplier = context.flow_runtime.get("debug_event_index_supplier")
+            debug_event_index_supplier = (
+                candidate_supplier if callable(candidate_supplier) else None
+            )
         service = NetworkRuntimeService(
             response_root_directory=Path(tempfile.gettempdir()),
             access_policy=NetworkAccessPolicy(
@@ -2020,6 +2868,8 @@ class RuntimeExecutorRegistry:
             ),
             sensitive_values=context.flow_runtime.get("sensitive_value_service"),
             audit_event_sink=audit_event_sink if callable(audit_event_sink) else None,
+            trace_recorder=trace_recorder if isinstance(trace_recorder, NetworkTraceRecorder) else None,
+            debug_event_index_supplier=debug_event_index_supplier,
             allow_insecure_tls=bool(self._runtime_settings.get("allow_insecure_tls", True)),
         )
         context.flow_runtime["network_runtime_service"] = service
@@ -2208,7 +3058,31 @@ class RuntimeExecutorRegistry:
         target = _require_browser_target(context)
         matched_url = _wait_for_browser_url(target, url_pattern.strip(), timeout_ms)
         if matched_url is None:
+            self._record_browser_listener_failure(
+                node,
+                context,
+                event_kind="browser.navigation_failed",
+                method="NAVIGATION",
+                url=str(getattr(target, "url", "") or ""),
+                payload={
+                    "url_pattern": url_pattern.strip(),
+                    "timeout_ms": timeout_ms,
+                },
+                error_code="browser.navigation_timeout",
+            )
             return _failed_result(node, "browser.navigation_timeout", "browser.wait_for_navigation timed out")
+        self._record_browser_network_observation(
+            node,
+            context,
+            event_kind="browser.navigation_observed",
+            method="NAVIGATION",
+            url=matched_url,
+            payload={
+                "url_pattern": url_pattern.strip(),
+                "matched_url": matched_url,
+                "timeout_ms": timeout_ms,
+            },
+        )
         return {
             "status": "succeeded",
             "node_id": node["node_id"],
@@ -2219,7 +3093,20 @@ class RuntimeExecutorRegistry:
 
     def _execute_browser_wait_for_timeout(self, node: dict, context: RuntimeContext) -> dict:
         timeout_ms = _resolve_int(_resolve_value(_node_config(node).get("timeout"), context), default=0)
-        _wait_for_timeout_with_cancellation(_require_browser_page(context), timeout_ms, context)
+        page = _require_browser_page(context)
+        _wait_for_timeout_with_cancellation(page, timeout_ms, context)
+        page_url = str(getattr(page, "url", "") or "")
+        self._record_browser_network_observation(
+            node,
+            context,
+            event_kind="browser.timeout_observed",
+            method="WAIT",
+            url=page_url,
+            payload={
+                "timeout_ms": timeout_ms,
+                "page_url": page_url,
+            },
+        )
         return {
             "status": "succeeded",
             "node_id": node["node_id"],
@@ -2459,11 +3346,41 @@ class RuntimeExecutorRegistry:
         if not isinstance(url_pattern, str) or not url_pattern.strip():
             return _failed_result(node, "browser.url_pattern_required", "url_pattern is required")
         normalized_method = method.strip().upper() if isinstance(method, str) and method.strip() else None
-        record = _wait_for_record(
-            context.browser_runtime.setdefault("request_records", []),
-            timeout_ms,
-            lambda item: _request_record_matches(item, url_pattern.strip(), normalized_method),
-            on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
+        try:
+            record = _wait_for_record(
+                context.browser_runtime.setdefault("request_records", []),
+                timeout_ms,
+                lambda item: _request_record_matches(item, url_pattern.strip(), normalized_method),
+                on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
+            )
+        except TimeoutError:
+            self._record_browser_listener_failure(
+                node,
+                context,
+                event_kind="browser.request_failed",
+                method="REQUEST",
+                url=str(getattr(context.browser_runtime.get("page"), "url", "") or ""),
+                payload={
+                    "url_pattern": url_pattern.strip(),
+                    "method": normalized_method,
+                    "timeout_ms": timeout_ms,
+                },
+                error_code="browser.request_timeout",
+            )
+            return _failed_result(node, "browser.request_timeout", "browser.wait_for_request timed out")
+        self._record_browser_network_observation(
+            node,
+            context,
+            event_kind="browser.request_observed",
+            method=str(record.get("method") or "REQUEST"),
+            url=str(record.get("url") or ""),
+            payload=record,
+            request_headers=(
+                record.get("headers")
+                if isinstance(record.get("headers"), Mapping)
+                else None
+            ),
+            request_body=record.get("post_data"),
         )
         return {
             "status": "succeeded",
@@ -2482,11 +3399,47 @@ class RuntimeExecutorRegistry:
         if not isinstance(url_pattern, str) or not url_pattern.strip():
             return _failed_result(node, "browser.url_pattern_required", "url_pattern is required")
         expected_status = _resolve_int(status_code, default=-1) if status_code is not None else None
-        record = _wait_for_record(
-            context.browser_runtime.setdefault("response_records", []),
-            timeout_ms,
-            lambda item: _response_record_matches(item, url_pattern.strip(), expected_status),
-            on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
+        try:
+            record = _wait_for_record(
+                context.browser_runtime.setdefault("response_records", []),
+                timeout_ms,
+                lambda item: _response_record_matches(item, url_pattern.strip(), expected_status),
+                on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
+            )
+        except TimeoutError:
+            self._record_browser_listener_failure(
+                node,
+                context,
+                event_kind="browser.response_failed",
+                method="RESPONSE",
+                url=str(getattr(context.browser_runtime.get("page"), "url", "") or ""),
+                payload={
+                    "url_pattern": url_pattern.strip(),
+                    "status_code": expected_status,
+                    "timeout_ms": timeout_ms,
+                },
+                error_code="browser.response_timeout",
+            )
+            return _failed_result(node, "browser.response_timeout", "browser.wait_for_response timed out")
+        self._record_browser_network_observation(
+            node,
+            context,
+            event_kind="browser.response_observed",
+            method=str(record.get("method") or "RESPONSE"),
+            url=str(record.get("url") or ""),
+            payload=record,
+            response_status=(
+                record.get("status_code")
+                if isinstance(record.get("status_code"), int)
+                and not isinstance(record.get("status_code"), bool)
+                else None
+            ),
+            response_headers=(
+                record.get("headers")
+                if isinstance(record.get("headers"), Mapping)
+                else None
+            ),
+            response_body=record.get("body_text"),
         )
         return {
             "status": "succeeded",
@@ -2502,12 +3455,24 @@ class RuntimeExecutorRegistry:
         node_config = _node_config(node)
         timeout_ms = _resolve_int(_resolve_value(node_config.get("timeout"), context), default=10000)
         activate = bool(_resolve_value(node_config.get("activate", True), context))
-        record = _wait_for_record(
-            context.browser_runtime.setdefault("popup_records", []),
-            timeout_ms,
-            lambda item: isinstance(item, dict) and isinstance(item.get("page"), Page),
-            on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
-        )
+        try:
+            record = _wait_for_record(
+                context.browser_runtime.setdefault("popup_records", []),
+                timeout_ms,
+                lambda item: isinstance(item, dict) and isinstance(item.get("page"), Page),
+                on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
+            )
+        except TimeoutError:
+            self._record_browser_listener_failure(
+                node,
+                context,
+                event_kind="browser.popup_failed",
+                method="POPUP",
+                url=str(getattr(context.browser_runtime.get("page"), "url", "") or ""),
+                payload={"timeout_ms": timeout_ms, "activate": activate},
+                error_code="browser.popup_timeout",
+            )
+            return _failed_result(node, "browser.popup_timeout", "browser.wait_for_popup timed out")
         popup_page = record["page"]
         if activate:
             page_index = _set_active_browser_page(context, popup_page)
@@ -2521,6 +3486,19 @@ class RuntimeExecutorRegistry:
             "label": _page_label(context, popup_page),
             "activated": activate,
         }
+        self._record_browser_network_observation(
+            node,
+            context,
+            event_kind="browser.popup_observed",
+            method="POPUP",
+            url=str(result["page_url"] or ""),
+            payload={
+                key: value
+                for key, value in record.items()
+                if key != "page"
+            }
+            | {"page_url": result["page_url"]},
+        )
         _store_optional_variable(node_config, context, {key: value for key, value in result.items() if key != "node_id" and key != "status"})
         return result
 
@@ -2937,12 +3915,24 @@ class RuntimeExecutorRegistry:
         if not self._is_browser_downloads_allowed():
             return _failed_result(node, "browser.download_disabled", "browser downloads are disabled")
         timeout_ms = _resolve_int(_resolve_value(node_config.get("timeout"), context), default=10000)
-        record = _wait_for_record(
-            context.browser_runtime.setdefault("download_records", []),
-            timeout_ms,
-            lambda item: isinstance(item, dict) and item.get("download") is not None,
-            on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
-        )
+        try:
+            record = _wait_for_record(
+                context.browser_runtime.setdefault("download_records", []),
+                timeout_ms,
+                lambda item: isinstance(item, dict) and item.get("download") is not None,
+                on_poll=lambda: _pump_browser_events(context.browser_runtime.get("page")),
+            )
+        except TimeoutError:
+            self._record_browser_listener_failure(
+                node,
+                context,
+                event_kind="browser.download_failed",
+                method="DOWNLOAD",
+                url=str(getattr(context.browser_runtime.get("page"), "url", "") or ""),
+                payload={"timeout_ms": timeout_ms},
+                error_code="browser.download_timeout",
+            )
+            return _failed_result(node, "browser.download_timeout", "browser.wait_for_download timed out")
         path_value = _resolve_value(node_config.get("path"), context)
         if isinstance(path_value, str) and path_value.strip():
             path = _resolve_runtime_path(path_value, context)
@@ -2951,6 +3941,19 @@ class RuntimeExecutorRegistry:
         path.parent.mkdir(parents=True, exist_ok=True)
         record["download"].save_as(str(path))
         result = {"status": "succeeded", "node_id": node["node_id"], "url": record["url"], "path": str(path.resolve()), "suggested_filename": record["suggested_filename"], "page_index": record.get("page_index")}
+        self._record_browser_network_observation(
+            node,
+            context,
+            event_kind="browser.download_observed",
+            method="DOWNLOAD",
+            url=str(record.get("url") or ""),
+            payload={
+                key: value
+                for key, value in record.items()
+                if key != "download"
+            }
+            | {"path": result["path"]},
+        )
         _store_optional_variable(node_config, context, {key: value for key, value in result.items() if key not in {"status", "node_id"}})
         return result
 
@@ -2978,7 +3981,36 @@ class RuntimeExecutorRegistry:
         page = _require_browser_page(context)
         if not isinstance(from_url, str) or not from_url.strip():
             from_url = page.url
-        matched_url = _wait_for_url_change(page=page, from_url=from_url, url_pattern=url_pattern if isinstance(url_pattern, str) else "", timeout_ms=timeout_ms)
+        try:
+            matched_url = _wait_for_url_change(page=page, from_url=from_url, url_pattern=url_pattern if isinstance(url_pattern, str) else "", timeout_ms=timeout_ms)
+        except TimeoutError:
+            self._record_browser_listener_failure(
+                node,
+                context,
+                event_kind="browser.url_change_failed",
+                method="NAVIGATION",
+                url=str(getattr(page, "url", "") or ""),
+                payload={
+                    "from_url": from_url,
+                    "url_pattern": url_pattern if isinstance(url_pattern, str) else "",
+                    "timeout_ms": timeout_ms,
+                },
+                error_code="browser.url_change_timeout",
+            )
+            return _failed_result(node, "browser.url_change_timeout", "browser.wait_for_url_change timed out")
+        self._record_browser_network_observation(
+            node,
+            context,
+            event_kind="browser.url_change_observed",
+            method="NAVIGATION",
+            url=matched_url,
+            payload={
+                "from_url": from_url,
+                "url_pattern": url_pattern if isinstance(url_pattern, str) else "",
+                "matched_url": matched_url,
+                "timeout_ms": timeout_ms,
+            },
+        )
         return {"status": "succeeded", "node_id": node["node_id"], "from_url": from_url, "matched_url": matched_url, "page_url": page.url}
 
     def _execute_time_get_current_time(self, node: dict, context: RuntimeContext) -> dict:
@@ -4709,32 +5741,62 @@ class RuntimeExecutorRegistry:
 
     def _execute_dialog_watch_dialogs(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        page = _require_browser_page(context)
         _ensure_dialog_handler(context)
         timeout_ms = _resolve_int(_resolve_value(node_config.get("timeout"), context), default=0)
         if timeout_ms > 0:
-            _require_browser_page(context).wait_for_timeout(timeout_ms)
+            page.wait_for_timeout(timeout_ms)
         records = list(context.browser_runtime.get("dialog_records", []))
         _store_optional_variable(node_config, context, records)
-        return {
+        result = {
             "status": "succeeded",
             "node_id": node["node_id"],
             "dialog_count": len(records),
             "dialogs": records,
         }
+        page_url = str(getattr(page, "url", "") or "")
+        self._record_browser_network_observation(
+            node,
+            context,
+            event_kind="browser.dialogs_watched",
+            method="DIALOG",
+            url=page_url,
+            payload={
+                "timeout_ms": timeout_ms,
+                "dialog_count": len(records),
+                "dialogs": records,
+            },
+        )
+        return result
 
     def _execute_dialog_handle_dialogs(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
+        page = _require_browser_page(context)
         _ensure_dialog_handler(context)
         records = list(context.browser_runtime.get("dialog_records", []))
         if bool(_resolve_value(node_config.get("clear_after", False), context)):
             context.browser_runtime["dialog_records"] = []
-        return {
+        result = {
             "status": "succeeded",
             "node_id": node["node_id"],
             "handled_count": len(records),
             "dialogs": records,
             "cleared": bool(node_config.get("clear_after", False)),
         }
+        page_url = str(getattr(page, "url", "") or "")
+        self._record_browser_network_observation(
+            node,
+            context,
+            event_kind="browser.dialogs_handled",
+            method="DIALOG",
+            url=page_url,
+            payload={
+                "handled_count": len(records),
+                "dialogs": records,
+                "cleared": result["cleared"],
+            },
+        )
+        return result
 
     def _execute_control_foreach(self, node: dict, context: RuntimeContext) -> dict:
         node_config = _node_config(node)
@@ -5079,6 +6141,32 @@ def _is_non_negative_int(value: object) -> bool:
 
 def _is_non_negative_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+
+
+def _resolve_long_connection_reconnect_attempts(value: object, *, error_code: str) -> int:
+    if not _is_non_negative_int(value):
+        raise ValueError(error_code)
+    return int(value)
+
+
+def _resolve_long_connection_reconnect_delay(value: object, *, error_code: str) -> float:
+    if not _is_non_negative_number(value):
+        raise ValueError(error_code)
+    return float(value)
+
+
+def _resolve_long_connection_reconnect_max_delay(
+    value: object,
+    *,
+    reconnect_delay_seconds: float,
+    error_code: str,
+) -> float:
+    if not _is_non_negative_number(value):
+        raise ValueError(error_code)
+    reconnect_max_delay_seconds = float(value)
+    if reconnect_max_delay_seconds < reconnect_delay_seconds:
+        raise ValueError(error_code)
+    return reconnect_max_delay_seconds
 
 
 def _resolve_response_assert_read_limit(node_config: dict, body_size_bytes: int) -> int:
@@ -7073,6 +8161,12 @@ def _ensure_browser_context_handlers(context: RuntimeContext) -> None:
         return
 
     def handle_request(request: Any) -> None:
+        post_data = getattr(request, "post_data", None)
+        if callable(post_data):
+            try:
+                post_data = post_data()
+            except Exception:
+                post_data = None
         _append_bounded_browser_record(
             context.browser_runtime.setdefault("request_records", []),
             {
@@ -7080,6 +8174,7 @@ def _ensure_browser_context_handlers(context: RuntimeContext) -> None:
                 "method": request.method,
                 "headers": dict(request.headers),
                 "resource_type": request.resource_type,
+                "post_data": post_data,
             }
         )
 
@@ -7088,10 +8183,18 @@ def _ensure_browser_context_handlers(context: RuntimeContext) -> None:
             body_text = response.text()
         except Exception:
             body_text = None
+        request = getattr(response, "request", None)
+        response_method = getattr(request, "method", None)
+        if callable(response_method):
+            try:
+                response_method = response_method()
+            except Exception:
+                response_method = None
         _append_bounded_browser_record(
             context.browser_runtime.setdefault("response_records", []),
             {
                 "url": response.url,
+                "method": response_method,
                 "status_code": response.status,
                 "headers": dict(response.headers),
                 "body_text": body_text,

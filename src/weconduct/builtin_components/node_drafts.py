@@ -3588,6 +3588,48 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             "timeout": None,
         },
     },
+    "network.graphql_subscription": {
+        "lowered_kind": "execution",
+        "expansion_role": "network:graphql_subscription",
+        "ports": (
+            _network_control_ports()
+            + _network_context_ports()
+            + [
+                {"port_id": "in:action", "direction": "input", "relation_layer": "data", "semantic_slot": "in.action"},
+                {"port_id": "in:connection_id", "direction": "input", "relation_layer": "data", "semantic_slot": "in.connection_id"},
+                {"port_id": "in:endpoint", "direction": "input", "relation_layer": "data", "semantic_slot": "in.endpoint"},
+                {"port_id": "in:query", "direction": "input", "relation_layer": "data", "semantic_slot": "in.query"},
+                {"port_id": "in:operation_name", "direction": "input", "relation_layer": "data", "semantic_slot": "in.operation_name"},
+                {"port_id": "in:variables", "direction": "input", "relation_layer": "data", "semantic_slot": "in.variables"},
+            ]
+            + _network_security_override_ports(include_query=False)
+            + [
+                {"port_id": "out:connection_id", "direction": "output", "relation_layer": "data", "semantic_slot": "out.connection_id"},
+                {"port_id": "out:event_type", "direction": "output", "relation_layer": "data", "semantic_slot": "out.event_type"},
+                {"port_id": "out:data", "direction": "output", "relation_layer": "data", "semantic_slot": "out.data"},
+                {"port_id": "out:errors", "direction": "output", "relation_layer": "data", "semantic_slot": "out.errors"},
+                {"port_id": "out:extensions", "direction": "output", "relation_layer": "data", "semantic_slot": "out.extensions"},
+                {"port_id": "out:message", "direction": "output", "relation_layer": "data", "semantic_slot": "out.message"},
+            ]
+        ),
+        "node_config": {
+            "context_strategy": "inherit",
+            "action": "connect",
+            "connection_id": "",
+            "endpoint": "",
+            "query": "",
+            "operation_name": None,
+            "variables": {},
+            "headers": {},
+            "subprotocol": "graphql-transport-ws",
+            "timeout_seconds": None,
+            "max_queue_size": 100,
+            "backpressure_policy": "fail_stream",
+            "max_reconnect_attempts": 0,
+            "reconnect_delay_seconds": 0.5,
+            "reconnect_max_delay_seconds": 30.0,
+        },
+    },
     "network.sse_connect": {
         "lowered_kind": "execution",
         "expansion_role": "network:sse_connect",
@@ -3612,6 +3654,11 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             "url": "",
             "headers": {},
             "timeout_seconds": None,
+            "max_queue_size": 100,
+            "backpressure_policy": "fail_stream",
+            "max_reconnect_attempts": 0,
+            "reconnect_delay_seconds": 0.5,
+            "reconnect_max_delay_seconds": 30.0,
         },
     },
     "network.websocket_connect": {
@@ -3640,6 +3687,11 @@ GRAPH_NODE_DRAFT_DEFINITIONS: dict[str, dict] = {
             "message": None,
             "headers": {},
             "timeout_seconds": None,
+            "max_queue_size": 100,
+            "backpressure_policy": "fail_stream",
+            "max_reconnect_attempts": 0,
+            "reconnect_delay_seconds": 0.5,
+            "reconnect_max_delay_seconds": 30.0,
         },
     },
     "network.batch_request": {

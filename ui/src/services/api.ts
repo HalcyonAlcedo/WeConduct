@@ -32,6 +32,14 @@ import type {
   DebugProjectionResponse,
   DebugEventsResponse,
   DebugControlResponse,
+  DebugNetworkSummaryResponse,
+  DebugNetworkListResponse,
+  DebugNetworkTraceResponse,
+  DebugNetworkTraceBodyResponse,
+  OAuthAuthorizationBeginRequest,
+  OAuthDeviceBeginRequest,
+  OAuthFlowSnapshot,
+  OAuthFlowSubmitRequest,
   DebugVariablesApplyRequest,
   DebugVariablesApplyResponse,
   ExecutionHistoryResponse,
@@ -459,6 +467,73 @@ export function postDebugSensitiveValuesReveal(sessionId: string, variableNames:
 }
 export function fetchDebugHistorySessions(): Promise<DebugHistorySummaryResponse> { return request('/workbench/debug/history') }
 export function fetchDebugHistorySession(id: string): Promise<DebugHistorySessionResponse> { return request(`/workbench/debug/history/${id}`) }
+
+export function fetchDebugSessionNetworkSummary(sessionId: string): Promise<DebugNetworkSummaryResponse> {
+  return request<DebugNetworkSummaryResponse>(`/workbench/debug/${sessionId}/network/summary`)
+}
+
+export function fetchDebugSessionNetwork(sessionId: string): Promise<DebugNetworkListResponse> {
+  return request<DebugNetworkListResponse>(`/workbench/debug/${sessionId}/network`)
+}
+
+export function fetchDebugSessionNetworkTrace(sessionId: string, traceId: string): Promise<DebugNetworkTraceResponse> {
+  return request<DebugNetworkTraceResponse>(`/workbench/debug/${sessionId}/network/${traceId}`)
+}
+
+export function fetchDebugSessionNetworkTraceBody(sessionId: string, traceId: string, part?: 'all' | 'request' | 'response' | 'messages'): Promise<DebugNetworkTraceBodyResponse> {
+  const suffix = part && part !== 'all' ? `?part=${encodeURIComponent(part)}` : ''
+  return request<DebugNetworkTraceBodyResponse>(`/workbench/debug/${sessionId}/network/${traceId}/body${suffix}`)
+}
+
+export function fetchDebugHistorySessionNetworkSummary(sessionId: string): Promise<DebugNetworkSummaryResponse> {
+  return request<DebugNetworkSummaryResponse>(`/workbench/debug/history/${sessionId}/network/summary`)
+}
+
+export function fetchDebugHistorySessionNetwork(sessionId: string): Promise<DebugNetworkListResponse> {
+  return request<DebugNetworkListResponse>(`/workbench/debug/history/${sessionId}/network`)
+}
+
+export function fetchDebugHistorySessionNetworkTrace(sessionId: string, traceId: string): Promise<DebugNetworkTraceResponse> {
+  return request<DebugNetworkTraceResponse>(`/workbench/debug/history/${sessionId}/network/${traceId}`)
+}
+
+export function fetchDebugHistorySessionNetworkTraceBody(sessionId: string, traceId: string, part?: 'all' | 'request' | 'response' | 'messages'): Promise<DebugNetworkTraceBodyResponse> {
+  const suffix = part && part !== 'all' ? `?part=${encodeURIComponent(part)}` : ''
+  return request<DebugNetworkTraceBodyResponse>(`/workbench/debug/history/${sessionId}/network/${traceId}/body${suffix}`)
+}
+
+// ===== 0.9.2: Interactive OAuth =====
+export function postOAuthAuthorization(body: OAuthAuthorizationBeginRequest): Promise<OAuthFlowSnapshot> {
+  return request<OAuthFlowSnapshot>('/workbench/oauth/authorization', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function postOAuthDevice(body: OAuthDeviceBeginRequest): Promise<OAuthFlowSnapshot> {
+  return request<OAuthFlowSnapshot>('/workbench/oauth/device', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function fetchOAuthFlow(flowId: string): Promise<OAuthFlowSnapshot> {
+  return request<OAuthFlowSnapshot>(`/workbench/oauth/${encodeURIComponent(flowId)}`)
+}
+
+export function postOAuthFlowSubmit(flowId: string, body: OAuthFlowSubmitRequest): Promise<OAuthFlowSnapshot> {
+  return request<OAuthFlowSnapshot>(`/workbench/oauth/${encodeURIComponent(flowId)}/submit`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function postOAuthFlowCancel(flowId: string): Promise<OAuthFlowSnapshot> {
+  return request<OAuthFlowSnapshot>(`/workbench/oauth/${encodeURIComponent(flowId)}/cancel`, {
+    method: 'POST',
+    body: '{}',
+  })
+}
 
 // ===== 0.8.0: Debugger Projection =====
 

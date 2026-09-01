@@ -15,7 +15,7 @@ def test_runtime_capabilities_report_the_090_network_execution_surface() -> None
         "sse": True,
         "websocket": True,
         "graphql": True,
-        "graphql_subscription": False,
+        "graphql_subscription": True,
         "oauth_client_credentials": True,
         "oauth_refresh": True,
         "http_proxy": True,
@@ -42,7 +42,7 @@ def test_runtime_capabilities_report_the_090_network_execution_surface() -> None
     assert capabilities["python_run"]["available"] is True
     assert capabilities["plugins"] == {
         "available": False,
-        "planned_version": "0.9.1",
+        "planned": False,
     }
 
 

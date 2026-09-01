@@ -33,6 +33,47 @@ def project_runtime_value_for_publication(
     )
 
 
+def project_diagnostic_for_publication(
+    value: object,
+    *,
+    secret_values: Iterable[object] = (),
+) -> dict[str, Any]:
+    """生成可写入日志、诊断和事件流的脱敏对象。
+
+    诊断不允许携带请求/响应正文，即使正文没有命中已知敏感值也必须
+    作为结构字段隐藏；Debug 网络 Trace 不调用此投影，因此仍可保留原文。
+    """
+    projected = project_runtime_value_for_publication(
+        value,
+        secret_values=secret_values,
+    )
+    if not isinstance(projected, Mapping):
+        return {"value": "<redacted>"}
+    return _redact_diagnostic_mapping(projected)
+
+
+def _redact_diagnostic_mapping(value: Mapping[object, object]) -> dict[str, Any]:
+    redacted: dict[str, Any] = {}
+    for key, item in value.items():
+        name = str(key)
+        normalized = name.strip().lower().replace("-", "_")
+        if (
+            normalized in {"body", "payload", "request", "response", "raw_body"}
+            or normalized.endswith("_body")
+        ):
+            redacted[name] = "<redacted>"
+        elif isinstance(item, Mapping):
+            redacted[name] = _redact_diagnostic_mapping(item)
+        elif isinstance(item, list):
+            redacted[name] = [
+                _redact_diagnostic_mapping(entry) if isinstance(entry, Mapping) else entry
+                for entry in item
+            ]
+        else:
+            redacted[name] = item
+    return redacted
+
+
 def project_runtime_plan_for_publication(runtime_plan: Mapping[str, object]) -> dict[str, Any]:
     """Expose plan structure while keeping executable configuration in memory only."""
     projected = _project_runtime_value(runtime_plan)

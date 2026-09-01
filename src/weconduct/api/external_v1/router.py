@@ -103,6 +103,22 @@ def resolve_external_operation(
                 return "graph.document.replace", payload
     if method == "PUT" and request_path == "/api/ext/v1/graph":
         return "graph.replace", dict(read())
+    oauth_prefix = "/api/ext/v1/oauth/"
+    if request_path.startswith(oauth_prefix):
+        parts = [item for item in request_path.removeprefix(oauth_prefix).split("/") if item]
+        if method == "POST" and request_path == "/api/ext/v1/oauth/authorization":
+            return "oauth.authorization.begin", dict(read())
+        if method == "POST" and request_path == "/api/ext/v1/oauth/device":
+            return "oauth.device.begin", dict(read())
+        # authorization/device 是固定的开始入口，不能被解释为 flow_id。
+        if len(parts) == 1 and parts[0] not in {"authorization", "device"} and method == "GET":
+            return "oauth.flow.get", {"flow_id": parts[0]}
+        if len(parts) == 2 and parts[1] == "submit" and method == "POST":
+            payload = dict(read())
+            payload["flow_id"] = parts[0]
+            return "oauth.flow.submit", payload
+        if len(parts) == 2 and parts[1] == "cancel" and method == "POST":
+            return "oauth.flow.cancel", {"flow_id": parts[0]}
     configuration_prefix = "/api/ext/v1/configuration/"
     if request_path.startswith(configuration_prefix):
         parts = [item for item in request_path.removeprefix(configuration_prefix).split("/") if item]
@@ -118,6 +134,36 @@ def resolve_external_operation(
     debug_prefix = "/api/ext/v1/debug/"
     if request_path.startswith(debug_prefix):
         parts = [item for item in request_path.removeprefix(debug_prefix).split("/") if item]
+        # 网络 Debug 仅公开摘要、记录列表和元数据详情；正文仍只通过
+        # 桌面内部 Debug API 按需读取，避免外部 API 扩大敏感数据暴露面。
+        if method == "GET":
+            history = bool(parts and parts[0] == "history")
+            network_parts = parts[1:] if history else parts
+            if (history and len(network_parts) >= 2) or (not history and len(network_parts) >= 2):
+                session_id = network_parts[0]
+                if network_parts[1] == "network":
+                    query_payload: dict[str, object] = {
+                        "session_id": session_id,
+                        "history": history,
+                    }
+                    if query_params is not None:
+                        for key in ("protocol", "status", "node_id", "operation_id", "connection_id", "event_kind", "from_time", "to_time", "page", "page_size"):
+                            values = query_params.get(key)
+                            if values:
+                                query_payload[key] = values[0]
+                    if len(network_parts) == 2:
+                        return "debug.network.list", query_payload
+                    if len(network_parts) == 3 and network_parts[2] == "summary":
+                        return "debug.network.summary", {
+                            "session_id": session_id,
+                            "history": history,
+                        }
+                    if len(network_parts) == 3 and network_parts[2] not in {"body", "summary"}:
+                        return "debug.network.get", {
+                            "session_id": session_id,
+                            "history": history,
+                            "trace_id": network_parts[2],
+                        }
         if len(parts) == 3 and parts[0] == "history" and method == "GET":
             operation_id = {
                 "events": "debug.history.events",
@@ -282,6 +328,10 @@ class ExternalV1Router:
                 "execution.start",
                 "execution.parameters.unlock",
                 "pending_input.submit",
+                "oauth.authorization.begin",
+                "oauth.device.begin",
+                "oauth.flow.submit",
+                "oauth.flow.cancel",
             } else HTTPStatus.OK
             response_payload = {
                 "operation_id": operation_id,

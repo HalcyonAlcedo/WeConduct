@@ -56,6 +56,9 @@ _STABLE_OPERATION_ROUTE_CASES: dict[str, tuple[str, str, dict[str, object]]] = {
     "debug.history.get": ("GET", "/api/ext/v1/debug/history/debug-1", {}),
     "debug.history.events": ("GET", "/api/ext/v1/debug/history/debug-1/events", {}),
     "debug.history.projection": ("GET", "/api/ext/v1/debug/history/debug-1/projection", {}),
+    "debug.network.summary": ("GET", "/api/ext/v1/debug/debug-1/network/summary", {}),
+    "debug.network.list": ("GET", "/api/ext/v1/debug/debug-1/network", {}),
+    "debug.network.get": ("GET", "/api/ext/v1/debug/debug-1/network/trace-1", {}),
     "debug.live_projection": ("GET", "/api/ext/v1/debug/debug-1/projection", {}),
     "debug.get": ("GET", "/api/ext/v1/debug/debug-1", {}),
     "debug.continue": ("POST", "/api/ext/v1/debug/debug-1/continue", {}),
@@ -111,6 +114,11 @@ _STABLE_OPERATION_ROUTE_CASES: dict[str, tuple[str, str, dict[str, object]]] = {
         "/api/ext/v1/executions/execution-1/pending-input/request-1/submit",
         {},
     ),
+    "oauth.authorization.begin": ("POST", "/api/ext/v1/oauth/authorization", {}),
+    "oauth.device.begin": ("POST", "/api/ext/v1/oauth/device", {}),
+    "oauth.flow.get": ("GET", "/api/ext/v1/oauth/flow-1", {}),
+    "oauth.flow.submit": ("POST", "/api/ext/v1/oauth/flow-1/submit", {}),
+    "oauth.flow.cancel": ("POST", "/api/ext/v1/oauth/flow-1/cancel", {}),
 }
 
 
@@ -369,7 +377,7 @@ def test_external_operation_discovery_lists_every_stable_descriptor_and_resolves
         descriptor.operation_id
         for descriptor in OperationRegistry.build_stable_public().list_descriptors()
     }
-    assert len(registry_ids) == 67
+    assert len(registry_ids) == 75
 
     class _DiscoveryService:
         def get_runtime_health(self) -> dict[str, object]:

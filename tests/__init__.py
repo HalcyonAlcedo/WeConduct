@@ -1,1 +1,1 @@
-# Test package marker.
+"""WeConduct test package marker."""

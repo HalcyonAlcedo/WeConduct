@@ -947,6 +947,239 @@ export interface DebugSessionDetailResponse {
   variable_snapshot?: Record<string, unknown>
   runtime_preview?: Record<string, unknown>
   runtime_preview_summary?: Record<string, unknown>
+  network_trace_snapshot?: DebugNetworkTraceSnapshot | null
+}
+
+export interface DebugNetworkBodyPayload {
+  encoding: 'text' | 'json' | 'base64'
+  value: unknown
+  text?: string | null
+  resource_kind?: string | null
+  resource_id?: string | null
+  session_id?: string | null
+  storage_kind?: string | null
+  size_bytes?: number | null
+  content_type?: string | null
+  sha256?: string | null
+  available?: boolean
+  path?: string | null
+}
+
+export interface DebugNetworkTraceOperation {
+  trace_id: string
+  debug_session_id: string
+  runtime_session_id: string
+  node_id: string | null
+  operation_id: string | null
+  started_at: string
+  ended_at: string | null
+  duration_ms: number | null
+  status: string
+  error_code: string | null
+  debug_event_index?: number | null
+  method: string
+  url: string
+  protocol?: string | null
+  request_headers: Record<string, unknown>
+  request_query: Record<string, unknown>
+  request_body?: DebugNetworkBodyPayload | null
+  response_status: number | null
+  response_headers: Record<string, unknown> | null
+  response_body?: DebugNetworkBodyPayload | null
+  retry_attempt: number
+  final_url?: string | null
+  redirects?: DebugNetworkRedirect[]
+  proxy?: unknown
+  tls?: unknown
+}
+
+export interface DebugNetworkRedirect {
+  status_code: number
+  from_url: string
+  to_url: string
+  location?: string | null
+}
+
+export interface DebugNetworkTraceConnection {
+  trace_id: string
+  debug_session_id: string
+  runtime_session_id: string
+  node_id: string | null
+  operation_id: string | null
+  connection_id: string
+  connection_epoch: number | null
+  protocol: string | null
+  subprotocol: string | null
+  connection_state: string | null
+  message_count: number | null
+  last_event_id: string | null
+  reconnect_count: number | null
+  reconnect_reason?: string | null
+  queue_depth: number | null
+  dropped_count: number | null
+  drop_events?: DebugNetworkQueueEvent[]
+  activation_queue_depth?: number | null
+  activation_dropped_count?: number | null
+  activation_drop_events?: DebugNetworkQueueEvent[]
+  backpressure_policy: string | null
+  close_reason: string | null
+  debug_event_index: number | null
+}
+
+export interface DebugNetworkQueueEvent {
+  event_kind: string
+  policy?: string | null
+  dropped_count: number
+  first_sequence_id?: number | null
+  last_sequence_id?: number | null
+  connection_id?: string | null
+  connection_epoch?: number | null
+  trace_id?: string | null
+}
+
+export interface DebugNetworkTraceMessage {
+  trace_id: string
+  debug_session_id: string
+  runtime_session_id: string
+  node_id: string | null
+  operation_id: string | null
+  connection_id: string | null
+  protocol?: string | null
+  event_kind: string
+  recorded_at?: string
+  payload?: unknown
+  size_bytes: number | null
+  sequence_id: number
+  connection_epoch: number | null
+  debug_event_index: number | null
+}
+
+export interface DebugNetworkTraceSnapshot {
+  trace_order: string[]
+  traces: Record<string, DebugNetworkTraceRecord>
+  summary: DebugNetworkSummary
+}
+
+export interface DebugNetworkTraceRecord {
+  trace_id: string
+  debug_session_id: string
+  runtime_session_id: string
+  node_id: string | null
+  operation_id: string | null
+  started_at: string
+  ended_at: string | null
+  duration_ms: number | null
+  status: string
+  error_code: string | null
+  debug_event_index: number | null
+  operation: DebugNetworkTraceOperation
+  connections: DebugNetworkTraceConnection[]
+  messages: DebugNetworkTraceMessage[]
+  connection_id?: string | null
+  connection_epoch?: number | null
+  sequence_id?: number
+  protocol?: string | null
+  connection_state?: string | null
+  event_kind?: string | null
+  recorded_at?: string
+}
+
+export interface DebugNetworkRecentError {
+  trace_id: string
+  operation_id: string | null
+  status: string | null
+  error_code: string | null
+  ended_at: string | null
+}
+
+export interface DebugNetworkSummary {
+  total_operations: number
+  successful_operations: number
+  failed_operations: number
+  cancelled_operations: number
+  active_connections: number
+  queue_depth: number
+  reconnect_count: number
+  dropped_count: number
+  activation_queue_depth?: number
+  activation_dropped_count?: number
+  queue_events?: DebugNetworkQueueEvent[]
+  recent_errors: DebugNetworkRecentError[]
+}
+
+export interface DebugNetworkSummaryResponse {
+  summary: DebugNetworkSummary
+}
+
+export interface DebugNetworkListResponse {
+  summary: DebugNetworkSummary
+  traces: DebugNetworkTraceRecord[]
+}
+
+export interface DebugNetworkTraceResponse {
+  trace: DebugNetworkTraceRecord
+}
+
+export interface DebugNetworkTraceBodyResponse {
+  request_body?: DebugNetworkBodyPayload | null
+  response_body?: DebugNetworkBodyPayload | null
+  messages?: DebugNetworkTraceMessage[]
+}
+
+export interface OAuthPendingInputField {
+  field_id: string
+  label: string
+  value_type: string
+  required: boolean
+  sensitive: boolean
+}
+
+export interface OAuthPendingInputSnapshot {
+  request_id: string | null
+  execution_id: string | null
+  status: string | null
+  fields: OAuthPendingInputField[]
+  timeout_seconds: number | null
+}
+
+export interface OAuthFlowSnapshot {
+  flow_id: string
+  flow_type: 'authorization_code_pkce' | 'device_code' | string
+  status: string
+  scope_id: string
+  request_id: string | null
+  pending_input: OAuthPendingInputSnapshot | null
+  created_at: number
+  error_code: string | null
+  authorization_url?: string
+  redirect_uri?: string
+  verification_uri?: string
+  user_code?: string
+  expires_at?: number
+  interval?: number
+  token_type?: string
+  token_expires_at?: number | null
+}
+
+export interface OAuthAuthorizationBeginRequest {
+  authorization_url: string
+  token_url: string
+  client_id: string
+  redirect_uri: string
+  scope?: string | null
+  scope_id: string
+}
+
+export interface OAuthDeviceBeginRequest {
+  device_authorization_url: string
+  token_url: string
+  client_id: string
+  scope?: string | null
+  scope_id: string
+}
+
+export interface OAuthFlowSubmitRequest {
+  values: unknown
 }
 
 export interface DebugHistorySummaryResponse {

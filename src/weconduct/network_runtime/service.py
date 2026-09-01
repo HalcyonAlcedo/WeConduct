@@ -11,6 +11,7 @@ from threading import Event, RLock, Thread
 from time import monotonic, time
 from typing import Callable, Mapping
 from urllib.parse import quote, urlsplit, urlunsplit
+from uuid import uuid4
 
 import httpx
 
@@ -22,7 +23,16 @@ from .long_connection import SSEClientHandle, WebSocketClientHandle
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
 from .oauth import OAuthService, OAuthTokenState
 from .proxy import ProxyResolver
+from .resources import ResponseBodyRef
 from .tls import TlsResolver, build_ssl_context
+from .trace import NetworkTraceRecorder
+from .queue import (
+    QueueBackpressureError,
+    QueueCancelledError,
+    QueueClosedError,
+    SequenceAllocator,
+    SessionActivationQueue,
+)
 
 
 def _normalize_retry_policy(value: object) -> dict[str, object]:
@@ -115,14 +125,19 @@ def _with_retry_attempt(
     retry_attempt: int,
 ) -> NetworkResult:
     if result.status != "failed":
-        return result
+        return replace(result, retry_attempt=retry_attempt)
     error = result.error or build_network_error(
         result.transport_error or "network.transport_failed",
         operation=operation,
         snapshot=snapshot,
     )
     error = error.with_retry_attempt(retry_attempt)
-    return replace(result, transport_error=error.error_code, error=error)
+    return replace(
+        result,
+        transport_error=error.error_code,
+        error=error,
+        retry_attempt=retry_attempt,
+    )
 
 
 def _retry_delay_seconds(
@@ -167,6 +182,24 @@ def _parse_retry_after(headers: Mapping[str, str]) -> float | None:
         return max(0.0, (parsed - datetime.now(timezone.utc)).total_seconds())
 
 
+def _metadata_status_code(metadata: Mapping[str, object]) -> int | None:
+    value = metadata.get("status_code")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _metadata_headers(metadata: Mapping[str, object]) -> Mapping[str, object] | None:
+    value = metadata.get("headers")
+    return value if isinstance(value, Mapping) else None
+
+
+def _connection_error_code(error: BaseException, fallback: str) -> str:
+    value = getattr(error, "error_code", None)
+    if isinstance(value, str) and value.strip():
+        return value
+    text = str(error).strip()
+    return text if text.startswith("network.") else fallback
+
+
 def _connection_security_audit_events(
     snapshot: NetworkContextSnapshot,
     url: str,
@@ -198,6 +231,8 @@ class NetworkRuntimeService:
         access_policy: NetworkAccessPolicy | None = None,
         sensitive_values: object | None = None,
         audit_event_sink: Callable[[str, dict[str, object]], None] | None = None,
+        trace_recorder: NetworkTraceRecorder | None = None,
+        debug_event_index_supplier: Callable[[], int | None] | None = None,
         allow_insecure_tls: bool = True,
     ) -> None:
         if not isinstance(allow_insecure_tls, bool):
@@ -217,8 +252,15 @@ class NetworkRuntimeService:
         self._lock = RLock()
         self._active_tasks: dict[str, set[asyncio.Task[NetworkResult]]] = {}
         self._long_connections: dict[str, set[object]] = {}
+        self._sequence_allocators: dict[str, SequenceAllocator] = {}
+        self._session_activation_queues: dict[str, SessionActivationQueue] = {}
+        self._connection_activation_keys: dict[int, tuple[str, str]] = {}
+        self._connection_trace_metadata: dict[int, dict[str, object]] = {}
+        self._pending_activation_trace_records: dict[tuple[str, str], list[dict[str, object]]] = {}
         self._sensitive_values = sensitive_values
         self._audit_event_sink = audit_event_sink
+        self._trace_recorder = trace_recorder
+        self._debug_event_index_supplier = debug_event_index_supplier
         self._oauth_service = (
             OAuthService(
                 sensitive_values=sensitive_values,  # type: ignore[arg-type]
@@ -248,17 +290,102 @@ class NetworkRuntimeService:
             if self._closed:
                 raise RuntimeError("network runtime service is closed")
             future: Future[NetworkResult] = Future()
+            trace_id: str | None = None
+            if self._trace_recorder is not None:
+                try:
+                    trace_request_headers = self._resolve_debug_trace_value(
+                        {**dict(snapshot.headers), **dict(operation.headers)}
+                    )
+                    trace_request_query = self._resolve_debug_trace_value(
+                        {**dict(snapshot.query), **dict(operation.query)}
+                    )
+                    trace_request_body = self._resolve_debug_trace_value(operation.content)
+                    captured_request_body = self._adapter.capture_trace_body(
+                        operation.session_id,
+                        trace_request_body,
+                        content_type=self._header_value_for_trace(
+                            {**dict(snapshot.headers), **dict(operation.headers)},
+                            "content-type",
+                        ),
+                    )
+                    trace = self._trace_recorder.start_operation(
+                        trace_id=None,
+                        debug_session_id=operation.session_id,
+                        runtime_session_id=operation.session_id,
+                        node_id=operation.node_id,
+                        operation_id=operation.operation_id,
+                        method=operation.method,
+                        url=operation.url,
+                        protocol="http",
+                        request_headers=trace_request_headers,
+                        request_query=trace_request_query,
+                        request_body=(
+                            captured_request_body
+                            if captured_request_body is not None
+                            else trace_request_body
+                        ),
+                        proxy=self._resolve_debug_trace_value(snapshot.proxy),
+                        tls=self._resolve_debug_trace_value(snapshot.tls),
+                        debug_event_index=self._current_debug_event_index(),
+                    )
+                    trace_id = trace.get("trace_id")
+                except Exception:
+                    # Tracing must never prevent the network operation itself.
+                    trace_id = None
             self._loop.call_soon_threadsafe(
                 self._schedule_operation,
                 operation,
                 snapshot,
                 future,
+                trace_id,
             )
-            return future
+        return future
+
+    @staticmethod
+    def _header_value_for_trace(headers: Mapping[str, object], name: str) -> str | None:
+        lowered = name.lower()
+        for key, value in headers.items():
+            if str(key).lower() == lowered and value is not None:
+                return str(value)
+        return None
+
+    @staticmethod
+    def _normalize_debug_event_index(value: object) -> int | None:
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return None
+
+    def _current_debug_event_index(self) -> int | None:
+        supplier = self._debug_event_index_supplier
+        if not callable(supplier):
+            return None
+        try:
+            return self._normalize_debug_event_index(supplier())
+        except Exception:
+            # Debug 事件关联是观测旁路，供应器异常不能影响网络请求。
+            return None
+
+    def _resolve_debug_trace_value(self, value: object) -> object:
+        """仅为 Debug Trace 解析敏感引用；失败时保留原值，不影响网络执行。"""
+        if isinstance(value, Mapping):
+            return {
+                key: self._resolve_debug_trace_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._resolve_debug_trace_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._resolve_debug_trace_value(item) for item in value)
+        try:
+            resolved = self._resolve_sensitive_text(value)
+        except Exception:
+            return value
+        return resolved
 
     def cancel_session(self, session_id: str) -> None:
         self._close_session_connections(session_id)
         self._clear_session_oauth(session_id)
+        self._clear_session_sequence_allocator(session_id)
         with self._lock:
             if self._closed:
                 return
@@ -269,10 +396,15 @@ class NetworkRuntimeService:
         with self._oauth_tokens_lock:
             self._oauth_tokens.clear()
         with self._lock:
+            self._sequence_allocators.clear()
+            activation_queues = tuple(self._session_activation_queues.values())
+            self._session_activation_queues.clear()
             if self._closed:
                 return
             self._closed = True
             shutdown = asyncio.run_coroutine_threadsafe(self._shutdown(), self._loop)
+        for activation_queue in activation_queues:
+            activation_queue.close()
         shutdown.result(timeout=1)
         with self._lock:
             self._loop.call_soon_threadsafe(self._loop.stop)
@@ -284,10 +416,16 @@ class NetworkRuntimeService:
         session_id: str,
         snapshot: NetworkContextSnapshot,
         url: str,
+        node_id: str | None = None,
         headers: dict[str, str] | None = None,
         params: dict[str, str] | None = None,
+        connection_id: str | None = None,
         timeout_seconds: float = 30.0,
         max_queue_size: int = 100,
+        backpressure_policy: str = "fail_stream",
+        max_reconnect_attempts: int = 0,
+        reconnect_delay_seconds: float = 0.5,
+        reconnect_max_delay_seconds: float = 30.0,
     ) -> tuple[SSEClientHandle, dict[str, object]]:
         self._require_open()
         operation = NetworkOperation(
@@ -295,7 +433,9 @@ class NetworkRuntimeService:
             session_id=session_id,
             method="GET",
             url=url,
+            node_id=node_id,
         )
+        connection_key = self._connection_key("sse", connection_id)
         effective_snapshot = self._resolve_oauth_snapshot_sync(
             operation=operation,
             snapshot=snapshot,
@@ -310,6 +450,14 @@ class NetworkRuntimeService:
             effective_snapshot,
             (*resolved_tls.audit_events, *_connection_security_audit_events(effective_snapshot, url)),
         )
+        trace_id = self._start_connection_trace(
+            operation=operation,
+            snapshot=effective_snapshot,
+            protocol="sse",
+            connection_id=connection_key,
+            request_headers=headers,
+            request_query=params,
+        )
         handle = SSEClientHandle(
             url=url,
             headers=self._effective_headers(effective_snapshot, headers),
@@ -317,15 +465,47 @@ class NetworkRuntimeService:
             proxy=proxy,
             timeout_seconds=timeout_seconds,
             max_queue_size=max_queue_size,
+            backpressure_policy=backpressure_policy,
             access_policy=self._access_policy,
             ssl_context=build_ssl_context(resolved_tls),
             certificate_pins=resolved_tls.certificate_pins,
+            sequence_allocator=self._get_sequence_allocator(session_id),
+            connection_id=connection_key,
+            max_reconnect_attempts=max_reconnect_attempts,
+            reconnect_delay_seconds=reconnect_delay_seconds,
+            reconnect_max_delay_seconds=reconnect_max_delay_seconds,
+            activation_sink=self._build_activation_sink(
+                session_id=session_id,
+                connection_key=connection_key,
+                backpressure_policy=backpressure_policy,
+                maxsize=max_queue_size,
+            ),
         )
         try:
             metadata = handle.start(timeout_seconds=timeout_seconds)
-        except BaseException:
+        except BaseException as exc:
+            self._complete_connection_trace(
+                trace_id=trace_id,
+                status="failed",
+                error_code=_connection_error_code(exc, "network.sse_connect_failed"),
+            )
             handle.close()
             raise
+        self._complete_connection_trace(
+            trace_id=trace_id,
+            status="succeeded",
+            response_status=_metadata_status_code(metadata),
+            response_headers=_metadata_headers(metadata),
+        )
+        self._register_connection_trace(
+            session_id=session_id,
+            handle=handle,
+            trace_id=trace_id,
+            operation=operation,
+            protocol="sse",
+            connection_id=connection_key,
+        )
+        self._register_connection_activation(session_id, handle, connection_key)
         self._register_long_connection(session_id, handle)
         return handle, metadata
 
@@ -335,17 +515,38 @@ class NetworkRuntimeService:
         session_id: str,
         snapshot: NetworkContextSnapshot,
         url: str,
+        node_id: str | None = None,
         headers: dict[str, str] | None = None,
         timeout_seconds: float = 30.0,
         subprotocols: list[str] | None = None,
+        connection_id: str | None = None,
+        max_queue_size: int = 100,
+        backpressure_policy: str = "fail_stream",
+        max_reconnect_attempts: int = 0,
+        reconnect_delay_seconds: float = 0.5,
+        reconnect_max_delay_seconds: float = 30.0,
+        trace_operation_id: str | None = None,
+        trace_protocol: str | None = None,
     ) -> tuple[WebSocketClientHandle, dict[str, object]]:
         self._require_open()
+        resolved_trace_operation_id = (
+            trace_operation_id.strip()
+            if isinstance(trace_operation_id, str) and trace_operation_id.strip()
+            else "network.websocket_connect"
+        )
+        resolved_trace_protocol = (
+            trace_protocol.strip()
+            if isinstance(trace_protocol, str) and trace_protocol.strip()
+            else "websocket"
+        )
         operation = NetworkOperation(
-            operation_id="network.websocket_connect",
+            operation_id=resolved_trace_operation_id,
             session_id=session_id,
             method="GET",
             url=url,
+            node_id=node_id,
         )
+        connection_key = self._connection_key(resolved_trace_protocol, connection_id)
         effective_snapshot = self._resolve_oauth_snapshot_sync(
             operation=operation,
             snapshot=snapshot,
@@ -360,25 +561,70 @@ class NetworkRuntimeService:
             effective_snapshot,
             (*resolved_tls.audit_events, *_connection_security_audit_events(effective_snapshot, url)),
         )
+        trace_id = self._start_connection_trace(
+            operation=operation,
+            snapshot=effective_snapshot,
+            protocol=resolved_trace_protocol,
+            connection_id=connection_key,
+            request_headers=headers,
+        )
         handle = WebSocketClientHandle(
             url=url,
             headers=self._effective_headers(effective_snapshot, headers),
             proxy=proxy,
             timeout_seconds=timeout_seconds,
+            max_queue_size=max_queue_size,
+            backpressure_policy=backpressure_policy,
             subprotocols=subprotocols,
             access_policy=self._access_policy,
             ssl_context=build_ssl_context(resolved_tls),
             certificate_pins=resolved_tls.certificate_pins,
+            sequence_allocator=self._get_sequence_allocator(session_id),
+            connection_id=connection_key,
+            max_reconnect_attempts=max_reconnect_attempts,
+            reconnect_delay_seconds=reconnect_delay_seconds,
+            reconnect_max_delay_seconds=reconnect_max_delay_seconds,
+            activation_sink=self._build_activation_sink(
+                session_id=session_id,
+                connection_key=connection_key,
+                backpressure_policy=backpressure_policy,
+                maxsize=max_queue_size,
+            ),
         )
         try:
             metadata = handle.start(timeout_seconds=timeout_seconds)
-        except BaseException:
+        except BaseException as exc:
+            self._complete_connection_trace(
+                trace_id=trace_id,
+                status="failed",
+                error_code=_connection_error_code(exc, "network.websocket_connect_failed"),
+            )
             handle.close()
             raise
+        self._complete_connection_trace(
+            trace_id=trace_id,
+            status="succeeded",
+            response_status=_metadata_status_code(metadata),
+            response_headers=_metadata_headers(metadata),
+        )
+        self._register_connection_trace(
+            session_id=session_id,
+            handle=handle,
+            trace_id=trace_id,
+            operation=operation,
+            protocol=resolved_trace_protocol,
+            connection_id=connection_key,
+            subprotocol=(subprotocols[0] if subprotocols else None),
+        )
+        self._register_connection_activation(session_id, handle, connection_key)
         self._register_long_connection(session_id, handle)
         return handle, metadata
 
     def release_connection(self, session_id: str, handle: object) -> None:
+        activation_key = self._connection_activation_key(handle)
+        if activation_key is not None:
+            self._discard_connection_activation(*activation_key)
+        self._record_connection_closed(session_id, handle, close_reason="released")
         with self._lock:
             connections = self._long_connections.get(session_id)
             if connections is None:
@@ -387,11 +633,569 @@ class NetworkRuntimeService:
             if not connections:
                 self._long_connections.pop(session_id, None)
 
+    def record_connection_message(
+        self,
+        *,
+        session_id: str,
+        handle: object,
+        connection_id: str | None,
+        event_kind: str,
+        payload: object,
+        debug_event_index: int | None = None,
+        sequence_id: int | None = None,
+        connection_epoch: int | None = None,
+    ) -> None:
+        """记录长连接消息；记录失败不得影响网络节点结果。"""
+        recorder = self._trace_recorder
+        if recorder is None:
+            return
+        with self._lock:
+            metadata = self._connection_trace_metadata.get(id(handle))
+            if metadata is None or metadata.get("session_id") != session_id:
+                return
+        queue_metrics = self._connection_queue_metrics(handle)
+        activation_metrics = self._session_activation_queue_metrics(session_id)
+        self._record_connection_message_from_metadata(
+            recorder=recorder,
+            metadata=metadata,
+            session_id=session_id,
+            connection_id=connection_id,
+            event_kind=event_kind,
+            payload=payload,
+            debug_event_index=debug_event_index,
+            sequence_id=sequence_id,
+            connection_epoch=connection_epoch,
+            queue_metrics=queue_metrics,
+            activation_metrics=activation_metrics,
+        )
+
+    def record_connection_activation(
+        self,
+        *,
+        session_id: str,
+        connection_id: str,
+        activation: Mapping[str, object],
+    ) -> None:
+        """记录接收线程自动产生的激活消息，不依赖节点先调用 receive。"""
+        recorder = self._trace_recorder
+        if recorder is None or not isinstance(activation, Mapping):
+            return
+        with self._lock:
+            metadata = next(
+                (
+                    item
+                    for item in self._connection_trace_metadata.values()
+                    if item.get("session_id") == session_id
+                    and item.get("connection_id") == connection_id
+                ),
+                None,
+            )
+            if metadata is None:
+                pending = self._pending_activation_trace_records.setdefault(
+                    (session_id, connection_id),
+                    [],
+                )
+                if len(pending) < 256:
+                    pending.append(dict(activation))
+                return
+            handles = tuple(self._long_connections.get(session_id, ()))
+            handle = next(
+                (
+                    candidate
+                    for candidate in handles
+                    if self._connection_trace_metadata.get(id(candidate)) is metadata
+                ),
+                None,
+            )
+        if metadata is None:
+            return
+        activation_payload = activation.get("payload")
+        message = (
+            activation_payload.get("message")
+            if isinstance(activation_payload, Mapping)
+            else None
+        )
+        if not isinstance(message, Mapping):
+            return
+        raw_payload = message.get("payload")
+        event_kind = (
+            activation_payload.get("event_kind")
+            if isinstance(activation_payload, Mapping)
+            else None
+        )
+        if not isinstance(event_kind, str) or not event_kind:
+            event_kind = "network.message"
+        normalized_payload = self._normalize_connection_message_payload(raw_payload)
+        sequence_id = message.get("sequence_id")
+        if not isinstance(sequence_id, int) or isinstance(sequence_id, bool):
+            sequence_id = activation.get("sequence_id")
+        if not isinstance(sequence_id, int) or isinstance(sequence_id, bool):
+            sequence_id = None
+        connection_epoch = message.get("connection_epoch")
+        if not isinstance(connection_epoch, int) or isinstance(connection_epoch, bool):
+            connection_epoch = activation.get("connection_epoch")
+        if not isinstance(connection_epoch, int) or isinstance(connection_epoch, bool):
+            connection_epoch = None
+        self._record_connection_message_from_metadata(
+            recorder=recorder,
+            metadata=metadata,
+            session_id=session_id,
+            connection_id=connection_id,
+            event_kind=event_kind,
+            payload=normalized_payload,
+            sequence_id=sequence_id,
+            connection_epoch=connection_epoch,
+            queue_metrics=self._connection_queue_metrics(handle) if handle is not None else {},
+            activation_metrics=self._session_activation_queue_metrics(session_id),
+        )
+
+    @staticmethod
+    def _normalize_connection_message_payload(payload: object) -> object:
+        if all(hasattr(payload, name) for name in ("event_id", "event_type", "data", "retry_ms")):
+            return {
+                "event_id": getattr(payload, "event_id"),
+                "event_type": getattr(payload, "event_type"),
+                "data": getattr(payload, "data"),
+                "retry_ms": getattr(payload, "retry_ms"),
+            }
+        return payload
+
+    def _record_connection_message_from_metadata(
+        self,
+        *,
+        recorder: NetworkTraceRecorder,
+        metadata: dict[str, object],
+        session_id: str,
+        connection_id: str | None,
+        event_kind: str,
+        payload: object,
+        debug_event_index: int | None = None,
+        sequence_id: int | None = None,
+        connection_epoch: int | None = None,
+        queue_metrics: Mapping[str, object] | None = None,
+        activation_metrics: Mapping[str, object] | None = None,
+    ) -> None:
+        queue_metrics = dict(queue_metrics or {})
+        activation_metrics = dict(activation_metrics or {})
+        resolved_debug_event_index = self._normalize_debug_event_index(debug_event_index)
+        with self._lock:
+            if queue_metrics:
+                metadata.update(queue_metrics)
+            if activation_metrics:
+                metadata.update(activation_metrics)
+            if resolved_debug_event_index is None:
+                resolved_debug_event_index = self._normalize_debug_event_index(
+                    metadata.get("debug_event_index")
+                )
+            if resolved_debug_event_index is None:
+                resolved_debug_event_index = self._current_debug_event_index()
+            if resolved_debug_event_index is not None:
+                metadata["debug_event_index"] = resolved_debug_event_index
+            if isinstance(sequence_id, int) and not isinstance(sequence_id, bool):
+                recorded_sequences = metadata.setdefault("_recorded_sequence_ids", set())
+                if not isinstance(recorded_sequences, set):
+                    recorded_sequences = set()
+                    metadata["_recorded_sequence_ids"] = recorded_sequences
+                if sequence_id in recorded_sequences:
+                    return
+                recorded_sequences.add(sequence_id)
+            message_count = int(metadata.get("message_count", 0)) + 1
+            metadata["message_count"] = message_count
+        trace_id = metadata.get("trace_id")
+        if not isinstance(trace_id, str):
+            return
+        resolved_connection_id = connection_id or metadata.get("connection_id") or trace_id
+        if not isinstance(resolved_connection_id, str):
+            return
+        resolved_connection_epoch = (
+            connection_epoch
+            if isinstance(connection_epoch, int)
+            else queue_metrics.get("connection_epoch")
+            if isinstance(queue_metrics.get("connection_epoch"), int)
+            else metadata.get("connection_epoch")
+            if isinstance(metadata.get("connection_epoch"), int)
+            else None
+        )
+        resolved_reconnect_count = (
+            queue_metrics.get("reconnect_count")
+            if isinstance(queue_metrics.get("reconnect_count"), int)
+            else metadata.get("reconnect_count")
+            if isinstance(metadata.get("reconnect_count"), int)
+            else None
+        )
+        resolved_reconnect_reason = (
+            queue_metrics.get("reconnect_reason")
+            if isinstance(queue_metrics.get("reconnect_reason"), str)
+            else metadata.get("reconnect_reason")
+            if isinstance(metadata.get("reconnect_reason"), str)
+            else None
+        )
+        try:
+            trace_payload = payload
+            if not isinstance(payload, ResponseBodyRef):
+                try:
+                    captured = self._adapter.capture_trace_message_body(
+                        session_id,
+                        payload,
+                    )
+                except Exception:
+                    captured = None
+                if captured is not None:
+                    trace_payload = captured
+            recorder.append_message(
+                trace_id=trace_id,
+                debug_session_id=session_id,
+                runtime_session_id=session_id,
+                node_id=(
+                    metadata.get("node_id")
+                    if isinstance(metadata.get("node_id"), str)
+                    else None
+                ),
+                operation_id=(
+                    metadata.get("operation_id")
+                    if isinstance(metadata.get("operation_id"), str)
+                    else None
+                ),
+                connection_id=resolved_connection_id,
+                event_kind=event_kind,
+                payload=trace_payload,
+                sequence_id=sequence_id,
+                connection_epoch=resolved_connection_epoch,
+                debug_event_index=resolved_debug_event_index,
+            )
+            recorder.update_connection(
+                trace_id=trace_id,
+                debug_session_id=session_id,
+                runtime_session_id=session_id,
+                node_id=(
+                    metadata.get("node_id")
+                    if isinstance(metadata.get("node_id"), str)
+                    else None
+                ),
+                operation_id=(
+                    metadata.get("operation_id")
+                    if isinstance(metadata.get("operation_id"), str)
+                    else None
+                ),
+                connection_id=resolved_connection_id,
+                connection_epoch=resolved_connection_epoch,
+                protocol=(
+                    metadata.get("protocol")
+                    if isinstance(metadata.get("protocol"), str)
+                    else None
+                ),
+                subprotocol=(
+                    metadata.get("subprotocol")
+                    if isinstance(metadata.get("subprotocol"), str)
+                    else None
+                ),
+                connection_state="connected",
+                message_count=message_count,
+                last_event_id=(
+                    payload.get("event_id")
+                    if isinstance(payload, Mapping)
+                    and isinstance(payload.get("event_id"), str)
+                    else None
+                ),
+                queue_depth=(
+                    queue_metrics.get("queue_depth")
+                    if isinstance(queue_metrics.get("queue_depth"), int)
+                    else None
+                ),
+                dropped_count=(
+                    queue_metrics.get("dropped_count")
+                    if isinstance(queue_metrics.get("dropped_count"), int)
+                    else None
+                ),
+                drop_events=(
+                    queue_metrics.get("drop_events")
+                    if isinstance(queue_metrics.get("drop_events"), list)
+                    else None
+                ),
+                backpressure_policy=(
+                    queue_metrics.get("backpressure_policy")
+                    if isinstance(queue_metrics.get("backpressure_policy"), str)
+                    else None
+                ),
+                activation_queue_depth=(
+                    activation_metrics.get("activation_queue_depth")
+                    if isinstance(activation_metrics.get("activation_queue_depth"), int)
+                    else None
+                ),
+                activation_dropped_count=(
+                    activation_metrics.get("activation_dropped_count")
+                    if isinstance(activation_metrics.get("activation_dropped_count"), int)
+                    else None
+                ),
+                activation_drop_events=(
+                    activation_metrics.get("activation_drop_events")
+                    if isinstance(activation_metrics.get("activation_drop_events"), list)
+                    else None
+                ),
+                reconnect_count=resolved_reconnect_count,
+                reconnect_reason=resolved_reconnect_reason,
+                debug_event_index=resolved_debug_event_index,
+            )
+        except Exception:
+            return
+
+    def refresh_connection_traces(self, *, session_id: str) -> None:
+        """将自动重连后的句柄状态同步到 Debug Trace。"""
+        recorder = self._trace_recorder
+        if recorder is None:
+            return
+        with self._lock:
+            handles = tuple(self._long_connections.get(session_id, ()))
+        for handle in handles:
+            self._refresh_connection_trace(session_id=session_id, handle=handle)
+
+    def _refresh_connection_trace(self, *, session_id: str, handle: object) -> None:
+        recorder = self._trace_recorder
+        if recorder is None:
+            return
+        with self._lock:
+            metadata = self._connection_trace_metadata.get(id(handle))
+            if metadata is None or metadata.get("session_id") != session_id:
+                return
+        queue_metrics = self._connection_queue_metrics(handle)
+        activation_metrics = self._session_activation_queue_metrics(session_id)
+        with self._lock:
+            current_metadata = self._connection_trace_metadata.get(id(handle))
+            if current_metadata is None:
+                return
+            current_metadata.update(queue_metrics)
+            current_metadata.update(activation_metrics)
+            metadata = dict(current_metadata)
+        trace_id = metadata.get("trace_id")
+        connection_id = metadata.get("connection_id")
+        if not isinstance(trace_id, str) or not isinstance(connection_id, str):
+            return
+        connection_epoch = (
+            queue_metrics.get("connection_epoch")
+            if isinstance(queue_metrics.get("connection_epoch"), int)
+            else metadata.get("connection_epoch")
+            if isinstance(metadata.get("connection_epoch"), int)
+            else None
+        )
+        reconnect_count = (
+            queue_metrics.get("reconnect_count")
+            if isinstance(queue_metrics.get("reconnect_count"), int)
+            else metadata.get("reconnect_count")
+            if isinstance(metadata.get("reconnect_count"), int)
+            else None
+        )
+        reconnect_reason = (
+            queue_metrics.get("reconnect_reason")
+            if isinstance(queue_metrics.get("reconnect_reason"), str)
+            else metadata.get("reconnect_reason")
+            if isinstance(metadata.get("reconnect_reason"), str)
+            else None
+        )
+        connection_state = queue_metrics.get("connection_state")
+        if not isinstance(connection_state, str):
+            connection_state = "connected"
+        try:
+            recorder.update_connection(
+                trace_id=trace_id,
+                debug_session_id=session_id,
+                runtime_session_id=session_id,
+                node_id=(metadata.get("node_id") if isinstance(metadata.get("node_id"), str) else None),
+                operation_id=(
+                    metadata.get("operation_id")
+                    if isinstance(metadata.get("operation_id"), str)
+                    else None
+                ),
+                connection_id=connection_id,
+                connection_epoch=connection_epoch,
+                protocol=(metadata.get("protocol") if isinstance(metadata.get("protocol"), str) else None),
+                subprotocol=(
+                    metadata.get("subprotocol")
+                    if isinstance(metadata.get("subprotocol"), str)
+                    else None
+                ),
+                connection_state=connection_state,
+                message_count=int(metadata.get("message_count", 0)),
+                last_event_id=(
+                    queue_metrics.get("last_event_id")
+                    if isinstance(queue_metrics.get("last_event_id"), str)
+                    else None
+                ),
+                queue_depth=(
+                    queue_metrics.get("queue_depth")
+                    if isinstance(queue_metrics.get("queue_depth"), int)
+                    else None
+                ),
+                dropped_count=(
+                    queue_metrics.get("dropped_count")
+                    if isinstance(queue_metrics.get("dropped_count"), int)
+                    else None
+                ),
+                drop_events=(
+                    queue_metrics.get("drop_events")
+                    if isinstance(queue_metrics.get("drop_events"), list)
+                    else None
+                ),
+                activation_queue_depth=(
+                    activation_metrics.get("activation_queue_depth")
+                    if isinstance(activation_metrics.get("activation_queue_depth"), int)
+                    else None
+                ),
+                activation_dropped_count=(
+                    activation_metrics.get("activation_dropped_count")
+                    if isinstance(activation_metrics.get("activation_dropped_count"), int)
+                    else None
+                ),
+                activation_drop_events=(
+                    activation_metrics.get("activation_drop_events")
+                    if isinstance(activation_metrics.get("activation_drop_events"), list)
+                    else None
+                ),
+                backpressure_policy=(
+                    queue_metrics.get("backpressure_policy")
+                    if isinstance(queue_metrics.get("backpressure_policy"), str)
+                    else None
+                ),
+                reconnect_count=reconnect_count,
+                reconnect_reason=reconnect_reason,
+                debug_event_index=(
+                    metadata.get("debug_event_index")
+                    if isinstance(metadata.get("debug_event_index"), int)
+                    and not isinstance(metadata.get("debug_event_index"), bool)
+                    else None
+                ),
+            )
+        except Exception:
+            return
+
+    def describe_connection(
+        self,
+        *,
+        session_id: str,
+        handle: object,
+    ) -> dict[str, object]:
+        self._require_session_connection(session_id, handle)
+        queue_status = getattr(handle, "queue_status", None)
+        if not isinstance(queue_status, dict):
+            raise ValueError("network.connection_queue_unavailable")
+        return dict(queue_status)
+
+    def wait_connection_activation(
+        self,
+        *,
+        session_id: str,
+        handle: object,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
+        self._require_session_connection(session_id, handle)
+        activation_key = self._connection_activation_key(handle)
+        if activation_key is not None and activation_key[0] == session_id:
+            with self._lock:
+                activation_queue = self._session_activation_queues.get(session_id)
+            if activation_queue is not None:
+                try:
+                    return activation_queue.wait(
+                        activation_key[1],
+                        timeout_seconds=timeout_seconds,
+                    )
+                except (QueueBackpressureError, QueueCancelledError, QueueClosedError):
+                    raise
+        waiter = getattr(handle, "wait_next_activation", None)
+        if not callable(waiter):
+            raise ValueError("network.connection_activation_unavailable")
+        activation = waiter(timeout_seconds=timeout_seconds)
+        if not isinstance(activation, dict):
+            raise ValueError("network.connection_activation_invalid")
+        return activation
+
+    @staticmethod
+    def _connection_key(protocol: str, connection_id: str | None) -> str:
+        if isinstance(connection_id, str) and connection_id.strip():
+            return connection_id.strip()
+        return f"{protocol}:{uuid4().hex}"
+
+    def read_debug_body(self, session_id: str, descriptor: dict) -> bytes:
+        """读取活动 Debug 会话中已登记的网络正文资源。"""
+        return self._adapter.read_debug_body(session_id, descriptor)
+
+    def capture_trace_body(
+        self,
+        session_id: str,
+        payload: object,
+        *,
+        content_type: str | None = None,
+    ) -> ResponseBodyRef | None:
+        """将超大 Debug 正文写入活动会话的临时资源。"""
+        return self._adapter.capture_trace_body(
+            session_id,
+            payload,
+            content_type=content_type,
+        )
+
+    def _get_session_activation_queue(
+        self,
+        session_id: str,
+        *,
+        maxsize: int,
+    ) -> SessionActivationQueue:
+        with self._lock:
+            queue = self._session_activation_queues.get(session_id)
+            if queue is None:
+                queue = SessionActivationQueue(maxsize=max(1, int(maxsize)))
+                self._session_activation_queues[session_id] = queue
+            return queue
+
+    def _build_activation_sink(
+        self,
+        *,
+        session_id: str,
+        connection_key: str,
+        backpressure_policy: str,
+        maxsize: int,
+    ) -> Callable[[dict[str, object]], None]:
+        activation_queue = self._get_session_activation_queue(session_id, maxsize=maxsize)
+
+        def publish(activation: dict[str, object]) -> None:
+            activation_queue.publish(
+                connection_key,
+                activation,
+                backpressure_policy=backpressure_policy,
+            )
+            # 接收线程产生激活时立即记录原始消息；节点随后调用
+            # receive/next_event 只负责消费，不能决定 Trace 是否存在。
+            self.record_connection_activation(
+                session_id=session_id,
+                connection_id=connection_key,
+                activation=activation,
+            )
+
+        return publish
+
+    def _register_connection_activation(
+        self,
+        session_id: str,
+        handle: object,
+        connection_key: str,
+    ) -> None:
+        with self._lock:
+            self._connection_activation_keys[id(handle)] = (session_id, connection_key)
+
+    def _connection_activation_key(self, handle: object) -> tuple[str, str] | None:
+        with self._lock:
+            return self._connection_activation_keys.get(id(handle))
+
+    def _discard_connection_activation(self, session_id: str, connection_key: str) -> None:
+        with self._lock:
+            activation_queue = self._session_activation_queues.get(session_id)
+            self._pending_activation_trace_records.pop((session_id, connection_key), None)
+        if activation_queue is not None:
+            activation_queue.discard(connection_key)
+
     def _schedule_operation(
         self,
         operation: NetworkOperation,
         snapshot: NetworkContextSnapshot,
         result_future: Future[NetworkResult],
+        trace_id: str | None = None,
     ) -> None:
         task = self._loop.create_task(self._execute_with_retry(operation, snapshot))
         active_tasks = self._active_tasks.setdefault(operation.session_id, set())
@@ -401,24 +1205,20 @@ class NetworkRuntimeService:
             active_tasks.discard(completed_task)
             if not active_tasks:
                 self._active_tasks.pop(operation.session_id, None)
-            if result_future.done():
-                return
             try:
-                result_future.set_result(completed_task.result())
+                result = completed_task.result()
             except asyncio.CancelledError:
                 error = build_network_error(
                     "network.cancelled",
                     operation=operation,
                     snapshot=snapshot,
                 )
-                result_future.set_result(
-                    NetworkResult(
-                        status="failed",
-                        operation_id=operation.operation_id,
-                        session_id=operation.session_id,
-                        transport_error=error.error_code,
-                        error=error,
-                    )
+                result = NetworkResult(
+                    status="failed",
+                    operation_id=operation.operation_id,
+                    session_id=operation.session_id,
+                    transport_error=error.error_code,
+                    error=error,
                 )
             except Exception as exc:
                 error = build_network_error(
@@ -426,15 +1226,49 @@ class NetworkRuntimeService:
                     operation=operation,
                     snapshot=snapshot,
                 )
-                result_future.set_result(
-                    NetworkResult(
-                        status="failed",
-                        operation_id=operation.operation_id,
-                        session_id=operation.session_id,
-                        transport_error=error.error_code,
-                        error=error,
-                    )
+                result = NetworkResult(
+                    status="failed",
+                    operation_id=operation.operation_id,
+                    session_id=operation.session_id,
+                    transport_error=error.error_code,
+                    error=error,
                 )
+
+            if trace_id is not None and self._trace_recorder is not None:
+                request_body = self._adapter.pop_request_trace_body(operation.request_id)
+                response_body = None
+                if result.body_ref is not None:
+                    try:
+                        response_body = (
+                            result.body_ref
+                            if result.body_ref.storage_kind == "file"
+                            else result.body_ref.read_bytes()
+                        )
+                    except BaseException:
+                        response_body = result.body_ref
+                try:
+                    self._trace_recorder.complete_operation(
+                        trace_id=trace_id,
+                        status=(
+                            "cancelled"
+                            if result.transport_error == "network.cancelled"
+                            else result.status
+                        ),
+                        response_status=result.status_code,
+                        response_headers=result.headers,
+                        request_body=request_body,
+                        response_body=response_body,
+                        error_code=result.transport_error,
+                        final_url=result.final_url,
+                        redirects=result.redirects,
+                        retry_attempt=result.retry_attempt,
+                    )
+                except Exception:
+                    # A trace sink is observational and must not break callers.
+                    pass
+            if result_future.done():
+                return
+            result_future.set_result(result)
 
         task.add_done_callback(complete)
 
@@ -609,6 +1443,18 @@ class NetworkRuntimeService:
                 if key[0] == session_id:
                     self._oauth_tokens.pop(key, None)
 
+    def _get_sequence_allocator(self, session_id: str) -> SequenceAllocator:
+        with self._lock:
+            allocator = self._sequence_allocators.get(session_id)
+            if allocator is None:
+                allocator = SequenceAllocator()
+                self._sequence_allocators[session_id] = allocator
+            return allocator
+
+    def _clear_session_sequence_allocator(self, session_id: str) -> None:
+        with self._lock:
+            self._sequence_allocators.pop(session_id, None)
+
     def _emit_network_security_events(
         self,
         operation: NetworkOperation,
@@ -711,13 +1557,406 @@ class NetworkRuntimeService:
                 raise RuntimeError("network runtime service is closed")
             self._long_connections.setdefault(session_id, set()).add(handle)
 
+    def _start_connection_trace(
+        self,
+        *,
+        operation: NetworkOperation,
+        snapshot: NetworkContextSnapshot | None = None,
+        protocol: str,
+        connection_id: str | None,
+        request_headers: Mapping[str, object] | None = None,
+        request_query: Mapping[str, object] | None = None,
+    ) -> str | None:
+        recorder = self._trace_recorder
+        if recorder is None:
+            return None
+        try:
+            trace = recorder.start_operation(
+                trace_id=None,
+                debug_session_id=operation.session_id,
+                runtime_session_id=operation.session_id,
+                node_id=operation.node_id,
+                operation_id=operation.operation_id,
+                method=operation.method,
+                url=operation.url,
+                protocol=protocol,
+                request_headers=self._resolve_debug_trace_value(request_headers or {}),
+                request_query=self._resolve_debug_trace_value(request_query or {}),
+                connection_id=connection_id,
+                proxy=(
+                    self._resolve_debug_trace_value(snapshot.proxy)
+                    if snapshot is not None
+                    else None
+                ),
+                tls=(
+                    self._resolve_debug_trace_value(snapshot.tls)
+                    if snapshot is not None
+                    else None
+                ),
+                debug_event_index=self._current_debug_event_index(),
+            )
+        except Exception:
+            return None
+        trace_id = trace.get("trace_id")
+        return trace_id if isinstance(trace_id, str) else None
+
+    def _complete_connection_trace(
+        self,
+        *,
+        trace_id: str | None,
+        status: str,
+        response_status: int | None = None,
+        response_headers: Mapping[str, object] | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        if trace_id is None or self._trace_recorder is None:
+            return
+        try:
+            self._trace_recorder.complete_operation(
+                trace_id=trace_id,
+                status=status,
+                response_status=response_status,
+                response_headers=response_headers,
+                error_code=error_code,
+            )
+        except Exception:
+            return
+
+    def _register_connection_trace(
+        self,
+        *,
+        session_id: str,
+        handle: object,
+        trace_id: str | None,
+        operation: NetworkOperation,
+        protocol: str,
+        connection_id: str | None,
+        subprotocol: str | None = None,
+    ) -> None:
+        if trace_id is None or self._trace_recorder is None:
+            return
+        resolved_connection_id = connection_id or trace_id
+        debug_event_index = None
+        try:
+            trace = self._trace_recorder.get_trace(trace_id)
+            if isinstance(trace, Mapping):
+                debug_event_index = self._normalize_debug_event_index(
+                    trace.get("debug_event_index")
+                )
+        except Exception:
+            debug_event_index = None
+        if debug_event_index is None:
+            debug_event_index = self._current_debug_event_index()
+        metadata = {
+            "session_id": session_id,
+            "trace_id": trace_id,
+            "node_id": operation.node_id,
+            "operation_id": operation.operation_id,
+            "protocol": protocol,
+            "subprotocol": subprotocol,
+            "connection_id": resolved_connection_id,
+            "connection_epoch": 1,
+            "message_count": 0,
+            "reconnect_count": 0,
+            "reconnect_reason": None,
+            "debug_event_index": debug_event_index,
+        }
+        metadata.update(self._connection_queue_metrics(handle))
+        metadata.update(self._session_activation_queue_metrics(session_id))
+        with self._lock:
+            self._connection_trace_metadata[id(handle)] = metadata
+            pending_activations = self._pending_activation_trace_records.pop(
+                (session_id, resolved_connection_id),
+                [],
+            )
+        try:
+            self._trace_recorder.update_connection(
+                trace_id=trace_id,
+                debug_session_id=session_id,
+                runtime_session_id=session_id,
+                node_id=operation.node_id,
+                operation_id=operation.operation_id,
+                connection_id=resolved_connection_id,
+                connection_epoch=1,
+                protocol=protocol,
+                subprotocol=subprotocol,
+                connection_state="connected",
+                message_count=0,
+                queue_depth=(
+                    metadata.get("queue_depth")
+                    if isinstance(metadata.get("queue_depth"), int)
+                    else None
+                ),
+                dropped_count=(
+                    metadata.get("dropped_count")
+                    if isinstance(metadata.get("dropped_count"), int)
+                    else None
+                ),
+                drop_events=(
+                    metadata.get("drop_events")
+                    if isinstance(metadata.get("drop_events"), list)
+                    else None
+                ),
+                activation_queue_depth=(
+                    metadata.get("activation_queue_depth")
+                    if isinstance(metadata.get("activation_queue_depth"), int)
+                    else None
+                ),
+                activation_dropped_count=(
+                    metadata.get("activation_dropped_count")
+                    if isinstance(metadata.get("activation_dropped_count"), int)
+                    else None
+                ),
+                activation_drop_events=(
+                    metadata.get("activation_drop_events")
+                    if isinstance(metadata.get("activation_drop_events"), list)
+                    else None
+                ),
+                backpressure_policy=(
+                    metadata.get("backpressure_policy")
+                    if isinstance(metadata.get("backpressure_policy"), str)
+                    else None
+                ),
+                reconnect_count=(
+                    metadata.get("reconnect_count")
+                    if isinstance(metadata.get("reconnect_count"), int)
+                    else None
+                ),
+                reconnect_reason=(
+                    metadata.get("reconnect_reason")
+                    if isinstance(metadata.get("reconnect_reason"), str)
+                    else None
+                ),
+                debug_event_index=(
+                    metadata.get("debug_event_index")
+                    if isinstance(metadata.get("debug_event_index"), int)
+                    and not isinstance(metadata.get("debug_event_index"), bool)
+                    else None
+                ),
+            )
+        except Exception:
+            pass
+        for activation in pending_activations:
+            self.record_connection_activation(
+                session_id=session_id,
+                connection_id=resolved_connection_id,
+                activation=activation,
+            )
+
+    def _record_connection_closed(
+        self,
+        session_id: str,
+        handle: object,
+        *,
+        close_reason: str,
+    ) -> None:
+        recorder = self._trace_recorder
+        queue_metrics = self._connection_queue_metrics(handle)
+        activation_metrics = self._session_activation_queue_metrics(session_id)
+        with self._lock:
+            metadata = self._connection_trace_metadata.pop(id(handle), None)
+            self._connection_activation_keys.pop(id(handle), None)
+        if recorder is None or metadata is None:
+            return
+        if session_id and metadata.get("session_id") != session_id:
+            return
+        trace_id = metadata.get("trace_id")
+        connection_id = metadata.get("connection_id")
+        if not isinstance(trace_id, str) or not isinstance(connection_id, str):
+            return
+        metadata.update(queue_metrics)
+        metadata.update(activation_metrics)
+        owner_session_id = str(metadata.get("session_id") or session_id)
+        try:
+            recorder.update_connection(
+                trace_id=trace_id,
+                debug_session_id=owner_session_id,
+                runtime_session_id=owner_session_id,
+                node_id=(
+                    metadata.get("node_id")
+                    if isinstance(metadata.get("node_id"), str)
+                    else None
+                ),
+                operation_id=(
+                    metadata.get("operation_id")
+                    if isinstance(metadata.get("operation_id"), str)
+                    else None
+                ),
+                connection_id=connection_id,
+                connection_epoch=(
+                    metadata.get("connection_epoch")
+                    if isinstance(metadata.get("connection_epoch"), int)
+                    else None
+                ),
+                protocol=(
+                    metadata.get("protocol")
+                    if isinstance(metadata.get("protocol"), str)
+                    else None
+                ),
+                subprotocol=(
+                    metadata.get("subprotocol")
+                    if isinstance(metadata.get("subprotocol"), str)
+                    else None
+                ),
+                connection_state=(
+                    "failed"
+                    if metadata.get("connection_state") == "failed"
+                    else "closed"
+                ),
+                message_count=int(metadata.get("message_count", 0)),
+                queue_depth=(
+                    metadata.get("queue_depth")
+                    if isinstance(metadata.get("queue_depth"), int)
+                    else None
+                ),
+                dropped_count=(
+                    metadata.get("dropped_count")
+                    if isinstance(metadata.get("dropped_count"), int)
+                    else None
+                ),
+                drop_events=(
+                    metadata.get("drop_events")
+                    if isinstance(metadata.get("drop_events"), list)
+                    else None
+                ),
+                activation_queue_depth=(
+                    metadata.get("activation_queue_depth")
+                    if isinstance(metadata.get("activation_queue_depth"), int)
+                    else None
+                ),
+                activation_dropped_count=(
+                    metadata.get("activation_dropped_count")
+                    if isinstance(metadata.get("activation_dropped_count"), int)
+                    else None
+                ),
+                activation_drop_events=(
+                    metadata.get("activation_drop_events")
+                    if isinstance(metadata.get("activation_drop_events"), list)
+                    else None
+                ),
+                backpressure_policy=(
+                    metadata.get("backpressure_policy")
+                    if isinstance(metadata.get("backpressure_policy"), str)
+                    else None
+                ),
+                reconnect_count=(
+                    metadata.get("reconnect_count")
+                    if isinstance(metadata.get("reconnect_count"), int)
+                    else None
+                ),
+                reconnect_reason=(
+                    metadata.get("reconnect_reason")
+                    if isinstance(metadata.get("reconnect_reason"), str)
+                    else None
+                ),
+                close_reason=close_reason,
+                debug_event_index=(
+                    metadata.get("debug_event_index")
+                    if isinstance(metadata.get("debug_event_index"), int)
+                    and not isinstance(metadata.get("debug_event_index"), bool)
+                    else None
+                ),
+            )
+        except Exception:
+            return
+
+    def _require_session_connection(self, session_id: str, handle: object) -> None:
+        with self._lock:
+            connections = self._long_connections.get(session_id)
+            if connections is None or handle not in connections:
+                raise ValueError("network.connection_not_found")
+
+    @staticmethod
+    def _connection_queue_metrics(handle: object) -> dict[str, object]:
+        try:
+            status = getattr(handle, "queue_status", None)
+            if callable(status):
+                status = status()
+        except Exception:
+            return {}
+        if not isinstance(status, Mapping):
+            return {}
+
+        metrics: dict[str, object] = {}
+        depth = status.get("depth")
+        dropped_count = status.get("dropped_count")
+        connection_epoch = status.get("connection_epoch")
+        if isinstance(depth, int) and not isinstance(depth, bool) and depth >= 0:
+            metrics["queue_depth"] = depth
+        if isinstance(dropped_count, int) and not isinstance(dropped_count, bool) and dropped_count >= 0:
+            metrics["dropped_count"] = dropped_count
+        drop_events = status.get("drop_events")
+        if isinstance(drop_events, list):
+            metrics["drop_events"] = [
+                dict(item)
+                for item in drop_events
+                if isinstance(item, Mapping)
+            ]
+        if isinstance(connection_epoch, int) and not isinstance(connection_epoch, bool) and connection_epoch >= 1:
+            metrics["connection_epoch"] = connection_epoch
+            metrics["reconnect_count"] = max(connection_epoch - 1, 0)
+        reconnect_reason = status.get("reconnect_reason")
+        if isinstance(reconnect_reason, str) and reconnect_reason.strip():
+            metrics["reconnect_reason"] = reconnect_reason.strip()
+        connection_state = status.get("connection_state")
+        if isinstance(connection_state, str) and connection_state.strip():
+            metrics["connection_state"] = connection_state
+        elif status.get("closed") is True:
+            metrics["connection_state"] = "closed"
+        last_event_id = getattr(handle, "last_event_id", None)
+        if isinstance(last_event_id, str) and last_event_id:
+            metrics["last_event_id"] = last_event_id
+        policy = status.get("backpressure_policy")
+        if isinstance(policy, str) and policy.strip():
+            metrics["backpressure_policy"] = policy
+        return metrics
+
+    def _session_activation_queue_metrics(self, session_id: str) -> dict[str, object]:
+        with self._lock:
+            activation_queue = self._session_activation_queues.get(session_id)
+        if activation_queue is None:
+            return {}
+        try:
+            status = activation_queue.status()
+        except Exception:
+            return {}
+        if not isinstance(status, Mapping):
+            return {}
+        metrics: dict[str, object] = {}
+        depth = status.get("depth")
+        dropped_count = status.get("dropped_count")
+        drop_events = status.get("drop_events")
+        if isinstance(depth, int) and not isinstance(depth, bool) and depth >= 0:
+            metrics["activation_queue_depth"] = depth
+        if isinstance(dropped_count, int) and not isinstance(dropped_count, bool) and dropped_count >= 0:
+            metrics["activation_dropped_count"] = dropped_count
+        if isinstance(drop_events, list):
+            metrics["activation_drop_events"] = [
+                dict(item) for item in drop_events if isinstance(item, Mapping)
+            ]
+        return metrics
+
     def _close_session_connections(self, session_id: str) -> None:
         with self._lock:
             connections = tuple(self._long_connections.pop(session_id, ()))
+            activation_queue = self._session_activation_queues.get(session_id)
+            for key in tuple(self._pending_activation_trace_records):
+                if key[0] == session_id:
+                    self._pending_activation_trace_records.pop(key, None)
+        if activation_queue is not None:
+            activation_queue.cancel()
         for connection in connections:
+            activation_key = self._connection_activation_key(connection)
+            if activation_key is not None:
+                self._discard_connection_activation(*activation_key)
+            self._record_connection_closed(session_id, connection, close_reason="session_cancelled")
             close = getattr(connection, "close", None)
             if callable(close):
                 close()
+        if activation_queue is not None:
+            with self._lock:
+                if self._session_activation_queues.get(session_id) is activation_queue:
+                    self._session_activation_queues.pop(session_id, None)
 
     def _close_all_connections(self) -> None:
         with self._lock:
@@ -727,10 +1966,23 @@ class NetworkRuntimeService:
                 for connection in session_connections
             )
             self._long_connections.clear()
+            activation_queues = tuple(self._session_activation_queues.items())
+            self._pending_activation_trace_records.clear()
         for connection in connections:
+            activation_key = self._connection_activation_key(connection)
+            owner_session_id = activation_key[0] if activation_key is not None else ""
+            if activation_key is not None:
+                self._discard_connection_activation(*activation_key)
+            self._record_connection_closed(owner_session_id, connection, close_reason="service_closed")
             close = getattr(connection, "close", None)
             if callable(close):
                 close()
+        with self._lock:
+            for session_id, activation_queue in activation_queues:
+                if self._session_activation_queues.get(session_id) is activation_queue:
+                    self._session_activation_queues.pop(session_id, None)
+        for _, activation_queue in activation_queues:
+            activation_queue.close()
 
     def _require_open(self) -> None:
         with self._lock:

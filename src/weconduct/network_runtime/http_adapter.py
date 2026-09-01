@@ -5,6 +5,7 @@ from collections.abc import AsyncIterable, Mapping
 from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 import ssl
+from threading import RLock
 from time import perf_counter
 from urllib.parse import urljoin, urlsplit
 
@@ -14,10 +15,11 @@ from .access_policy import NetworkAccessPolicy
 from .authentication import apply_static_auth
 from .errors import build_network_error
 from .models import NetworkContextSnapshot, NetworkOperation, NetworkResult
-from .resources import ResponseBodyStore, ResponseBodyTooLargeError
+from .resources import ResponseBodyRef, ResponseBodyStore, ResponseBodyTooLargeError
 from .proxy import ProxyResolver
 from .tls import ResolvedTls, TlsResolver, verify_response_certificate_pins
 from .transport import PinnedDnsAsyncHTTPTransport
+from .trace import TRACE_MESSAGE_BODY_THRESHOLD_BYTES, serialize_trace_message_payload
 
 
 class UploadPathDeniedError(ValueError):
@@ -49,7 +51,9 @@ class HttpxAdapter:
         self._owns_client = client is None
         self._response_root_directory = Path(response_root_directory)
         self._stores: dict[str, ResponseBodyStore] = {}
+        self._stores_lock = RLock()
         self._tls_clients: dict[tuple[object, ...], httpx.AsyncClient] = {}
+        self._request_trace_bodies: dict[str, ResponseBodyRef] = {}
 
     def execute(
         self,
@@ -64,6 +68,7 @@ class HttpxAdapter:
         snapshot: NetworkContextSnapshot,
     ) -> NetworkResult:
         started_at = perf_counter()
+        redirects: list[dict[str, object]] = []
         try:
             request_headers = apply_static_auth(
                 {**snapshot.headers, **operation.headers},
@@ -75,15 +80,24 @@ class HttpxAdapter:
                 **operation.query,
             }
             request_content = operation.content
+            store = self._store_for_session(operation.session_id)
             if operation.upload_stream is not None:
-                request_content = operation.upload_stream
+                request_content = self._traceable_upload_stream(
+                    operation=operation,
+                    content_type=_header_value(request_headers, "content-type"),
+                )
             elif operation.upload_file_path is not None:
+                upload_file_path = _validate_upload_file_path(
+                    operation.upload_file_path,
+                    allowed_roots=operation.upload_allowed_roots,
+                    allow_any_path=operation.upload_allow_any_path,
+                )
+                self._request_trace_bodies[operation.request_id] = store.create_from_file_copy(
+                    upload_file_path,
+                    content_type=_header_value(request_headers, "content-type"),
+                )
                 request_content = _iter_upload_file_chunks(
-                    _validate_upload_file_path(
-                        operation.upload_file_path,
-                        allowed_roots=operation.upload_allowed_roots,
-                        allow_any_path=operation.upload_allow_any_path,
-                    )
+                    upload_file_path
                 )
             request_cookies = dict(snapshot.cookies)
             request_method = operation.method
@@ -115,13 +129,6 @@ class HttpxAdapter:
                     verify_response_certificate_pins(response, resolved_tls.certificate_pins)
                     redirect_target = response.headers.get("location")
                     if response.status_code not in {301, 302, 303, 307, 308} or not redirect_target:
-                        store = self._stores.setdefault(
-                            operation.session_id,
-                            ResponseBodyStore(
-                                session_id=operation.session_id,
-                                root_directory=self._response_root_directory,
-                            ),
-                        )
                         body_ref = await store.create_from_async_chunks(
                             response.aiter_bytes(),
                             content_type=response.headers.get("content-type"),
@@ -130,6 +137,14 @@ class HttpxAdapter:
                         )
                         break
                     next_url = urljoin(request_url, redirect_target)
+                    redirects.append(
+                        {
+                            "status_code": response.status_code,
+                            "from_url": request_url,
+                            "to_url": next_url,
+                            "location": redirect_target,
+                        }
+                    )
                     if _is_cross_origin_redirect(request_url, next_url):
                         request_headers = _drop_cross_origin_credentials(request_headers)
                         # params=None 保留 Location 自带 query，但不会携带来源请求的附加 query。
@@ -155,6 +170,7 @@ class HttpxAdapter:
                     transport_error=error.error_code,
                     error=error,
                     duration_ms=(perf_counter() - started_at) * 1000,
+                    redirects=tuple(redirects),
                 )
         except asyncio.CancelledError:
             error = build_network_error(
@@ -169,6 +185,7 @@ class HttpxAdapter:
                 transport_error=error.error_code,
                 error=error,
                 duration_ms=(perf_counter() - started_at) * 1000,
+                redirects=tuple(redirects),
             )
         except ResponseBodyTooLargeError as exc:
             error = build_network_error(
@@ -184,6 +201,7 @@ class HttpxAdapter:
                 transport_error=error.error_code,
                 error=error,
                 duration_ms=(perf_counter() - started_at) * 1000,
+                redirects=tuple(redirects),
             )
         except (httpx.HTTPError, ValueError) as exc:
             error = build_network_error(
@@ -199,6 +217,7 @@ class HttpxAdapter:
                 transport_error=error.error_code,
                 error=error,
                 duration_ms=(perf_counter() - started_at) * 1000,
+                redirects=tuple(redirects),
             )
         return NetworkResult(
             status="succeeded",
@@ -210,16 +229,35 @@ class HttpxAdapter:
             final_url=str(response.url),
             set_cookies=_parse_set_cookie_headers(response.headers),
             duration_ms=(perf_counter() - started_at) * 1000,
+            redirects=tuple(redirects),
         )
 
     def close_session(self, session_id: str) -> None:
-        store = self._stores.pop(session_id, None)
+        for request_id, body_ref in tuple(self._request_trace_bodies.items()):
+            if body_ref.session_id == session_id:
+                self._request_trace_bodies.pop(request_id, None)
+        with self._stores_lock:
+            store = self._stores.pop(session_id, None)
         if store is not None:
             store.close()
 
     def close(self) -> None:
-        for session_id in list(self._stores):
+        with self._stores_lock:
+            session_ids = list(self._stores)
+        for session_id in session_ids:
             self.close_session(session_id)
+
+    def _store_for_session(self, session_id: str) -> ResponseBodyStore:
+        """并发网络任务共享会话正文 store，避免 setdefault 构造出孤儿目录。"""
+        with self._stores_lock:
+            store = self._stores.get(session_id)
+            if store is None:
+                store = ResponseBodyStore(
+                    session_id=session_id,
+                    root_directory=self._response_root_directory,
+                )
+                self._stores[session_id] = store
+            return store
 
     def _client_for_snapshot(
         self,
@@ -305,11 +343,89 @@ class HttpxAdapter:
 
     async def aclose(self) -> None:
         self.close()
+        self._request_trace_bodies.clear()
         for client in tuple(self._tls_clients.values()):
             await client.aclose()
         self._tls_clients.clear()
         if self._owns_client:
             await self._client.aclose()
+
+    def pop_request_trace_body(self, request_id: str) -> ResponseBodyRef | None:
+        return self._request_trace_bodies.pop(request_id, None)
+
+    def read_debug_body(self, session_id: str, descriptor: dict) -> bytes:
+        """通过活动会话的 ResponseBodyStore 读取已登记正文资源。"""
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise RuntimeError("network.response_body_unavailable")
+        if not isinstance(descriptor, dict) or descriptor.get("session_id") != session_id:
+            raise RuntimeError("network.response_body_unavailable")
+        with self._stores_lock:
+            store = self._stores.get(session_id)
+        if store is None:
+            raise RuntimeError("network.response_body_unavailable")
+        return store.read_debug_descriptor(descriptor)
+
+    def capture_trace_message_body(
+        self,
+        session_id: str,
+        payload: object,
+        *,
+        content_type: str | None = None,
+    ) -> ResponseBodyRef | None:
+        """将超大长连接消息写入会话临时正文资源。"""
+        return self.capture_trace_body(
+            session_id,
+            payload,
+            content_type=content_type,
+        )
+
+    def capture_trace_body(
+        self,
+        session_id: str,
+        payload: object,
+        *,
+        content_type: str | None = None,
+    ) -> ResponseBodyRef | None:
+        """将超大 Debug 请求、响应或消息正文写入会话临时资源。"""
+        encoded, inferred_content_type = serialize_trace_message_payload(payload)
+        if len(encoded) <= TRACE_MESSAGE_BODY_THRESHOLD_BYTES:
+            return None
+        store = self._store_for_session(session_id)
+        capture = store.open_capture(
+            content_type=content_type or inferred_content_type,
+            force_file=True,
+        )
+        try:
+            capture.write(encoded)
+            return capture.finish()
+        except BaseException:
+            capture.abort()
+            raise
+
+    async def _traceable_upload_stream(
+        self,
+        *,
+        operation: NetworkOperation,
+        content_type: str | None,
+    ) -> AsyncIterable[bytes]:
+        store = self._store_for_session(operation.session_id)
+        capture = store.open_capture(content_type=content_type, force_file=True)
+        try:
+            assert operation.upload_stream is not None
+            async for chunk in operation.upload_stream:
+                capture.write(chunk)
+                yield chunk
+        except BaseException:
+            if capture.size_bytes:
+                try:
+                    self._request_trace_bodies[operation.request_id] = capture.finish()
+                except RuntimeError:
+                    capture.abort()
+            else:
+                capture.abort()
+            raise
+        else:
+            self._request_trace_bodies[operation.request_id] = capture.finish()
 
 
 async def _iter_upload_file_chunks(path: Path, *, chunk_size: int = 64 * 1024):
@@ -339,6 +455,14 @@ def _validate_upload_file_path(
         except (OSError, ValueError):
             continue
     raise UploadPathDeniedError("network.upload_path_denied")
+
+
+def _header_value(headers: Mapping[str, object], name: str) -> str | None:
+    lowered = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == lowered and value is not None:
+            return str(value)
+    return None
 
 
 def _resolve_response_limits(response_limits: Mapping[str, object]) -> dict[str, int | None]:

@@ -729,6 +729,98 @@ def test_external_api_dispatches_graph_get_and_graph_validate(tmp_path: Path) ->
         server.server_close()
 
 
+def test_external_api_oauth_routes_return_async_status_and_keep_reserved_paths_distinct(
+    tmp_path: Path,
+) -> None:
+    server = _build_server(tmp_path, enabled=True, token="external-secret")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    flows: dict[str, dict[str, object]] = {}
+    try:
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        # Force lazy service creation before installing deterministic provider stubs.
+        status, _ = _request_json(f"{base_url}/api/ext/v1/host", token="external-secret")
+        assert status == 200
+        service = server.workbench_service
+
+        def begin_oauth_authorization(**_: object) -> dict[str, object]:
+            flow = {"flow_id": "flow-1", "status": "waiting_input"}
+            flows["flow-1"] = flow
+            return flow
+
+        def get_oauth_flow(*, flow_id: str) -> dict[str, object]:
+            return flows.get(flow_id, {"flow_id": flow_id, "status": "waiting_input"})
+
+        def submit_oauth_flow(*, flow_id: str, values: object) -> dict[str, object]:
+            assert values == {"code": "private-code"}
+            flows[flow_id] = {"flow_id": flow_id, "status": "exchanging"}
+            return flows[flow_id]
+
+        def cancel_oauth_flow(*, flow_id: str) -> dict[str, object]:
+            flows[flow_id] = {"flow_id": flow_id, "status": "cancelled"}
+            return flows[flow_id]
+
+        service.begin_oauth_authorization = begin_oauth_authorization  # type: ignore[method-assign]
+        service.get_oauth_flow = get_oauth_flow  # type: ignore[method-assign]
+        service.submit_oauth_flow = submit_oauth_flow  # type: ignore[method-assign]
+        service.cancel_oauth_flow = cancel_oauth_flow  # type: ignore[method-assign]
+
+        status, started = _request_json(
+            f"{base_url}/api/ext/v1/oauth/authorization",
+            method="POST",
+            payload={
+                "authorization_url": "https://example.test/authorize",
+                "token_url": "https://example.test/token",
+                "client_id": "client",
+                "redirect_uri": "http://127.0.0.1/callback",
+                "scope_id": "flow-scope",
+            },
+            token="external-secret",
+        )
+        assert status == 202
+        assert started["operation_id"] == "oauth.authorization.begin"
+        assert started["result"]["flow_id"] == "flow-1"
+
+        with pytest.raises(urllib.error.HTTPError) as reserved_get:
+            urllib.request.urlopen(
+                urllib.request.Request(
+                    f"{base_url}/api/ext/v1/oauth/authorization",
+                    headers={"Authorization": "Bearer external-secret"},
+                )
+            )
+        assert reserved_get.value.code == 405
+        assert reserved_get.value.headers["Allow"] == "POST, OPTIONS"
+
+        status, flow = _request_json(
+            f"{base_url}/api/ext/v1/oauth/flow-1",
+            token="external-secret",
+        )
+        assert status == 200
+        assert flow["result"]["flow_id"] == "flow-1"
+
+        status, submitted = _request_json(
+            f"{base_url}/api/ext/v1/oauth/flow-1/submit",
+            method="POST",
+            payload={"values": {"code": "private-code"}},
+            token="external-secret",
+        )
+        assert status == 202
+        assert submitted["result"]["status"] == "exchanging"
+        assert "private-code" not in json.dumps(submitted)
+
+        status, cancelled = _request_json(
+            f"{base_url}/api/ext/v1/oauth/flow-1/cancel",
+            method="POST",
+            token="external-secret",
+        )
+        assert status == 202
+        assert cancelled["result"]["status"] == "cancelled"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
 def test_external_api_operation_discovery_matches_every_stable_public_descriptor(
     tmp_path: Path,
 ) -> None:
@@ -750,7 +842,7 @@ def test_external_api_operation_discovery_matches_every_stable_public_descriptor
             item["operation_id"] for item in response["result"]["operations"]
         }
         assert discovered_ids == expected_ids
-        assert len(discovered_ids) == 67
+        assert len(discovered_ids) == 75
 
         for operation_id in discovered_ids:
             status, detail = _request_json(

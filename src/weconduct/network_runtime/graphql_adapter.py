@@ -66,6 +66,32 @@ class GraphQLSubscriptionProtocol:
         return frame
 
     @staticmethod
+    def ping(payload: object | None = None) -> dict[str, object]:
+        frame: dict[str, object] = {"type": "ping"}
+        if payload is not None:
+            frame["payload"] = payload
+        return frame
+
+    @staticmethod
+    def pong(payload: object | None = None) -> dict[str, object]:
+        frame: dict[str, object] = {"type": "pong"}
+        if payload is not None:
+            frame["payload"] = payload
+        return frame
+
+    @staticmethod
+    def complete(*, request_id: str) -> dict[str, object]:
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise GraphQLAdapterError("graphql.subscription_id_required")
+        return {"id": request_id, "type": "complete"}
+
+    @staticmethod
+    def stop(*, request_id: str) -> dict[str, object]:
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise GraphQLAdapterError("graphql.subscription_id_required")
+        return {"id": request_id, "type": "stop"}
+
+    @staticmethod
     def subscribe(*, request_id: str, request: GraphQLSubscriptionRequest) -> dict[str, object]:
         if not isinstance(request_id, str) or not request_id.strip():
             raise GraphQLAdapterError("graphql.subscription_id_required")
@@ -184,7 +210,7 @@ class GraphQLProtocolAdapter:
         headers: Mapping[str, str] | None = None,
         subprotocol: str = "graphql-transport-ws",
     ) -> GraphQLSubscriptionRequest:
-        self._validate_endpoint(endpoint)
+        self._validate_subscription_endpoint(endpoint)
         if not isinstance(query, str) or not query.strip():
             raise GraphQLAdapterError("graphql.query_required")
         try:
@@ -226,6 +252,16 @@ class GraphQLProtocolAdapter:
             return
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise GraphQLAdapterError("graphql.endpoint_invalid")
+
+    @staticmethod
+    def _validate_subscription_endpoint(endpoint: str) -> None:
+        """允许 HTTP(S) 自动转换，也允许调用方直接提供 WS(S) 地址。"""
+        parsed = urlsplit(endpoint)
+        if parsed.scheme in {"http", "https", "ws", "wss"} and parsed.hostname:
+            return
+        if not parsed.scheme and not parsed.netloc and endpoint.strip():
+            return
+        raise GraphQLAdapterError("graphql.endpoint_invalid")
 
     @staticmethod
     def _operation_count(document: DocumentNode) -> int:

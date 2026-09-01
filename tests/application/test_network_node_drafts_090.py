@@ -37,12 +37,26 @@ def test_network_long_connection_and_batch_drafts_have_pull_actions_and_ordered_
     service = CompilationWorkbenchService()
     sse = service.build_graph_node_draft(resource_key="network.sse_connect")["node"]
     websocket = service.build_graph_node_draft(resource_key="network.websocket_connect")["node"]
+    graphql_subscription = service.build_graph_node_draft(
+        resource_key="network.graphql_subscription"
+    )["node"]
     batch = service.build_graph_node_draft(resource_key="network.batch_request")["node"]
 
     assert {"in:connection_id", "out:event", "out:connection_id"} <= _port_ids(sse)
     assert {"in:connection_id", "in:message", "out:message", "out:connection_id"} <= _port_ids(websocket)
+    assert {"in:connection_id", "in:query", "out:event_type", "out:data"} <= _port_ids(graphql_subscription)
     assert sse["node_config"]["timeout_seconds"] is None
+    assert sse["node_config"]["max_reconnect_attempts"] == 0
+    assert sse["node_config"]["reconnect_delay_seconds"] == 0.5
+    assert sse["node_config"]["reconnect_max_delay_seconds"] == 30.0
     assert websocket["node_config"]["timeout_seconds"] is None
+    assert websocket["node_config"]["max_reconnect_attempts"] == 0
+    assert websocket["node_config"]["reconnect_delay_seconds"] == 0.5
+    assert websocket["node_config"]["reconnect_max_delay_seconds"] == 30.0
+    assert graphql_subscription["node_config"]["subprotocol"] == "graphql-transport-ws"
+    assert graphql_subscription["node_config"]["max_reconnect_attempts"] == 0
+    assert graphql_subscription["node_config"]["reconnect_delay_seconds"] == 0.5
+    assert graphql_subscription["node_config"]["reconnect_max_delay_seconds"] == 30.0
     assert {"in:requests", "out:results"} <= _port_ids(batch)
     assert batch["node_config"]["max_concurrency"] == 1
 

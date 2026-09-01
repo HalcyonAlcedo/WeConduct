@@ -92,3 +92,5 @@ class NetworkResult:
     duration_ms: float | None = None
     transport_error: str | None = None
     error: NetworkExecutionError | None = None
+    redirects: tuple[Mapping[str, object], ...] = field(default_factory=tuple)
+    retry_attempt: int = 1

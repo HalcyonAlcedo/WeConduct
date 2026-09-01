@@ -73,6 +73,16 @@ def test_graphql_subscription_builds_transport_ws_frames() -> None:
     )["type"] == "subscribe"
 
 
+def test_graphql_subscription_accepts_direct_websocket_endpoint() -> None:
+    request = GraphQLProtocolAdapter().build_subscription(
+        endpoint="ws://127.0.0.1:3456/api/network/graphql-ws",
+        query="subscription Watch { updates { id } }",
+        session_id="session-1",
+    )
+
+    assert request.endpoint == "ws://127.0.0.1:3456/api/network/graphql-ws"
+
+
 def test_graphql_subscription_parses_next_error_and_complete_frames() -> None:
     protocol = GraphQLSubscriptionProtocol()
 
@@ -88,3 +98,14 @@ def test_graphql_subscription_parses_next_error_and_complete_frames() -> None:
     assert next_frame.payload == {"data": {"updates": []}}
     assert error_frame.type == "error"
     assert complete_frame.type == "complete"
+
+
+def test_graphql_subscription_builds_unsubscribe_frames_for_both_protocols() -> None:
+    assert GraphQLSubscriptionProtocol.complete(request_id="sub-1") == {
+        "id": "sub-1",
+        "type": "complete",
+    }
+    assert GraphQLSubscriptionProtocol.stop(request_id="sub-1") == {
+        "id": "sub-1",
+        "type": "stop",
+    }

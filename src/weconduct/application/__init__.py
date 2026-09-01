@@ -11,6 +11,8 @@ _PUBLIC_EXPORTS = {
     "convert_legacy_webcontrol_project": (".legacy_webcontrol_converter", "convert_legacy_webcontrol_project"),
     "RuntimeSessionStreamBroker": (".runtime_session_stream", "RuntimeSessionStreamBroker"),
     "HostOperationService": (".operations", "HostOperationService"),
+    "OAuthInteractiveService": (".oauth_interactive", "OAuthInteractiveService"),
+    "OAuthInteractiveError": (".oauth_interactive", "OAuthInteractiveError"),
     "OperationDescriptor": (".operations", "OperationDescriptor"),
     "OperationRegistry": (".operations", "OperationRegistry"),
     "OperationRegistryError": (".operations", "OperationRegistryError"),

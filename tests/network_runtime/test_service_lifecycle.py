@@ -16,6 +16,7 @@ from weconduct.network_runtime.models import NetworkContextSnapshot, NetworkOper
 from weconduct.network_runtime.access_policy import NetworkAccessPolicy
 from weconduct.network_runtime.proxy import ResolvedProxy
 from weconduct.network_runtime.service import NetworkRuntimeService
+from weconduct.network_runtime.trace import NetworkTraceRecorder
 from weconduct.application.sensitive_values.service import SensitiveValueService
 
 
@@ -676,6 +677,37 @@ def test_network_runtime_service_cancels_active_session_requests(tmp_path) -> No
     assert result.error.request_id.startswith("request-cancel-")
     assert result.error.network_context_id == "context-1"
     assert result.error.retry_attempt == 1
+
+
+def test_network_runtime_service_records_cancelled_request_status(tmp_path) -> None:
+    async def slow_response(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(1)
+        return httpx.Response(204, request=request)
+
+    recorder = NetworkTraceRecorder()
+    service = NetworkRuntimeService(
+        transport=httpx.MockTransport(slow_response),
+        response_root_directory=tmp_path,
+        access_policy=NetworkAccessPolicy(allowed_hostnames={"example.test"}),
+        trace_recorder=recorder,
+    )
+    future = service.submit(
+        NetworkOperation(
+            operation_id="request-cancel-traced",
+            session_id="session-cancel-traced",
+            method="GET",
+            url="https://example.test/slow",
+        ),
+        NetworkContextSnapshot(context_id="context-cancel-traced"),
+    )
+    service.cancel_session("session-cancel-traced")
+    result = future.result(timeout=1)
+    service.close()
+
+    assert result.transport_error == "network.cancelled"
+    traces = recorder.list_traces(debug_session_id="session-cancel-traced")
+    assert traces[0]["status"] == "cancelled"
+    assert recorder.summary(debug_session_id="session-cancel-traced")["cancelled_operations"] == 1
 
 
 def test_network_runtime_service_serializes_oauth_cache_cleanup(tmp_path) -> None:

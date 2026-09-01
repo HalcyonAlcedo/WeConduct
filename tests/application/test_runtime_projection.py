@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from weconduct.application.runtime_projection import (
+    project_diagnostic_for_publication,
     project_runtime_plan_for_publication,
     project_runtime_value_for_publication,
 )
@@ -60,4 +61,27 @@ def test_runtime_plan_projection_exposes_configured_field_names_without_values()
     assert projected["executable_nodes"][0]["node_config"] == {
         "configured_fields": ["headers", "url"],
         "sensitive_fields": ["headers"],
+    }
+
+
+def test_diagnostic_projection_redacts_message_and_nested_details() -> None:
+    projected = project_diagnostic_for_publication(
+        {
+            "event_kind": "diagnostic.raised",
+            "message": "request failed with debug-secret",
+            "details": {
+                "request_body": {"token": "debug-secret"},
+                "status_code": 401,
+            },
+        },
+        secret_values=("debug-secret",),
+    )
+
+    assert projected == {
+        "event_kind": "diagnostic.raised",
+        "message": "request failed with <redacted>",
+        "details": {
+            "request_body": "<redacted>",
+            "status_code": 401,
+        },
     }

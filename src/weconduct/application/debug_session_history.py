@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
+import shutil
 import threading
 import uuid
+from copy import deepcopy
 
 from weconduct.application.event_storage import migration as legacy_migration
 from weconduct.application.event_storage.session_store import EventSessionStore
@@ -21,7 +24,10 @@ _METADATA_KEYS = (
     "variable_snapshot",
     "variable_descriptors",
     "variable_changes",
+    "network_trace_snapshot",
 )
+
+_NETWORK_BODY_FIELDS = ("request_body", "response_body")
 
 
 class DebugSessionHistoryStore:
@@ -112,9 +118,142 @@ class DebugSessionHistoryStore:
         self._validate_snapshot_records(events=events, snapshots=snapshots)
 
         with self._lock:
-            self._store.write_metadata(session_id, self._extract_metadata(session_document))
+            document_for_persistence = self._materialize_network_trace_bodies(
+                session_id=session_id,
+                session_document=session_document,
+            )
+            self._store.write_metadata(
+                session_id,
+                self._extract_metadata(document_for_persistence),
+            )
             self._persist_events_and_keyframes(session_id, events, keyframes)
-            self._upsert_summary(self._build_summary_from_session_document(session_document))
+            self._upsert_summary(
+                self._build_summary_from_session_document(document_for_persistence)
+            )
+
+    def read_network_body(self, session_id: str, descriptor: dict) -> bytes:
+        """读取历史 Debug 网络正文，并校验资源仍属于指定会话。"""
+        if not isinstance(descriptor, dict) or descriptor.get("resource_kind") != "history_temp":
+            raise ValueError("network history body descriptor is invalid")
+        descriptor_session_id = descriptor.get("session_id")
+        if descriptor_session_id != session_id:
+            raise ValueError("network history body session mismatch")
+        resource_id = descriptor.get("resource_id")
+        path = self._network_body_path(session_id, resource_id)
+        if not path.exists() or not path.is_file():
+            raise RuntimeError("network.response_body_unavailable")
+        try:
+            payload = path.read_bytes()
+        except OSError as exc:
+            raise RuntimeError("network.response_body_unavailable") from exc
+        size_bytes = descriptor.get("size_bytes")
+        if isinstance(size_bytes, int) and not isinstance(size_bytes, bool) and len(payload) != size_bytes:
+            raise RuntimeError("network.response_body_unavailable")
+        sha256 = descriptor.get("sha256")
+        if isinstance(sha256, str) and sha256.strip() and hashlib.sha256(payload).hexdigest() != sha256:
+            raise RuntimeError("network.response_body_unavailable")
+        return payload
+
+    def _materialize_network_trace_bodies(
+        self,
+        *,
+        session_id: str,
+        session_document: dict,
+    ) -> dict:
+        document = deepcopy(session_document)
+        snapshot = document.get("network_trace_snapshot")
+        if not isinstance(snapshot, dict):
+            return document
+        traces = snapshot.get("traces")
+        if not isinstance(traces, dict):
+            return document
+        for trace in traces.values():
+            if not isinstance(trace, dict):
+                continue
+            operation = trace.get("operation")
+            if not isinstance(operation, dict):
+                continue
+            for field_name in _NETWORK_BODY_FIELDS:
+                payload = operation.get(field_name)
+                operation[field_name] = self._materialize_network_body_descriptor(
+                    session_id=session_id,
+                    payload=payload,
+                )
+            messages = trace.get("messages")
+            if isinstance(messages, list):
+                for message in messages:
+                    if not isinstance(message, dict):
+                        continue
+                    message["payload"] = self._materialize_network_body_descriptor(
+                        session_id=session_id,
+                        payload=message.get("payload"),
+                    )
+        return document
+
+    def _materialize_network_body_descriptor(
+        self,
+        *,
+        session_id: str,
+        payload: object,
+    ) -> object:
+        if not isinstance(payload, dict):
+            return payload
+        if payload.get("resource_kind") == "history_temp":
+            return payload
+        if payload.get("resource_kind") != "session_temp":
+            return payload
+        resource_id = payload.get("resource_id")
+        source_text = payload.get("path")
+        if not isinstance(resource_id, str) or not resource_id.strip():
+            return payload
+        if not isinstance(source_text, str) or not source_text.strip():
+            return payload
+        try:
+            target = self._network_body_path(session_id, resource_id)
+        except ValueError:
+            return payload
+        source = Path(source_text)
+        if target.exists() and target.is_file():
+            return {
+                **payload,
+                "resource_kind": "history_temp",
+                "session_id": session_id,
+                "path": None,
+                "available": True,
+            }
+        if not source.exists() or not source.is_file():
+            return payload
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if not target.exists() or target.stat().st_size != source.stat().st_size:
+                temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
+                try:
+                    shutil.copyfile(source, temporary)
+                    temporary.replace(target)
+                finally:
+                    temporary.unlink(missing_ok=True)
+        except OSError:
+            # 历史记录持久化不能阻断正在运行的 Debug；正文不可用时由 API
+            # 通过 descriptor 的 available 状态报告，而不是写入半成品文件。
+            return payload
+        return {
+            **payload,
+            "resource_kind": "history_temp",
+            "session_id": session_id,
+            "path": None,
+            "available": True,
+        }
+
+    def _network_body_path(self, session_id: str, resource_id: object) -> Path:
+        if (
+            not isinstance(resource_id, str)
+            or not resource_id.strip()
+            or resource_id in {".", ".."}
+            or "/" in resource_id
+            or "\\" in resource_id
+        ):
+            raise ValueError("network history body resource id is invalid")
+        return self._store.session_dir(session_id) / "network-bodies" / f"{resource_id}.bin"
 
     def _persist_events_and_keyframes(
         self, session_id: str, events: list[dict], keyframes: list[dict]

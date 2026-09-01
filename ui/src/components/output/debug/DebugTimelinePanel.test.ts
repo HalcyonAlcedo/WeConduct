@@ -7,13 +7,23 @@ const debugStoreMock = vi.hoisted(() => ({
   eventsTotal: 0,
   eventsSessionId: 'dbg-1' as string | null,
   activeSession: null as any,
+  activeHistorySession: null as any,
+  projection: null as any,
   isDebugActive: false,
   loadProjection: vi.fn(),
   clearProjection: vi.fn(),
 }))
 
+const dockStoreMock = vi.hoisted(() => ({
+  restorePanel: vi.fn(),
+  activatePanel: vi.fn(),
+}))
+
 vi.mock('@/stores/debugStore', () => ({
   useDebugStore: () => debugStoreMock,
+}))
+vi.mock('@/stores/dockStore', () => ({
+  useDockStore: () => dockStoreMock,
 }))
 
 import DebugTimelinePanel from './DebugTimelinePanel.vue'
@@ -45,9 +55,27 @@ describe('DebugTimelinePanel', () => {
     ]
     debugStoreMock.eventsTotal = 2
     debugStoreMock.eventsSessionId = 'dbg-1'
-    debugStoreMock.activeSession = null
+    debugStoreMock.activeSession = {
+      network_trace_snapshot: {
+        summary: {
+          total_operations: 1,
+          successful_operations: 1,
+          failed_operations: 0,
+          cancelled_operations: 2,
+          active_connections: 0,
+          queue_depth: 0,
+          reconnect_count: 3,
+          dropped_count: 4,
+          recent_errors: [{ trace_id: 'trace-error', operation_id: 'network.http_request', status: 'failed', error_code: 'network.timeout', ended_at: null }],
+        },
+      },
+    }
+    debugStoreMock.activeHistorySession = null
+    debugStoreMock.projection = null
     debugStoreMock.isDebugActive = false
     debugStoreMock.loadProjection.mockResolvedValue(undefined)
+    dockStoreMock.restorePanel.mockReset()
+    dockStoreMock.activatePanel.mockReset()
   })
 
   it('使用 event_id 作为稳定标识，并点击时加载对应历史投影', async () => {
@@ -67,6 +95,11 @@ describe('DebugTimelinePanel', () => {
     expect(wrapper.text()).toContain('node-loop:2')
     expect(wrapper.text()).toContain('关键帧')
     expect(wrapper.text()).toContain('退出历史查看')
+    expect(wrapper.text()).toContain('取消 2')
+    expect(wrapper.text()).toContain('队列 0')
+    expect(wrapper.text()).toContain('重连 3')
+    expect(wrapper.text()).toContain('丢弃 4')
+    expect(wrapper.text()).toContain('network.timeout')
   })
 
   it('退出历史查看时，有活动会话恢复 live，否则清空投影回到静态图', async () => {
@@ -91,6 +124,113 @@ describe('DebugTimelinePanel', () => {
 
     expect(debugStoreMock.loadProjection).not.toHaveBeenCalledWith(expect.anything(), 'live')
     expect(debugStoreMock.clearProjection).toHaveBeenCalled()
+  })
+
+  it('可直接打开网络调试窗口', async () => {
+    const wrapper = mount(DebugTimelinePanel)
+    await nextTick()
+
+    await wrapper.get('[data-action="open-network-debug"]').trigger('click')
+
+    expect(dockStoreMock.restorePanel).toHaveBeenCalledWith('debugNetwork')
+    expect(dockStoreMock.activatePanel).toHaveBeenCalledWith('debugNetwork')
+  })
+
+  it('历史会话也显示网络概览并可打开网络调试窗口', async () => {
+    debugStoreMock.activeSession = null
+    debugStoreMock.activeHistorySession = {
+      session_id: 'dbg-history-1',
+      session: {
+        network_trace_snapshot: {
+          summary: {
+            total_operations: 2,
+            successful_operations: 1,
+            failed_operations: 1,
+            cancelled_operations: 0,
+            active_connections: 1,
+            queue_depth: 2,
+            reconnect_count: 1,
+            dropped_count: 0,
+            recent_errors: [],
+          },
+        },
+      },
+    }
+
+    const wrapper = mount(DebugTimelinePanel)
+    await nextTick()
+
+    expect(wrapper.text()).toContain('操作 2')
+    await wrapper.get('[data-action="open-network-debug"]').trigger('click')
+    expect(dockStoreMock.restorePanel).toHaveBeenCalledWith('debugNetwork')
+  })
+
+  it('历史投影优先使用历史会话的网络概述', async () => {
+    debugStoreMock.projection = { mode: 'history' }
+    debugStoreMock.activeSession = {
+      network_trace_snapshot: {
+        summary: {
+          total_operations: 1,
+          successful_operations: 1,
+          failed_operations: 0,
+          cancelled_operations: 0,
+          active_connections: 0,
+          queue_depth: 0,
+          reconnect_count: 0,
+          dropped_count: 0,
+          recent_errors: [],
+        },
+      },
+    }
+    debugStoreMock.activeHistorySession = {
+      session_id: 'dbg-history-2',
+      session: {
+        network_trace_snapshot: {
+          summary: {
+            total_operations: 9,
+            successful_operations: 8,
+            failed_operations: 1,
+            cancelled_operations: 0,
+            active_connections: 2,
+            queue_depth: 4,
+            reconnect_count: 3,
+            dropped_count: 1,
+            recent_errors: [],
+          },
+        },
+      },
+    }
+
+    const wrapper = mount(DebugTimelinePanel)
+    await nextTick()
+
+    expect(wrapper.text()).toContain('操作 9')
+    expect(wrapper.text()).toContain('连接 2')
+    expect(wrapper.text()).not.toContain('操作 1 条')
+  })
+
+  it('有 Debug 事件但尚无网络摘要时仍提供网络调试入口', async () => {
+    debugStoreMock.activeSession = null
+    debugStoreMock.activeHistorySession = null
+
+    const wrapper = mount(DebugTimelinePanel)
+    await nextTick()
+
+    await wrapper.get('[data-action="open-network-debug"]').trigger('click')
+    expect(dockStoreMock.restorePanel).toHaveBeenCalledWith('debugNetwork')
+  })
+
+  it('无 Debug 事件且尚无网络摘要时仍提供网络调试入口', async () => {
+    debugStoreMock.events = []
+    debugStoreMock.eventsTotal = 0
+    debugStoreMock.activeSession = null
+    debugStoreMock.activeHistorySession = null
+
+    const wrapper = mount(DebugTimelinePanel)
+    await nextTick()
+
+    await wrapper.get('[data-action="open-network-debug"]').trigger('click')
+    expect(dockStoreMock.restorePanel).toHaveBeenCalledWith('debugNetwork')
   })
 })
 

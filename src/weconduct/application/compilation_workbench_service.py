@@ -71,6 +71,8 @@ from weconduct.application.execution_core import ExecutionCore
 from weconduct.application.network_context_validation import (
     collect_network_context_join_ambiguities,
 )
+from weconduct.network_runtime.trace import NetworkTraceRecorder, body_payload_from_bytes
+from weconduct.network_runtime.errors import redact_network_message
 from weconduct.application.graph_upgrades import (
     CORRECTIVE_HTTP_CONTRACT_UPGRADER_ID,
     CURRENT_GRAPH_DATA_VERSION,
@@ -81,6 +83,7 @@ from weconduct.application.graph_upgrades import (
 from weconduct.application.runtime_capabilities import build_runtime_capabilities
 from weconduct.application.graph_runtime_projection import GraphRuntimeProjectionBuilder
 from weconduct.application.runtime_projection import (
+    project_diagnostic_for_publication,
     project_runtime_plan_for_publication,
     project_runtime_value_for_publication,
 )
@@ -96,6 +99,7 @@ from weconduct.application.pending_input import (
     PendingInputService,
     PendingInputStatus,
 )
+from weconduct.application.oauth_interactive import OAuthInteractiveService
 from weconduct.application.sensitive_values.models import SensitiveConsumer, SensitiveRef
 from weconduct.application.sensitive_values.encryption import (
     decrypt_parameter_values,
@@ -317,6 +321,7 @@ class CompilationWorkbenchService:
         configuration_service: ConfigurationService | None = None,
         runtime_stream_broker: RuntimeSessionStreamBroker | None = None,
         workbench_event_broker: WorkbenchEventStreamBroker | None = None,
+        oauth_interactive_service: OAuthInteractiveService | None = None,
     ) -> None:
         self._compiler = CompilerFacade()
         self._state_store = state_store or InMemoryWorkspaceStateStore()
@@ -324,6 +329,9 @@ class CompilationWorkbenchService:
         self._runtime_stream_broker = runtime_stream_broker or RuntimeSessionStreamBroker()
         self._workbench_event_broker = workbench_event_broker or WorkbenchEventStreamBroker()
         self._pending_input_service = PendingInputService()
+        self._oauth_interactive_service = oauth_interactive_service or OAuthInteractiveService(
+            pending_input_service=self._pending_input_service,
+        )
         self._project_python_runtime_manager = ProjectPythonRuntimeManager(
             app_data_root=self._resolve_application_data_root()
         )
@@ -346,6 +354,7 @@ class CompilationWorkbenchService:
         # Debug encrypted parameters must never enter the persisted session document.
         self._debug_sensitive_values: dict[str, SensitiveValueService] = {}
         self._debug_sensitive_variable_refs: dict[str, dict[str, SensitiveRef]] = {}
+        self._debug_network_trace_recorders: dict[str, NetworkTraceRecorder] = {}
         loaded_state = self._state_store.load()
         state, changed = self._normalize_workspace_state(loaded_state)
         state, restored_pending_recovery = self._restore_startup_pending_recovery(state)
@@ -2169,6 +2178,439 @@ class CompilationWorkbenchService:
             response_payload["status"] = debug_session.get("status")
         return response_payload
 
+    def _get_debug_network_snapshot(
+        self,
+        *,
+        session_id: str,
+        history: bool = False,
+    ) -> tuple[str, dict]:
+        """读取 Debug 网络记录；活动会话优先读取内存 recorder，历史读取持久化快照。"""
+        self._refresh_state_from_store()
+        if history:
+            payload = self._get_debug_history_store().load_session_payload(session_id)
+            if not isinstance(payload, dict):
+                raise ValueError(f"debug history session not found: {session_id}")
+            source = "history_store"
+            snapshot = payload.get("network_trace_snapshot")
+        else:
+            session = self._find_debug_session(session_id)
+            source = "active_session"
+            snapshot = session.get("network_trace_snapshot")
+            self._refresh_debug_network_connection_traces(session_id)
+            recorder = self._get_debug_network_trace_recorder(session_id)
+            if recorder is not None:
+                traces = recorder.list_traces(debug_session_id=session_id)
+                # list_traces 会展开 operation/connection/message，快照需要保留
+                # trace 的完整层级，因此按 recorder 的 trace_id 重新组装。
+                trace_ids = []
+                trace_map = {}
+                for item in traces:
+                    trace_id = item.get("trace_id") if isinstance(item, dict) else None
+                    if not isinstance(trace_id, str) or trace_id in trace_map:
+                        continue
+                    try:
+                        trace_map[trace_id] = recorder.get_trace(trace_id)
+                        trace_ids.append(trace_id)
+                    except KeyError:
+                        continue
+                snapshot = {
+                    "trace_order": trace_ids,
+                    "traces": trace_map,
+                    "summary": recorder.summary(debug_session_id=session_id),
+                }
+        if not isinstance(snapshot, dict):
+            snapshot = {"trace_order": [], "traces": {}, "summary": {}}
+        return source, deepcopy(snapshot)
+
+    @staticmethod
+    def _network_snapshot_traces(snapshot: dict) -> list[dict]:
+        traces = snapshot.get("traces")
+        if not isinstance(traces, dict):
+            return []
+        order = snapshot.get("trace_order")
+        ordered_ids = order if isinstance(order, list) else list(traces)
+        return [
+            deepcopy(traces[trace_id])
+            for trace_id in ordered_ids
+            if isinstance(trace_id, str) and isinstance(traces.get(trace_id), dict)
+        ]
+
+    @staticmethod
+    def _network_list_record(trace: dict) -> list[dict]:
+        records = []
+        connections = [
+            item for item in trace.get("connections", [])
+            if isinstance(item, dict)
+        ]
+        operation = trace.get("operation")
+        if isinstance(operation, dict):
+            operation = deepcopy(operation)
+            operation.pop("request_body", None)
+            operation.pop("response_body", None)
+            records.append(operation)
+        records.extend(deepcopy(item) for item in connections)
+        for item in trace.get("messages", []):
+            if not isinstance(item, dict):
+                continue
+            message = deepcopy(item)
+            message.pop("payload", None)
+            connection_id = message.get("connection_id")
+            if "protocol" not in message and connection_id is not None:
+                connection = next(
+                    (
+                        connection
+                        for connection in connections
+                        if connection.get("connection_id") == connection_id
+                    ),
+                    None,
+                )
+                if isinstance(connection, dict):
+                    message["protocol"] = connection.get("protocol")
+            if "protocol" not in message and isinstance(operation, dict):
+                # 浏览器动态监听消息没有 connection_id，沿用父 operation
+                # 的协议，保证历史/分页查询的 protocol 筛选与实时 UI 一致。
+                message["protocol"] = operation.get("protocol")
+            records.append(message)
+        return records
+
+    @staticmethod
+    def _network_trace_metadata(trace: dict) -> dict:
+        """返回不含正文的 Trace 详情；完整正文只从 body 接口按需读取。"""
+        metadata = deepcopy(trace)
+        operation = metadata.get("operation")
+        if isinstance(operation, dict):
+            operation.pop("request_body", None)
+            operation.pop("response_body", None)
+        messages = metadata.get("messages")
+        if isinstance(messages, list):
+            metadata["messages"] = [
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key != "payload"
+                }
+                for item in messages
+                if isinstance(item, dict)
+            ]
+        return metadata
+
+    @staticmethod
+    def _assert_debug_network_trace_session_owner(trace: dict, *, session_id: str) -> None:
+        def assert_record_owner(record: dict) -> None:
+            for field_name in ("debug_session_id", "runtime_session_id", "session_id"):
+                trace_session_id = record.get(field_name)
+                if (
+                    isinstance(trace_session_id, str)
+                    and trace_session_id.strip()
+                    and trace_session_id != session_id
+                ):
+                    raise ValueError("debug network trace session mismatch")
+            operation = record.get("operation")
+            if isinstance(operation, dict):
+                assert_record_owner(operation)
+            connections = record.get("connections")
+            if isinstance(connections, list):
+                for connection in connections:
+                    if isinstance(connection, dict):
+                        assert_record_owner(connection)
+            messages = record.get("messages")
+            if isinstance(messages, list):
+                for message in messages:
+                    if isinstance(message, dict):
+                        assert_record_owner({key: value for key, value in message.items() if key != "payload"})
+
+        assert_record_owner(trace)
+
+    def get_debug_session_network(
+        self,
+        *,
+        session_id: str,
+        history: bool = False,
+        protocol: str | None = None,
+        status: str | None = None,
+        node_id: str | None = None,
+        operation_id: str | None = None,
+        connection_id: str | None = None,
+        event_kind: str | None = None,
+        from_time: str | None = None,
+        to_time: str | None = None,
+        page: int | None = None,
+        page_size: int | None = None,
+        include_body: bool = False,
+    ) -> dict:
+        source, snapshot = self._get_debug_network_snapshot(session_id=session_id, history=history)
+        traces = self._network_snapshot_traces(snapshot)
+        for trace in traces:
+            self._assert_debug_network_trace_session_owner(trace, session_id=session_id)
+        from_datetime = self._parse_debug_network_time(from_time, "from_time")
+        to_datetime = self._parse_debug_network_time(to_time, "to_time")
+        if from_datetime is not None and to_datetime is not None and from_datetime > to_datetime:
+            raise ValueError("debug network from_time must not be later than to_time")
+        records = []
+        for trace in traces:
+            for record in self._network_list_record(trace):
+                if node_id is not None and record.get("node_id") != node_id:
+                    continue
+                if operation_id is not None and record.get("operation_id") != operation_id:
+                    continue
+                if connection_id is not None and record.get("connection_id") != connection_id:
+                    continue
+                if protocol is not None and record.get("protocol") != protocol:
+                    continue
+                if status is not None and record.get("status", record.get("connection_state")) != status:
+                    continue
+                if event_kind is not None and record.get("event_kind") != event_kind:
+                    continue
+                record_time = self._debug_network_record_time(record)
+                if from_datetime is not None and (record_time is None or record_time < from_datetime):
+                    continue
+                if to_datetime is not None and (record_time is None or record_time > to_datetime):
+                    continue
+                records.append(record)
+        total_count = len(records)
+        resolved_page = page
+        resolved_page_size = page_size
+        if resolved_page is not None or resolved_page_size is not None:
+            resolved_page = 1 if resolved_page is None else resolved_page
+            resolved_page_size = 100 if resolved_page_size is None else resolved_page_size
+            if resolved_page < 1:
+                raise ValueError("debug network page must be at least 1")
+            if resolved_page_size < 1 or resolved_page_size > 500:
+                raise ValueError("debug network page_size must be between 1 and 500")
+            start = (resolved_page - 1) * resolved_page_size
+            records = records[start : start + resolved_page_size]
+        if include_body:
+            # 仅在显式请求时恢复 operation 和消息正文；默认列表永不携带完整正文。
+            by_trace = {trace.get("trace_id"): trace for trace in traces}
+            for record in records:
+                trace = by_trace.get(record.get("trace_id"))
+                operation = trace.get("operation") if isinstance(trace, dict) else None
+                if isinstance(operation, dict) and "method" in record:
+                    record["request_body"] = deepcopy(operation.get("request_body"))
+                    record["response_body"] = deepcopy(operation.get("response_body"))
+                    continue
+                if not isinstance(trace, dict) or "event_kind" not in record:
+                    continue
+                messages = trace.get("messages")
+                if not isinstance(messages, list):
+                    continue
+                message = next(
+                    (
+                        item
+                        for item in messages
+                        if isinstance(item, dict)
+                        and self._network_message_record_matches(record, item)
+                    ),
+                    None,
+                )
+                if isinstance(message, dict):
+                    record["payload"] = deepcopy(message.get("payload"))
+        summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), dict) else {}
+        result = {
+            "session_id": session_id,
+            "source": source,
+            "summary": deepcopy(summary),
+            "traces": records,
+            "total_count": total_count,
+        }
+        if resolved_page is not None and resolved_page_size is not None:
+            result["page"] = resolved_page
+            result["page_size"] = resolved_page_size
+        return result
+
+    @staticmethod
+    def _network_message_record_matches(record: dict, message: dict) -> bool:
+        sequence_id = record.get("sequence_id")
+        if sequence_id is not None:
+            return message.get("sequence_id") == sequence_id
+        return all(
+            record.get(field_name) == message.get(field_name)
+            for field_name in (
+                "connection_id",
+                "connection_epoch",
+                "event_kind",
+                "recorded_at",
+                "debug_event_index",
+            )
+        )
+
+    @staticmethod
+    def _parse_debug_network_time(value: str | None, field_name: str) -> datetime | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"debug network {field_name} must be an ISO-8601 timestamp")
+        normalized = value.strip()
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError as exc:
+            raise ValueError(f"debug network {field_name} must be an ISO-8601 timestamp") from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @classmethod
+    def _debug_network_record_time(cls, record: dict) -> datetime | None:
+        for field_name in ("recorded_at", "started_at", "ended_at"):
+            value = record.get(field_name)
+            if isinstance(value, str):
+                try:
+                    return cls._parse_debug_network_time(value, field_name)
+                except ValueError:
+                    continue
+        return None
+
+    def get_debug_session_network_summary(self, *, session_id: str, history: bool = False) -> dict:
+        source, snapshot = self._get_debug_network_snapshot(session_id=session_id, history=history)
+        traces = self._network_snapshot_traces(snapshot)
+        for trace in traces:
+            self._assert_debug_network_trace_session_owner(trace, session_id=session_id)
+        summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), dict) else {}
+        return {"session_id": session_id, "source": source, "summary": deepcopy(summary)}
+
+    def get_debug_session_network_trace(
+        self, *, session_id: str, trace_id: str, history: bool = False
+    ) -> dict:
+        source, snapshot = self._get_debug_network_snapshot(session_id=session_id, history=history)
+        traces = snapshot.get("traces") if isinstance(snapshot.get("traces"), dict) else {}
+        trace = traces.get(trace_id)
+        if not isinstance(trace, dict):
+            raise ValueError(f"debug network trace not found: {trace_id}")
+        self._assert_debug_network_trace_session_owner(trace, session_id=session_id)
+        return {
+            "session_id": session_id,
+            "source": source,
+            "trace": self._network_trace_metadata(trace),
+        }
+
+    def get_debug_session_network_trace_body(
+        self,
+        *,
+        session_id: str,
+        trace_id: str,
+        history: bool = False,
+        part: str = "all",
+    ) -> dict:
+        if part not in {"all", "request", "response", "messages"}:
+            raise ValueError(
+                "debug network body part must be one of: all, request, response, messages"
+            )
+        source, snapshot = self._get_debug_network_snapshot(session_id=session_id, history=history)
+        traces = snapshot.get("traces") if isinstance(snapshot.get("traces"), dict) else {}
+        trace = traces.get(trace_id)
+        if not isinstance(trace, dict):
+            raise ValueError(f"debug network trace not found: {trace_id}")
+        self._assert_debug_network_trace_session_owner(trace, session_id=session_id)
+        result = {
+            "session_id": session_id,
+            "source": source,
+            "trace_id": trace_id,
+        }
+        operation = trace.get("operation") if isinstance(trace.get("operation"), dict) else {}
+        if part in {"all", "request"}:
+            result["request_body"] = self._read_debug_network_body(
+                operation.get("request_body"),
+                session_id=session_id,
+            )
+        if part in {"all", "response"}:
+            result["response_body"] = self._read_debug_network_body(
+                operation.get("response_body"),
+                session_id=session_id,
+            )
+        if part in {"all", "messages"}:
+            messages: list[dict] = []
+            raw_messages = trace.get("messages")
+            if isinstance(raw_messages, list):
+                for raw_message in raw_messages:
+                    if not isinstance(raw_message, dict):
+                        continue
+                    message = deepcopy(raw_message)
+                    message["payload"] = self._read_debug_network_body(
+                        message.get("payload"),
+                        session_id=session_id,
+                    )
+                    messages.append(message)
+            result["messages"] = messages
+        return result
+
+    def _read_debug_network_body(
+        self,
+        payload: object,
+        *,
+        session_id: str,
+    ) -> object:
+        if not isinstance(payload, dict):
+            return deepcopy(payload)
+        resource_kind = payload.get("resource_kind")
+        if resource_kind == "history_temp":
+            body = self._get_debug_history_store().read_network_body(session_id, payload)
+            return body_payload_from_bytes(
+                body,
+                {"content-type": payload.get("content_type")}
+                if isinstance(payload.get("content_type"), str)
+                else None,
+            )
+        if resource_kind != "session_temp":
+            return deepcopy(payload)
+        descriptor_session_id = payload.get("session_id")
+        if descriptor_session_id != session_id:
+            raise ValueError("network session temp body session mismatch")
+        resource_id = payload.get("resource_id")
+        if (
+            not isinstance(resource_id, str)
+            or not resource_id.strip()
+            or not resource_id.startswith("body-")
+            or "/" in resource_id
+            or "\\" in resource_id
+        ):
+            raise ValueError("network session temp body resource id is invalid")
+        path_text = payload.get("path")
+        resolved_path: Path | None = None
+        path_exists = False
+        if isinstance(path_text, str) and path_text.strip():
+            path = Path(path_text)
+            try:
+                resolved_path = path.resolve(strict=False)
+            except OSError as exc:
+                raise ValueError("network session temp body path is invalid") from exc
+            expected_prefix = f"weconduct-{session_id}-"
+            if not resolved_path.parent.name.startswith(expected_prefix):
+                raise ValueError("network session temp body path is outside session directory")
+            path_exists = resolved_path.exists() and resolved_path.is_file()
+        runtime_service = self._get_debug_network_runtime_service(session_id)
+        reader = getattr(runtime_service, "read_debug_body", None)
+        if callable(reader):
+            try:
+                body = reader(session_id, payload)
+            except (RuntimeError, ValueError):
+                body = None
+            if body is not None:
+                return body_payload_from_bytes(
+                    body,
+                    {"content-type": payload.get("content_type")}
+                    if isinstance(payload.get("content_type"), str)
+                    else None,
+                )
+        # 活动会话结束后临时文件会被释放，但每次 Debug 快照同时已经写入历史
+        # 存储；此处回退到历史正文，保证活动页和历史页行为一致。
+        try:
+            body = self._get_debug_history_store().read_network_body(session_id, {
+                **payload,
+                "resource_kind": "history_temp",
+            })
+        except (RuntimeError, ValueError, OSError):
+            if path_exists:
+                raise RuntimeError("network.response_body_unavailable")
+            return deepcopy(payload)
+        return body_payload_from_bytes(
+            body,
+            {"content-type": payload.get("content_type")}
+            if isinstance(payload.get("content_type"), str)
+            else None,
+        )
+
     def list_debug_sessions(self) -> dict:
         self._refresh_state_from_store()
         sessions = [
@@ -2316,7 +2758,7 @@ class CompilationWorkbenchService:
                 "diagnostic_id": f"debug:{session_id}:worker_failed",
                 "category": "debug.worker_failed",
                 "severity": "error",
-                "message": str(error) or error.__class__.__name__,
+                "message": redact_network_message(str(error) or error.__class__.__name__),
                 "graph_ref": None,
             }
         )
@@ -2431,12 +2873,39 @@ class CompilationWorkbenchService:
                 self._debug_execution_states.pop(session_id, None)
                 sensitive_values = self._debug_sensitive_values.pop(session_id, None)
                 self._debug_sensitive_variable_refs.pop(session_id, None)
+                self._debug_network_trace_recorders.pop(session_id, None)
             if sensitive_values is not None:
                 sensitive_values.revoke_scope(session_id)
 
     def _get_debug_sensitive_value_service(self, session_id: str) -> SensitiveValueService | None:
         with self._debug_execution_lock:
             return self._debug_sensitive_values.get(session_id)
+
+    def _get_debug_network_trace_recorder(self, session_id: str) -> NetworkTraceRecorder | None:
+        with self._debug_execution_lock:
+            return self._debug_network_trace_recorders.get(session_id)
+
+    def _get_debug_network_runtime_service(self, session_id: str) -> object | None:
+        with self._debug_execution_lock:
+            runtime_context = self._debug_runtime_contexts.get(session_id)
+            if not isinstance(runtime_context, RuntimeContext):
+                return None
+            return runtime_context.flow_runtime.get("network_runtime_service")
+
+    def _refresh_debug_network_connection_traces(self, session_id: str) -> None:
+        with self._debug_execution_lock:
+            runtime_context = self._debug_runtime_contexts.get(session_id)
+            network_service = (
+                runtime_context.flow_runtime.get("network_runtime_service")
+                if isinstance(runtime_context, RuntimeContext)
+                else None
+            )
+        refresh = getattr(network_service, "refresh_connection_traces", None)
+        if callable(refresh):
+            try:
+                refresh(session_id=session_id)
+            except Exception:
+                return
 
     def _inject_debug_sensitive_variables(self, *, session_id: str, runtime_context: RuntimeContext) -> None:
         with self._debug_execution_lock:
@@ -2476,12 +2945,38 @@ class CompilationWorkbenchService:
             sensitive_values = self._get_debug_sensitive_value_service(session_id)
             if sensitive_values is not None:
                 secret_values = sensitive_values.values_for_scope(session_id)
+        document_for_projection = deepcopy(session_document)
+        if isinstance(session_id, str):
+            recorder = self._get_debug_network_trace_recorder(session_id)
+            if recorder is not None:
+                trace_ids = []
+                trace_map = {}
+                for item in recorder.list_traces(debug_session_id=session_id):
+                    trace_id = item.get("trace_id") if isinstance(item, dict) else None
+                    if not isinstance(trace_id, str) or trace_id in trace_map:
+                        continue
+                    try:
+                        trace_map[trace_id] = recorder.get_trace(trace_id)
+                        trace_ids.append(trace_id)
+                    except KeyError:
+                        continue
+                document_for_projection["network_trace_snapshot"] = {
+                    "trace_order": trace_ids,
+                    "traces": trace_map,
+                    "summary": recorder.summary(debug_session_id=session_id),
+                }
+        # 网络 Trace 是 Debug 专用原始观察数据。它允许在 Debug 窗口中查看
+        # 完整正文，因此必须绕过普通运行时公开投影的敏感值替换；变量、事件
+        # 和诊断仍走同一条脱敏路径。
+        network_trace_snapshot = document_for_projection.pop("network_trace_snapshot", None)
         projected = project_runtime_value_for_publication(
-            session_document,
+            document_for_projection,
             secret_values=secret_values,
         )
         if not isinstance(projected, dict):
             raise ValueError("debug session document must project to an object")
+        if isinstance(network_trace_snapshot, dict):
+            projected["network_trace_snapshot"] = network_trace_snapshot
         runtime_plan = session_document.get("runtime_plan")
         if isinstance(runtime_plan, dict):
             projected["runtime_plan"] = project_runtime_plan_for_publication(runtime_plan)
@@ -3156,6 +3651,16 @@ class CompilationWorkbenchService:
         session_document["runtime_plan"] = runtime_plan
         debug_session = session_document.get("debug_session", {})
         if not isinstance(debug_session, dict) or debug_session.get("status") != "paused":
+            # 异步 Debug 启动会先持久化 prepared/running，再由 worker 到达首个
+            # 断点。控制请求允许等待这一小段状态切换，避免把调度竞态暴露给 UI。
+            settled = self._await_debug_execution_settle(
+                session_id=session_id,
+                settle_timeout_ms=1000,
+            )
+            session_document = deepcopy(settled)
+            session_document["runtime_plan"] = runtime_plan
+            debug_session = session_document.get("debug_session", {})
+        if not isinstance(debug_session, dict) or debug_session.get("status") != "paused":
             raise ValueError("debug node debugger updates require a paused debug session")
         executable_nodes = (
             runtime_plan.get("executable_nodes")
@@ -3524,6 +4029,24 @@ class CompilationWorkbenchService:
         session_document = deepcopy(self._find_debug_session(session_id))
         previous_session_document = deepcopy(session_document)
         self._ensure_debug_session_not_terminal(session_document)
+        debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        # 异步启动可能在首个断点落地前返回 running。仅对这一段没有任何
+        # 执行/控制事件且仍有活动 worker 的初始过渡态等待，避免把调度竞态
+        # 暴露给 UI；已有继续、暂停或单步历史的 running 会话仍立即拒绝。
+        if (
+            self._is_debug_initial_pause_pending(session_document)
+            and self._is_debug_execution_thread_alive(session_id)
+        ):
+            settled = self._await_debug_execution_settle(
+                session_id=session_id,
+                settle_timeout_ms=max(settle_timeout_ms, 500),
+            )
+            session_document = deepcopy(settled)
+            self._ensure_debug_session_not_terminal(session_document)
         self._ensure_debug_step_allowed(session_document)
         previous_debug_session = (
             session_document.get("debug_session")
@@ -3562,6 +4085,27 @@ class CompilationWorkbenchService:
             session_id=session_id,
             settle_timeout_ms=settle_timeout_ms,
         )
+
+    def _is_debug_execution_thread_alive(self, session_id: str) -> bool:
+        with self._debug_execution_lock:
+            worker = self._debug_execution_threads.get(session_id)
+            return worker is not None and worker.is_alive()
+
+    @staticmethod
+    def _is_debug_initial_pause_pending(session_document: dict) -> bool:
+        debug_session = (
+            session_document.get("debug_session")
+            if isinstance(session_document.get("debug_session"), dict)
+            else {}
+        )
+        if debug_session.get("status") not in {"preparing", "running"}:
+            return False
+        if debug_session.get("last_control_action") is not None:
+            return False
+        if debug_session.get("step_sequence") not in {None, 0}:
+            return False
+        debug_events = session_document.get("debug_events")
+        return not isinstance(debug_events, list) or not debug_events
 
     def step_over_debug_session_async(
         self,
@@ -5711,6 +6255,31 @@ class CompilationWorkbenchService:
         )
         return result
 
+    # OAuth 交互入口统一委托给共享状态机；UI、CLI 和外部 API 不得各自保存
+    # authorization code、device code 或 token 的临时副本。
+    def begin_oauth_authorization(self, **payload: object) -> dict[str, object]:
+        return self._oauth_interactive_service.begin_authorization_code(**payload)
+
+    def begin_oauth_device(self, **payload: object) -> dict[str, object]:
+        return self._oauth_interactive_service.begin_device_code(**payload)
+
+    def get_oauth_flow(self, *, flow_id: str) -> dict[str, object]:
+        return self._oauth_interactive_service.get_flow(flow_id)
+
+    def submit_oauth_flow(
+        self,
+        *,
+        flow_id: str,
+        values: object,
+    ) -> dict[str, object]:
+        return self._oauth_interactive_service.submit_flow(flow_id, values)  # type: ignore[arg-type]
+
+    def cancel_oauth_flow(self, *, flow_id: str) -> dict[str, object]:
+        return self._oauth_interactive_service.cancel_flow(flow_id)
+
+    def shutdown_oauth_flows(self) -> None:
+        self._oauth_interactive_service.close()
+
     def unlock_runtime_session_parameters(self, *, session_id: str, password: str) -> dict:
         self._refresh_state_from_store()
         session = self._find_runtime_session(session_id)
@@ -6258,8 +6827,15 @@ class CompilationWorkbenchService:
                         "node_id": payload.get("node_id"),
                         "node_kind": payload.get("node_kind"),
                     }
-                    event_log.append(event)
-                    publish_live_update("runtime.diagnostic", event)
+                    secret_values = self._get_runtime_sensitive_value_service(
+                        session_id
+                    ).values_for_scope(session_id)
+                    safe_event = project_diagnostic_for_publication(
+                        event,
+                        secret_values=secret_values,
+                    )
+                    event_log.append(safe_event)
+                    publish_live_update("runtime.diagnostic", safe_event)
 
                 runtime_context.flow_runtime["runtime_diagnostic_sink"] = publish_runtime_diagnostic
 
@@ -17334,6 +17910,9 @@ class CompilationWorkbenchService:
             runtime_settings["python_project_runtime_prepare_error"] = None
         return runtime_settings
 
+    def _is_local_network_access_allowed(self) -> bool:
+        return bool(self._build_runtime_execution_settings().get("allow_local_network_access", False))
+
     def _build_initial_project_security_settings_document(self) -> dict:
         security_settings = self._get_configuration_domain(
             scope="program", domain="security"
@@ -22365,6 +22944,13 @@ class CompilationWorkbenchService:
             "step_mode": step_mode,
             "pending_component_pause": deepcopy(pending_component_pause),
         }
+        trace_recorder = self._get_debug_network_trace_recorder(session_id)
+        if trace_recorder is None:
+            trace_recorder = NetworkTraceRecorder()
+            with self._debug_execution_lock:
+                self._debug_network_trace_recorders[session_id] = trace_recorder
+        # 网络服务在首次执行网络节点时惰性创建，避免无网络 Debug 启动被连接池初始化拖慢。
+        runtime_context.flow_runtime["network_trace_recorder"] = trace_recorder
 
         executable_nodes = [dict(item) for item in runtime_plan.get("executable_nodes", [])]
         node_states = [
@@ -22407,6 +22993,18 @@ class CompilationWorkbenchService:
             list(session_document.get("debug_events", []))
             if isinstance(session_document.get("debug_events"), list)
             else []
+        )
+        # 网络 Trace 在请求/连接创建时关联当前已记录的 Debug 事件。
+        # 供应器读取 flow_runtime 中的活动列表，保证 Debug 暂停后继续执行时，
+        # 已存在的网络服务仍然关联到新的事件列表。
+        runtime_context.flow_runtime["debug_events"] = debug_events
+        runtime_context.flow_runtime["debug_event_index_supplier"] = (
+            lambda: (
+                len(runtime_context.flow_runtime.get("debug_events", ())) - 1
+                if isinstance(runtime_context.flow_runtime.get("debug_events"), list)
+                and runtime_context.flow_runtime.get("debug_events")
+                else None
+            )
         )
         runtime_preview = (
             session_document.get("runtime_preview")
@@ -22505,10 +23103,20 @@ class CompilationWorkbenchService:
                 }
 
         def publish_debug_runtime_diagnostic(payload: dict[str, object]) -> None:
-            node_id = payload.get("node_id")
-            category = payload.get("category") or "runtime.message"
-            severity = payload.get("severity") or "info"
-            message = payload.get("message") or ""
+            sensitive_values = self._get_debug_sensitive_value_service(session_id)
+            secret_values = (
+                sensitive_values.values_for_scope(session_id)
+                if sensitive_values is not None
+                else ()
+            )
+            safe_payload = project_diagnostic_for_publication(
+                payload,
+                secret_values=secret_values,
+            )
+            node_id = safe_payload.get("node_id")
+            category = safe_payload.get("category") or "runtime.message"
+            severity = safe_payload.get("severity") or "info"
+            message = safe_payload.get("message") or ""
             diagnostic_event = {
                 "event_kind": "diagnostic.raised",
                 "category": category,

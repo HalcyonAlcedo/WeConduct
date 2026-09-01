@@ -173,4 +173,26 @@ describe('MetadataEditorPanel', () => {
       'info', 'warning', 'error', 'fatal',
     ])
   })
+
+  it('为 SSE 节点提供重连配置字段', () => {
+    graphWorkspaceState.graphModel.nodes[0] = {
+      ...graphWorkspaceState.graphModel.nodes[0],
+      node_kind: 'network.sse_connect',
+      node_config: {
+        action: 'connect',
+        connection_id: 'stream',
+        url: 'https://example.test/events',
+        max_reconnect_attempts: 2,
+        reconnect_delay_seconds: 0.5,
+        reconnect_max_delay_seconds: 10,
+      },
+    }
+
+    const wrapper = mount(MetadataEditorPanel)
+    const labels = wrapper.findAll('.mep-cfg-row label').map(label => label.text())
+
+    expect(labels).toContain('max_reconnect_attempts')
+    expect(labels).toContain('reconnect_delay_seconds')
+    expect(labels).toContain('reconnect_max_delay_seconds')
+  })
 })

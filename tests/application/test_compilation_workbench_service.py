@@ -4400,6 +4400,63 @@ def test_start_debug_session_async_keeps_request_status_when_execution_is_still_
     assert start_result["debug_session"]["status"] == "preparing"
 
 
+def test_step_async_waits_for_initial_pause_before_validating_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CompilationWorkbenchService()
+    service.save_graph_document(
+        _build_debug_execution_workspace_graph(start_breakpoint_before=True)
+    )
+
+    start_result = service.start_debug_session(graph_document_payload=None)
+    session_id = start_result["debug_session"]["session_id"]
+    session_document = service.get_debug_session(session_id=session_id)
+    session_document["debug_session"] = {
+        **session_document["debug_session"],
+        "status": "running",
+        "paused_reason": None,
+        "last_control_action": None,
+        "step_sequence": 0,
+    }
+    session_document["debug_events"] = []
+    session_document["debug_keyframes"] = []
+    session_document["debug_snapshots"] = []
+    service._replace_debug_session_document(  # type: ignore[attr-defined]
+        session_document,
+        persist_history=False,
+    )
+    service._debug_execution_threads[session_id] = _AliveThread()  # type: ignore[attr-defined]
+
+    settle_calls: list[int] = []
+
+    def settle_initial_pause(*, session_id: str, settle_timeout_ms: int, **_: object) -> dict:
+        settle_calls.append(settle_timeout_ms)
+        settled = service.get_debug_session(session_id=session_id)
+        settled["debug_session"] = {
+            **settled["debug_session"],
+            "status": "paused",
+            "paused_reason": "breakpoint_hit",
+        }
+        service._replace_debug_session_document(  # type: ignore[attr-defined]
+            settled,
+            persist_history=False,
+        )
+        return {**settled, "status": "paused"}
+
+    monkeypatch.setattr(service, "_await_debug_execution_settle", settle_initial_pause)
+    monkeypatch.setattr(service, "_signal_debug_execution_thread", lambda _: True)
+
+    try:
+        result = service.step_into_debug_session_async(session_id=session_id)
+    finally:
+        service._release_debug_runtime_context(session_id)  # type: ignore[attr-defined]
+
+    assert result["debug_session"]["status"] == "paused"
+    assert result["debug_session"]["step_mode"] == "step_into"
+    assert len(settle_calls) == 2
+    assert settle_calls[0] >= 500
+
+
 def test_continue_debug_session_rejects_after_terminal_completion() -> None:
     service = CompilationWorkbenchService()
     service.save_graph_document(_build_debug_step_workspace_graph())
@@ -5691,8 +5748,12 @@ def test_continue_debug_session_async_rejects_running_session_state() -> None:
         _build_debug_execution_workspace_graph(start_breakpoint_before=True)
     )
 
-    start_result = service.start_debug_session_async(graph_document_payload=None)
+    start_result = service.start_debug_session_async(
+        graph_document_payload=None,
+        settle_timeout_ms=1_000,
+    )
     session_id = start_result["debug_session"]["session_id"]
+    assert start_result["debug_session"]["status"] == "paused"
     session_document = service.get_debug_session(session_id=session_id)
     session_document["debug_session"] = {
         **session_document["debug_session"],
@@ -5712,8 +5773,12 @@ def test_step_over_debug_session_async_rejects_running_session_state() -> None:
         _build_debug_execution_workspace_graph(start_breakpoint_before=True)
     )
 
-    start_result = service.start_debug_session_async(graph_document_payload=None)
+    start_result = service.start_debug_session_async(
+        graph_document_payload=None,
+        settle_timeout_ms=1_000,
+    )
     session_id = start_result["debug_session"]["session_id"]
+    assert start_result["debug_session"]["status"] == "paused"
     session_document = service.get_debug_session(session_id=session_id)
     session_document["debug_session"] = {
         **session_document["debug_session"],

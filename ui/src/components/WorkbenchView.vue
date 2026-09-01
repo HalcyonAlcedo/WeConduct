@@ -16,6 +16,7 @@ import ProjectSettingsPanel from '@/components/shells/ProjectSettingsPanel.vue'
 import PackagePanel from '@/components/shells/PackagePanel.vue'
 import DebugVariablesPanel from '@/components/output/debug/DebugVariablesPanel.vue'
 import DebugTimelinePanel from '@/components/output/debug/DebugTimelinePanel.vue'
+import DebugNetworkPanel from '@/components/output/debug/DebugNetworkPanel.vue'
 import DebugSnapshotsPanel from '@/components/output/debug/DebugSnapshotsPanel.vue'
 
 const dock = useDockStore()
@@ -39,6 +40,7 @@ function panelTitles(): Record<string, string> {
     packageManager: t('framework.workbench.panel.packageManager', '.wcrun 包管理'),
     debugVariables: t('framework.workbench.panel.debugVariables', 'Debug 变量'),
     debugTimeline: t('framework.workbench.panel.debugTimeline', 'Debug 事件'),
+    debugNetwork: t('framework.workbench.panel.debugNetwork', 'Debug 网络'),
     debugSnapshots: t('framework.workbench.panel.debugSnapshots', 'Debug 快照'),
   }
 }
@@ -81,6 +83,7 @@ onMounted(() => {
     <template #packageManager><PackagePanel /></template>
     <template #debugVariables><DebugVariablesPanel /></template>
     <template #debugTimeline><DebugTimelinePanel /></template>
+    <template #debugNetwork><DebugNetworkPanel /></template>
     <template #debugSnapshots><DebugSnapshotsPanel /></template>
   </DockLayout>
 </template>

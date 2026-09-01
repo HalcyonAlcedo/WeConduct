@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
+import json
 import ssl
 import sys
 from threading import Event, RLock, Thread
-from typing import Mapping
+from typing import Awaitable, Callable, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -17,6 +18,14 @@ from .access_policy import NetworkAccessPolicy, ResolvedNetworkTarget
 from .errors import redact_network_message
 from .tls import verify_response_certificate_pins, verify_websocket_certificate_pins
 from .transport import PinnedDnsAsyncHTTPTransport
+from .queue import (
+    BoundedMessageQueue,
+    ExecutionActivationQueue,
+    QueueBackpressureError,
+    QueueClosedError,
+    QueueCancelledError,
+    SequenceAllocator,
+)
 
 
 class SSEConnectionClosed(RuntimeError):
@@ -25,6 +34,35 @@ class SSEConnectionClosed(RuntimeError):
 
 class WebSocketConnectionError(RuntimeError):
     error_code = "network.websocket_error"
+
+
+ReconnectCallback = Callable[["WebSocketConnection"], Awaitable[None]]
+
+
+def _serialize_websocket_message(value: object) -> object:
+    """将节点中的结构化值编码为 WebSocket 文本帧。"""
+    if isinstance(value, (str, bytes, bytearray, memoryview)):
+        return value
+    if value is None or isinstance(value, (bool, int, float, list, tuple, Mapping)):
+        try:
+            return json.dumps(
+                value,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("network.websocket_message_invalid") from exc
+    raise ValueError("network.websocket_message_invalid")
+
+
+def _safe_reconnect_reason(error: BaseException, fallback: str) -> str:
+    """只保留结构化网络错误码，避免将 URL 或凭据写入 Debug Trace。"""
+    error_code = getattr(error, "error_code", None)
+    if isinstance(error_code, str) and error_code.strip():
+        return error_code.strip()
+    text = str(error).strip()
+    return text if text.startswith("network.") else fallback
 
 
 @dataclass(frozen=True)
@@ -38,39 +76,147 @@ class SSEEvent:
 class SSEConnection:
     """Pull-based SSE handle; raw frame parsing remains delegated to httpx-sse."""
 
-    def __init__(self, *, max_queue_size: int = 100) -> None:
-        if not isinstance(max_queue_size, int) or max_queue_size <= 0:
-            raise ValueError("max_queue_size must be a positive integer")
-        self._queue: asyncio.Queue[SSEEvent | None] = asyncio.Queue(maxsize=max_queue_size)
+    def __init__(
+        self,
+        *,
+        max_queue_size: int = 100,
+        backpressure_policy: str = "fail_stream",
+        connection_id: str | None = None,
+        connection_epoch: int = 1,
+        sequence_allocator: SequenceAllocator | None = None,
+        activation_sink: Callable[[dict[str, object]], None] | None = None,
+    ) -> None:
+        allocator = sequence_allocator or SequenceAllocator()
+        self._queue = BoundedMessageQueue(
+            maxsize=max_queue_size,
+            backpressure_policy=backpressure_policy,
+            sequence_allocator=allocator,
+        )
+        self._activation_queue = ExecutionActivationQueue(
+            maxsize=max_queue_size + 1,
+            backpressure_policy=backpressure_policy,
+            sequence_allocator=allocator,
+        )
+        self._connection_id = connection_id
+        self._connection_epoch = connection_epoch
         self._last_event_id: str | None = None
+        self._last_retry_ms: int | None = None
+        self._last_received_record: dict[str, object] | None = None
+        self._reconnect_reason: str | None = None
+        self._terminal_state: str | None = None
+        self._reconnecting = False
         self._closed = False
+        self._activation_sink = activation_sink
 
     @property
     def last_event_id(self) -> str | None:
         return self._last_event_id
 
+    @property
+    def activation_queue(self) -> ExecutionActivationQueue:
+        return self._activation_queue
+
+    @property
+    def queue_depth(self) -> int:
+        return self._queue.size
+
+    @property
+    def dropped_count(self) -> int:
+        return self._queue.dropped_count
+
+    @property
+    def queue_status(self) -> dict[str, object]:
+        return {
+            "depth": self.queue_depth,
+            "dropped_count": self.dropped_count,
+            "drop_events": self._queue.drop_events,
+            "closed": self._closed,
+            "cancelled": self._queue.cancelled,
+            "backpressure_policy": self._queue.backpressure_policy,
+            "connection_id": self._connection_id,
+            "connection_epoch": self._connection_epoch,
+            "reconnect_count": max(self._connection_epoch - 1, 0),
+            "reconnect_reason": self._reconnect_reason,
+            "connection_state": (
+                self._terminal_state
+                if self._terminal_state is not None
+                else "closed"
+                if self._closed
+                else "reconnecting"
+                if self._reconnecting
+                else "connected"
+            ),
+        }
+
+    @property
+    def last_received_record(self) -> dict[str, object] | None:
+        return dict(self._last_received_record) if self._last_received_record is not None else None
+
+    async def advance_epoch(self) -> int:
+        """在保持队列和 Last-Event-ID 的前提下开始下一次连接。"""
+        if self._closed:
+            raise SSEConnectionClosed("network.sse_closed")
+        self._connection_epoch += 1
+        return self._connection_epoch
+
+    def set_reconnect_reason(self, reason: str | None) -> None:
+        self._reconnect_reason = reason.strip() if isinstance(reason, str) and reason.strip() else None
+
+    def mark_failed(self) -> None:
+        """记录不可恢复的异常终态，供 Debug Trace 区分主动关闭。"""
+        self._reconnecting = False
+        self._terminal_state = "failed"
+
+    def mark_reconnecting(self) -> None:
+        if not self._closed and self._terminal_state is None:
+            self._reconnecting = True
+
+    def mark_connected(self) -> None:
+        if not self._closed and self._terminal_state is None:
+            self._reconnecting = False
+
+    @property
+    def retry_delay_seconds(self) -> float | None:
+        return self._last_retry_ms / 1000 if self._last_retry_ms is not None else None
+
     async def feed(self, event: Mapping[str, object] | object) -> None:
         if self._closed:
             raise SSEConnectionClosed("network.sse_closed")
         normalized = self._normalize_event(event)
-        await self._queue.put(normalized)
+        try:
+            message = await self._queue.put(
+                normalized,
+                connection_id=self._connection_id,
+                connection_epoch=self._connection_epoch,
+            )
+        except (QueueBackpressureError, QueueClosedError, QueueCancelledError) as exc:
+            raise SSEConnectionClosed(str(exc)) from exc
+        if message is not None:
+            activation = await self._activation_queue.activate(
+                {
+                    "event_kind": "sse.message",
+                    "message": message,
+                },
+                connection_id=self._connection_id,
+                connection_epoch=self._connection_epoch,
+                sequence_id=message["sequence_id"],
+            )
+            if activation is not None and self._activation_sink is not None:
+                self._activation_sink(activation)
         if normalized.event_id:
             self._last_event_id = normalized.event_id
+        if normalized.retry_ms is not None:
+            self._last_retry_ms = normalized.retry_ms
 
     async def receive(self, *, timeout_seconds: float | None = None) -> SSEEvent:
-        if self._closed and self._queue.empty():
-            raise SSEConnectionClosed("network.sse_closed")
         try:
-            item = (
-                await asyncio.wait_for(self._queue.get(), timeout_seconds)
-                if timeout_seconds is not None
-                else await self._queue.get()
-            )
-        except asyncio.TimeoutError as exc:
+            item = await self._queue.get(timeout_seconds=timeout_seconds)
+        except TimeoutError as exc:
             raise TimeoutError("network.sse_receive_timeout") from exc
-        if item is None:
+        except (QueueClosedError, QueueCancelledError) as exc:
             raise SSEConnectionClosed("network.sse_closed")
-        return item
+        self._last_received_record = dict(item)
+        return item["payload"]
 
     def build_reconnect_headers(self) -> dict[str, str]:
         return {"Last-Event-ID": self._last_event_id} if self._last_event_id else {}
@@ -89,13 +235,8 @@ class SSEConnection:
         # Events already received before the peer closes remain available to
         # pull-based nodes. A later receive observes the closed state after
         # draining them, while an empty queue still receives an immediate wakeup.
-        try:
-            if self._queue.empty():
-                self._queue.put_nowait(None)
-        except asyncio.QueueFull:
-            # A pending consumer can drain the queued event; its next receive
-            # sees the closed flag and fails without waiting.
-            pass
+        self._queue.close()
+        self._activation_queue.close()
 
     @staticmethod
     def _normalize_event(event: Mapping[str, object] | object) -> SSEEvent:
@@ -125,20 +266,122 @@ class SSEConnection:
 class WebSocketConnection:
     """Pull-based WebSocket handle with an explicit connection epoch."""
 
-    def __init__(self, socket) -> None:
+    def __init__(
+        self,
+        socket,
+        *,
+        max_queue_size: int = 100,
+        backpressure_policy: str = "fail_stream",
+        connection_id: str | None = None,
+        sequence_allocator: SequenceAllocator | None = None,
+        activation_sink: Callable[[dict[str, object]], None] | None = None,
+    ) -> None:
         self._socket = socket
         self._connection_epoch = 1
         self._closed = False
+        self._connection_id = connection_id
+        self._activation_sink = activation_sink
+        allocator = sequence_allocator or SequenceAllocator()
+        self._queue = BoundedMessageQueue(
+            maxsize=max_queue_size,
+            backpressure_policy=backpressure_policy,
+            sequence_allocator=allocator,
+        )
+        self._activation_queue = ExecutionActivationQueue(
+            maxsize=max_queue_size + 1,
+            backpressure_policy=backpressure_policy,
+            sequence_allocator=allocator,
+        )
+        self._receiver_task: asyncio.Task[None] | None = None
+        self._receiver_error: BaseException | None = None
+        self._last_received_record: dict[str, object] | None = None
+        self._reconnect_reason: str | None = None
+        self._terminal_state: str | None = None
+        self._reconnecting = False
+        self._closed_event = asyncio.Event()
 
     @property
     def connection_epoch(self) -> int:
         return self._connection_epoch
 
+    @property
+    def activation_queue(self) -> ExecutionActivationQueue:
+        return self._activation_queue
+
+    @property
+    def queue_depth(self) -> int:
+        return self._queue.size
+
+    @property
+    def dropped_count(self) -> int:
+        return self._queue.dropped_count
+
+    @property
+    def queue_status(self) -> dict[str, object]:
+        return {
+            "depth": self.queue_depth,
+            "dropped_count": self.dropped_count,
+            "drop_events": self._queue.drop_events,
+            "closed": self._closed,
+            "cancelled": self._queue.cancelled,
+            "backpressure_policy": self._queue.backpressure_policy,
+            "connection_id": self._connection_id,
+            "connection_epoch": self._connection_epoch,
+            "reconnect_count": max(self._connection_epoch - 1, 0),
+            "reconnect_reason": self._reconnect_reason,
+            "connection_state": (
+                self._terminal_state
+                if self._terminal_state is not None
+                else "closed"
+                if self._closed
+                else "reconnecting"
+                if self._reconnecting
+                else "disconnected"
+                if self._receiver_error is not None
+                else "connected"
+            ),
+        }
+
+    @property
+    def receiver_error(self) -> BaseException | None:
+        return self._receiver_error
+
+    @property
+    def last_received_record(self) -> dict[str, object] | None:
+        return dict(self._last_received_record) if self._last_received_record is not None else None
+
+    async def wait_closed(self) -> None:
+        await self._closed_event.wait()
+
+    async def start_receiver(self) -> None:
+        self._ensure_open()
+        if self._receiver_task is None:
+            self._receiver_task = asyncio.create_task(self._receive_loop())
+
     async def send(self, value: object) -> None:
         self._ensure_open()
         await self._socket.send(value)
 
-    async def receive(self) -> object:
+    async def receive(self, *, timeout_seconds: float | None = None) -> object:
+        # 对端终止或重连耗尽后，已入队的消息仍须可被拉取；空队列才报告关闭。
+        if self._closed and self._queue.size == 0:
+            self._ensure_open()
+        if self._receiver_task is not None:
+            try:
+                message = await self._queue.get(timeout_seconds=timeout_seconds)
+            except TimeoutError as exc:
+                raise TimeoutError("network.websocket_receive_timeout") from exc
+            except (QueueClosedError, QueueCancelledError) as exc:
+                raise WebSocketConnectionError("network.websocket_closed") from exc
+            self._last_received_record = dict(message)
+            return message["payload"]
+        if self._closed and self._queue.size:
+            try:
+                message = await self._queue.get(timeout_seconds=timeout_seconds)
+            except (QueueClosedError, QueueCancelledError) as exc:
+                raise WebSocketConnectionError("network.websocket_closed") from exc
+            self._last_received_record = dict(message)
+            return message["payload"]
         self._ensure_open()
         return await self._socket.recv()
 
@@ -148,19 +391,89 @@ class WebSocketConnection:
 
     async def replace_socket(self, socket) -> None:
         self._ensure_open()
+        if self._receiver_task is not None:
+            self._receiver_task.cancel()
+            await asyncio.gather(self._receiver_task, return_exceptions=True)
+            self._receiver_task = None
         await self._socket.close()
         self._socket = socket
         self._connection_epoch += 1
+        self._queue.reopen()
+        self._activation_queue.reopen()
+        self._receiver_error = None
+        self._terminal_state = None
+        self._closed_event = asyncio.Event()
+
+    def set_reconnect_reason(self, reason: str | None) -> None:
+        self._reconnect_reason = reason.strip() if isinstance(reason, str) and reason.strip() else None
+
+    def mark_failed(self) -> None:
+        """记录不可恢复的异常终态，供 Debug Trace 区分主动关闭。"""
+        self._reconnecting = False
+        self._terminal_state = "failed"
+
+    def mark_reconnecting(self) -> None:
+        if not self._closed and self._terminal_state is None:
+            self._reconnecting = True
+
+    def mark_connected(self) -> None:
+        if not self._closed and self._terminal_state is None:
+            self._reconnecting = False
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        if self._receiver_task is not None:
+            self._receiver_task.cancel()
+            await asyncio.gather(self._receiver_task, return_exceptions=True)
+            self._receiver_task = None
+        self._queue.close()
+        self._activation_queue.close()
+        self._closed_event.set()
         await self._socket.close()
 
     def _ensure_open(self) -> None:
         if self._closed:
             raise WebSocketConnectionError("network.websocket_closed")
+
+    async def _receive_loop(self) -> None:
+        try:
+            while not self._closed:
+                value = await self._socket.recv()
+                message = await self._queue.put(
+                    value,
+                    connection_id=self._connection_id,
+                    connection_epoch=self._connection_epoch,
+                )
+                if message is not None:
+                    activation = await self._activation_queue.activate(
+                        {
+                            "event_kind": "websocket.message",
+                            "message": message,
+                        },
+                        connection_id=self._connection_id,
+                        connection_epoch=self._connection_epoch,
+                        sequence_id=message["sequence_id"],
+                    )
+                    if activation is not None and self._activation_sink is not None:
+                        self._activation_sink(activation)
+        except asyncio.CancelledError:
+            raise
+        except (QueueBackpressureError, QueueClosedError, QueueCancelledError) as exc:
+            self._receiver_error = WebSocketConnectionError(str(exc))
+            self._queue.close()
+            self._activation_queue.close()
+            self._closed_event.set()
+        except BaseException as exc:
+            if not self._closed:
+                self._receiver_error = exc
+                # 接收线程已终止时必须关闭两个队列，唤醒正在等待消息的
+                # pull/执行激活消费者；连接对象仍保持 disconnected 状态，
+                # 由上层 WebSocketClientHandle 决定是否重连。
+                self._queue.close()
+                self._activation_queue.close()
+                self._closed_event.set()
 
 
 def _consume_async_task_result(task: asyncio.Task) -> None:
@@ -247,15 +560,40 @@ class SSEClientHandle:
         proxy: str | None = None,
         timeout_seconds: float = 30.0,
         max_queue_size: int = 100,
+        backpressure_policy: str = "fail_stream",
+        connection_id: str | None = None,
         access_policy: NetworkAccessPolicy | None = None,
         ssl_context: ssl.SSLContext | None = None,
         certificate_pins: tuple[str, ...] = (),
         resolved_target: ResolvedNetworkTarget | None = None,
+        max_reconnect_attempts: int = 0,
+        reconnect_delay_seconds: float = 0.5,
+        reconnect_max_delay_seconds: float = 30.0,
+        sequence_allocator: SequenceAllocator | None = None,
+        activation_sink: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         if not isinstance(url, str) or not url.strip():
             raise ValueError("network.sse_url_required")
         if timeout_seconds <= 0:
             raise ValueError("network.sse_timeout_invalid")
+        if (
+            not isinstance(max_reconnect_attempts, int)
+            or isinstance(max_reconnect_attempts, bool)
+            or max_reconnect_attempts < 0
+        ):
+            raise ValueError("network.sse_reconnect_attempts_invalid")
+        if (
+            not isinstance(reconnect_delay_seconds, (int, float))
+            or isinstance(reconnect_delay_seconds, bool)
+            or reconnect_delay_seconds < 0
+        ):
+            raise ValueError("network.sse_reconnect_delay_invalid")
+        if (
+            not isinstance(reconnect_max_delay_seconds, (int, float))
+            or isinstance(reconnect_max_delay_seconds, bool)
+            or reconnect_max_delay_seconds < reconnect_delay_seconds
+        ):
+            raise ValueError("network.sse_reconnect_max_delay_invalid")
         self.url = url.strip()
         self._access_policy = access_policy or NetworkAccessPolicy()
         self._resolved_target = resolved_target or self._access_policy.validate_url(self.url)
@@ -263,9 +601,21 @@ class SSEClientHandle:
         self.params = {str(key): str(value) for key, value in (params or {}).items()}
         self.proxy = proxy.strip() if isinstance(proxy, str) and proxy.strip() else None
         self.timeout_seconds = float(timeout_seconds)
+        self.backpressure_policy = backpressure_policy
+        self.connection_id = connection_id
         self.ssl_context = ssl_context
         self.certificate_pins = tuple(certificate_pins)
-        self.connection = SSEConnection(max_queue_size=max_queue_size)
+        self.max_reconnect_attempts = max_reconnect_attempts
+        self.reconnect_delay_seconds = float(reconnect_delay_seconds)
+        self.reconnect_max_delay_seconds = float(reconnect_max_delay_seconds)
+        self.sequence_allocator = sequence_allocator or SequenceAllocator()
+        self.connection = SSEConnection(
+            max_queue_size=max_queue_size,
+            backpressure_policy=backpressure_policy,
+            connection_id=connection_id,
+            sequence_allocator=self.sequence_allocator,
+            activation_sink=activation_sink,
+        )
         self._loop = _AsyncHandleLoop(name="weconduct-sse-client")
         self._task_future = None
         self._ready = Event()
@@ -278,6 +628,26 @@ class SSEClientHandle:
     @property
     def last_event_id(self) -> str | None:
         return self.connection.last_event_id
+
+    @property
+    def queue_depth(self) -> int:
+        return self.connection.queue_depth
+
+    @property
+    def dropped_count(self) -> int:
+        return self.connection.dropped_count
+
+    @property
+    def queue_status(self) -> dict[str, object]:
+        return self.connection.queue_status
+
+    @property
+    def activation_queue(self) -> ExecutionActivationQueue:
+        return self.connection.activation_queue
+
+    @property
+    def last_received_record(self) -> dict[str, object] | None:
+        return self.connection.last_received_record
 
     def start(self, *, timeout_seconds: float | None = None) -> dict[str, object]:
         with self._lock:
@@ -316,6 +686,15 @@ class SSEClientHandle:
             "retry_ms": event.retry_ms,
         }
 
+    def wait_next_activation(self, *, timeout_seconds: float | None = None) -> dict[str, object]:
+        self._ensure_started()
+        if self._closed:
+            raise RuntimeError("network.sse_closed")
+        return self._loop.submit(
+            self.connection.activation_queue.wait_next(timeout_seconds=timeout_seconds),
+            timeout_seconds=(timeout_seconds + 1 if timeout_seconds is not None else None),
+        )
+
     def reconnect_headers(self) -> dict[str, str]:
         return self.connection.build_reconnect_headers()
 
@@ -333,52 +712,97 @@ class SSEClientHandle:
             raise RuntimeError("network.sse_not_connected")
 
     async def _run(self) -> None:
+        reconnect_attempt = 0
         try:
-            transport = PinnedDnsAsyncHTTPTransport(
-                access_policy=self._access_policy,
-                verify=self.ssl_context or True,
-                proxy=self.proxy,
-                trust_env=False,
-                http2=True,
-            )
-            async with httpx.AsyncClient(
-                transport=transport,
-                timeout=self.timeout_seconds,
-                trust_env=False,
-                follow_redirects=False,
-            ) as client:
-                extensions = (
-                    {"weconduct.resolved_network_target": self._resolved_target}
-                    if self._resolved_target is not None
-                    else None
-                )
-                async with aconnect_sse(
-                    client,
-                    "GET",
-                    self.url,
-                    headers=self.headers,
-                    params=self.params,
-                    extensions=extensions,
-                ) as source:
-                    verify_response_certificate_pins(
-                        source.response,
-                        self.certificate_pins,
+            while not self._closed:
+                try:
+                    await self._run_once(reconnect_attempt > 0)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as exc:
+                    # 队列背压/取消是终态，不能用重连掩盖数据丢失或取消。
+                    if self._closed or str(exc).startswith("network.queue_"):
+                        self._error = exc
+                        break
+                    self.connection.set_reconnect_reason(
+                        _safe_reconnect_reason(exc, "network.sse_reconnect_failed")
                     )
-                    self._status_code = source.response.status_code
-                    self._response_headers = {
-                        str(key).lower(): str(value)
-                        for key, value in source.response.headers.items()
-                    }
-                    self._ready.set()
-                    async for event in source.aiter_sse():
-                        await self.connection.feed(event)
-        except asyncio.CancelledError:
-            raise
-        except BaseException as exc:
-            self._error = exc
-            self._ready.set()
+                    if reconnect_attempt >= self.max_reconnect_attempts:
+                        self._error = exc
+                        self._ready.set()
+                        break
+                else:
+                    if not self._closed and reconnect_attempt < self.max_reconnect_attempts:
+                        # httpx-sse 将对端正常结束也表现为迭代器完成；对自动重连
+                        # 来说这同样是一次可观测的断开原因。
+                        self.connection.set_reconnect_reason("network.sse_stream_closed")
+                if self._closed or reconnect_attempt >= self.max_reconnect_attempts:
+                    break
+                self.connection.mark_reconnecting()
+                reconnect_attempt += 1
+                delay = self._next_reconnect_delay(reconnect_attempt)
+                if delay:
+                    await asyncio.sleep(delay)
+                if not self._closed:
+                    await self.connection.advance_epoch()
         finally:
+            if self._error is not None:
+                self.connection.mark_failed()
             await self.connection.close()
+
+    async def _run_once(self, reconnecting: bool) -> None:
+        transport = PinnedDnsAsyncHTTPTransport(
+            access_policy=self._access_policy,
+            verify=self.ssl_context or True,
+            proxy=self.proxy,
+            trust_env=False,
+            http2=True,
+        )
+        request_headers = dict(self.headers)
+        if reconnecting:
+            request_headers.update(self.connection.build_reconnect_headers())
+        async with httpx.AsyncClient(
+            transport=transport,
+            timeout=self.timeout_seconds,
+            trust_env=False,
+            follow_redirects=False,
+        ) as client:
+            request_url = httpx.URL(self.url)
+            if self.params:
+                merged_params = dict(request_url.params)
+                merged_params.update(self.params)
+                request_url = request_url.copy_with(params=merged_params)
+            extensions = (
+                {"weconduct.resolved_network_target": self._resolved_target}
+                if self._resolved_target is not None
+                else None
+            )
+            async with aconnect_sse(
+                client,
+                "GET",
+                str(request_url),
+                headers=request_headers,
+                extensions=extensions,
+            ) as source:
+                verify_response_certificate_pins(source.response, self.certificate_pins)
+                self._status_code = source.response.status_code
+                self._response_headers = {
+                    str(key).lower(): str(value)
+                    for key, value in source.response.headers.items()
+                }
+                self.connection.mark_connected()
+                self._ready.set()
+                async for event in source.aiter_sse():
+                    await self.connection.feed(event)
+
+    def _next_reconnect_delay(self, attempt: int) -> float:
+        server_delay = self.connection.retry_delay_seconds
+        if server_delay is not None:
+            return min(self.reconnect_max_delay_seconds, server_delay)
+        return min(
+            self.reconnect_max_delay_seconds,
+            self.reconnect_delay_seconds * (2 ** max(attempt - 1, 0)),
+        )
 
 
 class WebSocketClientHandle:
@@ -391,16 +815,43 @@ class WebSocketClientHandle:
         headers: Mapping[str, str] | None = None,
         proxy: str | None = None,
         timeout_seconds: float = 30.0,
+        max_queue_size: int = 100,
+        backpressure_policy: str = "fail_stream",
+        connection_id: str | None = None,
         subprotocols: list[str] | None = None,
         access_policy: NetworkAccessPolicy | None = None,
         ssl_context: ssl.SSLContext | None = None,
         certificate_pins: tuple[str, ...] = (),
         resolved_target: ResolvedNetworkTarget | None = None,
+        max_reconnect_attempts: int = 0,
+        reconnect_delay_seconds: float = 0.5,
+        reconnect_max_delay_seconds: float = 30.0,
+        sequence_allocator: SequenceAllocator | None = None,
+        activation_sink: Callable[[dict[str, object]], None] | None = None,
+        reconnect_callback: ReconnectCallback | None = None,
     ) -> None:
         if not isinstance(url, str) or not url.strip():
             raise ValueError("network.websocket_url_required")
         if timeout_seconds <= 0:
             raise ValueError("network.websocket_timeout_invalid")
+        if (
+            not isinstance(max_reconnect_attempts, int)
+            or isinstance(max_reconnect_attempts, bool)
+            or max_reconnect_attempts < 0
+        ):
+            raise ValueError("network.websocket_reconnect_attempts_invalid")
+        if (
+            not isinstance(reconnect_delay_seconds, (int, float))
+            or isinstance(reconnect_delay_seconds, bool)
+            or reconnect_delay_seconds < 0
+        ):
+            raise ValueError("network.websocket_reconnect_delay_invalid")
+        if (
+            not isinstance(reconnect_max_delay_seconds, (int, float))
+            or isinstance(reconnect_max_delay_seconds, bool)
+            or reconnect_max_delay_seconds < reconnect_delay_seconds
+        ):
+            raise ValueError("network.websocket_reconnect_max_delay_invalid")
         self.url = url.strip()
         self._access_policy = access_policy or NetworkAccessPolicy()
         self._resolved_target = resolved_target or self._access_policy.validate_url(
@@ -410,17 +861,28 @@ class WebSocketClientHandle:
         self.headers = {str(key): str(value) for key, value in (headers or {}).items()}
         self.proxy = proxy.strip() if isinstance(proxy, str) and proxy.strip() else None
         self.timeout_seconds = float(timeout_seconds)
+        self.max_queue_size = max_queue_size
+        self.backpressure_policy = backpressure_policy
+        self.connection_id = connection_id
         self.subprotocols = list(subprotocols or [])
         self.ssl_context = ssl_context
         self.certificate_pins = tuple(certificate_pins)
+        self.max_reconnect_attempts = max_reconnect_attempts
+        self.reconnect_delay_seconds = float(reconnect_delay_seconds)
+        self.reconnect_max_delay_seconds = float(reconnect_max_delay_seconds)
+        self.sequence_allocator = sequence_allocator or SequenceAllocator()
+        self.activation_sink = activation_sink
         self.connection: WebSocketConnection | None = None
         self._loop = _AsyncHandleLoop(name="weconduct-websocket-client")
         self._task_future = None
         self._ready = Event()
         self._closed_event: asyncio.Event | None = None
+        self._connection_state_event: asyncio.Event | None = None
         self._lock = RLock()
         self._closed = False
         self._error: BaseException | None = None
+        self._connected_once = False
+        self._reconnect_callback = reconnect_callback
 
     def start(self, *, timeout_seconds: float | None = None) -> dict[str, object]:
         with self._lock:
@@ -432,14 +894,35 @@ class WebSocketClientHandle:
         if not self._ready.wait(timeout=wait_timeout):
             self.close()
             raise TimeoutError("network.websocket_connect_timeout")
-        if self._error is not None:
+        if self._error is not None and not self._connected_once:
             self.close()
             raise RuntimeError(redact_network_message(str(self._error))) from self._error
         return {"status": "connected", "url": self.url}
 
     def send(self, value: object) -> None:
         connection = self._ensure_connection()
-        self._loop.submit(connection.send(value), timeout_seconds=self.timeout_seconds)
+        serialized_value = _serialize_websocket_message(value)
+        self._loop.submit(connection.send(serialized_value), timeout_seconds=self.timeout_seconds)
+
+    @property
+    def queue_depth(self) -> int:
+        return self._ensure_connection().queue_depth
+
+    @property
+    def dropped_count(self) -> int:
+        return self._ensure_connection().dropped_count
+
+    @property
+    def queue_status(self) -> dict[str, object]:
+        return self._ensure_connection().queue_status
+
+    @property
+    def activation_queue(self) -> ExecutionActivationQueue:
+        return self._ensure_connection().activation_queue
+
+    @property
+    def last_received_record(self) -> dict[str, object] | None:
+        return self._ensure_connection().last_received_record
 
     def receive(self, *, timeout_seconds: float | None = None) -> object:
         connection = self._ensure_connection()
@@ -447,6 +930,18 @@ class WebSocketClientHandle:
             return self._loop.submit(
                 self._receive_async(connection, timeout_seconds),
                 timeout_seconds=timeout_seconds,
+            )
+        except TimeoutError as exc:
+            if str(exc) == "network.long_connection_operation_timeout":
+                raise TimeoutError("network.websocket_receive_timeout") from exc
+            raise
+
+    def wait_next_activation(self, *, timeout_seconds: float | None = None) -> dict[str, object]:
+        connection = self._ensure_connection()
+        try:
+            return self._loop.submit(
+                self._wait_next_activation_async(connection, timeout_seconds),
+                timeout_seconds=(timeout_seconds + 1 if timeout_seconds is not None else None),
             )
         except TimeoutError as exc:
             if str(exc) == "network.long_connection_operation_timeout":
@@ -469,6 +964,17 @@ class WebSocketClientHandle:
                 pass
         self._loop.close(self._task_future)
 
+    def set_reconnect_callback(self, callback: ReconnectCallback | None) -> None:
+        """设置传输重连后的协议恢复回调。"""
+        if callback is not None and not callable(callback):
+            raise TypeError("network.websocket_reconnect_callback_invalid")
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            self._reconnect_callback = callback
+            return
+        with lock:
+            self._reconnect_callback = callback
+
     def _ensure_connection(self) -> WebSocketConnection:
         if self._closed:
             raise RuntimeError("network.websocket_closed")
@@ -477,31 +983,98 @@ class WebSocketClientHandle:
         return self.connection
 
     async def _run(self) -> None:
-        socket = None
+        reconnect_attempt = 0
+        self._connection_state_event = asyncio.Event()
         try:
-            connect_url, headers, connect_options = self._build_connect_arguments()
-            socket = await websockets.connect(
-                connect_url,
-                additional_headers=headers or None,
-                subprotocols=self.subprotocols or None,
-                proxy=self.proxy,
-                open_timeout=self.timeout_seconds,
-                **connect_options,
-            )
-            verify_websocket_certificate_pins(socket, self.certificate_pins)
-            self.connection = WebSocketConnection(socket)
-            self._closed_event = asyncio.Event()
-            self._ready.set()
-            await self._closed_event.wait()
+            while not self._closed:
+                socket = None
+                try:
+                    connect_url, headers, connect_options = self._build_connect_arguments()
+                    socket = await websockets.connect(
+                        connect_url,
+                        additional_headers=headers or None,
+                        subprotocols=self.subprotocols or None,
+                        proxy=self.proxy,
+                        open_timeout=self.timeout_seconds,
+                        **connect_options,
+                    )
+                    verify_websocket_certificate_pins(socket, self.certificate_pins)
+                    if self.connection is None:
+                        self.connection = WebSocketConnection(
+                            socket,
+                            max_queue_size=self.max_queue_size,
+                            backpressure_policy=self.backpressure_policy,
+                            connection_id=self.connection_id,
+                            sequence_allocator=self.sequence_allocator,
+                            activation_sink=self.activation_sink,
+                        )
+                    else:
+                        await self.connection.replace_socket(socket)
+                    await self.connection.start_receiver()
+                    if self._connected_once and self._reconnect_callback is not None:
+                        await self._reconnect_callback(self.connection)
+                    self.connection.mark_connected()
+                    self._connected_once = True
+                    self._connection_state_event.set()
+                    self._ready.set()
+                    await self.connection.wait_closed()
+                    if self._closed:
+                        break
+                    receiver_error = self.connection.receiver_error
+                    if receiver_error is not None and str(receiver_error).startswith("network.queue_"):
+                        self._error = receiver_error
+                        self._connection_state_event.set()
+                        break
+                    if receiver_error is not None:
+                        self.connection.set_reconnect_reason(
+                            _safe_reconnect_reason(receiver_error, "network.websocket_reconnect_failed")
+                        )
+                    if reconnect_attempt >= self.max_reconnect_attempts:
+                        if receiver_error is not None:
+                            self._error = receiver_error
+                        self._connection_state_event.set()
+                        break
+                    # The connection queue is closed while the receiver unwinds.
+                    # Keep receive callers suspended until replacement succeeds or
+                    # the reconnect loop reaches a terminal state.
+                    self.connection.mark_reconnecting()
+                    self._connection_state_event.clear()
+                except asyncio.CancelledError:
+                    if socket is not None:
+                        await socket.close()
+                    raise
+                except BaseException as exc:
+                    if socket is not None:
+                        await socket.close()
+                    if self.connection is not None and not self._closed:
+                        self.connection.set_reconnect_reason(
+                            _safe_reconnect_reason(exc, "network.websocket_reconnect_failed")
+                        )
+                    if self._closed or reconnect_attempt >= self.max_reconnect_attempts:
+                        self._error = exc
+                        self._connection_state_event.set()
+                        self._ready.set()
+                        break
+                    if self.connection is not None:
+                        self.connection.mark_reconnecting()
+                if self._closed or reconnect_attempt >= self.max_reconnect_attempts:
+                    break
+                reconnect_attempt += 1
+                delay = min(
+                    self.reconnect_max_delay_seconds,
+                    self.reconnect_delay_seconds * (2 ** max(reconnect_attempt - 1, 0)),
+                )
+                if delay:
+                    await asyncio.sleep(delay)
         except asyncio.CancelledError:
-            if socket is not None:
-                await socket.close()
             raise
-        except BaseException as exc:
-            if socket is not None:
-                await socket.close()
-            self._error = exc
-            self._ready.set()
+        finally:
+            if self._connection_state_event is not None:
+                self._connection_state_event.set()
+            if self.connection is not None and self._error is not None:
+                self.connection.mark_failed()
+            if self.connection is not None and not self.connection.queue_status.get("closed"):
+                await self.connection.close()
 
     def _build_connect_arguments(self) -> tuple[str, dict[str, str], dict[str, object]]:
         parsed = urlsplit(self.url)
@@ -542,21 +1115,94 @@ class WebSocketClientHandle:
         if self.connection is not None:
             await self.connection.close()
 
-    @staticmethod
     async def _receive_async(
+        self,
         connection: WebSocketConnection,
         timeout_seconds: float | None,
     ) -> object:
-        if timeout_seconds is None:
-            return await connection.receive()
-        task = asyncio.create_task(connection.receive())
-        done, pending = await asyncio.wait({task}, timeout=timeout_seconds)
-        if not done:
-            # websockets.recv() may spend a long time unwinding cancellation on
-            # Windows. Leave this single pending receive attached to the loop;
-            # close() will terminate the connection and drain it. The public
-            # operation still returns at the configured deadline.
-            for pending_task in pending:
-                pending_task.add_done_callback(_consume_async_task_result)
-            raise TimeoutError("network.websocket_receive_timeout")
-        return await task
+        deadline = (
+            None
+            if timeout_seconds is None
+            else asyncio.get_running_loop().time() + timeout_seconds
+        )
+        while True:
+            remaining = (
+                None
+                if deadline is None
+                else max(deadline - asyncio.get_running_loop().time(), 0.0)
+            )
+            try:
+                return await connection.receive(timeout_seconds=remaining)
+            except WebSocketConnectionError:
+                # A receiver error closes the queue before the reconnect loop can
+                # install the replacement socket. Wait for that state transition
+                # instead of exposing a transient websocket_closed to callers.
+                if self._closed or self._error is not None:
+                    raise
+                if connection.queue_status.get("connection_state") == "connected":
+                    # receiver_error is assigned immediately before queue.close();
+                    # yield once so that the receiver and reconnect loop can finish
+                    # the state transition instead of spinning on an open queue.
+                    await asyncio.sleep(0)
+                    continue
+                state_event = self._connection_state_event
+                if state_event is None:
+                    raise
+                state_event.clear()
+                if self._closed or self._error is not None:
+                    raise
+                if connection.queue_status.get("connection_state") == "connected":
+                    continue
+                if remaining is not None:
+                    if remaining <= 0:
+                        raise TimeoutError("network.websocket_receive_timeout")
+                    try:
+                        await asyncio.wait_for(state_event.wait(), remaining)
+                    except asyncio.TimeoutError as exc:
+                        raise TimeoutError("network.websocket_receive_timeout") from exc
+                else:
+                    await state_event.wait()
+
+    async def _wait_next_activation_async(
+        self,
+        connection: WebSocketConnection,
+        timeout_seconds: float | None,
+    ) -> dict[str, object]:
+        deadline = (
+            None
+            if timeout_seconds is None
+            else asyncio.get_running_loop().time() + timeout_seconds
+        )
+        while True:
+            remaining = (
+                None
+                if deadline is None
+                else max(deadline - asyncio.get_running_loop().time(), 0.0)
+            )
+            try:
+                return await connection.activation_queue.wait_next(timeout_seconds=remaining)
+            except TimeoutError as exc:
+                raise TimeoutError("network.websocket_receive_timeout") from exc
+            except (QueueClosedError, QueueCancelledError):
+                if self._closed or self._error is not None:
+                    raise WebSocketConnectionError("network.websocket_closed")
+                if connection.queue_status.get("connection_state") == "connected":
+                    await asyncio.sleep(0)
+                    continue
+                state_event = self._connection_state_event
+                if state_event is None:
+                    raise WebSocketConnectionError("network.websocket_closed")
+                state_event.clear()
+                if self._closed or self._error is not None:
+                    raise WebSocketConnectionError("network.websocket_closed")
+                if connection.queue_status.get("connection_state") == "connected":
+                    continue
+                if remaining is not None:
+                    if remaining <= 0:
+                        raise TimeoutError("network.websocket_receive_timeout")
+                    try:
+                        await asyncio.wait_for(state_event.wait(), remaining)
+                    except asyncio.TimeoutError as exc:
+                        raise TimeoutError("network.websocket_receive_timeout") from exc
+                else:
+                    await state_event.wait()

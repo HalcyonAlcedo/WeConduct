@@ -7,7 +7,14 @@ from .resources import ResponseBodyRef, ResponseBodyStore, ResponseBodyTooLargeE
 from .proxy import ProxyConfigurationError, ProxyResolver, ResolvedProxy
 from .windows_proxy_worker import WindowsProxyResolverWorker
 from .tls import ResolvedTls, TlsConfigurationError, TlsResolver
-from .oauth import OAuthClientCredentialsRequest, OAuthConfigurationError, OAuthService, OAuthTokenState
+from .oauth import (
+    OAuthAuthorizationCodePKCERequest,
+    OAuthClientCredentialsRequest,
+    OAuthConfigurationError,
+    OAuthDeviceCodeState,
+    OAuthService,
+    OAuthTokenState,
+)
 from .graphql_adapter import (
     GraphQLAdapterError,
     GraphQLProtocolAdapter,
@@ -26,7 +33,16 @@ from .long_connection import (
     WebSocketClientHandle,
 )
 from .batch import execute_batch
+from .queue import (
+    BoundedMessageQueue,
+    ExecutionActivationQueue,
+    QueueBackpressureError,
+    QueueCancelledError,
+    QueueClosedError,
+    SequenceAllocator,
+)
 from .service import NetworkRuntimeService
+from .trace import NetworkTraceRecorder
 
 __all__ = [
     "HttpxAdapter",
@@ -49,7 +65,9 @@ __all__ = [
     "TlsConfigurationError",
     "TlsResolver",
     "OAuthClientCredentialsRequest",
+    "OAuthAuthorizationCodePKCERequest",
     "OAuthConfigurationError",
+    "OAuthDeviceCodeState",
     "OAuthService",
     "OAuthTokenState",
     "GraphQLAdapterError",
@@ -66,5 +84,12 @@ __all__ = [
     "WebSocketConnectionError",
     "WebSocketClientHandle",
     "execute_batch",
+    "BoundedMessageQueue",
+    "ExecutionActivationQueue",
+    "QueueBackpressureError",
+    "QueueCancelledError",
+    "QueueClosedError",
+    "SequenceAllocator",
     "UnknownNetworkContextError",
+    "NetworkTraceRecorder",
 ]

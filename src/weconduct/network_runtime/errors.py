@@ -4,10 +4,15 @@ from dataclasses import dataclass, replace
 import re
 from typing import Mapping
 
+from weconduct.application.sensitive_values.redaction import redact_sensitive_payload
+
 
 _NETWORK_ERROR_CODE = re.compile(r"\b(network\.[a-z0-9_]+)\b")
 _SENSITIVE_ASSIGNMENT = re.compile(
     r"(?i)(?<![a-z0-9_-])(?P<name>[a-z0-9_-]*(?:token|password|secret|cookie|authorization|credential|api[-_]?key)[a-z0-9_-]*)(?P<separator>=|:\s*)(?P<value>[^\s&#]+)"
+)
+_BODY_ASSIGNMENT = re.compile(
+    r"(?i)(?<![a-z0-9_-])(?P<name>(?:request|response|raw)?[_-]?body)(?P<separator>=|:\s*)(?P<value>[^\s&#]+)"
 )
 _URL_USERINFO = re.compile(r"(?i)(?P<scheme>[a-z][a-z0-9+.-]*://)(?P<userinfo>[^/@\s]+)@")
 
@@ -37,7 +42,7 @@ class NetworkExecutionError:
         return {
             "error_code": self.error_code,
             "message": self.message,
-            "details": dict(self.details),
+            "details": _redact_network_details(self.details),
             "request_id": self.request_id,
             "node_id": self.node_id,
             "network_context_id": self.network_context_id,
@@ -59,7 +64,7 @@ def build_network_error(
     return NetworkExecutionError(
         error_code=normalized_code,
         message=redact_network_message(raw_message),
-        details=dict(details or {}),
+        details=_redact_network_details(details or {}),
         request_id=_string_attribute(operation, "request_id"),
         node_id=_string_attribute(operation, "node_id"),
         network_context_id=_string_attribute(snapshot, "context_id"),
@@ -89,10 +94,46 @@ def redact_network_message(message: str) -> str:
         lambda match: f"{match.group('scheme')}<redacted>@",
         message,
     )
-    return _SENSITIVE_ASSIGNMENT.sub(
+    redacted = _SENSITIVE_ASSIGNMENT.sub(
         lambda match: f"{match.group('name')}=<redacted>",
         without_userinfo,
     )
+    return _BODY_ASSIGNMENT.sub(
+        lambda match: f"{match.group('name')}=<redacted>",
+        redacted,
+    )
+
+
+def _redact_network_details(value: object) -> dict[str, object]:
+    """错误/诊断详情只保留结构，禁止携带请求或响应正文。"""
+    projected = redact_sensitive_payload(value)
+    if not isinstance(projected, Mapping):
+        return {"value": "<redacted>"}
+    return _redact_network_detail_mapping(projected)
+
+
+def _redact_network_detail_mapping(value: Mapping[object, object]) -> dict[str, object]:
+    redacted: dict[str, object] = {}
+    for key, item in value.items():
+        name = str(key)
+        normalized = name.strip().lower().replace("-", "_")
+        if (
+            normalized in {"body", "payload", "request", "response", "raw_body"}
+            or normalized.endswith("_body")
+        ):
+            redacted[name] = "<redacted>"
+        elif isinstance(item, Mapping):
+            redacted[name] = _redact_network_detail_mapping(item)
+        elif isinstance(item, list):
+            redacted[name] = [
+                _redact_network_detail_mapping(entry)
+                if isinstance(entry, Mapping)
+                else entry
+                for entry in item
+            ]
+        else:
+            redacted[name] = item
+    return redacted
 
 
 def _string_attribute(value: object, attribute: str) -> str | None:

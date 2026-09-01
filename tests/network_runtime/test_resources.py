@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+from pathlib import Path
+from time import monotonic, sleep
 
 import pytest
 
@@ -164,3 +167,67 @@ def test_response_body_ref_enforces_read_limit_for_file_backed_response(tmp_path
 
     with pytest.raises(ResponseBodyTooLargeError, match="network.response_too_large"):
         body_ref.read_text(max_bytes=1024)
+
+
+def test_response_body_store_can_retain_references_and_export_debug_descriptor(tmp_path) -> None:
+    payload = b"trace-payload"
+    store = ResponseBodyStore(session_id="session-trace", root_directory=tmp_path)
+
+    body_ref = store.create(payload, content_type="application/octet-stream")
+    retained = store.retain(body_ref)
+    descriptor = retained.to_debug_descriptor()
+
+    assert retained.resource_id == body_ref.resource_id
+    assert descriptor["resource_kind"] == "session_temp"
+    assert descriptor["resource_id"] == body_ref.resource_id
+    assert descriptor["size_bytes"] == len(payload)
+    assert descriptor["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert descriptor["available"] is True
+
+    body_ref.release()
+    assert retained.read_bytes() == payload
+
+    retained.release()
+    with pytest.raises(RuntimeError, match="network.response_body_unavailable"):
+        retained.read_bytes()
+
+    store.close()
+
+
+def test_response_body_store_rejects_unregistered_debug_descriptor(tmp_path) -> None:
+    store = ResponseBodyStore(session_id="session-registered", root_directory=tmp_path)
+    body_ref = store.create(b"registered", content_type="text/plain")
+    descriptor = body_ref.to_debug_descriptor()
+
+    assert store.read_debug_descriptor(descriptor) == b"registered"
+
+    forged = {
+        **descriptor,
+        "resource_id": "body-not-registered",
+        "sha256": hashlib.sha256(b"forged").hexdigest(),
+    }
+    with pytest.raises(RuntimeError, match="network.response_body_unavailable"):
+        store.read_debug_descriptor(forged)
+
+    store.close()
+
+
+def test_response_body_store_defers_cleanup_when_windows_reader_holds_file(tmp_path) -> None:
+    """关闭会话时若正文仍被 Windows 读句柄占用，清理应延后而不是失败。"""
+    store = ResponseBodyStore(session_id="session-open-reader", root_directory=tmp_path)
+    body_ref = store.create(b"x" * (4 * 1024 * 1024 + 1), content_type="application/octet-stream")
+
+    assert body_ref.path is not None
+    body_path = body_ref.path
+    reader = body_path.open("rb")
+    try:
+        store.close()
+    finally:
+        reader.close()
+
+    deadline = monotonic() + 2
+    while (body_path.exists() or any(tmp_path.iterdir())) and monotonic() < deadline:
+        sleep(0.02)
+
+    assert body_path.exists() is False
+    assert list(tmp_path.iterdir()) == []

@@ -772,6 +772,7 @@ class WeConductApiServer(ThreadingHTTPServer):
             service = getattr(self, "workbench_service", None)
             if isinstance(service, CompilationWorkbenchService):
                 service.shutdown_debug_sessions()
+                service.shutdown_oauth_flows()
             broker = getattr(self, "workbench_event_broker", None)
             if broker is not None and hasattr(broker, "close"):
                 broker.close()
@@ -1243,6 +1244,17 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if request_path.startswith("/api/workbench/oauth/"):
+            suffix = request_path.removeprefix("/api/workbench/oauth/")
+            if suffix and "/" not in suffix:
+                try:
+                    result = service.get_oauth_flow(flow_id=suffix)
+                except ValueError as exc:
+                    self._write_invalid_request_error(exc)
+                    return
+                self._write_json(HTTPStatus.OK, result)
+                return
+
         if request_path == "/api/workbench/events":
             self._write_workbench_event_stream(service)
             return
@@ -1261,6 +1273,58 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 result,
             )
+            return
+
+        for history_prefix, history_mode in (
+            ("/api/workbench/debug/history/", True),
+            ("/api/workbench/debug/", False),
+        ):
+            if not request_path.startswith(history_prefix):
+                continue
+            suffix = request_path.removeprefix(history_prefix)
+            parts = suffix.split("/")
+            if len(parts) < 2 or parts[1] != "network":
+                continue
+            session_id = parts[0]
+            try:
+                if len(parts) == 3 and parts[2] == "summary":
+                    result = service.get_debug_session_network_summary(
+                        session_id=session_id, history=history_mode
+                    )
+                elif len(parts) == 2:
+                    result = service.get_debug_session_network(
+                        session_id=session_id,
+                        history=history_mode,
+                        protocol=self._get_optional_query_param(query_params, "protocol"),
+                        status=self._get_optional_query_param(query_params, "status"),
+                        node_id=self._get_optional_query_param(query_params, "node_id"),
+                        operation_id=self._get_optional_query_param(query_params, "operation_id"),
+                        connection_id=self._get_optional_query_param(query_params, "connection_id"),
+                        event_kind=self._get_optional_query_param(query_params, "event_kind"),
+                        from_time=self._get_optional_query_param(query_params, "from_time"),
+                        to_time=self._get_optional_query_param(query_params, "to_time"),
+                        page=self._get_optional_int_query_param(query_params, "page"),
+                        page_size=self._get_optional_int_query_param(query_params, "page_size"),
+                        include_body=self._get_optional_query_param(query_params, "include_body")
+                        in {"1", "true", "yes"},
+                    )
+                elif len(parts) == 3:
+                    result = service.get_debug_session_network_trace(
+                        session_id=session_id, trace_id=parts[2], history=history_mode
+                    )
+                elif len(parts) == 4 and parts[3] == "body":
+                    result = service.get_debug_session_network_trace_body(
+                        session_id=session_id,
+                        trace_id=parts[2],
+                        history=history_mode,
+                        part=self._get_optional_query_param(query_params, "part") or "all",
+                    )
+                else:
+                    continue
+            except (KeyError, TypeError, ValueError) as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.OK, result)
             return
 
         if request_path.startswith("/api/workbench/debug/history/"):
@@ -1429,7 +1493,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             "/api/workbench/project/resource-audit", "/api/workbench/component-library",
             "/api/workbench/editor/history", "/api/workbench/execution-history",
             "/api/workbench/runtime/sessions", "/api/workbench/events",
-            "/api/workbench/debug/sessions", "/api/workbench/debug/history", "/api/host/info",
+            "/api/workbench/debug/sessions", "/api/workbench/debug/history",
+            "/api/host/info",
         }
         post_paths = {
             "/api/host/file-dialog", "/api/host/open-path", "/api/host/read-file",
@@ -1438,6 +1503,7 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             "/api/workbench/runtime/prepare", "/api/workbench/runtime/start",
             "/api/workbench/config/preview", "/api/workbench/config/reset",
             "/api/workbench/preferences/external-api", "/api/workbench/debug/prepare",
+            "/api/workbench/oauth/authorization", "/api/workbench/oauth/device",
             "/api/workbench/debug/start", "/api/workbench/project/new",
             "/api/workbench/project/encrypted-parameters",
             "/api/workbench/project/encrypted-parameters/rekey",
@@ -1480,6 +1546,8 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             methods.extend(("GET", "HEAD"))
         if request_path.startswith("/api/workbench/debug/history/"):
             methods.extend(("GET", "HEAD"))
+        if request_path.startswith("/api/workbench/debug/history/") and "/network" in request_path:
+            methods.extend(("GET", "HEAD"))
         if request_path.startswith("/api/workbench/debug/projection/"):
             methods.extend(("GET", "HEAD"))
         if request_path.startswith("/api/workbench/runtime/"):
@@ -1493,9 +1561,22 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             debug_suffix = request_path.removeprefix("/api/workbench/debug/")
             if request_path.endswith("/events"):
                 methods.extend(("GET", "HEAD"))
+            elif "/network" in debug_suffix:
+                methods.extend(("GET", "HEAD"))
             elif request_path.endswith(("/unlock", "/sensitive-values/reveal", "/continue", "/pause", "/variables/apply", "/debugger-config/apply", "/step-over", "/step-into", "/step-out", "/abort")):
                 methods.append("POST")
             elif debug_suffix and "/" not in debug_suffix:
+                methods.extend(("GET", "HEAD"))
+        if request_path.startswith("/api/workbench/oauth/"):
+            if request_path.endswith("/submit") or request_path.endswith("/cancel"):
+                methods.append("POST")
+            elif (
+                request_path.count("/") == 4
+                and request_path not in {
+                    "/api/workbench/oauth/authorization",
+                    "/api/workbench/oauth/device",
+                }
+            ):
                 methods.extend(("GET", "HEAD"))
         if request_path.startswith("/api/workbench/resources/") and request_path.endswith(("/enabled", "/tags")):
             methods.append("POST")
@@ -1608,6 +1689,55 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._write_workspace_state_error(exc)
             return
+        if request_path == "/api/workbench/oauth/authorization":
+            try:
+                payload = self._read_json_request_body()
+                result = service.begin_oauth_authorization(**payload)
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.ACCEPTED, result)
+            return
+        if request_path == "/api/workbench/oauth/device":
+            try:
+                payload = self._read_json_request_body()
+                result = service.begin_oauth_device(**payload)
+            except ValueError as exc:
+                self._write_invalid_request_error(exc)
+                return
+            self._write_json(HTTPStatus.ACCEPTED, result)
+            return
+        if request_path.startswith("/api/workbench/oauth/"):
+            suffix = request_path.removeprefix("/api/workbench/oauth/")
+            if suffix.endswith("/cancel"):
+                flow_id = suffix.removesuffix("/cancel")
+                if not flow_id or "/" in flow_id:
+                    self._write_invalid_request_error(ValueError("invalid OAuth flow path"))
+                    return
+                try:
+                    self._read_optional_json_request_body()
+                    result = service.cancel_oauth_flow(flow_id=flow_id)
+                except ValueError as exc:
+                    self._write_invalid_request_error(exc)
+                    return
+                self._write_json(HTTPStatus.ACCEPTED, result)
+                return
+            if suffix.endswith("/submit"):
+                flow_id = suffix.removesuffix("/submit")
+                if not flow_id or "/" in flow_id:
+                    self._write_invalid_request_error(ValueError("invalid OAuth flow path"))
+                    return
+                try:
+                    payload = self._read_json_request_body()
+                    result = service.submit_oauth_flow(
+                        flow_id=flow_id,
+                        values=payload.get("values", payload),
+                    )
+                except ValueError as exc:
+                    self._write_invalid_request_error(exc)
+                    return
+                self._write_json(HTTPStatus.ACCEPTED, result)
+                return
         if self.path == "/api/workbench/compile":
             try:
                 payload = self._read_json_request_body()
@@ -3380,6 +3510,19 @@ class WeConductApiHandler(BaseHTTPRequestHandler):
             return float(value)
         except ValueError:
             raise ValueError(f"query parameter must be numeric when provided: {key}") from None
+
+    def _get_optional_int_query_param(
+        self,
+        params: dict[str, list[str]],
+        key: str,
+    ) -> int | None:
+        value = self._get_optional_query_param(params, key)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            raise ValueError(f"query parameter must be an integer when provided: {key}") from None
 
     def _handle_host_file_dialog(self) -> None:
         try:
