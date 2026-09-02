@@ -275,7 +275,7 @@ const graphPreferences = computed(() => {
     auto_open_node_on_drop: prefs?.auto_open_node_on_drop ?? true,
     confirm_delete_node: prefs?.confirm_delete_node ?? true,
     edge_line_style: prefs?.edge_line_style ?? 'smoothstep',
-    auto_layout_on_overlap: prefs?.auto_layout_on_overlap ?? true,
+    auto_layout_on_overlap: prefs?.auto_layout_on_overlap ?? false,
   }
 })
 

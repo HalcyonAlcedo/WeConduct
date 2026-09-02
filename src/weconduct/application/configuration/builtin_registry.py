@@ -310,7 +310,7 @@ def _register_graph_fields(registry: ConfigurationRegistry) -> None:
             ("confirm_delete_node", "boolean", True),
             ("show_inline_config_summary", "boolean", True),
             ("edge_line_style", "enum", "smoothstep", ("smoothstep", "straight", "bezier")),
-            ("auto_layout_on_overlap", "boolean", True),
+            ("auto_layout_on_overlap", "boolean", False),
         ),
     )
     _register_fields(

@@ -373,6 +373,7 @@ describe('VueFlowGraph', () => {
   })
 
   it('节点初始化后按动态尺寸局部推开并同步到内存图稿', async () => {
+    workspaceSnapshotState.snapshot.graph_workspace.graph_preferences.auto_layout_on_overlap = true
     graphWorkspaceState.graphModel = {
       nodes: [
         { node_id: 'node-a', display_name: '高节点', node_kind: 'x', node_config: {}, position: { x: 100, y: 100 }, ports: [] },

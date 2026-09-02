@@ -134,7 +134,7 @@ const FIELD_DEFS = computed<Record<string, FieldDef[]>>(() => ({
     { key: 'grid_enabled', label: t('framework.preferences.nodegraph.gridEnabled', '网格启用'), type: 'bool' }, { key: 'auto_open_node_on_drop', label: t('framework.preferences.nodegraph.autoOpenNodeOnDrop', '拖放后自动打开节点'), type: 'bool' },
     { key: 'confirm_delete_node', label: t('framework.preferences.nodegraph.confirmDeleteNode', '删除节点确认'), type: 'bool' }, { key: 'show_inline_config_summary', label: t('framework.preferences.nodegraph.showInlineConfigSummary', '显示内联配置摘要'), type: 'bool' },
     { key: 'edge_line_style', label: t('framework.preferences.nodegraph.edgeLineStyle', '连线样式'), type: 'select', options: ['smoothstep', 'straight', 'bezier'], hint: t('framework.preferences.nodegraph.edgeLineStyleHint', 'smoothstep 平滑折线 / straight 直线 / bezier 曲线') },
-    { key: 'auto_layout_on_overlap', label: t('framework.preferences.nodegraph.autoLayoutOnOverlap', '节点碰撞时自动排版'), type: 'bool', hint: t('framework.preferences.nodegraph.autoLayoutOnOverlapHint', '加载节点图时，自动推开发生碰撞的节点') },
+    // { key: 'auto_layout_on_overlap', label: t('framework.preferences.nodegraph.autoLayoutOnOverlap', '节点碰撞时自动排版'), type: 'bool', hint: t('framework.preferences.nodegraph.autoLayoutOnOverlapHint', '加载节点图时，自动推开发生碰撞的节点') },
     { key: 'save_conflict_policy', label: t('framework.preferences.nodegraph.saveConflictPolicy', '保存冲突策略'), type: 'select', options: ['prefer_current_graph', 'strict'] },
   ],
 }))
